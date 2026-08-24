@@ -1,0 +1,22 @@
+.idea
+.vscode
+.xmake
+build
+sdk/tinylsm/dist
+sdk/tinylsm/build
+sdk/tinylsm/tinylsm/core/lib
+sdk/tinylsm/tinylsm.egg-info
+*__pycache__*
+book
+coverage*
+.clangd
+*.log*
+sst_html
+.cache
+compile_commands.json
+
+# 测试运行时产生的数据目录
+logs/
+test_data/
+test_wal_dir/
+dir_test_*_data/
