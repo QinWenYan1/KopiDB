@@ -27,8 +27,10 @@ KopiDB：类 RocksDB 的教学级 LSM-tree KV 存储引擎（C++20），跟随 [
 
 ## Git 纪律
 
-- commit 时机与粒度由用户决定，Claude 不主动 commit
-- `reference-impl` 分支：Claude 的保底参考实现，**永不合并进 main**
+- **所有 git 写操作（commit / push / branch 等）由用户自己执行，Claude 一律不代劳**
+- Claude 对 git 只读：`status` / `log` / `diff`，仅用于了解仓库现状
+- Claude 改完文件后告知用户"可以提交了"，由用户决定时机与粒度
+- `reference-impl` 分支：Claude 的保底参考实现（已建好），**永不合并进 main**
 - 任何计划外的改动：先在聊天框呈现，等用户批准
 
 ## 常用命令
