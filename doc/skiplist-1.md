@@ -1,43 +1,69 @@
-# 📘 SkipList（上）：地图与 InternalKey 编码（The Map & InternalKey Encoding）
+# 📘 SkipList（上）：工作流程与 InternalKey 编码（Workflow & InternalKey Encoding）
 
-> RocksDB 源码精读 · 跳表篇（上） | 源码版本 [`e6a2ee0`](https://github.com/facebook/rocksdb/tree/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7) | 本篇涵盖：写入路径全局图、跳表结构原理、Put 调用链源码解析、三层可插拔设计、WriteBatch 格式、Entry 编码、InternalKey 排序规则、读路径可见性
+> RocksDB 源码精读 · 跳表篇（上） | 源码版本 [`e6a2ee0`](https://github.com/facebook/rocksdb/tree/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7) | 本篇涵盖：Put/Get 完整工作流、跳表结构原理、三层可插拔设计、WriteBatch 格式、Entry 编码、InternalKey 排序规则、LookupKey
 
 ---
 
 ## 🧠 核心概念总览
 
-- [*知识点1: LSM 写入路径——跳表的位置*](#id1)
+- [*知识点1: Put 完整工作流（组提交）*](#id1)
 - [*知识点2: 跳表(SkipList)结构原理*](#id2)
-- [*知识点3: Put 调用链逐跳源码解析*](#id3)
-- [*知识点4: 三层可插拔设计*](#id4)
-- [*知识点5: 读路径速览*](#id5)
-- [*知识点6: 写批量(WriteBatch)的物理格式*](#id6)
-- [*知识点7: Entry 编码与 varint32*](#id7)
-- [*知识点8: PackSequenceAndType 位布局*](#id8)
-- [*知识点9: InternalKeyComparator 排序规则*](#id9)
-- [*知识点10: LookupKey 与 MemTable::Get 的可见性过滤*](#id10)
+- [*知识点3: 三层可插拔设计*](#id3)
+- [*知识点4: 写批量(WriteBatch)的物理格式*](#id4)
+- [*知识点5: Entry 编码与 varint32*](#id5)
+- [*知识点6: PackSequenceAndType 位布局*](#id6)
+- [*知识点7: InternalKeyComparator 排序规则*](#id7)
+- [*知识点8: LookupKey 结构与栈上缓冲优化*](#id8)
+- [*知识点9: Get 完整工作流（SuperVersion 三级查找）*](#id9)
+- [*知识点10: MemTable::Get 内部细节*](#id10)
 
 ---
 
 <a id="id1"></a>
-## ✅ 知识点 1: LSM 写入路径——跳表的位置
+## ✅ 知识点 1: Put 完整工作流（组提交）
 
-**跳表不直接面对用户写入，它是内存表(MemTable)的默认容器。**
+**Put 不是一次函数调用，而是一场"分组协作"：写入线程先组队，leader 统一写 WAL，组员再各自插跳表。**
 
-一次写入 `Put("name", "kopi")` 的生命周期：
+一次 `Put` 的完整旅程（编号即顺序）：
+
+1. **打包**：`DBImpl::Put` 把操作装进 `WriteBatch`，进入 `WriteImpl`（[db_impl_write.cc:867](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_write.cc#L867)）
+2. **组队（组提交 Group Commit）**：`write_thread_.JoinBatchGroup(&w)`（[:1099](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_write.cc#L1099)）——并发写线程在此汇合：**先到的当 leader，其余当 follower**
+3. **leader 预处理**：`PreprocessWrite`（[:1179](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_write.cc#L1179)）——检查 MemTable 是否写满；若满则 `SwitchMemtable`（[:388](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_write.cc#L388)）：当前 active 被 `MarkImmutable()` 打成只读、挂进 `imm_` 队列，另建一个新的 active
+4. **leader 写 WAL**：整组的 batch 合并后一次性 `WriteToWAL`（[:2262](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_write.cc#L2262)）——**序列号在写 WAL 时统一分配**（[:1375](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_write.cc#L1375) 注释）。**WAL 先落盘、MemTable 后更新，崩溃恢复依赖这个顺序**
+5. **插 MemTable**（两条岔路）：
+   - 非并发模式：leader 统一 replay 整组 batch
+   - 并发模式（默认）：leader 写完 WAL 放行，**follower 各自**调 `WriteBatchInternal::InsertInto`（[:1112-1117](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_write.cc#L1112-L1117)），以 `concurrent_memtable_writes=true` **并发**插跳表——**这就是 InlineSkipList 必须做成无锁的根因**（跳表篇（下）的核心动机）
+6. **发布**：整组完成后 `versions_->SetLastSequence(last_sequence)`（[:1137](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_write.cc#L1137)）——新序列号对读者可见，写入返回
 
 ```mermaid
 flowchart TD
-    A["DB::Put"] --> B["WAL 预写日志<br/>先落盘防丢"]
-    B --> C["MemTable 内存表 ⭐ 我们在这里"]
-    C -->|"写满后冻结、刷盘"| D["SST 文件（不可变）"]
+    A["Put → WriteBatch"] --> B["JoinBatchGroup<br/>leader / follower 组队"]
+    B --> C["leader: PreprocessWrite<br/>（满了就 SwitchMemtable 冻结）"]
+    C --> D["leader: WriteToWAL<br/>（统一分配序列号）"]
+    D --> E["各自 InsertInto<br/>并发插跳表"]
+    E --> F["SetLastSequence 发布<br/>读者可见"]
 ```
 
-- **预写日志(Write-Ahead Log, WAL)**：先落盘，防崩溃丢数据
-- **内存表(MemTable)**：写入的内存落脚点，默认容器就是跳表
-- **SST 文件(Sorted String Table)**：MemTable 写满后冻结刷盘的产物
+**MemTable 的两种身份**（教程里 current/frozen 的工业版）：
 
-> 💡 **理解技巧**：跳表只负责"在内存里有序地放 key"。持久化是 WAL 和 SST 的事，不是跳表的事。
+- **active**（`cfd->mem()`，[column_family.h:381](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/column_family.h#L381)）：可读可写，**唯一**
+- **immutable 队列**（`cfd->imm()`，[:380](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/column_family.h#L380)，类型 `MemTableList`）：**只读**，按新→旧排列，排队等后台 flush 成 SST
+
+**插入链路的最后一跳**（第 5 步的代码特写，[skiplistrep.cc:46-48](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L46-L48)）：
+
+```cpp
+bool InsertKey(KeyHandle handle) override {
+  return skip_list_.Insert(static_cast<char*>(handle));
+}
+```
+
+- `KeyHandle` 本质就是指向编码字节的裸指针 `char*`（内存由 **Arena 分配器**统一分配，跳表篇（下）讲）
+- `static_cast` 零开销：设计契约是"调用方保证传进来的就是跳表分配的字节"
+
+> 💡 **理解技巧**：组提交把 N 个线程的 WAL 写合并成 1 次，摊薄昂贵的磁盘 IO；插跳表走无锁，把 CPU 并行度拉满——**串行化昂贵的，并行化便宜的**。
+> ⚠️ **关键区分**：WAL 落盘 ≠ 数据可读。序列号经 `SetLastSequence` 发布后，这版数据才对读者可见。
+
+---
 
 <a id="id2"></a>
 ## ✅ 知识点 2: 跳表(SkipList)结构原理
@@ -74,82 +100,10 @@ explicit InlineSkipList(Comparator cmp, Allocator* allocator,
 > 📋 **术语提醒**：`分支因子(branching factor)` = 相邻两层之间的稀疏比例。$p = 1/4$ 即平均每 4 个节点才有 1 个晋级。
 > ⚠️ **关键区分**：晋级概率越小，索引越稀疏、单节点内存越省，但查找步数略增——空间与时间的权衡。
 
+---
+
 <a id="id3"></a>
-## ✅ 知识点 3: Put 调用链逐跳源码解析
-
-**从 `DBImpl::Put` 到跳表插入共 5 跳，每一跳职责单一。**
-
-```mermaid
-sequenceDiagram
-    participant P as DBImpl::Put
-    participant W as WriteImpl / WriteBatch
-    participant M as MemTableInserter
-    participant T as MemTable::Add
-    participant S as SkipListRep → InlineSkipList
-    P->>W: ① 打包成 WriteBatch
-    W->>M: ② 逐条 replay
-    M->>T: ③ mem->Add(seq, type, key, value)
-    T->>T: ④ 编码为连续字节串
-    T->>S: ⑤ InsertKey → 插入跳表
-```
-
-| 跳 | 位置 | 干了什么 |
-|---|------|---------|
-| 1 | `DBImpl::Put` → `WriteImpl`（[db_impl_write.cc:87](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_write.cc#L87) / [:867](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_write.cc#L867)） | 把 Put 打包进**写批量(WriteBatch)**，统一走写入流程 |
-| 2 | `MemTableInserter::PutCFImpl`（[write_batch.cc:2285](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L2285)） | 逐条 replay batch，取出当前**列族(Column Family)**的 MemTable |
-| 3 | `mem->Add(...)`（[write_batch.cc:2322](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L2322)） | 把 key/value **连同序列号一起**递给 MemTable |
-| 4 | `MemTable::Add`（[memtable.cc:1116](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1116)） | **编码**：(key, seq, type, value) 打包成连续字节 |
-| 5 | `SkipListRep::InsertKey` → `InlineSkipList::Insert`（[skiplistrep.cc:46](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L46) → [inlineskiplist.h:61](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L61)） | 最终插入跳表 |
-
-**逐段看真实代码：**
-
-**第 3 跳：递交接力棒**（[write_batch.cc:2320-2324](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L2320-L2324)）：
-
-```cpp
-if (!moptions->inplace_update_support) {
-  ret_status =
-      mem->Add(sequence_, value_type, key, value, kv_prot_info,
-               concurrent_memtable_writes_, ...);
-}
-```
-
-- `sequence_`：全局递增的**序列号(Sequence Number)**，MVCC 版本号的来源（知识点 8-9 详讲）
-- `value_type`：这条记录是"值"还是**删除标记(tombstone)**——**LSM 的删除是插墓碑，不是真删**
-- `concurrent_memtable_writes_`：是否允许并发写 MemTable 的开关（跳表篇（下）详讲）
-
-**第 4 跳：编码成字节串**（格式注释 [memtable.cc:1122-1127](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1122-L1127)，编码实现 [:1142-1152](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1142-L1152)）：
-
-```cpp
-// Format of an entry is concatenation of:
-//  key_size     : varint32 of internal_key.size()
-//  key bytes    : char[internal_key.size()]
-//  value_size   : varint32 of value.size()
-//  value bytes  : char[value.size()]
-char* p = EncodeVarint32(buf, internal_key_size);
-memcpy(p, key.data(), key_size);
-...
-uint64_t packed = PackSequenceAndType(s, type);
-EncodeFixed64(p, packed);
-```
-
-- 跳表里存的不是 `(key, value)` 对象，而是**一段连续字节**
-- `PackSequenceAndType` 把序列号和类型打包进 8 字节——**同一 user key 的多版本靠它区分**（知识点 8）
-
-**第 5 跳：进跳表**（[skiplistrep.cc:46-48](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L46-L48)）：
-
-```cpp
-bool InsertKey(KeyHandle handle) override {
-  return skip_list_.Insert(static_cast<char*>(handle));
-}
-```
-
-- `KeyHandle` 本质就是指向那段字节的裸指针 `char*`（内存由 **Arena 分配器**统一分配，跳表篇（下）讲）
-- `static_cast` 零开销：设计契约是"调用方保证传进来的就是跳表分配的字节"
-
-> ⚠️ **关键区分**：跳表存的 key **不是**原始用户 key，而是第 4 跳编码后的字节串（含 seq + type）。
-
-<a id="id4"></a>
-## ✅ 知识点 4: 三层可插拔设计
+## ✅ 知识点 3: 三层可插拔设计
 
 **MemTable 管逻辑，MemTableRep 定接口，InlineSkipList 干苦力。**
 
@@ -162,8 +116,8 @@ flowchart LR
 
 **各层职责：**
 
-- **MemTable（逻辑层）**：编码、序列号、内存统计、读一致性
-- **MemTableRep（接口层）**：`InsertKey` / `Get` / 迭代器的纯抽象
+- **MemTable（逻辑层）**：编码、序列号、内存统计、读一致性；对外由 `ColumnFamilyData` 持有为 `mem()` / `imm()` 两兄弟（[column_family.h:380-381](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/column_family.h#L380-L381)）
+- **MemTableRep（接口层）**：`InsertKey` / `Get` / 迭代器的纯抽象（`include/rocksdb/memtablerep.h`）
 - **InlineSkipList（实现层）**：真正的跳表；备选还有 HashSkipList、Vector 等
 
 **默认配置证据**（[advanced_options.h:754-755](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/include/rocksdb/advanced_options.h#L754-L755)）：
@@ -175,21 +129,14 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
 
 > 💡 **理解技巧**：这就是**策略模式(Strategy Pattern)**——换容器不用改 MemTable 一行代码。
 
-<a id="id5"></a>
-## ✅ 知识点 5: 读路径速览
+---
 
-**读 = 写入路径倒着走，外加一层"版本可见性"过滤（知识点 10 展开）。**
-
-- `DBImpl::Get` → … → `MemTable::Get`（[memtable.cc:1568](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1568)）
-- 查找用的是编码后的 **LookupKey**，比较器按 (user key 升序, seq 降序) 排序（知识点 9）
-- MemTable 查不到 → immutable MemTable → 再查 SST
-
-<a id="id6"></a>
-## ✅ 知识点 6: 写批量(WriteBatch)的物理格式
+<a id="id4"></a>
+## ✅ 知识点 4: 写批量(WriteBatch)的物理格式
 
 **WriteBatch 不是逻辑概念，是一段有严格二进制格式的字节串：12 字节头 + 逐条记录。**
 
-`DBImpl::Put` 并不直接写 MemTable——它先把操作打包成 WriteBatch。源码里的格式注释（[write_batch.cc:10-37](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L10-L37)）：
+源码里的格式注释（[write_batch.cc:10-37](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L10-L37)）：
 
 ```
 WriteBatch::rep_ :=
@@ -208,12 +155,25 @@ varstring := len: varint32 + data: uint8[len]
 
 > 💡 **理解技巧**：把 WriteBatch 理解成"最小写入事务单元"——WAL 里存的是它，MemTable 插入器 replay 的也是它。
 
-<a id="id7"></a>
-## ✅ 知识点 7: Entry 编码与 varint32
+<a id="id5"></a>
+## ✅ 知识点 5: Entry 编码与 varint32
 
 **跳表里每条记录是自描述的字节串：长度前缀 + key + 8 字节版本标签 + 长度前缀 + value。**
 
-回顾知识点 3 第 4 跳的编码格式（[memtable.cc:1122-1127](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1122-L1127)）：
+`MemTable::Add` 的编码（格式注释 [memtable.cc:1122-1127](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1122-L1127)，实现 [:1142-1152](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1142-L1152)）：
+
+```cpp
+// Format of an entry is concatenation of:
+//  key_size     : varint32 of internal_key.size()
+//  key bytes    : char[internal_key.size()]
+//  value_size   : varint32 of value.size()
+//  value bytes  : char[value.size()]
+char* p = EncodeVarint32(buf, internal_key_size);
+memcpy(p, key.data(), key_size);
+...
+uint64_t packed = PackSequenceAndType(s, type);
+EncodeFixed64(p, packed);
+```
 
 ```
 | varint32 key_size | key bytes | 8B packed(seq+type) | varint32 val_size | value bytes | [checksum] |
@@ -225,10 +185,11 @@ varstring := len: varint32 + data: uint8[len]
 - fixed32 恒占 4 字节；MemTable 里 key/value 长度通常很短，每条省 3 字节，百万条就是 MB 级
 - 同一套 varint 编码也用在 LevelDB / Protocol Buffers 里
 
+> ⚠️ **关键区分**：跳表存的 key **不是**原始用户 key，而是这段编码字节串（含 seq + type）。
 > 📋 **术语提醒**：`varint(可变长整数)`——小数值少占字节，以 CPU 换空间，是存储系统的常规武器。
 
-<a id="id8"></a>
-## ✅ 知识点 8: PackSequenceAndType 位布局
+<a id="id6"></a>
+## ✅ 知识点 6: PackSequenceAndType 位布局
 
 **序列号和记录类型被压进 8 字节：高 56 位是序列号，低 8 位是类型。**
 
@@ -243,13 +204,13 @@ inline uint64_t PackSequenceAndType(uint64_t seq, ValueType t) {
 ```
 
 - 解包对称（[dbformat.h:190-194](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.h#L190-L194)）：`seq = packed >> 8`、`type = packed & 0xff`
-- **位布局决定排序**：packed 值大 ⇔ seq 大（type 只在 seq 相同时起决胜作用）——下个知识点的排序规则建立在这上面
+- **位布局决定排序**：packed 值大 ⇔ seq 大（type 只在 seq 相同时起决胜作用）——知识点 7 的排序规则建立在这上面
 - `ValueType` 常见值：`kTypeValue`（正常值）、`kTypeDeletion`（点删除墓碑）、`kTypeMerge`（合并操作）
 
 > ⚠️ **关键区分**：这 8 字节**跟在 user key 后面**，构成**内部键(InternalKey)**的尾部——跳表排序看的是整个 InternalKey，不是裸 user key。
 
-<a id="id9"></a>
-## ✅ 知识点 9: InternalKeyComparator 排序规则
+<a id="id7"></a>
+## ✅ 知识点 7: InternalKeyComparator 排序规则
 
 **排序三关键字：user key 升序 → seq 降序 → type 降序。seq 降序是让"查找恰好落在可见版本上"的关键。**
 
@@ -278,12 +239,12 @@ inline uint64_t PackSequenceAndType(uint64_t seq, ValueType t) {
 > 💡 **理解技巧**：seq 降序的精妙之处——**一次 Seek 直接命中可见版本**，不用先找到最新再往回退。
 > 🔄 **知识关联**：`kValueTypeForSeek = kTypeValuePreferredSeqno`（[dbformat.cc:28](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.cc#L28)），与 preferred seqno 读优化有关——细节列入待验证点。
 
-<a id="id10"></a>
-## ✅ 知识点 10: LookupKey 与 MemTable::Get 的可见性过滤
+<a id="id8"></a>
+## ✅ 知识点 8: LookupKey 结构与栈上缓冲优化
 
-**查找时临时拼一个 LookupKey 当"探针"；Get 前置 Bloom 过滤，可见性在逐条回调里判。**
+**查找时临时拼一个 LookupKey 当"探针"；短 key 直接放栈上，零堆分配。**
 
-**LookupKey 的布局**（[lookup_key.h:47-57](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/lookup_key.h#L47-L57)）：
+**布局**（[lookup_key.h:47-57](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/lookup_key.h#L47-L57)）：
 
 ```
 | varint32 klength | userkey bytes | 8B tag = Pack(seq, kValueTypeForSeek) |
@@ -292,8 +253,44 @@ inline uint64_t PackSequenceAndType(uint64_t seq, ValueType t) {
 
 - 构造实现：[dbformat.cc:245-266](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.cc#L245-L266)
 - **工程细节**：`char space_[200]` 栈上缓冲区——key 短时零堆分配（同一段还有官方幽默注释 "We don't support user keys of more than 2GB :)"）
+- `memtable_key()` 返回从 `start_` 起的整段；`internal_key()` 返回从 `kstart_` 起的后缀——**同一段内存，两个视图**
 
-**`MemTable::Get` 的流程**（[memtable.cc:1568-1647](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1568-L1647)）：
+> 💡 **理解技巧**：栈上小缓冲区（SSO 思想）是高频小对象的标准优化——Get 是热路径，省一次 malloc 就是省一次潜在的缓存未命中。
+
+<a id="id9"></a>
+## ✅ 知识点 9: Get 完整工作流（SuperVersion 三级查找）
+
+**读的核心思想：先拿一张"一致视图"（SuperVersion），再按 新→旧 三级查找。**
+
+一次 `Get` 的完整旅程（注意：实现由协程宏生成，真身在 [db_impl_sync_and_async.h](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_sync_and_async.h)）：
+
+1. **取视图**：`GetAndRefSuperVersion(cfd)`（[:126](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_sync_and_async.h#L126)）——SuperVersion = 当前 active mem + imm 队列 + 当前 Version（SST 集合）的**一致快照**（结构定义 [column_family.h:208-214](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/column_family.h#L208-L214)）
+2. **定快照序列号**：有用户快照用快照的；否则 `GetLastPublishedSequence()`（[:141-156](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_sync_and_async.h#L141-L156)）。源码注释点出一个微妙的并发正确性细节（[:151-155](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_sync_and_async.h#L151-L155)）：**必须先引用 SuperVersion 再取序列号**——否则两步之间发生 flush，可能把快照本应看到的数据 compact 掉
+3. **拼探针**：`LookupKey lkey(key, snapshot, ...)`（[:201](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_sync_and_async.h#L201)）
+4. **三级查找，新→旧**：
+   - `sv->mem->Get(...)`——active MemTable（[:233](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_sync_and_async.h#L233)）
+   - 未命中 → `sv->imm->Get(...)`——immutable 队列（[:251](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_sync_and_async.h#L251)）
+   - 再未命中 → `sv->current->Get(...)`——SST 层（[:296](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_sync_and_async.h#L296)）
+5. **每层内部**：`MemTable::Get` 的细节见知识点 10
+
+```mermaid
+flowchart LR
+    A["Get(key)"] --> B["拿 SuperVersion<br/>一致视图"]
+    B --> C["定快照序列号"]
+    C --> D["active mem"]
+    D -->|未命中| E["imm 队列<br/>新→旧"]
+    E -->|未命中| F["SST 层<br/>L0→Ln"]
+```
+
+> 💡 **理解技巧**：SuperVersion 是 MVCC 的"取景框"——读全程不加 DB 级大锁，靠引用计数固定住这一刻的 mem/imm/Version 三件套。
+> 🔄 **知识关联**：第 4 步解释了为什么"刚写进的立刻能读到"——active 永远最先查；"刷盘后还能读到旧数据"靠的是 SST 层的版本接力。
+
+<a id="id10"></a>
+## ✅ 知识点 10: MemTable::Get 内部细节
+
+**进跳表之前先问 Bloom；命中之后逐版本判可见性；读到墓碑立即短路。**
+
+`MemTable::Get` 的流程（[memtable.cc:1568-1647](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1568-L1647)）：
 
 1. `IsEmpty()` 快速返回
 2. **范围删除检查**：`MaxCoveringTombstoneSeqnum`（range tombstone 走独立结构，不占点查询路径）
@@ -308,35 +305,38 @@ inline uint64_t PackSequenceAndType(uint64_t seq, ValueType t) {
 
 ## 🔑 核心要点总结
 
-1. 跳表是 MemTable 的**默认容器**，位于写入路径 WAL 之后、SST 之前
-2. Put 五跳：`DBImpl::Put` → `WriteImpl/WriteBatch` → `MemTableInserter::PutCFImpl` → `MemTable::Add`（编码）→ `SkipListRep::InsertKey` → `InlineSkipList::Insert`
-3. WriteBatch 物理格式 = `fixed64 sequence | fixed32 count | record[count]`，头 12 字节；batch 提供原子性并摊薄 WAL 成本
-4. 跳表存的是**编码后的字节串**：`varint(key_size) | key | packed(seq+type) 8B | varint(value_size) | value`
-5. `PackSequenceAndType`：`(seq << 8) | type`——高 56 位序列号、低 8 位类型
-6. InternalKey 排序：**user key 升序 → seq 降序 → type 降序**；seq 降序让 Seek 一步命中可见版本
-7. LookupKey 带 `space_[200]` 栈上缓冲区，短 key 零堆分配
-8. `MemTable::Get`：范围删除检查 → Bloom 过滤 → Seek → `SaveValue` 逐版本判可见性与墓碑
+1. Put 全流程：**组队（JoinBatchGroup）→ leader 预处理（满则冻结切换）→ 合并写 WAL（分配序列号）→ 组员并发插跳表 → SetLastSequence 发布**
+2. MemTable 两种身份：active 唯一可读写；immutable 队列只读、新→旧、等 flush
+3. 跳表是 MemTable 的默认容器；RocksDB 参数：最高 12 层、晋级概率 1/4
+4. 三层分离（MemTable / MemTableRep / InlineSkipList）= 策略模式，容器可插拔
+5. WriteBatch 物理格式 = `fixed64 sequence | fixed32 count | record[count]`，头 12 字节；batch 提供原子性并摊薄 WAL 成本
+6. Entry 编码：`varint(key_size) | key | packed(seq+type) 8B | varint(value_size) | value`
+7. InternalKey 排序：**user key 升序 → seq 降序 → type 降序**；seq 降序让 Seek 一步命中可见版本
+8. LookupKey 带 `space_[200]` 栈上缓冲，短 key 零堆分配
+9. Get 全流程：**拿 SuperVersion → 定快照 seq → 拼 LookupKey → active → imm → SST** 三级查找
+10. `MemTable::Get` 内部：范围删除检查 → Bloom 过滤 → Seek → SaveValue 判可见性 → 墓碑短路
 
 ## 📌 面试速记版
 
-- **写入路径**：Put → WAL → MemTable(跳表) → 冻结 → SST
-- **Entry 编码**：`varint(key_size) | key | packed(seq+type) 8B | varint(value_size) | value`
-- **InternalKey 排序**：user key 升 / seq 降 / type 降 → 一次 Seek 命中可见版本
-- **WriteBatch**：12 字节头（seq + count）+ 逐条 record；原子性 + 摊薄 WAL
-- **删除即墓碑**：`kTypeDeletion`，读时短路，Compaction 才真删
-- **易混点**：跳表里的 "key" ≠ 用户 key，是含序列号的 InternalKey 编码；MemTable 也有 Bloom Filter
+- **写**：Put → WriteBatch → 组提交（leader 写 WAL + 分配 seq）→ 并发插跳表 → 发布序列号
+- **读**：SuperVersion 一致视图 → active → imm（新→旧）→ SST；可见性 = seq ≤ 快照
+- **MemTable 分工**：active 可读写 ×1，immutable 只读 ×N，写满 MarkImmutable 切换
+- **编码**：`varint(key) | key | packed(seq<<8|type) | varint(value) | value`
+- **排序**：user key 升 / seq 降 / type 降 → Seek 一步命中可见版本
+- **易混点**：WAL 落盘 ≠ 可读（要 SetLastSequence 发布）；MemTable 也有 Bloom Filter；删除 = 墓碑不是真删
 
-**记忆口诀**：先落日志再进表，编码打包版本号；key 升序版本倒，Seek 一步命中到。
+**记忆口诀**：先组车队再过闸（WAL），序列号牌 leader 发；读拿视图三级跳，版本降序一眼抓。
 
 ## ✅ 自测 Checkpoint
 
-1. 一个 Put 从入口到跳表依次经过哪 5 跳？各自一句话职责。
-2. WriteBatch 头部的 12 字节装的是什么？batch 解决了哪三个问题？
-3. varint32 相比 fixed32 省在哪？什么场景最划算？
-4. `PackSequenceAndType` 的位布局是什么？为什么排序时 type 只是决胜项？
-5. InternalKey 排序的三关键字顺序？为什么 seq 必须降序？
-6. 跳表里存的 key 和用户的原始 key 有什么区别？
-7. `MemTable::Get` 从进入到返回经过哪几步？Bloom Filter 在这一层省的是什么？
+1. Put 从入口到返回经过哪 6 步？组提交里 leader 和 follower 各干什么？
+2. 为什么 InlineSkipList 必须支持无锁并发写？（提示：看第 5 步的分工）
+3. active 和 immutable MemTable 的分工？写满后发生什么？
+4. WAL 落盘和数据对读者可见，是同一个时刻吗？中间隔着什么动作？
+5. InternalKey 排序三关键字是什么？为什么 seq 降序能让 Seek 一步命中可见版本？
+6. Get 的三级查找顺序？SuperVersion 里固定了哪三样东西？
+7. 为什么必须先引用 SuperVersion、再取快照序列号？反过来会出什么问题？
+8. `MemTable::Get` 里 Bloom Filter 省的是什么资源？
 
 ## 🔍 待验证点
 
@@ -344,5 +344,6 @@ inline uint64_t PackSequenceAndType(uint64_t seq, ValueType t) {
 
 1. `kValueTypeForSeek = kTypeValuePreferredSeqno` 的语义：它与 preferred seqno 读优化的关系 → [dbformat.cc:28](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.cc#L28) 起，搜索 `kTypeValuePreferredSeqno` 的使用处
 2. `EncodeVarint32` 的具体实现位置（`util/coding.cc` 还是 `util/coding_lean.cc`）与编码逻辑 → 本地克隆 `grep -rn "EncodeVarint32" util/`
+3. "并发模式下默认开启"的依据：`allow_concurrent_memtable_write` 的默认值与生效条件 → `include/rocksdb/options.h` 或 advanced_options.h 中搜索该字段
 
-⏸ **停止点**。下一篇：跳表篇（下）——Node 内存布局与无锁并发核心。
+⏸ **停止点**。下一篇：跳表篇（下）——Node 内存布局与无锁并发核心（`skiplist-2.md`）。
