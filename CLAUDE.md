@@ -53,6 +53,9 @@ xmake project -k compile_commands  # 重新生成 clangd 编译数据库
 ## RocksDB 笔记纪律
 
 - 参考版本：`~/Desktop/Lab/rocksdb` @ `e6a2ee0`（行号引用以此为准）
-- 模板：`doc/_template.md`（模块职责 / workflow+调用链 / 关键数据结构 / 设计取舍 / KopiDB 对照 / 自测题 / 待验证点）
+- 每个源码锚点附 GitHub 永久链接，格式 `https://github.com/facebook/rocksdb/blob/e6a2ee0b…/<path>#L<行号>`——锚定 commit 不用 main，行号永不漂移
+- 笔记体例约定：存于 Claude 持久记忆（`kopidb-notes-conventions`），仓库内不维护模板文件
+- **边界（用户拍板）**：笔记只记录 RocksDB 知识本身——不做 KopiDB 对照章节、不单列设计取舍章节；"为什么"以 💡 理解技巧形式融在知识点内
+- 体例：遵循用户的 `course-notes-generator` skill 格式——知识点式结构（🧠 总览锚点 → ✅ 知识点N（加粗引导语+引子+正文+示例/实践+注意点引用块 ⚠️💡🔄📋）→ 🔑 总结 → 📌 面试速记版 + 记忆口诀），术语双语 `中文(English)`
 - 信息源优先级：本地真实源码（ground truth）→ DeepWiki（找路）→ RocksDB Wiki（设计动机）→ LevelDB（简化对照）
 - 分工：Claude 起草 → 用户精读修改（答自测题、核实待验证点、写对照小节）→ Claude review

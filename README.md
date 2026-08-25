@@ -38,10 +38,10 @@ LSM-tree（Log-Structured Merge-Tree，O'Neil et al. 1996）的核心思想是**
 
 ## 📚 学习文档
 
-`doc/` 下是与实现同步推进的 **RocksDB 源码精读笔记**（workflow / 调用链 / 设计取舍，面试导向）：
+`doc/` 下是与实现同步推进的 **RocksDB 源码精读笔记**（workflow / 调用链 / 关键机制，面试导向）：
 
 - [doc/README](doc/README.md)——笔记索引与使用方法
-- [笔记模板](doc/_template.md)——每篇的统一结构：模块职责 → workflow → 数据结构 → 设计取舍 → KopiDB 对照 → 自测题
+- [skiplist-1](doc/skiplist-1.md)——跳表（上）：写入路径地图 + InternalKey 编码
 
 ## 🛠 技术栈
 
