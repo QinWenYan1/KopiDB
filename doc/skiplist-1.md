@@ -22,9 +22,9 @@
 <a id="id1"></a>
 ## ✅ 知识点 1: Put 完整工作流（组提交）
 
-**Put 不是一次函数调用，而是一场"分组协作"：写入线程先组队，leader 统一写 WAL，组员再各自插跳表。**
+**Put 不是一次函数调用...**
 
-一次 `Put` 的完整旅程（编号即顺序）：
+**一次 `Put` 的完整旅程（编号即顺序）**：
 
 1. **打包**：`DBImpl::Put` 把操作装进 `WriteBatch`，进入 `WriteImpl`（[db_impl_write.cc:867](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_write.cc#L867)）
     - 你调用 `db->Put(key, value)` 时，RocksDB 不会立刻写磁盘
@@ -57,7 +57,7 @@
     - 调用后，`last_sequence` 被推进到这组写入的最大 `seq`，**整组写入原子性对外可见**
 
 ```mermaid
-flowchart TD
+flowchart LR
     A["Put → WriteBatch"] --> B["JoinBatchGroup<br/>leader / follower 组队"]
     B --> C["leader: PreprocessWrite<br/>（满了就 SwitchMemtable 冻结）"]
     C --> D["leader: WriteToWAL<br/>（统一分配序列号）"]
@@ -65,24 +65,30 @@ flowchart TD
     E --> F["SetLastSequence 发布<br/>读者可见"]
 ```
 
-**MemTable 的两种身份**（）：
+**所以在全过程中起到关键作用的`memtable`到底是什么？**
+- MemTable 在 RocksDB 里有两种身份：
 
-- **active**（`cfd->mem()`，[column_family.h:381](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/column_family.h#L381)）：可读可写，**唯一**
-- **immutable 队列**（`cfd->imm()`，[:380](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/column_family.h#L380)，类型 `MemTableList`）：**只读**，按新→旧排列，排队等后台 flush 成 SST
 
-**插入链路的最后一跳**（第 5 步的代码特写，[skiplistrep.cc:46-48](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L46-L48)）：
+    - **active**（`cfd->mem()`，[column_family.h:381](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/column_family.h#L381)）：可读可写，**唯一**
+    - **immutable 队列**（`cfd->imm()`，[:380](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/column_family.h#L380)，类型 `MemTableList`）：**只读**，按新→旧排列，排队等后台 flush 成 SST
 
-```cpp
-bool InsertKey(KeyHandle handle) override {
-  return skip_list_.Insert(static_cast<char*>(handle));
-}
-```
+**"插入 MemTable"最终落到的就是跳表本身**：active MemTable 的容器正是 `InlineSkipList`：
 
-- `KeyHandle` 本质就是指向编码字节的裸指针 `char*`（内存由 **Arena 分配器**统一分配，跳表篇（下）讲）
-- `static_cast` 零开销：设计契约是"调用方保证传进来的就是跳表分配的字节"
+- **插入链路的最后一跳**（第 5 步的代码特写，[skiplistrep.cc:46-48](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L46-L48)）：
+
+    ```cpp
+    bool InsertKey(KeyHandle handle) override {
+    return skip_list_.Insert(static_cast<char*>(handle));
+    }
+    ```
+
+    - `KeyHandle` 本质就是指向编码字节的裸指针 `char*`（内存由 **Arena 分配器**统一分配，跳表篇（下）讲）
+    - `static_cast` 零开销：设计契约是"调用方保证传进来的就是跳表分配的字节"
 
 > 💡 **理解技巧**：组提交把 N 个线程的 WAL 写合并成 1 次，摊薄昂贵的磁盘 IO；插跳表走无锁，把 CPU 并行度拉满——**串行化昂贵的，并行化便宜的**。
 > ⚠️ **关键区分**：WAL 落盘 ≠ 数据可读。序列号经 `SetLastSequence` 发布后，这版数据才对读者可见。
+
+
 
 ---
 
@@ -94,9 +100,9 @@ bool InsertKey(KeyHandle handle) override {
 ```
 Level 2:  HEAD ───────────────────────────► 17 ────────────────────────► NULL
                                             │
-Level 1:  HEAD ──────────► 9 ────────────► 17 ──────────► 25 ──────────► NULL
+Level 1:  HEAD ──────────► 9 ────────────►  17 ──────────► 25 ──────────► NULL
                                             │
-Level 0:  HEAD ──► 3 ──►  9 ──► 12 ──► 17 ──► 19 ──► 25 ───────────────► NULL
+Level 0:  HEAD  ──►  3 ──► 9 ──►  12  ──►   17 ──►  19 ──► 25 ───────────────► NULL
 
 查找 19 的路径：HEAD(L2) → 17(L2) → 下降 → 17(L1) → 下降 → 17(L0) → 19 ✔
 ```
@@ -120,6 +126,8 @@ explicit InlineSkipList(Comparator cmp, Allocator* allocator,
 
 > 📋 **术语提醒**：`分支因子(branching factor)` = 相邻两层之间的稀疏比例。$p = 1/4$ 即平均每 4 个节点才有 1 个晋级。
 > ⚠️ **关键区分**：晋级概率越小，索引越稀疏、单节点内存越省，但查找步数略增——空间与时间的权衡。
+
+→ **下一站**：跳表结构清楚了——它在 RocksDB 里被谁包着、怎么被调用？知识点 3。
 
 ---
 
@@ -150,6 +158,8 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
 
 > 💡 **理解技巧**：这就是**策略模式(Strategy Pattern)**——换容器不用改 MemTable 一行代码。
 
+→ **下一站**：MemTable 拿到数据后的第一件事是编码，而编码的源头是写批量——WriteBatch 长什么样？知识点 4。
+
 ---
 
 <a id="id4"></a>
@@ -175,6 +185,8 @@ varstring := len: varint32 + data: uint8[len]
 - **batch 存在的意义**：① 原子性——一批操作要么全写要么全不写；② 摊薄成本——一批只追加一次 WAL、统一分配序列号；③ 崩溃恢复时整批 replay
 
 > 💡 **理解技巧**：把 WriteBatch 理解成"最小写入事务单元"——WAL 里存的是它，MemTable 插入器 replay 的也是它。
+
+→ **下一站**：batch replay 之后，每条记录进 MemTable 时怎么编码？知识点 5。
 
 <a id="id5"></a>
 ## ✅ 知识点 5: Entry 编码与 varint32
@@ -209,6 +221,8 @@ EncodeFixed64(p, packed);
 > ⚠️ **关键区分**：跳表存的 key **不是**原始用户 key，而是这段编码字节串（含 seq + type）。
 > 📋 **术语提醒**：`varint(可变长整数)`——小数值少占字节，以 CPU 换空间，是存储系统的常规武器。
 
+→ **下一站**：编码里那 8 字节 `packed` 到底装了什么？知识点 6。
+
 <a id="id6"></a>
 ## ✅ 知识点 6: PackSequenceAndType 位布局
 
@@ -229,6 +243,8 @@ inline uint64_t PackSequenceAndType(uint64_t seq, ValueType t) {
 - `ValueType` 常见值：`kTypeValue`（正常值）、`kTypeDeletion`（点删除墓碑）、`kTypeMerge`（合并操作）
 
 > ⚠️ **关键区分**：这 8 字节**跟在 user key 后面**，构成**内部键(InternalKey)**的尾部——跳表排序看的是整个 InternalKey，不是裸 user key。
+
+→ **下一站**：packed 的位布局直接决定了跳表的排序规则——知识点 7。
 
 <a id="id7"></a>
 ## ✅ 知识点 7: InternalKeyComparator 排序规则
@@ -260,6 +276,8 @@ inline uint64_t PackSequenceAndType(uint64_t seq, ValueType t) {
 > 💡 **理解技巧**：seq 降序的精妙之处——**一次 Seek 直接命中可见版本**，不用先找到最新再往回退。
 > 🔄 **知识关联**：`kValueTypeForSeek = kTypeValuePreferredSeqno`（[dbformat.cc:28](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.cc#L28)），与 preferred seqno 读优化有关——细节列入待验证点。
 
+→ **下一站**：排序规则定了，查找时拿什么当"探针"去 Seek？知识点 8。
+
 <a id="id8"></a>
 ## ✅ 知识点 8: LookupKey 结构与栈上缓冲优化
 
@@ -277,6 +295,8 @@ inline uint64_t PackSequenceAndType(uint64_t seq, ValueType t) {
 - `memtable_key()` 返回从 `start_` 起的整段；`internal_key()` 返回从 `kstart_` 起的后缀——**同一段内存，两个视图**
 
 > 💡 **理解技巧**：栈上小缓冲区（SSO 思想）是高频小对象的标准优化——Get 是热路径，省一次 malloc 就是省一次潜在的缓存未命中。
+
+→ **下一站**：探针有了，一次完整的 Get 走什么路线？知识点 9。
 
 <a id="id9"></a>
 ## ✅ 知识点 9: Get 完整工作流（SuperVersion 三级查找）
@@ -305,6 +325,8 @@ flowchart LR
 
 > 💡 **理解技巧**：SuperVersion 是 MVCC 的"取景框"——读全程不加 DB 级大锁，靠引用计数固定住这一刻的 mem/imm/Version 三件套。
 > 🔄 **知识关联**：第 4 步解释了为什么"刚写进的立刻能读到"——active 永远最先查；"刷盘后还能读到旧数据"靠的是 SST 层的版本接力。
+
+→ **下一站**：三级查找里每一级的 `MemTable::Get` 内部又做了什么？知识点 10。
 
 <a id="id10"></a>
 ## ✅ 知识点 10: MemTable::Get 内部细节
