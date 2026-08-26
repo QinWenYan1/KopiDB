@@ -178,7 +178,20 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
 ## ✅ 知识点 4: 写批量(WriteBatch)的物理格式
 **MemTable 拿到数据后的第一件事是编码，而编码的源头是写批量——WriteBatch 长什么样**
 
-- WriteBatch 不是逻辑概念，是一段有严格二进制格式的字节串：12 字节头 + 逐条记录
+- WriteBatch 是 RocksDB 的**最小写入事务单元**——WAL 存的是它，MemTable 回放的还是它
+    
+    - **本质是一段二进制字节串**  
+        不是逻辑对象，是 `12字节头 + N条记录` 的紧凑二进制格式，直接往 WAL 里写
+
+    - **头部 12 字节：sequence + count**  
+        前 8 字节存这批写入的起始序列号，后 4 字节存有几条记录，后面紧跟具体数据。
+
+    - **每条记录 = 类型标签 + 内容**  
+        Put 是 `类型 + key + value`，Delete 是 `类型 + key`，Merge 类似；key/value 前面带长度前缀。
+
+    - **存在的三个意义**  
+        **原子性**（一批要么全写要么全不写）、**摊薄成本**（一批只写一次 WAL、统一分配序列号）、**崩溃恢复整批 replay**。
+
 
 - 源码里的格式注释（[write_batch.cc:10-37](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L10-L37)）：
 
@@ -199,12 +212,12 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
 
 > 💡 **理解技巧**：把 WriteBatch 理解成"最小写入事务单元"——WAL 里存的是它，MemTable 插入器 replay 的也是它。
 
-→ **下一站**：batch replay 之后，每条记录进 MemTable 时怎么编码？知识点 5。
-
 ---
 
 <a id="id5"></a>
 ## ✅ 知识点 5: Entry 编码与 varint32
+
+→ **下一站**：batch replay 之后，每条记录进 MemTable 时怎么编码？知识点 5。
 
 **跳表里每条记录是自描述的字节串：长度前缀 + key + 8 字节版本标签 + 长度前缀 + value。**
 
