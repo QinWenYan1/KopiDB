@@ -186,7 +186,7 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
     - **头部 12 字节：sequence + count**  
         前 8 字节存这批写入的起始序列号，后 4 字节存有几条记录，后面紧跟具体数据。
 
-    - **每条记录 = 类型标签 + 内容**  
+    - **每条记录(record) = 类型标签 + 内容**  
         Put 是 `类型 + key + value`，Delete 是 `类型 + key`，Merge 类似；key/value 前面带长度前缀。
 
     - **存在的三个意义**  
@@ -207,10 +207,17 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
     varstring := len: varint32 + data: uint8[len]
     ```
 
-    - 头部长度是常量 `kHeader = 12`（[write_batch_internal.h:82](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch_internal.h#L82)）：8 字节 sequence + 4 字节 count
-    - **batch 存在的意义**：① 原子性——一批操作要么全写要么全不写；② 摊薄成本——一批只追加一次 WAL、统一分配序列号；③ 崩溃恢复时整批 replay
+    - **头部长度是常量 `kHeader = 12`**（[write_batch_internal.h:82](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch_internal.h#L82)）：8 字节 sequence + 4 字节 count
+    - **WriteBatch 是"集装箱"**：整体是一段二进制字节串，包含 12 字节头部 + 一堆 record。
 
-> 💡 **理解技巧**：把 WriteBatch 理解成"最小写入事务单元"——WAL 里存的是它，MemTable 插入器 replay 的也是它。
+    - **record 是"集装箱里的货"**：每条 record 是一次具体操作（Put / Delete / Merge），是 WriteBatch 的组成部分
+
+    - **count 告诉你有几件货**：WriteBatch 头部里的 `count` 字段，说明后面紧跟了多少条 record
+
+    - **解析时逐个拆箱**：先读 12 字节头拿到 `count`，然后循环 `count` 次，每次按类型解析一条 record
+
+> **一句话关系**：**WriteBatch 装 record，record 是 WriteBatch 的最小操作单元**
+
 
 ---
 
