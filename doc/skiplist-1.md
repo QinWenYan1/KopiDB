@@ -156,17 +156,20 @@ flowchart LR
 **各层职责：**
 
 - **MemTable（逻辑层）**：编码、序列号、内存统计、读一致性；对外由 `ColumnFamilyData` 持有为 `mem()` / `imm()` 两兄弟（[column_family.h:380-381](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/column_family.h#L380-L381)）
-- **MemTableRep（接口层）**：`InsertKey` / `Get` / 迭代器的纯抽象（`include/rocksdb/memtablerep.h`）
+- **MemTableRep（接口层）**：`InsertKey` / `Get` / 迭代器的纯抽象类（`include/rocksdb/memtablerep.h`）
 - **InlineSkipList（实现层）**：真正的跳表；备选还有 HashSkipList、Vector 等
 
-**默认配置证据**（[advanced_options.h:754-755](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/include/rocksdb/advanced_options.h#L754-L755)）：
+**默认配置**（[advanced_options.h:754-755](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/include/rocksdb/advanced_options.h#L754-L755)）：
+
+1. **策略模式解决"用什么"**：MemTable 只依赖 `MemTableRep` 接口，底层是跳表、哈希跳表还是 Vector 对它完全透明。运行时换配置就能切策略，代码不用改。
+
+2. **工厂模式解决"怎么造"**：创建跳表需要传比较器、分配器等一堆参数，MemTable 不想管这些脏活。工厂把创建逻辑包起来，MemTable 只管调用 `CreateMemTableRep()` 拿成品用。
 
 ```cpp
 std::shared_ptr<MemTableRepFactory> memtable_factory =
     std::shared_ptr<SkipListFactory>(new SkipListFactory);
 ```
 
-> 💡 **理解技巧**：这就是**策略模式(Strategy Pattern)**——换容器不用改 MemTable 一行代码。
 
 
 ---
