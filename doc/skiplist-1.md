@@ -168,35 +168,37 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
 
 > 💡 **理解技巧**：这就是**策略模式(Strategy Pattern)**——换容器不用改 MemTable 一行代码。
 
-→ **下一站**：MemTable 拿到数据后的第一件事是编码，而编码的源头是写批量——WriteBatch 长什么样？知识点 4。
 
 ---
 
 <a id="id4"></a>
 ## ✅ 知识点 4: 写批量(WriteBatch)的物理格式
+**MemTable 拿到数据后的第一件事是编码，而编码的源头是写批量——WriteBatch 长什么样**
 
-**WriteBatch 不是逻辑概念，是一段有严格二进制格式的字节串：12 字节头 + 逐条记录。**
+- WriteBatch 不是逻辑概念，是一段有严格二进制格式的字节串：12 字节头 + 逐条记录
 
-源码里的格式注释（[write_batch.cc:10-37](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L10-L37)）：
+- 源码里的格式注释（[write_batch.cc:10-37](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L10-L37)）：
 
-```
-WriteBatch::rep_ :=
-    sequence: fixed64     ← 这批写入的起始序列号
-    count:    fixed32     ← 批里有几条记录
-    data:     record[count]
-record := kTypeValue varstring varstring    ← Put: key + value
-        | kTypeDeletion varstring           ← Delete: 只有 key
-        | kTypeMerge  varstring varstring   ← Merge 操作
-        | ...（还有列族变体、事务 XID 等十余种）
-varstring := len: varint32 + data: uint8[len]
-```
+    ```
+    WriteBatch::rep_ :=
+        sequence: fixed64     ← 这批写入的起始序列号
+        count:    fixed32     ← 批里有几条记录
+        data:     record[count]
+    record := kTypeValue varstring varstring    ← Put: key + value
+            | kTypeDeletion varstring           ← Delete: 只有 key
+            | kTypeMerge  varstring varstring   ← Merge 操作
+            | ...（还有列族变体、事务 XID 等十余种）
+    varstring := len: varint32 + data: uint8[len]
+    ```
 
-- 头部长度是常量 `kHeader = 12`（[write_batch_internal.h:82](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch_internal.h#L82)）：8 字节 sequence + 4 字节 count
-- **batch 存在的意义**：① 原子性——一批操作要么全写要么全不写；② 摊薄成本——一批只追加一次 WAL、统一分配序列号；③ 崩溃恢复时整批 replay
+    - 头部长度是常量 `kHeader = 12`（[write_batch_internal.h:82](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch_internal.h#L82)）：8 字节 sequence + 4 字节 count
+    - **batch 存在的意义**：① 原子性——一批操作要么全写要么全不写；② 摊薄成本——一批只追加一次 WAL、统一分配序列号；③ 崩溃恢复时整批 replay
 
 > 💡 **理解技巧**：把 WriteBatch 理解成"最小写入事务单元"——WAL 里存的是它，MemTable 插入器 replay 的也是它。
 
 → **下一站**：batch replay 之后，每条记录进 MemTable 时怎么编码？知识点 5。
+
+---
 
 <a id="id5"></a>
 ## ✅ 知识点 5: Entry 编码与 varint32
@@ -369,34 +371,3 @@ flowchart LR
 9. Get 全流程：**拿 SuperVersion → 定快照 seq → 拼 LookupKey → active → imm → SST** 三级查找
 10. `MemTable::Get` 内部：范围删除检查 → Bloom 过滤 → Seek → SaveValue 判可见性 → 墓碑短路
 
-## 📌 面试速记版
-
-- **写**：Put → WriteBatch → 组提交（leader 写 WAL + 分配 seq）→ 并发插跳表 → 发布序列号
-- **读**：SuperVersion 一致视图 → active → imm（新→旧）→ SST；可见性 = seq ≤ 快照
-- **MemTable 分工**：active 可读写 ×1，immutable 只读 ×N，写满 MarkImmutable 切换
-- **编码**：`varint(key) | key | packed(seq<<8|type) | varint(value) | value`
-- **排序**：user key 升 / seq 降 / type 降 → Seek 一步命中可见版本
-- **易混点**：WAL 落盘 ≠ 可读（要 SetLastSequence 发布）；MemTable 也有 Bloom Filter；删除 = 墓碑不是真删
-
-**记忆口诀**：先组车队再过闸（WAL），序列号牌 leader 发；读拿视图三级跳，版本降序一眼抓。
-
-## ✅ 自测 Checkpoint
-
-1. Put 从入口到返回经过哪 6 步？组提交里 leader 和 follower 各干什么？
-2. 为什么 InlineSkipList 必须支持无锁并发写？（提示：看第 5 步的分工）
-3. active 和 immutable MemTable 的分工？写满后发生什么？
-4. WAL 落盘和数据对读者可见，是同一个时刻吗？中间隔着什么动作？
-5. InternalKey 排序三关键字是什么？为什么 seq 降序能让 Seek 一步命中可见版本？
-6. Get 的三级查找顺序？SuperVersion 里固定了哪三样东西？
-7. 为什么必须先引用 SuperVersion、再取快照序列号？反过来会出什么问题？
-8. `MemTable::Get` 里 Bloom Filter 省的是什么资源？
-
-## 🔍 待验证点
-
-【到源码核实】格式：结论 → `文件:行号` → ✅/❌ → 若有误记录正确结论
-
-1. `kValueTypeForSeek = kTypeValuePreferredSeqno` 的语义：它与 preferred seqno 读优化的关系 → [dbformat.cc:28](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.cc#L28) 起，搜索 `kTypeValuePreferredSeqno` 的使用处
-2. `EncodeVarint32` 的具体实现位置（`util/coding.cc` 还是 `util/coding_lean.cc`）与编码逻辑 → 本地克隆 `grep -rn "EncodeVarint32" util/`
-3. "并发模式下默认开启"的依据：`allow_concurrent_memtable_write` 的默认值与生效条件 → `include/rocksdb/options.h` 或 advanced_options.h 中搜索该字段
-
-⏸ **停止点**。下一篇：跳表篇（下）——Node 内存布局与无锁并发核心（`skiplist-2.md`）。
