@@ -326,7 +326,9 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
     ```
     - **查找时"卡位"直接命中**：
         1. 快照 `seq=6` 想读 `"name"`，RocksDB 构造一个假想的 `(name, 6)` 去跳表 `Seek`
-        2. 因为 `seq` 降序，这个位置刚好卡在 `7` 和 `5` 之间，`Seek` 返回的第一个有效记录就是 `[name|5]`—— 即对 `seq=6` 可见的最新版本
+        2. 因为 `seq` 降序，这个位置刚好卡在 `7` 和 `5` 之间，`Seek` 返回的第一个有效记录就是 `[name|5]`
+        3. 即对 `seq=6` 可见的最新版本, 快照 `seq=6` 的规则是"只认 `≤6` 的版本"
+
 
 > 💡 **理解技巧**：seq 降序的精妙之处——**一次 Seek 直接命中可见版本**，不用先找到最新再往回退。
 > 🔄 **知识关联**：`kValueTypeForSeek = kTypeValuePreferredSeqno`（[dbformat.cc:28](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.cc#L28)），与 preferred seqno 读优化有关——细节列入待验证点。
@@ -339,20 +341,28 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
 
 **排序规则定了，查找时拿什么当"探针"去 Seek?**
 
-- 查找时临时拼一个 LookupKey 当"探针"，短 key 直接放栈上，零堆分配
+- RocksDB 查找一个 `key` 时，需要构造一个临时的 `InternalKey`，然后拿它去 `Seek()` 找位置，跳表不认识裸 key
+    - RocksDB 只认 `InternalKey` 格式的字节串；`LookupKey` 就是临时伪造一张"同格式工牌"混进去找人的。
+    - **`InternelKey`格式**：`userkey` 长度 + `userkey` 内容 + 8 字节(`seq`+`type`)
 
-- **布局**（[lookup_key.h:47-57](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/lookup_key.h#L47-L57)）：
+- **`InternalKey` 布局**（[lookup_key.h:47-57](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/lookup_key.h#L47-L57)）：
 
     ```
-    | varint32 klength | userkey bytes | 8B tag = Pack(seq, kValueTypeForSeek) |
-    start_ ↑           kstart_ ↑                                   end_ ↑
+           | varint32 klength | userkey bytes | 8B tag = Pack(seq, kValueTypeForSeek) |
+    start_ ↑          kstart_ ↑                                                  end_ ↑
     ```
 
-    - 构造实现：[dbformat.cc:245-266](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.cc#L245-L266)
-    - **工程细节**：`char space_[200]` 栈上缓冲区——key 短时零堆分配（同一段还有官方幽默注释 "We don't support user keys of more than 2GB :)"）
+    - **构造实现**：[dbformat.cc:245-266](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.cc#L245-L266)
+    - **工程细节**：这个临时 `InternalKey` 本来可以用 `malloc` 动态申请内存，但 `RocksDB` 发现 key 通常很短、而且这个操作非常频繁
+    - 所以它直接在栈上准备一个 `char space_[200]`，相当于准备了一个临时小盒子，大多数 key 直接放进去，直接塞栈里，不用 malloc，用完自动释放
+        - `start_` 指向整段开头（含长度前缀）→ `memtable_key()` 用
+        - `kstart_` 指向 `userkey` 开头 → `internal_key()` 用
+        - `end_` 指向末尾，同一段内存两个视图，零拷贝
     - `memtable_key()` 返回从 `start_` 起的整段；`internal_key()` 返回从 `kstart_` 起的后缀——**同一段内存，两个视图**
 
-> 💡 **理解技巧**：栈上小缓冲区（SSO 思想）是高频小对象的标准优化——Get 是热路径，省一次 malloc 就是省一次潜在的缓存未命中。
+> 💡 **理解技巧**：栈上小缓冲区（SSO 思想/Small String/Buffer optimization）是高频小对象的标准优化——Get 是热路径，省一次 malloc 就是省一次潜在的缓存未命中。
+
+---
 
 → **下一站**：探针有了，一次完整的 Get 走什么路线？知识点 9。
 
@@ -382,9 +392,12 @@ flowchart LR
 ```
 
 > 💡 **理解技巧**：SuperVersion 是 MVCC 的"取景框"——读全程不加 DB 级大锁，靠引用计数固定住这一刻的 mem/imm/Version 三件套。
-> 🔄 **知识关联**：第 4 步解释了为什么"刚写进的立刻能读到"——active 永远最先查；"刷盘后还能读到旧数据"靠的是 SST 层的版本接力。
+> 🔄 **知识关联**：第 4 步解释了为什么"刚写进的立刻能读到"——active 永远最先查；"刷盘后还能读到旧数据"靠的是 SST 层的版本接力
 
-→ **下一站**：三级查找里每一级的 `MemTable::Get` 内部又做了什么？知识点 10。
+---
+
+→ **下一站**：三级查找里每一级的 `MemTable::Get` 内部又做了什么？知识点 10
+
 
 <a id="id10"></a>
 ## ✅ 知识点 10: MemTable::Get 内部细节
