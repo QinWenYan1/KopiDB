@@ -270,28 +270,28 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
 
 ---
 
-→ **下一站**：编码里那 8 字节 `packed` 到底装了什么？知识点 6。
-
 <a id="id6"></a>
 ## ✅ 知识点 6: PackSequenceAndType 位布局
 
-**序列号和记录类型被压进 8 字节：高 56 位是序列号，低 8 位是类型。**
+**编码里那 8 字节 `packed` 到底装了什么？**
 
-[dbformat.h:181-186](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.h#L181-L186)：
+- **序列号和记录类型被压进 8 字节：高 56 位是序列号，低 8 位是类型**[dbformat.h:181-186](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.h#L181-L186)：
 
-```cpp
-inline uint64_t PackSequenceAndType(uint64_t seq, ValueType t) {
-  assert(seq <= kMaxSequenceNumber);
-  assert(IsExtendedValueType(t) || t == kTypeMaxValid);
-  return (seq << 8) | t;
-}
-```
+    ```cpp
+    inline uint64_t PackSequenceAndType(uint64_t seq, ValueType t) {
+    assert(seq <= kMaxSequenceNumber);
+    assert(IsExtendedValueType(t) || t == kTypeMaxValid);
+    return (seq << 8) | t;
+    }
+    ```
 
-- 解包对称（[dbformat.h:190-194](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.h#L190-L194)）：`seq = packed >> 8`、`type = packed & 0xff`
-- **位布局决定排序**：packed 值大 ⇔ seq 大（type 只在 seq 相同时起决胜作用）——知识点 7 的排序规则建立在这上面
-- `ValueType` 常见值：`kTypeValue`（正常值）、`kTypeDeletion`（点删除墓碑）、`kTypeMerge`（合并操作）
+    - 解包对称（[dbformat.h:190-194](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.h#L190-L194)）：`seq = packed >> 8`、`type = packed & 0xff`
+    - **位布局决定排序**：packed 值大 ⇔ seq 大（type 只在 seq 相同时起决胜作用）——知识点 7 的排序规则建立在这上面
+    - `ValueType` 常见值：`kTypeValue`（正常值）、`kTypeDeletion`（点删除墓碑）、`kTypeMerge`（合并操作）
 
-> ⚠️ **关键区分**：这 8 字节**跟在 user key 后面**，构成**内部键(InternalKey)**的尾部——跳表排序看的是整个 InternalKey，不是裸 user key。
+> ⚠️ **关键区分**：这 8 字节**跟在 user key 后面**，构成**内部键(InternalKey)**的尾部——跳表排序看的是整个 InternalKey，不是裸 user key
+
+---
 
 → **下一站**：packed 的位布局直接决定了跳表的排序规则——知识点 7。
 
