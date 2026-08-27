@@ -366,14 +366,14 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
 <a id="id9"></a>
 ## ✅ 知识点 9: Get 完整工作流（SuperVersion 三级查找）
 
-**读的核心思想：先拿一张"一致视图"（SuperVersion），再按 新→旧 三级查找。**
 
-一次 `Get` 的完整旅程（注意：实现由协程宏生成，真身在 [db_impl_sync_and_async.h](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_sync_and_async.h)）：
 
-1. **取视图**：`GetAndRefSuperVersion(cfd)`（[:126](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_sync_and_async.h#L126)）固定住当前状态
+一次 `Get` 的完整旅程就是先 **拿一张"一致视图"（SuperVersion），再按 新→旧 三级查找**（注意：实现由协程宏生成，真身在 [db_impl_sync_and_async.h](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_sync_and_async.h)）：
+
+1. **从`GetImpl`开始取视图**：`GetAndRefSuperVersion(cfd)`（[:126](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_sync_and_async.h#L126)）固定住当前状态
     - `SuperVersion` "快照取景框" = 当前 `active mem` + `imm` 队列 + 当前 `Version（SST 集合）`的**一致快照**（结构定义 [column_family.h:208-214](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/column_family.h#L208-L214)）
 2. **定快照序列号** `snapshot_seq`：
-    - 有用户快照用快照的；
+    - 有用户指定的快照用指定快照；
     - 否则 `GetLastPublishedSequence()`（[:141-156](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_sync_and_async.h#L141-L156)）
     - 源码注释点出一个微妙的并发正确性细节（[:151-155](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_sync_and_async.h#L151-L155)）：**必须先引用 SuperVersion 再取序列号**
     - 否则两步之间发生 flush，可能把快照本应看到的数据 compact 掉
@@ -395,26 +395,51 @@ flowchart LR
     E -->|未命中| F["SST 层<br/>L0→Ln"]
 ```
 
+假设 key 是 `"name"`，时间线如下：
+
+- `seq=1`：Put `"Alice"` → 被 flush 到 **SST**
+- `seq=3`：Put `"Bob"` → 被 flush 到 **SST**  
+- `seq=5`：Put `"Charlie"` → 在 **active mem**
+- `seq=7`：Delete → 在 **active mem**
+
+
+- **例 1：无快照 Get（最新视图，snapshot=7）**
+    1. **取 SuperVersion**：固定住当前三件套（active mem 有 5、7 / SST 有 1、3）
+    2. **定快照号**：拿到最新 published seq = **7**
+    3. **拼探针**：`LookupKey("name", 7)`
+    4. **查 active mem**：Seek 直接命中 `[name|seq=7|Delete]` → 发现是删除标记，**立刻返回 NotFound**
+    5. **SST 根本不用碰** —— 最新的已经告诉你这 key 没了
+
+- **例 2：快照 Get（snapshot=6，想读"那一刻"的数据）**
+
+    1. **SuperVersion 同上**，但快照号固定为 **6**
+    2. **拼探针**：`LookupKey("name", 6)`
+    3. **查 active mem**：`[name|7]` 的 seq=7 > 6，对快照 6 来说"还没出生"，跳过；下一条 `[name|5]` 的 seq=5 ≤ 6，**命中，返回 "Charlie"**
+    4. **不用查 SST** —— active mem 里已经有可见的最新版本
+    5. **关键点**：seq 降序让 Seek 自动"穿过"不可见的新版本，直接落在可见版本上
+
+
+
 > 💡 **理解技巧**：SuperVersion 是 MVCC 的"取景框"——读全程不加 DB 级大锁，靠引用计数固定住这一刻的 mem/imm/Version 三件套。
 > 🔄 **知识关联**：第 4 步解释了为什么"刚写进的立刻能读到"——active 永远最先查；"刷盘后还能读到旧数据"靠的是 SST 层的版本接力
 
 ---
 
-→ **下一站**：三级查找里每一级的 `MemTable::Get` 内部又做了什么？知识点 10
-
 
 <a id="id10"></a>
 ## ✅ 知识点 10: MemTable::Get 内部细节
 
-**进跳表之前先问 Bloom；命中之后逐版本判可见性；读到墓碑立即短路。**
+**三级查找里每一级的 `MemTable::Get` 内部又做了什么？**
 
-`MemTable::Get` 的流程（[memtable.cc:1568-1647](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1568-L1647)）：
+- **进跳表之前先问 Bloom；命中之后逐版本判可见性；读到墓碑立即短路。**
 
-1. `IsEmpty()` 快速返回
-2. **范围删除检查**：`MaxCoveringTombstoneSeqnum`（range tombstone 走独立结构，不占点查询路径）
-3. **Bloom 过滤**：`bloom_filter_` 存在时先问一遍——miss 直接判不存在，连跳表都不用进
-4. `GetFromTable`（[:1649](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1649)）→ Seek 命中后逐版本回调 `SaveValue`：判可见性（seq ≤ 快照）、判类型（值 / 墓碑 / merge）
-5. 读到 `kTypeDeletion` = 该 key 已删除（**墓碑短路**）；读到 merge 操作则标记 `MergeInProgress` 留给上层合并
+- `MemTable::Get` 的流程（[memtable.cc:1568-1647](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1568-L1647)）：
+
+    1. `IsEmpty()` 快速返回
+    2. **范围删除检查**：`MaxCoveringTombstoneSeqnum`（range tombstone 走独立结构，不占点查询路径）
+    3. **Bloom 过滤**：`bloom_filter_` 存在时先问一遍——miss 直接判不存在，连跳表都不用进
+    4. `GetFromTable`（[:1649](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1649)）→ Seek 命中后逐版本回调 `SaveValue`：判可见性（seq ≤ 快照）、判类型（值 / 墓碑 / merge）
+    5. 读到 `kTypeDeletion` = 该 key 已删除（**墓碑短路**）；读到 merge 操作则标记 `MergeInProgress` 留给上层合并
 
 > ⚠️ **关键区分**：MemTable 也有自己的 Bloom Filter——不是 SST 专利，省的是进跳表 Seek 的 CPU。
 > 📋 **术语提醒**：`tombstone(墓碑)` = 删除操作写入的特殊记录，读时判死、Compaction 时才真正清理。
