@@ -238,10 +238,14 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
     //  key bytes    : char[internal_key.size()]
     //  value_size   : varint32 of value.size()
     //  value bytes  : char[value.size()]
+    // 把 internal_key_size 这个整数，用 VarInt 的方式写进内存
     char* p = EncodeVarint32(buf, internal_key_size);
+    // 把真正的 key 内容复制到刚才那个位置后面
     memcpy(p, key.data(), key_size);
     ...
+    // seq + type 打包成 uint64_t 版本信息
     uint64_t packed = PackSequenceAndType(s, type);
+    // 将版本信息固定写入 8 bytes
     EncodeFixed64(p, packed);
     ```
 
@@ -249,14 +253,17 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
     | varint32 key_size | key bytes | 8B packed(seq+type) | varint32 val_size | value bytes | [checksum] |
     ```
 
-- **为什么长度前缀用 `varint32` 而不是 `fixed32`？**
+- **为什么用 varint32 存长度？省空间**
 
-    - `varint32`：每字节 7 位存数据、最高位做"还有后续字节"标记 → 长度 ≤127 时只占 **1 字节**
-    - `fixed32` 恒占 4 字节；MemTable 里 key/value 长度通常很短，每条省 3 字节，百万条就是 MB 级
+    - RocksDB 怎么知道 key/val 有多长，需要一个 `key_size`，`value_size` 告知
+    - **VarInt32 用小数值少占字节，绝大多数 key/value 长度很短，百万条记录能省 MB 级内存。**
+        - `varint32`： value或key长度 ≤127 时只占 **1 字节**
+        - `fixed32` 恒占 **4 字节**
     - 同一套 varint 编码也用在 LevelDB / Protocol Buffers 里
-- **`internal key` 又是什么？**
+- **`internal key` 又是什么？** 
     - RocksDB 有 `User Key` 比如 `"name"`
     - `Internal Key` =  `User Key ` + ` 8-byte packed`
+    - 存储是真正使用的 'key'
 
 > ⚠️ **关键区分**：跳表存的 key **不是**原始用户 key，而是这段编码字节串（含 seq + type）。
 > 📋 **术语提醒**：`varint(可变长整数)`——小数值少占字节，以 CPU 换空间，是存储系统的常规武器。
