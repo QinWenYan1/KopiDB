@@ -278,6 +278,8 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
 - **序列号和记录类型被压进 8 字节：高 56 位是序列号，低 8 位是类型**[dbformat.h:181-186](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.h#L181-L186)：
 
     ```cpp
+    // 左移 8 位给 type 腾座位，或运算把它塞进去；
+    // 拆的时候右移还原 seq，掩码抠出 type
     inline uint64_t PackSequenceAndType(uint64_t seq, ValueType t) {
     assert(seq <= kMaxSequenceNumber);
     assert(IsExtendedValueType(t) || t == kTypeMaxValid);
@@ -285,18 +287,21 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
     }
     ```
 
-    - 解包对称（[dbformat.h:190-194](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.h#L190-L194)）：`seq = packed >> 8`、`type = packed & 0xff`
+    - 解包对称（[dbformat.h:190-194](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.h#L190-L194)）：
+        1. `seq = packed >> 8`：整体右移 8 位，扔掉 `type`，还原 `seq`
+        2. `type = packed & 0xff`：`0xFF` 是 `11111111`，只保留低 8 位，抠出 `type`
     - **位布局决定排序**：packed 值大 ⇔ seq 大（type 只在 seq 相同时起决胜作用）——知识点 7 的排序规则建立在这上面
     - `ValueType` 常见值：`kTypeValue`（正常值）、`kTypeDeletion`（点删除墓碑）、`kTypeMerge`（合并操作）
 
-> ⚠️ **关键区分**：这 8 字节**跟在 user key 后面**，构成**内部键(InternalKey)**的尾部——跳表排序看的是整个 InternalKey，不是裸 user key
+> ⚠️ **关键区分**：这 8 字节**跟在 user key 后面**，构成**内部键**(InternalKey)的尾部——跳表排序看的是整个 InternalKey，不是裸 user key
 
 ---
 
-→ **下一站**：packed 的位布局直接决定了跳表的排序规则——知识点 7。
 
 <a id="id7"></a>
 ## ✅ 知识点 7: InternalKeyComparator 排序规则
+
+→ **下一站**：packed 的位布局直接决定了跳表的排序规则——知识点 7
 
 **排序三关键字：user key 升序 → seq 降序 → type 降序。seq 降序是让"查找恰好落在可见版本上"的关键。**
 
