@@ -225,37 +225,43 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
 <a id="id5"></a>
 ## ✅ 知识点 5: Entry 编码与 varint32
 
-→ **下一站**：batch replay 之后，每条记录进 MemTable 时怎么编码？知识点 5。
+**batch replay 之后，每条记录进 MemTable 时怎么编码**
 
-**跳表里每条记录是自描述的字节串：长度前缀 + key + 8 字节版本标签 + 长度前缀 + value。**
+- **MemTable 里存的不是原始 key，是一段"打包好的字节串"：长度前缀 + key + 8 字节版本标签 + 长度前缀 + value**
+    - **8 字节 `packed` 是"身份证"**: 把序列号（`seq`）和操作类型（`Put/Delete`）打包成 8 字节塞在 `key` 和 `value` 中间，用来区分同 一 `key` 的不同版本
 
-`MemTable::Add` 的编码（格式注释 [memtable.cc:1122-1127](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1122-L1127)，实现 [:1142-1152](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1142-L1152)）：
+- `MemTable::Add` 的编码（格式注释 [memtable.cc:1122-1127](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1122-L1127)，实现 [:1142-1152](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1142-L1152)）：
 
-```cpp
-// Format of an entry is concatenation of:
-//  key_size     : varint32 of internal_key.size()
-//  key bytes    : char[internal_key.size()]
-//  value_size   : varint32 of value.size()
-//  value bytes  : char[value.size()]
-char* p = EncodeVarint32(buf, internal_key_size);
-memcpy(p, key.data(), key_size);
-...
-uint64_t packed = PackSequenceAndType(s, type);
-EncodeFixed64(p, packed);
-```
+    ```cpp
+    // Format of an entry is concatenation of:
+    //  key_size     : varint32 of internal_key.size()
+    //  key bytes    : char[internal_key.size()]
+    //  value_size   : varint32 of value.size()
+    //  value bytes  : char[value.size()]
+    char* p = EncodeVarint32(buf, internal_key_size);
+    memcpy(p, key.data(), key_size);
+    ...
+    uint64_t packed = PackSequenceAndType(s, type);
+    EncodeFixed64(p, packed);
+    ```
 
-```
-| varint32 key_size | key bytes | 8B packed(seq+type) | varint32 val_size | value bytes | [checksum] |
-```
+    ```
+    | varint32 key_size | key bytes | 8B packed(seq+type) | varint32 val_size | value bytes | [checksum] |
+    ```
 
-**为什么长度前缀用 varint32 而不是 fixed32？**
+- **为什么长度前缀用 `varint32` 而不是 `fixed32`？**
 
-- varint32：每字节 7 位存数据、最高位做"还有后续字节"标记 → 长度 ≤127 时只占 **1 字节**
-- fixed32 恒占 4 字节；MemTable 里 key/value 长度通常很短，每条省 3 字节，百万条就是 MB 级
-- 同一套 varint 编码也用在 LevelDB / Protocol Buffers 里
+    - `varint32`：每字节 7 位存数据、最高位做"还有后续字节"标记 → 长度 ≤127 时只占 **1 字节**
+    - `fixed32` 恒占 4 字节；MemTable 里 key/value 长度通常很短，每条省 3 字节，百万条就是 MB 级
+    - 同一套 varint 编码也用在 LevelDB / Protocol Buffers 里
+- **`internal key` 又是什么？**
+    - RocksDB 有 `User Key` 比如 `"name"`
+    - `Internal Key` =  `User Key ` + ` 8-byte packed`
 
 > ⚠️ **关键区分**：跳表存的 key **不是**原始用户 key，而是这段编码字节串（含 seq + type）。
 > 📋 **术语提醒**：`varint(可变长整数)`——小数值少占字节，以 CPU 换空间，是存储系统的常规武器。
+
+---
 
 → **下一站**：编码里那 8 字节 `packed` 到底装了什么？知识点 6。
 
