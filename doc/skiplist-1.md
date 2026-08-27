@@ -431,7 +431,9 @@ flowchart LR
 
 **三级查找里每一级的 `MemTable::Get` 内部又做了什么？**
 
-- **进跳表之前先问 Bloom；命中之后逐版本判可见性；读到墓碑立即短路。**
+- **进跳表之前先问 Bloom；命中之后逐版本判可见性；读到墓碑立即短路**
+    - bloom filter 实现： 一个 bit 数组 + 多个哈希函数。插入时把元素用几个哈希函数映射到数组位置，全置为 1；查询时看这些位是否都为 1
+    - 如果都为1 表示可能有，否则一定没有
 
 - `MemTable::Get` 的流程（[memtable.cc:1568-1647](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1568-L1647)）：
     1. **空表直接走人**  
@@ -444,10 +446,11 @@ flowchart LR
 
     4. **进跳表 Seek，逐版本回调**  
     `GetFromTable`（[:1649](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1649)）→ 用 LookupKey Seek 命中后，从最新版本往回扫，每条记录回调 `SaveValue`：检查 seq ≤ 快照号（可见？）、检查类型（值/删除/合并）
-
+        - 跳表按 `user_key `+` seq` 排序，`Seek` 用 `LookupKey` 卡位后，落点可能是 `seq` 比你大的新版本（对快照不可见），所以落点附近可能有多条同名记录
 
     5. **墓碑短路：读到删除标记立刻停**  
     如果碰到 `kTypeDeletion`（墓碑），说明这 key 被删了，**立刻返回 NotFound**，不用继续往下翻旧版本。
+        - 墓碑是同一个 `key` 在 `MemTable` 里的最新可见状态，旧版本已被它物理覆盖，往下翻不可能翻出活口
 
     6. **Merge 特殊处理**  
    如果读到的是 Merge 操作，不直接返回值，而是标记 `MergeInProgress`，留给上层把多个 Merge 记录合并成最终结果。
