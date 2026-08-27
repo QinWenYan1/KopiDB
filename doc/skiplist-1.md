@@ -301,52 +301,56 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
 <a id="id7"></a>
 ## ✅ 知识点 7: InternalKeyComparator 排序规则
 
-→ **下一站**：packed 的位布局直接决定了跳表的排序规则——知识点 7
+**packed 的位布局直接决定了跳表的排序规则**
 
-**排序三关键字：user key 升序 → seq 降序 → type 降序。seq 降序是让"查找恰好落在可见版本上"的关键。**
+- **排序三关键字：先 `user key` 升序 → 再 `seq` 降序 → 然后 `type` 降序，`seq` 降序是让"查找恰好落在可见版本上"的关键** 源码注释原文（[dbformat.cc:201-204](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.cc#L201-L204)）：
 
-源码注释原文（[dbformat.cc:201-204](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.cc#L201-L204)）：
+    ```cpp
+    // Order by:
+    //    increasing user key (according to user-supplied comparator)
+    //    decreasing sequence number
+    //    decreasing type (though sequence# should be enough to disambiguate)
+    ```
 
-```cpp
-// Order by:
-//    increasing user key (according to user-supplied comparator)
-//    decreasing sequence number
-//    decreasing type (though sequence# should be enough to disambiguate)
-```
+- **多版本在跳表里的物理布局**（以 user key `"name"` 写过三次为例）：
 
-**多版本在跳表里的物理布局**（以 user key `"name"` 写过三次为例）：
+    ```
+    跳表中的排列（comparator 序）：
+    … → [name|seq=7] → [name|seq=5] → [name|seq=3] → [下一个 user key] → …
+            ▲ 最新版本永远排在同 key 的最前面
 
-```
-跳表中的排列（comparator 序）：
-… → [name|seq=7] → [name|seq=5] → [name|seq=3] → [下一个 user key] → …
-         ▲ 最新版本永远排在同 key 的最前面
-
-查找 name @ 快照 seq=6：
-  LookupKey = (name, 6, kValueTypeForSeek)
-  按排序规则，它"假想"的位置卡在 seq=7 和 seq=5 之间
-  Seek → 第一个 ≥ LookupKey 的条目 = [name|seq=5] ✔ 恰好是可见的最新版本
-```
+    查找 name @ 快照 seq=6：
+    LookupKey = (name, 6, kValueTypeForSeek)
+    按排序规则，它"假想"的位置卡在 seq=7 和 seq=5 之间
+    Seek → 第一个 ≥ LookupKey 的条目 = [name|seq=5] ✔ 恰好是可见的最新版本
+    ```
+    - **查找时"卡位"直接命中**：
+        1. 快照 `seq=6` 想读 `"name"`，RocksDB 构造一个假想的 `(name, 6)` 去跳表 `Seek`
+        2. 因为 `seq` 降序，这个位置刚好卡在 `7` 和 `5` 之间，`Seek` 返回的第一个有效记录就是 `[name|5]`—— 即对 `seq=6` 可见的最新版本
 
 > 💡 **理解技巧**：seq 降序的精妙之处——**一次 Seek 直接命中可见版本**，不用先找到最新再往回退。
 > 🔄 **知识关联**：`kValueTypeForSeek = kTypeValuePreferredSeqno`（[dbformat.cc:28](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.cc#L28)），与 preferred seqno 读优化有关——细节列入待验证点。
 
-→ **下一站**：排序规则定了，查找时拿什么当"探针"去 Seek？知识点 8。
+
+---
 
 <a id="id8"></a>
 ## ✅ 知识点 8: LookupKey 结构与栈上缓冲优化
 
-**查找时临时拼一个 LookupKey 当"探针"；短 key 直接放栈上，零堆分配。**
+**排序规则定了，查找时拿什么当"探针"去 Seek?**
 
-**布局**（[lookup_key.h:47-57](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/lookup_key.h#L47-L57)）：
+- 查找时临时拼一个 LookupKey 当"探针"，短 key 直接放栈上，零堆分配
 
-```
-| varint32 klength | userkey bytes | 8B tag = Pack(seq, kValueTypeForSeek) |
-   start_ ↑           kstart_ ↑                                   end_ ↑
-```
+- **布局**（[lookup_key.h:47-57](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/lookup_key.h#L47-L57)）：
 
-- 构造实现：[dbformat.cc:245-266](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.cc#L245-L266)
-- **工程细节**：`char space_[200]` 栈上缓冲区——key 短时零堆分配（同一段还有官方幽默注释 "We don't support user keys of more than 2GB :)"）
-- `memtable_key()` 返回从 `start_` 起的整段；`internal_key()` 返回从 `kstart_` 起的后缀——**同一段内存，两个视图**
+    ```
+    | varint32 klength | userkey bytes | 8B tag = Pack(seq, kValueTypeForSeek) |
+    start_ ↑           kstart_ ↑                                   end_ ↑
+    ```
+
+    - 构造实现：[dbformat.cc:245-266](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.cc#L245-L266)
+    - **工程细节**：`char space_[200]` 栈上缓冲区——key 短时零堆分配（同一段还有官方幽默注释 "We don't support user keys of more than 2GB :)"）
+    - `memtable_key()` 返回从 `start_` 起的整段；`internal_key()` 返回从 `kstart_` 起的后缀——**同一段内存，两个视图**
 
 > 💡 **理解技巧**：栈上小缓冲区（SSO 思想）是高频小对象的标准优化——Get 是热路径，省一次 malloc 就是省一次潜在的缓存未命中。
 
