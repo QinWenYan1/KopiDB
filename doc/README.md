@@ -10,20 +10,21 @@
 2. **待验证点**：按 `文件:行号` 到本地 RocksDB 源码核实笔记结论——训练源码导航能力，同时纠正可能的错误
 3. **自测 Checkpoint**：合上笔记，用自己的话作答后再对照
 4. 笔记只记录 RocksDB 知识本身，不做 KopiDB 对照、不单列设计取舍章节
+5. **编号即推荐阅读顺序**；每篇只深入自己的主题，衔接处互相引用而非重述（workflow 级内容归 01 数据通路）
 
 ## 索引
 
 | 文件 | 主题 | 状态 |
 |------|------|------|
-| [skiplist-1.md](skiplist-1.md) | 跳表（上）：写入路径地图 + InternalKey 编码 | ✅ |
-| skiplist-2.md | 跳表（下）：Node 内存布局 + 无锁并发 | 待写 |
-| memtable.md | MemTable | 待写 |
-| sst.md | Block / SST 格式 | 待写 |
-| compaction.md | Compaction / LSM Engine | 待写 |
-| mvcc.md | MVCC / SequenceNumber | 待写 |
-| wal.md | WAL 与崩溃恢复 | 待写 |
-| wisckey.md | WiscKey 键值分离 | 待写 |
-| redis.md | 网络层 / RESP 协议 | 待写 |
+| [01-data-path.md](01-data-path.md) | 数据通路：Put/Get 工作流 + 编码体系 | ✅ |
+| [02-skiplist.md](02-skiplist.md) | 跳表：Node 内存布局 + 无锁并发 + Arena | ✅ |
+| 03-memtable.md | MemTable 控制面：active/imm 生命周期、flush 触发、内存记账、并发写模式 | 待写 |
+| 04-sst.md | Block / SST 格式 | 待写 |
+| 05-compaction.md | Compaction / LSM Engine | 待写 |
+| 06-mvcc.md | MVCC / SequenceNumber | 待写 |
+| 07-wal.md | WAL 与崩溃恢复 | 待写 |
+| 08-wisckey.md | WiscKey 键值分离 | 待写 |
+| 09-redis.md | 网络层 / RESP 协议 | 待写 |
 
 ## 信息源优先级
 

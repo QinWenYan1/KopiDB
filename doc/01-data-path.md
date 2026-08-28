@@ -1,6 +1,6 @@
-# 📘 SkipList（上）：工作流程与 InternalKey 编码（Workflow & InternalKey Encoding）
+# 📘 数据通路（Data Path）：Put/Get 工作流与 InternalKey 编码
 
-> RocksDB 源码精读 · 跳表篇（上） | 源码版本 [`e6a2ee0`](https://github.com/facebook/rocksdb/tree/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7) | 本篇涵盖：Put/Get 完整工作流、跳表结构原理、三层可插拔设计、WriteBatch 格式、Entry 编码、InternalKey 排序规则、LookupKey
+> RocksDB 源码精读 · 01 数据通路 | 源码版本 [`e6a2ee0`](https://github.com/facebook/rocksdb/tree/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7) | 本篇涵盖：Put/Get 完整工作流、跳表结构原理、三层可插拔设计、WriteBatch 格式、Entry 编码、InternalKey 排序规则、LookupKey
 
 ---
 
@@ -49,7 +49,7 @@
         - WAL 先落盘，MemTable 后更新——如果进程在 WAL 写完后、MemTable 更新前崩溃，恢复时可以通过重放 WAL 找回数据
 5. **插 MemTable**：WAL 写完后，整组人（leader + followers）的 batch 数据需要插入到内存的 active MemTable（跳表）中，这里分了两种策略：
    - **非并发模式**：**Leader 一个人干**，leader 统一 replay 整组 batch
-   - **并发模式（默认）**：**大家各自干**，leader 写完 WAL 放行，**follower 各自**调 `WriteBatchInternal::InsertInto`（[:1112-1117](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_write.cc#L1112-L1117)），以 `concurrent_memtable_writes=true` **并发**插跳表——**这就是 InlineSkipList 必须做成无锁的根因**（跳表篇（下）的核心动机）
+   - **并发模式（默认）**：**大家各自干**，leader 写完 WAL 放行，**follower 各自**调 `WriteBatchInternal::InsertInto`（[:1112-1117](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_write.cc#L1112-L1117)），以 `concurrent_memtable_writes=true` **并发**插跳表——**这就是 InlineSkipList 必须做成无锁的根因**（详见 [02-skiplist](02-skiplist.md)）
 6. **发布**：等全组人都把数据插进 MemTable 后 `versions_->SetLastSequence(last_sequence)`（[:1137](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_write.cc#L1137)）——新序列号对读者可见，写入返回
     - RocksDB 用序列号（sequence number）实现 MVCC（多版本并发控制）。每个 key-value 在 `MemTable` 里都有一个 seq
     - 读线程读数据时，只读 `seq ≤ last_sequence` 的数据
@@ -82,7 +82,7 @@ flowchart LR
     }
     ```
 
-    - `KeyHandle` 本质就是指向编码字节的裸指针 `char*`（内存由 **Arena 分配器**统一分配，跳表篇（下）讲）
+    - `KeyHandle` 本质就是指向编码字节的裸指针 `char*`（内存由 **Arena 分配器**统一分配，见 [02-skiplist](02-skiplist.md)）
     - `static_cast` 零开销：设计契约是"调用方保证传进来的就是跳表分配的字节"
 
 > 💡 **理解技巧**：组提交把 N 个线程的 WAL 写合并成 1 次，摊薄昂贵的磁盘 IO；插跳表走无锁，把 CPU 并行度拉满——**串行化昂贵的，并行化便宜的**。

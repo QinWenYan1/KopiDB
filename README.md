@@ -41,7 +41,8 @@ LSM-tree（Log-Structured Merge-Tree，O'Neil et al. 1996）的核心思想是**
 `doc/` 下是与实现同步推进的 **RocksDB 源码精读笔记**（workflow / 调用链 / 关键机制，面试导向）：
 
 - [doc/README](doc/README.md)——笔记索引与使用方法
-- [skiplist-1](doc/skiplist-1.md)——跳表（上）：写入路径地图 + InternalKey 编码
+- [01-data-path](doc/01-data-path.md)——数据通路：Put/Get 工作流 + InternalKey 编码
+- [02-skiplist](doc/02-skiplist.md)——跳表：Node 内存布局 + 无锁并发
 
 ## 🛠 技术栈
 
@@ -59,7 +60,7 @@ xmake run test_skiplist    # 运行指定模块测试
 ## 🗺️ Roadmap
 
 - [x] Lab 0 环境准备
-- [ ] Lab 1 SkipList 跳表（🚧 进行中）｜RocksDB 对照笔记（待写）
+- [ ] Lab 1 SkipList 跳表（🚧 进行中）｜对照笔记 [01](doc/01-data-path.md) [02](doc/02-skiplist.md)
 - [ ] Lab 2 MemTable
 - [ ] Lab 3 Block / SST
 - [ ] Lab 4 LSM Engine / Compaction
