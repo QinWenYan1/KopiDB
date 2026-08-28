@@ -116,7 +116,13 @@ void SkipList::put(const std::string &key, const std::string &value,
     candidate->value_ = value;
   }
 
-  // 4. 插：新节点比表还高 → 高出的层前驱就是 head，同时拔高 current_level
+  // 4. 插：新节点比现在的表还高 → 高出的层前驱就是 head，同时拔高 current_level
+  for (int lvl = current_level; lvl < node_lvl; ++lvl) {
+    update[lvl] = head;
+  }
+  
+  // 更新现在的表高度
+  if (node_lvl > current_level) current_level = node_lvl;
 }
 
 // 查找键值对
