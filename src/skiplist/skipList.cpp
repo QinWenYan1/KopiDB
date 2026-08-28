@@ -114,6 +114,7 @@ void SkipList::put(const std::string &key, const std::string &value,
     // 更新新老 value 的差值即可
     size_bytes = size_bytes - candidate->value_.size() + value.size();
     candidate->value_ = value;
+    return; // 更新完直接返回，别掉进插入分支
   }
 
   // 4. 插：新节点比现在的表还高 → 高出的层前驱就是 head，同时拔高 current_level
@@ -121,21 +122,25 @@ void SkipList::put(const std::string &key, const std::string &value,
     update[lvl] = head;
   }
   // 更新现在的表高度
-  if (node_lvl > current_level) current_level = node_lvl;
+  if (node_lvl > current_level)
+    current_level = node_lvl;
 
   // 逐层挂链：forward_ 与 backward_ 双向都要接
-  for (int lvl = 0; lvl < node_lvl; ++lvl){
+  for (int lvl = 0; lvl < node_lvl; ++lvl) {
     // ① 新节点 指向 前驱动的后继节点
-    new_node_ptr->forward_[lvl] = update[lvl]->forward_[lvl]; 
+    new_node_ptr->forward_[lvl] = update[lvl]->forward_[lvl];
     // ② 前驱改指新节点
-    update[lvl]->backward_[lvl] = new_node_ptr; 
+    update[lvl]->backward_[lvl] = new_node_ptr;
     // ③ 新节点回指前驱
-    new_node_ptr->set_backward(lvl, update[lvl]); 
-    if (new_node_ptr->forward_[lvl]){
+    new_node_ptr->set_backward(lvl, update[lvl]);
+    if (new_node_ptr->forward_[lvl]) {
       // ④ 后继节点回指新节点
       new_node_ptr->forward_[lvl]->set_backward(lvl, new_node_ptr);
     }
   }
+
+  // 5. 记账：key + value + tranc_id（口径见 MemorySizeTracking 测试）
+  size_bytes += key.size() + value.size() + sizeof(uint64_t);
 }
 
 // 查找键值对
