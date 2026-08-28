@@ -76,7 +76,13 @@ int SkipList::random_level() {
 void SkipList::put(const std::string &key, const std::string &value,
                    uint64_t tranc_id) {
   spdlog::trace("SkipList--put({}, {}, {})", key, value, tranc_id);
-
+  // TODO: Lab1.1 任务：实现插入或更新键值对
+  // ? Hint: 你需要保证不同`Level`的步长从底层到高层逐渐增加
+  // ? 你可能需要使用到`random_level`函数以确定层数, 其注释中为你提供一种思路
+  // ? tranc_id 为事务id, 直接将其传递到 SkipListNode 的构造函数中即可
+  // ? 若key存在且tranc_id相同, 仅更新value; 否则插入新节点
+  // ? 注意维护 size_bytes
+  
   // 1. 先创建 node 等待插入（必须在堆上，由 shared_ptr 管理生命周期）
   auto new_node_ptr = std::make_shared<SkipListNode>(
       SkipListNode(key, value, random_level(), tranc_id));
@@ -93,12 +99,6 @@ void SkipList::put(const std::string &key, const std::string &value,
     update[lvl] = current;
   }
 
-  // TODO: Lab1.1 任务：实现插入或更新键值对
-  // ? Hint: 你需要保证不同`Level`的步长从底层到高层逐渐增加
-  // ? 你可能需要使用到`random_level`函数以确定层数, 其注释中为你提供一种思路
-  // ? tranc_id 为事务id, 直接将其传递到 SkipListNode 的构造函数中即可
-  // ? 若key存在且tranc_id相同, 仅更新value; 否则插入新节点
-  // ? 注意维护 size_bytes
 }
 
 // 查找键值对
