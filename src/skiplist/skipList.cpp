@@ -1,6 +1,7 @@
 #include "skiplist/skiplist.h"
 #include <cstdint>
 #include <iostream>
+#include <memory>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <tuple>
@@ -57,18 +58,40 @@ SkipList::SkipList(int max_lvl) : max_level(max_lvl), current_level(1) {
 }
 
 int SkipList::random_level() {
+
   // ? 通过"抛硬币"的方式随机生成层数：
   // ? - 每次有50%的概率增加一层
   // ? - 确保层数分布为：第1层100%，第2层50%，第3层25%，以此类推
   // ? - 层数范围限制在[1, max_level]之间，避免浪费内存
   // TODO: Lab1.1 任务：插入时随机为这一次操作确定其最高连接的链表层数
-  return 0;
+  int level = 1;
+  // 每一次 50% 概率加一层，最多到 max_level
+  while (dis_01(gen) && level < max_level) {
+    ++level;
+  }
+  return level;
 }
 
 // 插入或更新键值对
 void SkipList::put(const std::string &key, const std::string &value,
                    uint64_t tranc_id) {
   spdlog::trace("SkipList--put({}, {}, {})", key, value, tranc_id);
+
+  // 1. 先创建 node 等待插入（必须在堆上，由 shared_ptr 管理生命周期）
+  auto new_node_ptr = std::make_shared<SkipListNode>(
+      SkipListNode(key, value, random_level(), tranc_id));
+  int node_lvl = new_node_ptr->forward_.size(); // 新节点的身高
+
+  // 2. 找： 自顶向下，记录每层"最后一个小于新节点"的前驱
+  std::vector<std::shared_ptr<SkipListNode>> update(max_level, nullptr); 
+  auto current = head;
+  for (int lvl = current_level - 1; lvl >= 0; --lvl){
+    while (current->forward_[lvl] && *(current->forward_[lvl]) < *new_node_ptr){
+      current = current->forward_[lvl]; 
+    }
+    update[lvl] = current; 
+  }
+
 
   // TODO: Lab1.1 任务：实现插入或更新键值对
   // ? Hint: 你需要保证不同`Level`的步长从底层到高层逐渐增加
@@ -84,7 +107,8 @@ SkipListIterator SkipList::get(const std::string &key, uint64_t tranc_id) {
 
   // TODO: Lab1.1 任务：实现查找键值对
   // ? 从最高层开始向下查找, 最终在底层确认 key 是否存在
-  // ? 若 tranc_id == 0, 直接比较 key 返回; 否则需满足事务可见性 (tranc_id_ <= tranc_id)
+  // ? 若 tranc_id == 0, 直接比较 key 返回; 否则需满足事务可见性 (tranc_id_ <=
+  // tranc_id)
   // TODO: 完成查找后还需要额外实现SkipListIterator中的TODO部分(Lab1.2)
   return SkipListIterator{};
 }
