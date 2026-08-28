@@ -120,9 +120,22 @@ void SkipList::put(const std::string &key, const std::string &value,
   for (int lvl = current_level; lvl < node_lvl; ++lvl) {
     update[lvl] = head;
   }
-  
   // 更新现在的表高度
   if (node_lvl > current_level) current_level = node_lvl;
+
+  // 逐层挂链：forward_ 与 backward_ 双向都要接
+  for (int lvl = 0; lvl < node_lvl; ++lvl){
+    // ① 新节点 指向 前驱动的后继节点
+    new_node_ptr->forward_[lvl] = update[lvl]->forward_[lvl]; 
+    // ② 前驱改指新节点
+    update[lvl]->backward_[lvl] = new_node_ptr; 
+    // ③ 新节点回指前驱
+    new_node_ptr->set_backward(lvl, update[lvl]); 
+    if (new_node_ptr->forward_[lvl]){
+      // ④ 后继节点回指新节点
+      new_node_ptr->forward_[lvl]->set_backward(lvl, new_node_ptr);
+    }
+  }
 }
 
 // 查找键值对
