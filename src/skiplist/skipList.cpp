@@ -83,15 +83,15 @@ void SkipList::put(const std::string &key, const std::string &value,
   int node_lvl = new_node_ptr->forward_.size(); // 新节点的身高
 
   // 2. 找： 自顶向下，记录每层"最后一个小于新节点"的前驱
-  std::vector<std::shared_ptr<SkipListNode>> update(max_level, nullptr); 
+  std::vector<std::shared_ptr<SkipListNode>> update(max_level, nullptr);
   auto current = head;
-  for (int lvl = current_level - 1; lvl >= 0; --lvl){
-    while (current->forward_[lvl] && *(current->forward_[lvl]) < *new_node_ptr){
-      current = current->forward_[lvl]; 
+  for (int lvl = current_level - 1; lvl >= 0; --lvl) {
+    while (current->forward_[lvl] &&
+           *(current->forward_[lvl]) < *new_node_ptr) {
+      current = current->forward_[lvl];
     }
-    update[lvl] = current; 
+    update[lvl] = current;
   }
-
 
   // TODO: Lab1.1 任务：实现插入或更新键值对
   // ? Hint: 你需要保证不同`Level`的步长从底层到高层逐渐增加
