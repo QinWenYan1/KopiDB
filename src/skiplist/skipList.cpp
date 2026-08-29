@@ -84,8 +84,10 @@ void SkipList::put(const std::string &key, const std::string &value,
   // ? 注意维护 size_bytes
 
   // 1. 先创建 node 等待插入（必须在堆上，由 shared_ptr 管理生命周期）
-  auto new_node_ptr = std::make_shared<SkipListNode>(key, value, random_level(), tranc_id);
-  int node_lvl = static_cast<int>(new_node_ptr->forward_.size()); // 新节点的身高
+  auto new_node_ptr =
+      std::make_shared<SkipListNode>(key, value, random_level(), tranc_id);
+  int node_lvl =
+      static_cast<int>(new_node_ptr->forward_.size()); // 新节点的身高
 
   // 2. 找： 自顶向下，记录每层"最后一个小于新节点"的前驱
   //        1. update[lvl]数组表示 第 lvl 层上，最后一个小于目标 key
@@ -163,22 +165,34 @@ void SkipList::remove(const std::string &key) {
   // ? 注意同时维护 backward_ 指针和 size_bytes
   // 1. 找：同款下楼梯，但只按 key 比较（删除针对 key 本身，不挑版本）
   std::vector<std::shared_ptr<SkipListNode>> update(max_level, nullptr);
-  auto current = head; 
-  for (int lvl = current_level - 1; lvl >= 0; --lvl){
-    while (current->forward_[lvl] && current->forward_[lvl]->key_ < key){
-      current = current->forward_[lvl]; 
+  auto current = head;
+  for (int lvl = current_level - 1; lvl >= 0; --lvl) {
+    while (current->forward_[lvl] && current->forward_[lvl]->key_ < key) {
+      current = current->forward_[lvl];
     }
-    update[lvl] = current; 
+    update[lvl] = current;
   }
 
   // 2. 判：候选节点 key 相等才算找到：key 不存在，无事发生
   //       如果有相等的，那么一定在 current 节点 右边节点
-  auto target = current->forward_[0]; 
-  if (! target || target->key_ != key){
-    return; 
+  auto target = current->forward_[0];
+  if (!target || target->key_ != key) {
+    return; // 没有，那么直接返回
   }
 
-  // 3. 
+  // 3. 摘链：逐层让前驱"跳过" target，同时修好后继的 backward_
+  int target_lvl = static_cast<int>(target->forward_.size());
+  for (int lvl = 0; lvl < target_lvl; ++lvl) {
+    // ① 前驱节点跳过 target 节点
+    update[lvl]->forward_[lvl] = target->forward_[lvl];
+    // ② 后继节点回指前驱节点
+    if (target->forward_[lvl]) {
+      target->forward_[lvl]->set_backward(lvl, update[lvl]);
+    }
+  }
+
+  // 4. 记账扣减（口径与 put 对称）
+  size_bytes -= target->key_.size() + target->value_.size() + sizeof(uint64_t);
 }
 
 // 刷盘时可以直接遍历最底层链表
