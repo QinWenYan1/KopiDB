@@ -153,26 +153,29 @@ SkipListIterator SkipList::get(const std::string &key, uint64_t tranc_id) {
   // tranc_id)
   // TODO: 完成查找后还需要额外实现SkipListIterator中的TODO部分(Lab1.2)
 
-  // 1. 找：同款下楼梯，但只按 key 比较（删除针对 key 本身，不挑版本）
+  // 1. 找：下楼梯，只比 key（落在"该 key 的最新版本"跟前） 
   auto current = head; 
   for(int lvl = current_level-1; lvl >= 0; --lvl){
-    while (current->forward_[lvl] && current->forward_[lvl]->key_ <= key){
-      current = current->forward_[lvl];
-      while (current->forward_[lvl] && current->forward_[lvl]->key_ == key && current->forward_[lvl]->tranc_id_ > tranc_id){
-        current = current->forward_[lvl]; 
-      }
+    while (current->forward_[lvl] && current->forward_[lvl]->key_ < key){
+      current = current->forward_[lvl]; 
     }
   }
 
-  // 2. 判：候选节点 key 相等才算找到：key 不存在，无事发生
-  //       如果有相等的，那么一定在 current 节点 右边节点
-  auto target = current->forward_[0];
-  if (!target || target->key_ != key || target->tranc_id_ != tranc_id) {
-    return SkipListIterator{}; // 没有，那么直接返回
-  }
-  // 有直接返回
-  return SkipListIterator(target); 
+  // 2. 候选 = 第 0 层下一个节点 = 该 key 的最新版本（同 key 按 tranc_id 降序，最新排最前）
+  auto candidate = current->forward_[0];
 
+  // 3. 版本可见性：沿同 key 的版本链向右走（tranc_id 降序 = 越走越老），
+  //    tranc_id == 0 表示非事务读，直接要最新版本；
+  //    否则第一个满足 tranc_id_ <= tranc_id 的就是最新可见版本
+  while (candidate && candidate->key_ == key){
+    if (tranc_id == 0 || candidate->tranc_id_ <= tranc_id){
+      return SkipListIterator(candidate); 
+    }
+    candidate = candidate->forward_[0]; 
+  }
+
+  // 4. key 不存在，或所有版本对改事务都不可见
+  return SkipListIterator{}; 
 }
 
 // 删除键值对
