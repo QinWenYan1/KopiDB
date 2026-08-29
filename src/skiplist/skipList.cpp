@@ -152,7 +152,27 @@ SkipListIterator SkipList::get(const std::string &key, uint64_t tranc_id) {
   // ? 若 tranc_id == 0, 直接比较 key 返回; 否则需满足事务可见性 (tranc_id_ <=
   // tranc_id)
   // TODO: 完成查找后还需要额外实现SkipListIterator中的TODO部分(Lab1.2)
-  return SkipListIterator{};
+
+  // 1. 找：同款下楼梯，但只按 key 比较（删除针对 key 本身，不挑版本）
+  auto current = head; 
+  for(int lvl = current_level-1; lvl >= 0; --lvl){
+    while (current->forward_[lvl] && current->forward_[lvl]->key_ <= key){
+      current = current->forward_[lvl];
+      while (current->forward_[lvl] && current->forward_[lvl]->key_ == key && current->forward_[lvl]->tranc_id_ > tranc_id){
+        current = current->forward_[lvl]; 
+      }
+    }
+  }
+
+  // 2. 判：候选节点 key 相等才算找到：key 不存在，无事发生
+  //       如果有相等的，那么一定在 current 节点 右边节点
+  auto target = current->forward_[0];
+  if (!target || target->key_ != key || target->tranc_id_ != tranc_id) {
+    return SkipListIterator{}; // 没有，那么直接返回
+  }
+  // 有直接返回
+  return SkipListIterator(target); 
+
 }
 
 // 删除键值对
