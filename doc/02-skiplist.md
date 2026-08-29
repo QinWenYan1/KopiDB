@@ -289,33 +289,4 @@ void Prev() {
 7. 无锁正确三支柱：**release/acquire 配对发布 + 节点不可变 + Arena 保活无 ABA**
 8. 迭代器：`Next` $O(1)$；`Prev` = `FindLessThan` 重搜 $O(\log N)$——不存反向指针的代价转移
 
-## 📌 面试速记版
-
-- **Node 布局**：`[高层指针… | Node(next_[0]) | key]`，身高藏 next_[0]，插入时 `key_ptr - 1` 找回节点
-- **无锁写**：Splice 括号 + 逐层 CAS，失败重算当前层括号；查重只在第 0 层
-- **无锁读**：acquire 读 next ⇒ 看到完整节点；正确性 = release 发布 + 不可变 + Arena 保活
-- **内存序**：Next=acquire / SetNext=release / CASNext=强 CAS / 备料=relaxed
-- **Prev 的代价**：无 backward 指针，退一格 = 重新 $O(\log N)$ 搜索
-- **参数**：默认 12 层、1/4 晋级概率；表高 relaxed 懒增长
-
-**记忆口诀**：指针倒装 key 在后，Arena 推针不回收；读凭 acquire 写靠 CAS，Prev 太贵重新搜。
-
-## ✅ 自测 Checkpoint
-
-1. 画出一个 height=2 节点的完整内存布局，`Node*` 指向哪？key 和高层指针各在哪？
-2. `StashHeight` 为什么能借用 `next_[0]`？这个值什么时候失效？
-3. Arena 的 `ApproximateMemoryUsage` 怎么算？为什么 `SkipListRep` 返回 0？
-4. `max_height_` 为什么用 relaxed 读就够？（用"读错会怎样"的思路回答）
-5. CAS 插入失败时做什么？为什么只重算当前层？
-6. 无锁读正确的三个支柱是什么？少了 Arena 保活会出什么问题？
-7. `Prev()` 怎么实现的？为什么 RocksDB 接受这个代价？
-
-## 🔍 待验证点
-
-【到源码核实】格式：结论 → `文件:行号` → ✅/❌ → 若有误记录正确结论
-
-1. MemTable 在什么条件下把容器分配器换成 `ConcurrentArena`（而非裸 `Arena`）→ `db/memtable.h` 中搜 `ConcurrentArena` 的使用处
-2. `allow_concurrent_memtable_write` 的默认值与生效条件 → `include/rocksdb/advanced_options.h` 或 options.h
-3. `ConcurrentArena` 相对 `Arena` 加了什么并发保护 → [memory/concurrent_arena.h:42](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memory/concurrent_arena.h#L42) 起
-
-⏸ **停止点**。跳表篇完结——回去写 Lab 1 时，你手里的 KopiDB 跳表会比 RocksDB 的简单得多（单线程、shared_ptr、有 backward_），但每个简化你现在都知道"工业版为什么不敢这么做"。
+---
