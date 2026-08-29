@@ -84,9 +84,8 @@ void SkipList::put(const std::string &key, const std::string &value,
   // ? 注意维护 size_bytes
 
   // 1. 先创建 node 等待插入（必须在堆上，由 shared_ptr 管理生命周期）
-  auto new_node_ptr = std::make_shared<SkipListNode>(
-      SkipListNode(key, value, random_level(), tranc_id));
-  int node_lvl = new_node_ptr->forward_.size(); // 新节点的身高
+  auto new_node_ptr = std::make_shared<SkipListNode>(key, value, random_level(), tranc_id);
+  int node_lvl = static_cast<int>(new_node_ptr->forward_.size()); // 新节点的身高
 
   // 2. 找： 自顶向下，记录每层"最后一个小于新节点"的前驱
   //        1. update[lvl]数组表示 第 lvl 层上，最后一个小于目标 key
@@ -130,7 +129,7 @@ void SkipList::put(const std::string &key, const std::string &value,
     // ① 新节点 指向 前驱动的后继节点
     new_node_ptr->forward_[lvl] = update[lvl]->forward_[lvl];
     // ② 前驱改指新节点
-    update[lvl]->backward_[lvl] = new_node_ptr;
+    update[lvl]->forward_[lvl] = new_node_ptr;
     // ③ 新节点回指前驱
     new_node_ptr->set_backward(lvl, update[lvl]);
     if (new_node_ptr->forward_[lvl]) {
@@ -162,6 +161,15 @@ void SkipList::remove(const std::string &key) {
   // TODO: Lab1.1 任务：实现删除键值对
   // ? 从最高层开始查找目标节点并更新各层指针
   // ? 注意同时维护 backward_ 指针和 size_bytes
+  // 1. 找：同款下楼梯，但只按 key 比较（删除针对 key 本身，不挑版本）
+  std::vector<std::shared_ptr<SkipListNode>> update(max_level, nullptr);
+  auto current = head; 
+  for (int lvl = current_level - 1; lvl >= 0; --lvl){
+    while (current->forward_[lvl] && current->forward_[lvl]->key_ < key){
+      current = current->forward_[lvl]; 
+    }
+    update[lvl] = current; 
+  }
 }
 
 // 刷盘时可以直接遍历最底层链表
