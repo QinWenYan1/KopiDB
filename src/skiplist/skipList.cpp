@@ -170,6 +170,15 @@ void SkipList::remove(const std::string &key) {
     }
     update[lvl] = current; 
   }
+
+  // 2. 判：候选节点 key 相等才算找到：key 不存在，无事发生
+  //       如果有相等的，那么一定在 current 节点 右边节点
+  auto target = current->forward_[0]; 
+  if (! target || target->key_ != key){
+    return; 
+  }
+
+  // 3. 
 }
 
 // 刷盘时可以直接遍历最底层链表
