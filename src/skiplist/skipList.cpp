@@ -139,7 +139,6 @@ void SkipList::put(const std::string &key, const std::string &value,
       new_node_ptr->forward_[lvl]->set_backward(lvl, new_node_ptr);
     }
   }
-
   // 5. 记账：key + value + tranc_id（口径见 MemorySizeTracking 测试）
   size_bytes += key.size() + value.size() + sizeof(uint64_t);
 }
