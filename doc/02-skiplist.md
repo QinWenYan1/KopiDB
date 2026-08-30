@@ -36,12 +36,14 @@
 
 **先看两个朴素设计，才知道 RocksDB 在躲什么：**
 
-- **朴素 A——定长数组**：`struct Node { int height; Node* next[12]; }`。简单，但每个节点都背 12 个指针（96 字节），而平均身高只有 4/3 层（知识点 3 会算这笔账）→ **约 90% 的指针内存是空气**。
-- **朴素 B——变长数组**：`next[height]`，跟着身高走。但 C++ 的 struct 不允许真正的变长成员；堆上手工摆，也得先存一个 `height` 才知道指针区有多长——每个节点多背一个字段。
+- **朴素 A——定长数组**：`struct Node { int height; Node* next[12]; }`。
+  - 简单，但每个节点都背 12 个指针（96 字节），而平均身高只有 4/3 层（知识点 3 会算这笔账）→ **约 90% 的指针内存是空气**
+- **朴素 B——变长数组**：`next[height]`，跟着身高走。
+  - 但 C++ 的 struct 不允许真正的变长成员；得额外存个 `height` 字段才知道指针区多长，多背一个包袱
 
-**RocksDB 的选择：三段式倒装布局——高层指针放 header 前面，key 放 header 后面，header 本身只剩一个指针。** 源码原话（[inlineskiplist.h:352-356](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L352-L356)）：
+**RocksDB 的选择**：三段式倒装布局
+- 高层指针放 header 前面，key 放 header 后面，header 本身只剩一个指针（[inlineskiplist.h:352-356](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L352-L356)）：
 
-> "The Node data type is more of a pointer into custom-managed memory than a traditional C++ struct. The key is stored in the bytes immediately after the struct, and the next_ pointers for nodes with height > 1 are stored immediately _before_ the struct."
 
 **布局图**（以一个 height=3 的节点为例，假设本次分配的原始内存起点 `raw` 在地址 1000）：
 
@@ -57,41 +59,48 @@
 
 逐段拆解：
 
-- **(3) header（8 字节，地址 1016）**：`Node` 这个 struct 里**唯一**声明的成员就是 `Atomic<Node*> next_[1]`（[:417-421](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L417-L421)，`Atomic` 是 RocksDB 对 `std::atomic` 的封装，知识点 7 细讲）——`sizeof(Node)` 只有 8 字节，这个格子就是**第 0 层**的 next 指针。"header" 听着唬人，其实就一个指针。
-- **(2)(1) 高层指针区（header 前面，(height−1)×8 字节）**：第 1 层、第 2 层的 next 指针**倒着往低地址排**——第 1 层紧贴 header 前（1008），第 2 层再往前（1000）。
+- **(3) header（8 字节，地址 1016）**：
+  - `Node` 这个 struct 里**唯一**声明的成员就是 `Atomic<Node*> next_[1]`（[:417-421](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L417-L421)，`Atomic` 是 RocksDB 对 `std::atomic` 的封装，知识点 7 细讲）
+  - `sizeof(Node)` 只有 8 字节，这个格子就是**第 0 层**的 next 指针。"header" 听着唬人，其实就一个指针
+- **(2) (1) 高层指针区（header 前面，(height−1)×8 字节）**：
+  - 第 1 层、第 2 层的 next 指针**倒着往低地址排**——第 1 层紧贴 header 前（1008），第 2 层再往前（1000）。
 - **(4) key 区（header 紧后面）**：key 字节串，零偏移贴合。
 
-**"负索引"是什么？** C++ 里数组下标本来就可以是负的——`a[-1]` 等价于 `*(a - 1)`，只要指向的是合法内存。RocksDB 利用这一点：struct 里只声明 `next_[1]`，第 n 层的指针用 `(&next_[0] - n)` 去够（`Next()` 的实现，[:379-384](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L379-L384)）。源码注释说得更直白（[:418-419](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L418-L419)）："Higher levels are stored _earlier_, so level 1 is at next_[-1]." 对照上图：
+**"负索引"是什么？** 
+- C++ 里数组下标本来就可以是负的——`a[-1]` 等价于 `*(a - 1)`，只要指向的是合法内存。
+- RocksDB 利用这一点：struct 里只声明 `next_[1]`，第 n 层的指针用 `(&next_[0] - n)` 去够（`Next()` 的实现，[:379-384](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L379-L384)）。
+- 源码注释说得更直白（[:418-419](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L418-L419)）："Higher levels are stored _earlier_, so level 1 is at next_[-1]." 对照上图：
 
-| 要访问什么 | 定位公式 | 本例地址 |
-|------|------|------|
-| 第 0 层 next 指针 | `&next_[0]`（就是 header 本身） | 1016 |
-| 第 n 层 next 指针 | `(&next_[0] - n)` | 第 1 层 1008、第 2 层 1000 |
-| key 起点 | `&next_[1]`（`Key()` 的实现，[:374](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L374)） | 1024 |
-| 从 key 反推 Node | `(Node*)key - 1`（Insert 开头在用，[:1030](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1030)） | 1024 − 8 = 1016 |
+  | 要访问什么 | 定位公式 | 本例地址 |
+  |------|------|------|
+  | 第 0 层 next 指针 | `&next_[0]`（就是 header 本身） | 1016 |
+  | 第 n 层 next 指针 | `(&next_[0] - n)` | 第 1 层 1008、第 2 层 1000 |
+  | key 起点 | `&next_[1]`（`Key()` 的实现，[:374](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L374)） | 1024 |
+  | 从 key 反推 Node | `(Node*)key - 1`（Insert 开头在用，[:1030](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1030)） | 1024 − 8 = 1016 |
 
 **分配时怎么摆出这三段？** `AllocateNode`（[:858-880](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L858-L880)）：
 
-```cpp
-auto prefix = sizeof(Atomic<Node*>) * (height - 1);  // 高层指针区大小
-char* raw = allocator_->AllocateAligned(prefix + sizeof(Node) + key_size);
-Node* x = reinterpret_cast<Node*>(raw + prefix);     // header 落在正中间
-x->StashHeight(height);  // 见下
-```
+- 一次分配 = 高层指针区 + header + key，Node 指针指向 `raw + prefix`：
 
-一次分配 = 高层指针区 + header + key，Node 指针指向 `raw + prefix`。
+  ```cpp
+  auto prefix = sizeof(Atomic<Node*>) * (height - 1);  // 高层指针区大小
+  char* raw = allocator_->AllocateAligned(prefix + sizeof(Node) + key_size);
+  Node* x = reinterpret_cast<Node*>(raw + prefix);     // header 落在正中间
+  x->StashHeight(height);  // 见下
+  ```
 
-**StashHeight：身高的"临时便签"**。这里有个微妙问题：节点链入跳表后**根本不需要**存身高——你从第 h 层走进这个节点，h 就必然是它的合法层（[:871-874](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L871-L874) 注释原话）。但 `Insert` 的那一刻又必须知道身高，才能逐层接指针。解法：趁节点还没链入、`next_[0]` 这 8 字节还空着，把 int 身高**借**存在里面（[:358-372](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L358-L372)），Insert 时 `UnstashHeight` 取出（[:1032](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1032)）。
+**StashHeight：身高的"临时便签"**，这里有个微妙问题：节点链入跳表后**根本不需要**存身高——你从第 h 层走进这个节点，h 就必然是它的合法层（[:871-874](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L871-L874) 注释原话）。但 `Insert` 的那一刻又必须知道身高，才能逐层接指针。解法：趁节点还没链入、`next_[0]` 这 8 字节还空着，把 int 身高**借**存在里面（[:358-372](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L358-L372)），Insert 时 `UnstashHeight` 取出（[:1032](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1032)）。
 
 > ⚠️ **关键区分**：StashHeight 只是"传递中的便签"——一旦 `SetNext` 往 `next_[0]` 写了真指针，便签即作废（注释原话 "Undefined after a call to SetNext"）。
 > 💡 **理解技巧**：这套布局的收益是"省内存双杀"——① 不存 height 字段；② 高层指针只为高个子节点付费（平均身高 4/3 层 → 平均每节点指针开销 ≈ 8×4/3 ≈ 10.7 字节，对比朴素 A 的 96 字节）。代价是所有访问都要做指针算术，因此全封装进 `Next/SetNext/CASNext` 方法（知识点 7 会看到它们还兼管内存序）。
 
-→ **下一站**：节点的"摆法"定了，但内存从哪儿来？几十万个不规则节点逐个 `new` 行不行？知识点 2。
 
 ---
 
 <a id="id2"></a>
 ## ✅ 知识点 2: Arena 分配器
+
+→ **下一站**：节点的"摆法"定了，但内存从哪儿来？几十万个不规则节点逐个 `new` 行不行？知识点 2。
 
 **上一棒结论：节点大小不固定（(height−1)×8 + 8 + key_size 字节），数量几十万级。新疑问：这些不规则小块内存从哪儿来？** 逐个 `new` 有三笔账：每次分配进堆管理器（可能拿锁）、节点四处散落（缓存不友好）、大小混杂（碎片）。RocksDB 的答案：**一次向堆要一大块，自己在块里"推指针"分。**
 
