@@ -178,24 +178,28 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
 <a id="id4"></a>
 ## ✅ 知识点 4: WriteBatch → Node：逐条回放进跳表
 
-**上一棒结论：WriteBatch 就是一段"12 字节头 + N 条 record"的字节串（知识点 3），WAL 落盘的就是它。新疑问：WAL 写完之后，这串字节怎么变成跳表里的一个个 Node？** 谁把 batch 拆开？每条 record 的序列号谁发？编码好的字节怎么挂进跳表？——这一节是 01 数据通路与 [02-skiplist](02-skiplist.md) 的**焊接点**。
+**新疑问：WAL 写完之后，这串字节怎么变成跳表里的一个个 Node？**
 
-**入口：`WriteBatchInternal::InsertInto`**（[:3274-3306](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L3274-L3306)，组提交 leader 统一回放路径；[:3308-3335](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L3308-L3335)，并发模式每人各跑一份）：
+- **入口：`WriteBatchInternal::InsertInto`**（[:3274-3306](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L3274-L3306)，组提交 leader 统一回放路径；[:3308-3335](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L3308-L3335)，并发模式每人各跑一份）：
 
-```cpp
-MemTableInserter inserter(sequence, memtables, ...);
-SetSequence(writer->batch, sequence);          // 把分到的起始 seq 写回 batch 头
-Status s = writer->batch->Iterate(&inserter);  // 启动逐条回放
-if (concurrent_memtable_writes) {
-  inserter.PostProcess();                      // 并发模式的统计收尾
-}
-```
+    ```cpp
+    MemTableInserter inserter(sequence, memtables, ...);
+    SetSequence(writer->batch, sequence);          // 把分到的起始 seq 写回 batch 头
+    Status s = writer->batch->Iterate(&inserter);  // 启动逐条回放
+    if (concurrent_memtable_writes) {
+    inserter.PostProcess();                      // 并发模式的统计收尾
+    }
+    ```
 
-三件事：造一个回放器（`MemTableInserter`）、把 leader 分到的起始序列号写回 batch 头部那个 fixed64 字段（正是知识点 3 格式里的 `sequence`）、`Iterate` 开拆。
+- **三件事**：
+    1. 造一个回放器（`MemTableInserter`）
+    2. 把 leader 分到的起始序列号写回 batch 头部那个 fixed64 字段（正是知识点 3 格式里的 `sequence`）
+    3. `MemTableIterater` 开拆
 
-**拆箱：`Iterate` 顺序扫字节串，逐条回调**（[:518-525](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L518-L525) → [:527](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L527) 起）：
+- **拆箱：`Iterate` 顺序扫字节串，逐条回调**（[:518-525](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L518-L525) → [:527](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L527) 起）：
 
-- `rep_` 字节串的格式只有 WriteBatch 自己懂，所以遍历逻辑由它提供：每解析出一条 record（读 tag → 读 varstring key → 读 varstring value），就调用 handler 对应的方法（`PutCF` / `DeleteCF` / `MergeCF`……）
+    - `rep_` 字节串的格式只有 WriteBatch 自己懂
+    - 所以遍历逻辑由它提供：每解析出一条 record（读 tag → 读 varstring key → 读 varstring value），就调用 handler 对应的方法（`PutCF` / `DeleteCF` / `MergeCF`……）
 - 💡 这是 **Visitor 模式**（访问者模式）：遍历与处理分离——"回放进 MemTable"、"打印调试"、"统计大小"共用同一套遍历，各挂各的 handler。回放场景挂的 handler 就是 `MemTableInserter`
 
 **发号：`MemTableInserter` 每条 record 发一个序列号**（[:2025](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L2025)）：
