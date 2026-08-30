@@ -2,11 +2,13 @@
 
 > RocksDB 源码精读 · 02 跳表 | 源码版本 [`e6a2ee0`](https://github.com/facebook/rocksdb/tree/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7) | 本篇涵盖：Node 倒装内存布局、Arena 分配器、随机层高、head_ 设计、无锁读、CAS 无锁写、内存序、迭代器能力边界
 
-**从 01 走来**：[01-data-path](01-data-path.md) 里，Put 工作流的最后一跳是 `skip_list_.Insert(handle)`（01 §KP1 第 5 步），Get 工作流的最后一跳是 `MemTable::Get` 进跳表 `Seek`（01 §KP10）。01 全程把跳表当**黑盒**：只要求它"有序、能 Insert、能 Seek、并发安全"。本篇拆开这个黑盒，依次回答三个问题：
-
-1. 一个跳表节点在**内存里到底长什么样**、内存从哪儿来？（知识点 1-2）
-2. 节点的**层高**怎么随机、整张表的**骨架**怎么搭？（知识点 3-4）
-3. 多线程同时读写，凭什么**一把锁都不用**？（知识点 5-7——这正是 01 §KP1 第 5 步"并发插跳表"能成立的根）最后看迭代器在这副骨架上的能力边界（知识点 8）。
+**从 01 走来**：[01-data-path](01-data-path.md) 里
+- Put 工作流的最后一跳是 `skip_list_.Insert(handle)`（01 §KP1 第 5 步）
+- Get 工作流的最后一跳是 `MemTable::Get` 进跳表 `Seek`（01 §KP10）。
+- 01 全程把跳表当**黑盒**：只要求它"有序、能 Insert、能 Seek、并发安全"。本篇拆开这个黑盒，依次回答三个问题：
+  1. 一个跳表节点在**内存里到底长什么样**、内存从哪儿来？（知识点 1-2）
+  2. 节点的**层高**怎么随机、整张表的**骨架**怎么搭？（知识点 3-4）
+  3. 多线程同时读写，凭什么**一把锁都不用**？（知识点 5-7——这正是 01 §KP1 第 5 步"并发插跳表"能成立的根）最后看迭代器在这副骨架上的能力边界（知识点 8）。
 
 ---
 
@@ -347,19 +349,6 @@ void Prev() {
 
 ---
 
-## 🔑 核心要点总结
-
-1. Node 是倒装布局：**高层指针在 header 前（`&next_[0] - n` 负索引够取）、key 在 header 后**，header 只有一个 `next_[0]`；身高借 `next_[0]` 暂存（StashHeight），链入后不需要存身高
-2. Arena 推指针分配：对齐 + bump，块 2KB 内联起步、4KB 常规、2GB 上限；无单节点释放，整表销毁一次搞定
-3. RandomHeight：随机数 vs 预计算阈值 `kScaledInverseBranching_`，一次整数比较 = 一次"1/4 概率"抛硬币；软上限 12 层、硬上限 32 层；期望身高 4/3
-4. 表高 `max_height_` 从 1 起步、relaxed CAS 懒增长——"读过头无害"所以敢用最弱内存序
-5. 读全程无锁：`Contains = FindGreaterOrEqual + Equal`；三个工程细节：相等立即返回、last_bigger 复用比较、PREFETCH 预取
-6. 写用 CAS：Splice 括号定位 → 逐层 ①relaxed 备料 ②CAS 发布 → 失败仅重算当前层；重复检测只在第 0 层；并发用栈上 Splice、顺序写才缓存 `seq_splice_`
-7. 无锁正确三支柱：**release/acquire 配对发布 + 节点不可变 + Arena 保活无 ABA**
-8. 迭代器：`Next` O(1)；`Prev` = `FindLessThan` 重搜 O(log N)——不存反向指针的代价转移
-
----
-
 ## 📌 面试速记版
 
 | 面试题 | 一句话答 |
@@ -375,30 +364,3 @@ void Prev() {
 **记忆口诀**：**"指针倒装 key 贴后，Arena 推针不回收；抛币一次比阈值，表高懒长 relaxed；备料 relaxed 发布 release，读取 acquire 交换 CAS；Prev 重搜省指针，三柱撑起无锁读。"**
 
 ---
-
-## ✅ 自测 Checkpoint
-
-合上笔记，先自己答，再回查对应知识点：
-
-1. （KP1）一个 height=3 的节点，内存三段分别是什么？用 `&next_[0]` 写出第 n 层指针和 key 的定位公式。
-2. （KP1）节点链入跳表后为什么不需要存 height？那 Insert 时怎么知道身高——StashHeight 借了哪个格子？
-3. （KP2）Arena 分配一次节点只做哪两件事？为什么"无单节点释放"反而是并发读安全的支柱？
-4. （KP3）`kScaledInverseBranching_` 怎么算出来的？为什么一次整数比较等价于"1/4 概率抛硬币"？期望层高多少？
-5. （KP4）`max_height_` 读到旧值 / "过头值"分别会发生什么？为什么都能接受？
-6. （KP5）`Contains` 为什么不能写成 `FindLessThan(key)->Next(0)`？（两个理由）
-7. （KP6）CAS 插入失败时怎么办？为什么只重算当前层、查重只在第 0 层？
-8. （KP8）为什么 `Prev()` 是 O(log N)？RocksDB 为什么不存反向指针？
-
----
-
-## 🔍 待验证点
-
-以下问题笔记给出了线索但未展开，请到本地源码（`~/Desktop/Lab/rocksdb` @ e6a2ee0）核实：
-
-1. **ConcurrentArena 的选择逻辑**（KP2 提到）：并发写路径在哪里、依据什么条件把 Arena 换成 `ConcurrentArena`？线索：`concurrent_memtable_writes` 选项与 MemTable 的构造处。
-2. **Splice 数组为什么开 kMaxHeight_+1**（[:886](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L886)）：比最高层数多开的一格谁在用？线索：[:1052](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1052) 的 `splice->prev_[max_height] = head_`。
-3. **表高增长为什么用 CasWeakRelaxed 而不是 CasStrong**（KP4）：weak CAS 允许"虚假失败"（值没变也可能返回失败），为什么在这里反而是更优选择？线索：它在循环里，失败代价 = 重试一次。
-
----
-
-**下一站**：跳表这个容器拆完了。但它不单独存在——包着它的 MemTable 还管着跳表不管的事：什么时候写满冻结、active/immutable 怎么切换、内存账记到多少触发 flush、并发写怎么组织。→ 03-memtable（待写）
