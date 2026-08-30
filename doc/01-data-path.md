@@ -98,11 +98,11 @@ flowchart LR
 **跳表 = 多层有序链表：底层全量、上层稀疏索引，查找类似二分。**
 
 ```
-Level 2:  HEAD ───────────────────────────► 17 ────────────────────────► NULL
-                                            │
-Level 1:  HEAD ──────────► 9 ────────────►  17 ──────────► 25 ──────────► NULL
-                                            │
-Level 0:  HEAD  ──►  3 ──► 9 ──►  12  ──►   17 ──►  19 ──► 25 ───────────────► NULL
+Level 2:  HEAD ────────────────────────► 17 ───────────────► NIL
+                                         │
+Level 1:  HEAD ───► 9 ─────────────────► 17 ─────► 25 ─────► NIL
+                                         │
+Level 0:  HEAD ───► 3 ──► 9 ──► 12 ────► 17 ──► 19 ──► 25 ─► NIL
 
 查找 19 的路径：HEAD(L2) → 17(L2) → 下降 → 17(L1) → 下降 → 17(L0) → 19 ✔
 插入 22 的路径：HEAD(L2) → 17(L2) → 下降 → 17(L1) → 下降 → 17(L0) → 19 前驱找到 → 插入 22 
@@ -316,8 +316,9 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
 
     ```
     跳表中的排列（comparator 序）：
-    … → [name|seq=7] → [name|seq=5] → [name|seq=3] → [下一个 user key] → …
-            ▲ 最新版本永远排在同 key 的最前面
+    [name|seq=7] -> [name|seq=5] -> [name|seq=3] -> [下一个 user key] -> ...
+    ^
+    最新版本永远排在同 key 的最前面
 
     查找 name @ 快照 seq=6：
     LookupKey = (name, 6, kValueTypeForSeek)
@@ -331,7 +332,7 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
 
 
 > 💡 **理解技巧**：seq 降序的精妙之处——**一次 Seek 直接命中可见版本**，不用先找到最新再往回退。
-> 🔄 **知识关联**：`kValueTypeForSeek = kTypeValuePreferredSeqno`（[dbformat.cc:28](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.cc#L28)），与 preferred seqno 读优化有关——细节列入待验证点。
+> 🔄 **知识关联**：`kValueTypeForSeek = kTypeValuePreferredSeqno`（[dbformat.cc:28](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.cc#L28)），与 preferred seqno 读优化有关，细节这里不展开。
 
 
 ---
@@ -348,8 +349,9 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
 - **`LookupKey` 布局**（[lookup_key.h:47-57](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/lookup_key.h#L47-L57)）：
 
     ```
-           | varint32 klength | userkey bytes | 8B tag = Pack(seq, kValueTypeForSeek) |
-    start_ ↑          kstart_ ↑                                                  end_ ↑
+    | varint32 klength | userkey bytes | 8B tag = Pack(seq, kValueTypeForSeek) |
+    ^                     ^                                                       ^
+    start_               kstart_                                               end_
     ```
 
     - **构造实现**：[dbformat.cc:245-266](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.cc#L245-L266)
@@ -464,16 +466,26 @@ flowchart LR
 
 ---
 
-## 🔑 核心要点总结
+## 📌 面试速记版
 
-1. Put 全流程：**组队（JoinBatchGroup）→ leader 预处理（满则冻结切换）→ 合并写 WAL（分配序列号）→ 组员并发插跳表 → SetLastSequence 发布**
-2. MemTable 两种身份：active 唯一可读写；immutable 队列只读、新→旧、等 flush
-3. 跳表是 MemTable 的默认容器；RocksDB 参数：最高 12 层、晋级概率 1/4
-4. 三层分离（MemTable / MemTableRep / InlineSkipList）= 策略模式，容器可插拔
-5. WriteBatch 物理格式 = `fixed64 sequence | fixed32 count | record[count]`，头 12 字节；batch 提供原子性并摊薄 WAL 成本
-6. Entry 编码：`varint(key_size) | key | packed(seq+type) 8B | varint(value_size) | value`
-7. InternalKey 排序：**user key 升序 → seq 降序 → type 降序**；seq 降序让 Seek 一步命中可见版本
-8. LookupKey 带 `space_[200]` 栈上缓冲，短 key 零堆分配
-9. Get 全流程：**拿 SuperVersion → 定快照 seq → 拼 LookupKey → active → imm → SST** 三级查找
-10. `MemTable::Get` 内部：范围删除检查 → Bloom 过滤 → Seek → SaveValue 判可见性 → 墓碑短路
+| 面试题 | 一句话答 |
+|---|---|
+| 一次 Put 经历什么？ | WriteBatch 打包 → JoinBatchGroup 组提交（leader 预处理 + 统一写 WAL 分配 seq）→ 全组并发 InsertInto 跳表 → SetLastSequence 发布可见 |
+| 为什么先写 WAL 再写 MemTable？ | 崩溃恢复靠重放 WAL；WAL 先落盘，MemTable 丢了也能找回 |
+| MemTable 的两种身份？ | active 唯一可读可写；imm_ 只读队列按新→旧排队等 flush |
+| 跳表在 RocksDB 里的参数？ | 默认 InlineSkipList，最高 12 层、晋级概率 1/4（分支因子 4） |
+| 三层可插拔设计？ | MemTable 管逻辑 / MemTableRep 定接口 / InlineSkipList 干苦力——策略 + 工厂，容器可换 |
+| WriteBatch 物理格式？ | 12 字节头（fixed64 sequence + fixed32 count）+ record[count]；record = 类型标签 + varstring key/value |
+| MemTable 一条 entry 的编码？ | varint32 key_size + key bytes + 8B packed(seq<<8 \| type) + varint32 value_size + value bytes |
+| InternalKey 排序规则？ | user key 升序 → seq 降序 → type 降序；seq 降序让 LookupKey 一次 Seek 命中快照可见版本 |
+| LookupKey 的优化？ | 栈上 space_[200] 小缓冲，短 key 零 malloc；start_/kstart_/end_ 同一段内存两个视图 |
+| 一次 Get 经历什么？ | 拿 SuperVersion 一致视图 → 定快照 seq → 拼 LookupKey → active → imm → SST 三级查找（新→旧） |
+| SuperVersion 是什么？ | active + imm + Version 的一致快照，引用计数固定，读路径不加 DB 大锁；必须先引用再取 seq（防 flush 间隙） |
+| MemTable::Get 内部流程？ | 空表短路 → 范围删除检查 → Bloom 挡第一关 → 跳表 Seek → SaveValue 逐版本判可见性 → 墓碑短路、Merge 留上层 |
+
+**记忆口诀**：**"Put 组队 WAL 先行，seq 发布才算成；user 升序 seq 降序，Seek 一步见版本；Get 拿框三级找，新到旧、墓碑停。"**
+
+---
+
+**下一站**：本篇把跳表当黑盒用——只管把编码好的字节串 `Insert` 进去、`Seek` 出来。这个黑盒内部长什么样？一个节点在内存里怎么摆、几十万节点的内存从哪来、多线程并发插凭什么不加锁？→ [02-skiplist](02-skiplist.md)
 

@@ -30,7 +30,9 @@
 
 跳表靠 Node 串成链表，RocksDB 的 Node 是"头信息 + 内联数据"的变长结构，用 Arena 内存池管理。
 
-**一个跳表节点要存什么？一个 key 字节串，外加"它参加的每一层"各一个 next 指针（01 §KP2：节点身高随机，参加几层有几个指针）。问题来了：每个节点层数不一样，Node 这个 struct 该怎么摆这些大小不一的东西？**
+**一个跳表节点要存什么？**
+  - 一个 key 字节串，外加"它参加的每一层"各一个 next 指针（01 §KP2：节点身高随机，参加几层有几个指针）。
+  - 问题来了：每个节点层数不一样，Node 这个 struct 该怎么摆这些大小不一的东西？
 
 **先看两个朴素设计，才知道 RocksDB 在躲什么：**
 
@@ -117,7 +119,7 @@ if (needed <= alloc_bytes_remaining_) {
 
 **内存统计因此简化**：`ApproximateMemoryUsage() = 已分配块总量 − 当前块剩余`（[arena.h:66-69](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memory/arena.h#L66-L69)）——`SkipListRep::ApproximateMemoryUsage` 直接返回 0，因为账全记在 Arena 这里（[skiplistrep.cc:80-83](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L80-L83)）。
 
-> 🔄 **知识关联**："无单节点释放"听着危险（读者正拿着指针怎么办？）——它恰恰是并发读安全的三大支柱之一，知识点 7 回收这个伏笔。并发写场景 MemTable 会用 `ConcurrentArena`（[concurrent_arena.h:42](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memory/concurrent_arena.h#L42)），选择逻辑列入待验证点 1。
+> 🔄 **知识关联**："无单节点释放"听着危险（读者正拿着指针怎么办？）——它恰恰是并发读安全的三大支柱之一，知识点 7 回收这个伏笔。并发写场景 MemTable 会用 `ConcurrentArena`（[concurrent_arena.h:42](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memory/concurrent_arena.h#L42)），选择逻辑这里不展开。
 
 → **下一站**：内存有了。每个节点能进几层——身高怎么随机出来？知识点 3。
 
@@ -364,3 +366,5 @@ void Prev() {
 **记忆口诀**：**"指针倒装 key 贴后，Arena 推针不回收；抛币一次比阈值，表高懒长 relaxed；备料 relaxed 发布 release，读取 acquire 交换 CAS；Prev 重搜省指针，三柱撑起无锁读。"**
 
 ---
+
+**下一站**：跳表这个容器拆完了。但它不单独存在——包着它的 MemTable 还管着跳表不管的事：什么时候写满冻结、active/immutable 怎么切换、内存账记到多少触发 flush、并发写怎么组织。→ 03-memtable（待写）
