@@ -15,7 +15,7 @@
 | 文件 | 主题 | 状态 |
 |------|------|------|
 | [01-data-path.md](01-data-path.md) | 数据通路：Put/Get 工作流 + 编码体系 | ✅ |
-| [02-skiplist.md](02-skiplist.md) | 跳表：Node 内存布局 + 无锁并发 + Arena | ✅ |
+| [02-skiplist.md](02-skiplist.md) | 跳表：结构原理 + Node 内存布局 + 无锁并发 + Arena | ✅ |
 | 03-memtable.md | MemTable 控制面：active/imm 生命周期、flush 触发、内存记账、并发写模式 | 待写 |
 | 04-sst.md | Block / SST 格式 | 待写 |
 | 05-compaction.md | Compaction / LSM Engine | 待写 |

@@ -1,15 +1,17 @@
 # 📘 数据通路（Data Path）：Put/Get 工作流与 InternalKey 编码
 
-> RocksDB 源码精读 · 01 数据通路 | 源码版本 [`e6a2ee0`](https://github.com/facebook/rocksdb/tree/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7) | 本篇涵盖：Put/Get 完整工作流、跳表结构原理、三层可插拔设计、WriteBatch 格式、Entry 编码、InternalKey 排序规则、LookupKey
+> RocksDB 源码精读 · 01 数据通路 | 源码版本 [`e6a2ee0`](https://github.com/facebook/rocksdb/tree/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7) | 本篇涵盖：Put/Get 完整工作流、三层可插拔设计、WriteBatch 格式与回放链路、Entry 编码、InternalKey 排序规则、LookupKey
+>
+> 🧭 导读：本篇把 MemTable 的内存容器（跳表）当**黑盒**——只管数据怎么流进去、怎么查出来；跳表自身是什么、内部怎么工作，全在 [02-skiplist](02-skiplist.md)。
 
 ---
 
 ## 🧠 核心概念总览
 
 - [*知识点1: Put 完整工作流（组提交）*](#id1)
-- [*知识点2: 跳表(SkipList)结构原理*](#id2)
-- [*知识点3: 三层可插拔设计*](#id3)
-- [*知识点4: 写批量(WriteBatch)的物理格式*](#id4)
+- [*知识点2: 三层可插拔设计*](#id2)
+- [*知识点3: 写批量(WriteBatch)的物理格式*](#id3)
+- [*知识点4: WriteBatch → Node：逐条回放进跳表*](#id4)
 - [*知识点5: Entry 编码与 varint32*](#id5)
 - [*知识点6: PackSequenceAndType 位布局*](#id6)
 - [*知识点7: InternalKeyComparator 排序规则*](#id7)
@@ -93,56 +95,7 @@ flowchart LR
 ---
 
 <a id="id2"></a>
-## ✅ 知识点 2: 跳表(SkipList)结构原理
-
-**跳表 = 多层有序链表：底层全量、上层稀疏索引，查找类似二分。**
-
-```
-Level 2:  HEAD ────────────────────────► 17 ───────────────► NIL
-                                         │
-Level 1:  HEAD ───► 9 ─────────────────► 17 ─────► 25 ─────► NIL
-                                         │
-Level 0:  HEAD ───► 3 ──► 9 ──► 12 ────► 17 ──► 19 ──► 25 ─► NIL
-
-查找 19 的路径：HEAD(L2) → 17(L2) → 下降 → 17(L1) → 下降 → 17(L0) → 19 ✔
-插入 22 的路径：HEAD(L2) → 17(L2) → 下降 → 17(L1) → 下降 → 17(L0) → 19 前驱找到 → 插入 22 
-```
-
-**核心规则：**
-
-- 第 0 层包含**所有**节点，越往上越稀疏
-- 每个节点以概率 $p$ 向上"晋级"一层，层数呈指数衰减分布
-- **查找**：从最高层向右走，走不通就下降一层 → 期望复杂度 $O(\log n)$
-    1. **从最顶层开始**：从跳表的最高层（最稀疏的索引层）的头部节点出发。
-    2. **向右大步跳跃**：在当前层向右遍历，如果下一个节点的值 **小于** 目标值，就继续向右跳。
-    3. **太大就往下掉**：如果下一个节点的值 **大于或等于** 目标值，或者右边没节点了，就下降到下一层。
-    4. **重复直到底层**：在下一层继续执行"向右跳→太大就下降"的过程，直到到达最底层（原始数据层）。
-    5. **底层精确定位**：在最底层继续向右比较，找到目标值或确认不存在。
-- **插入**：先按查找路径定位，再随机决定新节点层数，逐层接指针
-    1. **先找到位置**：像查找一样从顶层往下走，记录每层最后经过的节点（这些就是新节点的前驱）。
-    2. **抛硬币定层高**：随机决定新节点有几层（比如抛硬币，正面就加一层，直到反面为止）。
-    3. **创建节点**：按决定的层数创建新节点，存好要插入的值。
-    4. **各层插入链表**：从最底层到最高层，像普通链表一样把新节点"缝"进前驱和后继之间。
-    5. **更新表头高度**：如果新节点层数超过了当前最高层，把头节点也增高到这一层。
-
-**RocksDB 的具体参数**（源码证据 [inlineskiplist.h:74-76](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L74-L76)）：
-
-```cpp
-explicit InlineSkipList(Comparator cmp, Allocator* allocator,
-                        int32_t max_height = 12,
-                        int32_t branching_factor = 4);
-```
-
-- 最高 **12 层**；每晋级一层概率 **1/4**（`branching_factor = 4`，实现见 `RandomHeight()` [inlineskiplist.h:559-570](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L559-L570)）
-
-> 📋 **术语提醒**：`分支因子(branching factor)` = 相邻两层之间的稀疏比例。$p = 1/4$ 即平均每 4 个节点才有 1 个晋级。
-> ⚠️ **关键区分**：晋级概率越小，索引越稀疏、单节点内存越省，但查找步数略增——空间与时间的权衡。
-
-
----
-
-<a id="id3"></a>
-## ✅ 知识点 3: 三层可插拔设计
+## ✅ 知识点 2: 三层可插拔设计
 
 它在 RocksDB 里被谁包着、怎么被调用：**MemTable 管逻辑，MemTableRep 定接口，InlineSkipList 干苦力。**
 
@@ -174,8 +127,8 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
 
 ---
 
-<a id="id4"></a>
-## ✅ 知识点 4: 写批量(WriteBatch)的物理格式
+<a id="id3"></a>
+## ✅ 知识点 3: 写批量(WriteBatch)的物理格式
 **MemTable 拿到数据后的第一件事是编码，而编码的源头是写批量——WriteBatch 长什么样**
 
 - WriteBatch 是 RocksDB 的**最小写入事务单元**——WAL 存的是它，MemTable 回放的还是它
@@ -219,6 +172,67 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
 
 > **一句话关系**：**WriteBatch 装 record，record 是 WriteBatch 的最小操作单元**
 
+
+---
+
+<a id="id4"></a>
+## ✅ 知识点 4: WriteBatch → Node：逐条回放进跳表
+
+**上一棒结论：WriteBatch 就是一段"12 字节头 + N 条 record"的字节串（知识点 3），WAL 落盘的就是它。新疑问：WAL 写完之后，这串字节怎么变成跳表里的一个个 Node？** 谁把 batch 拆开？每条 record 的序列号谁发？编码好的字节怎么挂进跳表？——这一节是 01 数据通路与 [02-skiplist](02-skiplist.md) 的**焊接点**。
+
+**入口：`WriteBatchInternal::InsertInto`**（[:3274-3306](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L3274-L3306)，组提交 leader 统一回放路径；[:3308-3335](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L3308-L3335)，并发模式每人各跑一份）：
+
+```cpp
+MemTableInserter inserter(sequence, memtables, ...);
+SetSequence(writer->batch, sequence);          // 把分到的起始 seq 写回 batch 头
+Status s = writer->batch->Iterate(&inserter);  // 启动逐条回放
+if (concurrent_memtable_writes) {
+  inserter.PostProcess();                      // 并发模式的统计收尾
+}
+```
+
+三件事：造一个回放器（`MemTableInserter`）、把 leader 分到的起始序列号写回 batch 头部那个 fixed64 字段（正是知识点 3 格式里的 `sequence`）、`Iterate` 开拆。
+
+**拆箱：`Iterate` 顺序扫字节串，逐条回调**（[:518-525](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L518-L525) → [:527](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L527) 起）：
+
+- `rep_` 字节串的格式只有 WriteBatch 自己懂，所以遍历逻辑由它提供：每解析出一条 record（读 tag → 读 varstring key → 读 varstring value），就调用 handler 对应的方法（`PutCF` / `DeleteCF` / `MergeCF`……）
+- 💡 这是 **Visitor 模式**（访问者模式）：遍历与处理分离——"回放进 MemTable"、"打印调试"、"统计大小"共用同一套遍历，各挂各的 handler。回放场景挂的 handler 就是 `MemTableInserter`
+
+**发号：`MemTableInserter` 每条 record 发一个序列号**（[:2025](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L2025)）：
+
+- 它持有 `sequence_`，从 batch 的起始 seq 开始；默认 **seq_per_key**——每处理一条 record，`MaybeAdvanceSeq()` 里 `sequence_++`（[:2208-2212](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L2208-L2212)）
+- 这就是知识点 1 第 4 步"写 WAL 时统一分配序列号"的**落点**：WAL 里只存 batch 的起始 seq，逐条的 seq 在回放时现场递增发出——batch 内第 i 条 record 拿到 `起始seq + i`
+- 回调核心（以 Put 为例，`PutCFImpl` [:2285](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L2285)）：取出当前列族（Column Family，可理解为逻辑分库）的 MemTable（[:2315](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L2315)），调 `mem->Add(sequence_, kTypeValue, key, value, ...)`（[:2322](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L2322)）
+
+**落地：`MemTable::Add` 四步**（[memtable.cc:1116-1219](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1116-L1219)）：
+
+```cpp
+// ① 算长度：varint(key_size) + key + 8B packed + varint(value_size) + value
+const uint32_t encoded_len = VarintLength(internal_key_size) + ...;
+KeyHandle handle = table->Allocate(encoded_len, &buf);   // ② 拿地
+char* p = EncodeVarint32(buf, internal_key_size);        // ③ 编码写入 buf
+...
+// ④ 挂链：非并发 InsertKey / 并发 InsertKeyConcurrently
+```
+
+- **② 拿地**：`SkipListRep::Allocate`（[skiplistrep.cc:35-38](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L35-L38)）就一行：`*buf = skip_list_.AllocateKey(len)` → `AllocateNode(len, RandomHeight())`——**02 知识点 2 的三段式 Node 在这里从 Arena 切出**，身高已随机、已 StashHeight 存好，返回的 `buf` 正是 key 区起点
+- **③ 编码**：往 buf 里按格式写字节——逐字段细节就是下一个知识点
+- **④ 挂链分流**：`concurrent_memtable_writes` 决定走 `InsertKey`（[:1180](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1180) → `skip_list_.Insert`）还是 `InsertKeyConcurrently`（[:1211](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1211) → `skip_list_.InsertConcurrently`）——**02 知识点 7 的"非并发 SetNext"与"CAS 链接"两条路径在这里分道**，也正是知识点 1 第 5 步"两种策略"的落地
+
+```mermaid
+flowchart LR
+    A["WriteBatch<br/>12B 头 + N 条 record"] --> B["InsertInto<br/>造 Inserter + 写回起始 seq"]
+    B --> C["Iterate 逐条拆箱<br/>回调 PutCF / DeleteCF"]
+    C --> D["MemTableInserter<br/>sequence_++ 发号"]
+    D --> E["MemTable::Add<br/>Allocate → 编码 → InsertKey"]
+    E --> F["InlineSkipList::Insert<br/>02 知识点 7：备料 → 发布"]
+```
+
+> 📋 **术语提醒**：`sequence_` 是回放器手里的"发号机读数"，随每条 record 递增；batch 头里那个 fixed64 只是起始值。
+> ⚠️ **关键区分**：WAL 里的 seq 是**批次起始值**；跳表里每条 entry 的 seq 是**回放时逐条递增**发出的。崩溃恢复重放 WAL 时走同一套 InsertInto 逻辑，seq 严格重现。
+> 💡 **理解技巧**：这条链上每一环都是别的知识点埋的钩子——知识点 3 的字节串格式、知识点 5 的编码、02 的 AllocateNode 与 CAS 链接。看懂这一节，01 和 02 就焊死了。
+
+→ **下一站**：Add 第③步往 buf 里写字节的那套紧凑格式——长度前缀、8 字节 packed 标签，逐字段细看。知识点 5。
 
 ---
 
@@ -473,9 +487,9 @@ flowchart LR
 | 一次 Put 经历什么？ | WriteBatch 打包 → JoinBatchGroup 组提交（leader 预处理 + 统一写 WAL 分配 seq）→ 全组并发 InsertInto 跳表 → SetLastSequence 发布可见 |
 | 为什么先写 WAL 再写 MemTable？ | 崩溃恢复靠重放 WAL；WAL 先落盘，MemTable 丢了也能找回 |
 | MemTable 的两种身份？ | active 唯一可读可写；imm_ 只读队列按新→旧排队等 flush |
-| 跳表在 RocksDB 里的参数？ | 默认 InlineSkipList，最高 12 层、晋级概率 1/4（分支因子 4） |
 | 三层可插拔设计？ | MemTable 管逻辑 / MemTableRep 定接口 / InlineSkipList 干苦力——策略 + 工厂，容器可换 |
 | WriteBatch 物理格式？ | 12 字节头（fixed64 sequence + fixed32 count）+ record[count]；record = 类型标签 + varstring key/value |
+| WriteBatch 怎么进跳表？ | InsertInto 用 MemTableInserter 逐条回放：每条 record 的 seq 递增发放 → MemTable::Add（AllocateKey 切 Node → 编码 → InsertKey 链接） |
 | MemTable 一条 entry 的编码？ | varint32 key_size + key bytes + 8B packed(seq<<8 \| type) + varint32 value_size + value bytes |
 | InternalKey 排序规则？ | user key 升序 → seq 降序 → type 降序；seq 降序让 LookupKey 一次 Seek 命中快照可见版本 |
 | LookupKey 的优化？ | 栈上 space_[200] 小缓冲，短 key 零 malloc；start_/kstart_/end_ 同一段内存两个视图 |
