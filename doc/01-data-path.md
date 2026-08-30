@@ -200,7 +200,12 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
 
     - `rep_` 字节串的格式只有 WriteBatch 自己懂
     - 所以遍历逻辑由它提供：每解析出一条 record（读 tag → 读 varstring key → 读 varstring value），就调用 handler 对应的方法（`PutCF` / `DeleteCF` / `MergeCF`……）
-- 💡 这是 **Visitor 模式**（访问者模式）：遍历与处理分离——"回放进 MemTable"、"打印调试"、"统计大小"共用同一套遍历，各挂各的 handler。回放场景挂的 handler 就是 `MemTableInserter`
+    - `inserter` 负责编码 + 插入回调里把 `user_key + seq + type + value` 编码成 `InternalKey`
+    - 走 `MemTableRep::Allocate` 拿内存块，再 `Insert` 进跳表
+- 💡 这是 **Visitor 模式**（访问者模式）：  
+    - `WriteBatch` 只管"遍历拆箱"（遍历逻辑固定）
+    - `inserter` 只管"怎么处理"（回放进 `MemTable`、打印调试、统计大小各挂各的 `handler`）
+    - 回放场景挂的 handler 就是 `MemTableInserter`
 
 **发号：`MemTableInserter` 每条 record 发一个序列号**（[:2025](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L2025)）：
 
