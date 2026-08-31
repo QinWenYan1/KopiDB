@@ -16,9 +16,9 @@ BaseIterator &SkipListIterator::operator++() {
   // 实现SkipListIterator的++操作符
   // ? current 是当前节点指针, forward_[0] 是最底层链表的下一个节点
 
-  if (current){
+  if (current) {
     // 沿着第0层前进一步
-    current = current->forward_[0]; 
+    current = current->forward_[0];
   }
   return *this;
 }
@@ -29,8 +29,9 @@ bool SkipListIterator::operator==(const BaseIterator &other) const {
 
   // 类型都不同，谈不上相等
   // 参数是基类引用 BaseIterator&，运行时可能是任何子类
-  if (get_type() != other.get_type()) return false; 
-  const auto & other_iter = dynamic_cast<const SkipListIterator&>(other); 
+  if (get_type() != other.get_type())
+    return false;
+  const auto &other_iter = dynamic_cast<const SkipListIterator &>(other);
   return current == other_iter.current;
 }
 
@@ -44,7 +45,8 @@ SkipListIterator::value_type SkipListIterator::operator*() const {
   // ? 若 current 为空需抛出异常
   // ? 若 current 为空需抛出异常
   if (!current) {
-    throw std::runtime_error("dereferencing invalid SkipListIterator: Node empty");
+    throw std::runtime_error(
+        "dereferencing invalid SkipListIterator: Node empty");
   }
   return {current->key_, current->value_};
 }
@@ -52,7 +54,7 @@ SkipListIterator::value_type SkipListIterator::operator*() const {
 IteratorType SkipListIterator::get_type() const {
   // 实现SkipListIterator的get_type
   // ? 主要是为了熟悉基类的定义和继承关系, 返回 IteratorType::SkipListIterator
-  return IteratorType::SkipListIterator; 
+  return IteratorType::SkipListIterator;
 }
 
 bool SkipListIterator::is_valid() const {
