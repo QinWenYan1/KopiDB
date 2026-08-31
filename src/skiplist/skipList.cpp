@@ -13,6 +13,11 @@ namespace tiny_lsm {
 BaseIterator &SkipListIterator::operator++() {
   // TODO: Lab1.2 任务：实现SkipListIterator的++操作符
   // ? current 是当前节点指针, forward_[0] 是最底层链表的下一个节点
+
+  if (current){
+    // 沿着第0层前进一步
+    current = current->forward_[0]; 
+  }
   return *this;
 }
 
