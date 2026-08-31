@@ -16,13 +16,14 @@
 |------|------|------|
 | [01-data-path.md](01-data-path.md) | 数据通路：Put/Get 工作流 + 编码体系 | ✅ |
 | [02-skiplist.md](02-skiplist.md) | 跳表：结构原理 + Node 内存布局 + 无锁并发 + Arena | ✅ |
-| 03-memtable.md | MemTable 控制面：active/imm 生命周期、flush 触发、内存记账、并发写模式 | 待写 |
-| 04-sst.md | Block / SST 格式 | 待写 |
-| 05-compaction.md | Compaction / LSM Engine | 待写 |
-| 06-mvcc.md | MVCC / SequenceNumber | 待写 |
-| 07-wal.md | WAL 与崩溃恢复 | 待写 |
-| 08-wisckey.md | WiscKey 键值分离 | 待写 |
-| 09-redis.md | 网络层 / RESP 协议 | 待写 |
+| [03-iterator.md](03-iterator.md) | 迭代器体系：两层接口 + 层层包装 + 可见性过滤 | ✅ |
+| 04-memtable.md | MemTable 控制面：active/imm 生命周期、flush 触发、内存记账、并发写模式 | 待写 |
+| 05-sst.md | Block / SST 格式 | 待写 |
+| 06-compaction.md | Compaction / LSM Engine | 待写 |
+| 07-mvcc.md | MVCC / SequenceNumber | 待写 |
+| 08-wal.md | WAL 与崩溃恢复 | 待写 |
+| 09-wisckey.md | WiscKey 键值分离 | 待写 |
+| 10-redis.md | 网络层 / RESP 协议 | 待写 |
 
 ## 信息源优先级
 

@@ -428,4 +428,4 @@ void Prev() {
 
 ---
 
-**下一站**：跳表这个容器拆完了。但它不单独存在——包着它的 MemTable 还管着跳表不管的事：什么时候写满冻结、active/immutable 怎么切换、内存账记到多少触发 flush、并发写怎么组织。→ 03-memtable（待写）
+**下一站**：跳表这个容器拆完了。但 §KP9 的裸迭代器离用户手里的 `db->NewIterator()` 还差四层包装——编码分工、prefix bloom、N 路归并、可见性过滤。→ [03-iterator](03-iterator.md)（MemTable 本体的冻结/flush/并发写顺延至 04-memtable，待写）

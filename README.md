@@ -43,6 +43,7 @@ LSM-tree（Log-Structured Merge-Tree，O'Neil et al. 1996）的核心思想是**
 - [doc/README](doc/README.md)——笔记索引与使用方法
 - [01-data-path](doc/01-data-path.md)——数据通路：Put/Get 工作流 + InternalKey 编码
 - [02-skiplist](doc/02-skiplist.md)——跳表：结构原理 + Node 内存布局 + 无锁并发
+- [03-iterator](doc/03-iterator.md)——迭代器体系：两层接口 + 层层包装 + 可见性过滤
 
 ## 🛠 技术栈
 
