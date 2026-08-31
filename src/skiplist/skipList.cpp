@@ -1,5 +1,7 @@
 #include "skiplist/skiplist.h"
+#include "spdlog/fmt/bundled/format.h"
 #include <cstdint>
+#include <cstdio>
 #include <iostream>
 #include <memory>
 #include <spdlog/spdlog.h>
@@ -24,18 +26,24 @@ BaseIterator &SkipListIterator::operator++() {
 bool SkipListIterator::operator==(const BaseIterator &other) const {
   // TODO: Lab1.2 任务：实现SkipListIterator的==操作符
   // ? 需要先通过 get_type() 判断类型再做 dynamic_cast
-  return false;
+
+  // 类型都不同，谈不上相等
+  // 参数是基类引用 BaseIterator&，运行时可能是任何子类
+  if (get_type() != other.get_type()) return false; 
+  const auto & other_iter = dynamic_cast<const SkipListIterator&>(other); 
+  return current == other_iter.current;
 }
 
 bool SkipListIterator::operator!=(const BaseIterator &other) const {
   // TODO: Lab1.2 任务：实现SkipListIterator的!=操作符
-  return true;
+  return !(operator==(other));
 }
 
 SkipListIterator::value_type SkipListIterator::operator*() const {
   // TODO: Lab1.2 任务：实现SkipListIterator的*操作符
   // ? 若 current 为空需抛出异常
-  return {"", ""};
+  if(current) return {current->key_, current->value_}; 
+  else throw std::runtime_error("invalid Iterator: node empty");  // 抛出; 
 }
 
 IteratorType SkipListIterator::get_type() const {
