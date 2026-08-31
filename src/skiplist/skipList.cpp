@@ -13,7 +13,7 @@ namespace tiny_lsm {
 
 // ************************ SkipListIterator ************************
 BaseIterator &SkipListIterator::operator++() {
-  // TODO: Lab1.2 任务：实现SkipListIterator的++操作符
+  // 实现SkipListIterator的++操作符
   // ? current 是当前节点指针, forward_[0] 是最底层链表的下一个节点
 
   if (current){
@@ -24,7 +24,7 @@ BaseIterator &SkipListIterator::operator++() {
 }
 
 bool SkipListIterator::operator==(const BaseIterator &other) const {
-  // TODO: Lab1.2 任务：实现SkipListIterator的==操作符
+  // 实现SkipListIterator的==操作符
   // ? 需要先通过 get_type() 判断类型再做 dynamic_cast
 
   // 类型都不同，谈不上相等
@@ -35,21 +35,24 @@ bool SkipListIterator::operator==(const BaseIterator &other) const {
 }
 
 bool SkipListIterator::operator!=(const BaseIterator &other) const {
-  // TODO: Lab1.2 任务：实现SkipListIterator的!=操作符
+  // 实现SkipListIterator的!=操作符
   return !(operator==(other));
 }
 
 SkipListIterator::value_type SkipListIterator::operator*() const {
-  // TODO: Lab1.2 任务：实现SkipListIterator的*操作符
+  // 实现SkipListIterator的*操作符
   // ? 若 current 为空需抛出异常
-  if(current) return {current->key_, current->value_}; 
-  else throw std::runtime_error("invalid Iterator: node empty");  // 抛出; 
+  // ? 若 current 为空需抛出异常
+  if (!current) {
+    throw std::runtime_error("dereferencing invalid SkipListIterator: Node empty");
+  }
+  return {current->key_, current->value_};
 }
 
 IteratorType SkipListIterator::get_type() const {
-  // TODO: Lab1.2 任务：实现SkipListIterator的get_type
+  // 实现SkipListIterator的get_type
   // ? 主要是为了熟悉基类的定义和继承关系, 返回 IteratorType::SkipListIterator
-  return IteratorType::SkipListIterator; // placeholder, 请替换为正确实现
+  return IteratorType::SkipListIterator; 
 }
 
 bool SkipListIterator::is_valid() const {
@@ -160,11 +163,11 @@ void SkipList::put(const std::string &key, const std::string &value,
 SkipListIterator SkipList::get(const std::string &key, uint64_t tranc_id) {
   spdlog::trace("SkipList--get({}) called", key);
 
-  // TODO: Lab1.1 任务：实现查找键值对
+  // 实现查找键值对
   // ? 从最高层开始向下查找, 最终在底层确认 key 是否存在
   // ? 若 tranc_id == 0, 直接比较 key 返回; 否则需满足事务可见性 (tranc_id_ <=
   // tranc_id)
-  // TODO: 完成查找后还需要额外实现SkipListIterator中的TODO部分(Lab1.2)
+  // 完成查找后还需要额外实现SkipListIterator中的TODO部分(Lab1.2)
 
   // 1. 找：下楼梯，只比 key（落在"该 key 的最新版本"跟前）
   auto current = head;
@@ -193,10 +196,10 @@ SkipListIterator SkipList::get(const std::string &key, uint64_t tranc_id) {
 }
 
 // 删除键值对
-// ! 这里的 remove 是跳表本身真实的 remove,  lsm 应该使用 put 空值表示删除,
-// ! 这里只是为了实现完整的 SkipList 不会真正被上层调用
+// 这里的 remove 是跳表本身真实的 remove,  lsm 应该使用 put 空值表示删除,
+// 这里只是为了实现完整的 SkipList 不会真正被上层调用
 void SkipList::remove(const std::string &key) {
-  // TODO: Lab1.1 任务：实现删除键值对
+  // 实现删除键值对
   // ? 从最高层开始查找目标节点并更新各层指针
   // ? 注意同时维护 backward_ 指针和 size_bytes
   // 1. 找：同款下楼梯，但只按 key 比较（删除针对 key 本身，不挑版本）
