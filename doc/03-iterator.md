@@ -355,4 +355,4 @@ result: user sees no "foo"
 
 ---
 
-**下一站**：迭代器栈拆完了，但 MemTable 这个"被迭代的数据源"本身还没讲：它什么时候写满冻结、active/immutable 怎么切换、内存账记到多少触发 flush、并发写怎么组织。→ 04-memtable（待写）
+**下一站**：迭代器栈拆完了。但扫描还有两个边界问题没答：只扫一个前缀凭什么停、只扫一个区间在哪切。→ [04-scan](04-scan.md)（MemTable 本体的冻结/flush/并发写顺延至 05-memtable，待写）
