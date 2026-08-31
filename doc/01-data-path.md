@@ -224,7 +224,7 @@ char* p = EncodeVarint32(buf, internal_key_size);        // ③ 编码写入 buf
 // ④ 挂链：非并发 InsertKey / 并发 InsertKeyConcurrently
 ```
 
-- **② 拿地**：`SkipListRep::Allocate`（[skiplistrep.cc:35-38](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L35-L38)）就一行：`*buf = skip_list_.AllocateKey(len)` → `AllocateNode(len, RandomHeight())`——**02 知识点 2 的三段式 Node 在这里从 Arena 切出**，身高已随机、已 StashHeight 存好，返回的 `buf` 正是 key 区起点
+- **② 拿地**：`SkipListRep::Allocate`（[skiplistrep.cc:35-38](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L35-L38)）就一行：`*buf = skip_list_.AllocateKey(len)` → `AllocateNode(len, RandomHeight())`——**02 知识点 2 的三段式 Node 在这里从 Arena 切出**，身高已随机、已用 StashHeight 暂存好（这个"临时便签"机制在 [02 知识点 2](02-skiplist.md#id2) 有专段讲解），返回的 `buf` 正是 key 区起点
 - **③ 编码**：往 buf 里按格式写字节——逐字段细节就是下一个知识点
 - **④ 挂链分流**：`concurrent_memtable_writes` 决定走 `InsertKey`（[:1180](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1180) → `skip_list_.Insert`）还是 `InsertKeyConcurrently`（[:1211](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1211) → `skip_list_.InsertConcurrently`）——**02 知识点 7 的"非并发 SetNext"与"CAS 链接"两条路径在这里分道**，也正是知识点 1 第 5 步"两种策略"的落地
 
