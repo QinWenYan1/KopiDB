@@ -281,18 +281,17 @@ SkipListIterator SkipList::begin_preffix(const std::string &preffix) {
   // ? 从最高层开始查找, 找到第一个 key >= preffix 的节点
   // 1. 下楼梯：和 get 同款，每层走到"下一个节点 key >= preffix"之前停下
   //    循环不变式：current 始终是当前层最后一个小于 preffix 的节点
-  //              也就是说，如果没有大于 preffix 的 节点也不会是nullptr
-  auto current = head; 
-  for (int lvl = current_level - 1; lvl >= 0; --lvl){
-    while (current->forward_[lvl] && current->forward_[lvl]->key_ < preffix){
-      current = current->forward_[lvl]; 
+  //              也就是说，如果没有大于 preffix 的节点也不会是 nullptr
+  auto current = head;
+  for (int lvl = current_level - 1; lvl >= 0; --lvl) {
+    while (current->forward_[lvl] && current->forward_[lvl]->key_ < preffix) {
+      current = current->forward_[lvl];
     }
   }
 
   // 2. 第 0 层的下一个节点 = 第一个 key >= preffix 的节点
   //    没有则是空迭代器，天然 == end()
-  return SkipListIterator(current->forward_[0]);  
-
+  return SkipListIterator(current->forward_[0]);
 }
 
 // 找到前缀的终结位置
