@@ -199,19 +199,24 @@ explicit InlineSkipList(Comparator cmp, Allocator* allocator,
 
 所以它叫 **bump allocation** 指针碰撞/指针推进分配（`Arena::AllocateAligned`，[arena.cc:108-143](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memory/arena.cc#L108-L143)）：
 
-```cpp
-// 对齐：原子指针要求地址是 8 的倍数，先算要补几个字节
-size_t slop = (current_mod == 0 ? 0 : kAlignUnit - current_mod);
-if (needed <= alloc_bytes_remaining_) {
-  result = aligned_alloc_ptr_ + slop;   // 当前块够用：返回对齐后的位置
-  aligned_alloc_ptr_ += needed;         // "未使用起点"往前推，完事
-  alloc_bytes_remaining_ -= needed;
-} else {
-  result = AllocateFallback(bytes, true);  // 当前块不够：向堆要一块新的
-}
-```
+- **所谓"推指针"：块内只维护两个数**
+  1. 未使用起点 `aligned_alloc_ptr_` 
+  2. 剩余字节数 `alloc_bytes_remaining_`
+- 分配 = 起点前移 + 余额扣减，**没有空闲链表、没有合并分裂，几次加减法就是一次分配**
 
-所谓"推指针"：块内只维护两个数——未使用起点 `aligned_alloc_ptr_` 和剩余字节数 `alloc_bytes_remaining_`。分配 = 起点前移 + 余额扣减，**没有空闲链表、没有合并分裂，几次加减法就是一次分配**。
+  ```cpp
+  // 对齐：原子指针要求地址是 8 的倍数，先算要补几个字节
+  size_t slop = (current_mod == 0 ? 0 : kAlignUnit - current_mod);
+  if (needed <= alloc_bytes_remaining_) {
+    result = aligned_alloc_ptr_ + slop;   // 当前块够用：返回对齐后的位置
+    aligned_alloc_ptr_ += needed;         // "未使用起点"往前推，完事
+    alloc_bytes_remaining_ -= needed;
+  } else {
+    result = AllocateFallback(bytes, true);  // 当前块不够：向堆要一块新的
+  }
+  ```
+
+
 
 **块管理参数**（[arena.h:31-37](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memory/arena.h#L31-L37)）：
 
