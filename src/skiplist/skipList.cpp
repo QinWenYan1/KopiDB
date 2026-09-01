@@ -277,7 +277,7 @@ SkipListIterator SkipList::end() {
 // 找到前缀的起始位置
 // 返回第一个前缀匹配或者大于前缀的迭代器
 SkipListIterator SkipList::begin_preffix(const std::string &preffix) {
-  // TODO: Lab1.3 任务：实现前缀查询的起始位置
+  // Lab1.3 任务：实现前缀查询的起始位置
   // ? 从最高层开始查找, 找到第一个 key >= preffix 的节点
   // 1. 下楼梯：和 get 同款，每层走到"下一个节点 key >= preffix"之前停下
   //    循环不变式：current 始终是当前层最后一个小于 preffix 的节点
@@ -298,7 +298,27 @@ SkipListIterator SkipList::begin_preffix(const std::string &preffix) {
 SkipListIterator SkipList::end_preffix(const std::string &prefix) {
   // TODO: Lab1.3 任务：实现前缀查询的终结位置
   // ? 找到第一个 key 不以 prefix 开头的节点作为终结位置
-  return SkipListIterator{};
+  // 1. 巧劲：构造 prefix 的"后继字符串"（末字符 +1）
+  //    性质：所有以 prefix 开头的 key 都 < 后继；
+  // end_preffix("a") → 后继 "b" → 第一个 ≥"b" 是 banana ✓
+  // end_preffix("cherry") → 后继 "cherz"，cherry2 < "cherz" 被跳过 → end()
+
+  std::string successor = prefix; 
+
+  // char 是一个字节，最大 255(0xff)，如果再+1的话会回绕为0x00
+  // 解决办法：从后往前找第一个 != 0xff 的字节，+1并截断其后的 0xff 字节
+  //         全是 0xff 则后继不存在，直接返回 end()
+  while (!successor.empty() && successor.back() == '\xff') {
+  successor.pop_back();
+  }
+
+  // 空前缀匹配一切，终结即 end()
+  if (successor.empty()) return end(); 
+
+  // "a"->"b", "cherry"->"cherz"
+  successor.back() += 1; 
+  return begin_preffix(successor); 
+
 }
 
 // ? 这里单调谓词的含义是, 整个数据库只会有一段连续区间满足此谓词
