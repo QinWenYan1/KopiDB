@@ -301,42 +301,56 @@ explicit InlineSkipList(Comparator cmp, Allocator* allocator,
 <a id="id4"></a>
 ## ✅ 知识点 4: RandomHeight 与层高参数
 
-内存有了。每个节点能进几层——身高怎么随机出来？知识点 4。
+**节点大小由身高决定，可是要如何决定呢？身高要满足什么分布、又怎么低成本生成？**
 
-**上一棒结论：节点大小由身高决定。新疑问：身高要满足什么分布、又怎么低成本生成？** 知识点 1 讲过直觉：全 1 层退化成链表（O(n)），层层都满又太刚——要的是**指数衰减**：第 1 层 100%，第 2 层 1/4，第 3 层 1/16……
+-  知识点 1 讲过直觉：全 1 层退化成链表（O(n)），层层都满又太刚
+- 要的是**指数衰减**：第 1 层 100%，第 2 层 1/4，第 3 层 1/16……
 
-`RandomHeight()`（[inlineskiplist.h:559-573](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L559-L573)）：
+  `RandomHeight()`（[inlineskiplist.h:559-573](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L559-L573)）：
 
-```cpp
-int height = 1;
-while (height < kMaxHeight_ && height < kMaxPossibleHeight &&
-       rnd->Next() < kScaledInverseBranching_) {   // 一次比较 = 抛一次硬币
-  height++;
-}
-```
+  ```cpp
+  int height = 1;
+  while (
+      height < kMaxHeight_ &&
+      height < kMaxPossibleHeight &&
+      rnd->Next() < kScaledInverseBranching_
+  ) {
+      height++; // 一次比较 = 抛一次硬币
+  }
+  ```
 
 **没有取模、没有浮点——"抛硬币"就是拿随机数和一个预计算阈值比大小：**
 
-- `rnd->Next()` 均匀分布在 [0, 2³²)；`kScaledInverseBranching_` 在构造时预计算为 `(Random::kMaxNext + 1) / kBranching_`（[:837](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L837)）= 2³²/4 = 2³⁰
+- `rnd->Next()` 均匀分布在 `[0, 2³²)`
+- `kScaledInverseBranching_` 在构造时预计算为 `(Random::kMaxNext + 1) / kBranching_`（[:837](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L837)）= 2³²/4 = 2³⁰
 - 随机数 < 2³⁰ 的概率恰好 1/4 → 每轮循环就是一次"1/4 概率晋级"
-- 期望层高 E[height] = 1/(1−p) = **4/3**（p = 1/4）——平均每节点只占 1.33 层指针（≈10.7 字节），这就是知识点 2 敢在布局上省内存的底气
+  ```
+  随机数范围：
+  0 ---------------- 2^30 ---------------- 2^32
+                      ↑
+                     1/4
+  ```
+- 期望层高 E[height] = 1/(1−p) = **4/3**（p = 1/4）
+  - 平均每节点只占 1.33 层指针（≈10.7 字节），这就是知识点 2 敢在布局上省内存的底气
 
 **两个层上限，别混**（循环条件里两个都在）：
 
-- `kMaxHeight_ = 12`：**这张表**的业务上限（构造参数，[:831-836](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L831-L836)）
-- `kMaxPossibleHeight = 32`：物理硬上限——栈上数组的维度，比如并发插入时 `Node* prev[kMaxPossibleHeight]`（[:914](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L914)）；身高绝不能超过它，否则栈数组越界
+- `kMaxHeight_ = 12`：**这张表的业务上限/可配置上限**（构造参数，[:831-836](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L831-L836)）
+- `kMaxPossibleHeight = 32`：**物理硬上限/实现安全底线** 
+  - 栈上数组的维度，比如并发插入时 `Node* prev[kMaxPossibleHeight]`（[:914](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L914)）
+  - 身高绝不能超过它，否则栈数组越界
 
 > 📋 **术语提醒**：`kScaledInverseBranching_` = 把"概率 1/4"换算成"32 位随机数域里的阈值"——从概率域到比较域的缩放，故名 Scaled Inverse Branching。
 > ⚠️ **关键区分**：`max_height_`（当前表高，动态增长）和 `kMaxHeight_`（允许上限 12）是两回事——前者下个知识点讲。
 
-→ **下一站**：节点有了、身高有了。整张表的骨架——表头和"当前表高"怎么搭、怎么长？知识点 5。
+
 
 ---
 
 <a id="id5"></a>
 ## ✅ 知识点 5: head_ 与 max_height_ 的松弛设计
 
-**上一棒结论：每个节点带着随机身高出生。新疑问：表头长什么样？整张表当前算几层？并发插入都想"拔高"表时怎么办？**
+**每个节点带着随机身高出生，那么表头长什么样？整张表当前算几层？并发插入都想"拔高"表时怎么办？**
 
 **构造**（[:831-851](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L831-L851)）：
 
