@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <tuple>
@@ -353,6 +354,9 @@ SkipList::iters_monotony_predicate(
         break; // 右侧越界了，下楼
     }
   }
+  
+  if (!node1) // 没有满足谓词条件的key在表中
+    return std::nullopt;
 
   return std::nullopt;
 }
