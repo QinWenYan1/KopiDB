@@ -303,22 +303,22 @@ SkipListIterator SkipList::end_preffix(const std::string &prefix) {
   // end_preffix("a") → 后继 "b" → 第一个 ≥"b" 是 banana ✓
   // end_preffix("cherry") → 后继 "cherz"，cherry2 < "cherz" 被跳过 → end()
 
-  std::string successor = prefix; 
+  std::string successor = prefix;
 
   // char 是一个字节，最大 255(0xff)，如果再+1的话会回绕为0x00
   // 解决办法：从后往前找第一个 != 0xff 的字节，+1并截断其后的 0xff 字节
   //         全是 0xff 则后继不存在，直接返回 end()
   while (!successor.empty() && successor.back() == '\xff') {
-  successor.pop_back();
+    successor.pop_back();
   }
 
   // 空前缀匹配一切，终结即 end()
-  if (successor.empty()) return end(); 
+  if (successor.empty())
+    return end();
 
   // "a"->"b", "cherry"->"cherz"
-  successor.back() += 1; 
-  return begin_preffix(successor); 
-
+  successor.back() += 1;
+  return begin_preffix(successor);
 }
 
 // ? 这里单调谓词的含义是, 整个数据库只会有一段连续区间满足此谓词
