@@ -252,15 +252,38 @@ explicit InlineSkipList(Comparator cmp, Allocator* allocator,
 
 
 
-**块管理参数**（[arena.h:31-37](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memory/arena.h#L31-L37)）：
+**Arena的块管理策略**（[arena.h:31-37](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memory/arena.h#L31-L37)）
 
-- 内联块 2KB（`kInlineSize`，小 MemTable 零堆分配）→ 常规块 4KB 起（`kMinBlockSize`）→ 上限 2GB
-- 新块用 `new char[block_bytes]`，并用 `malloc_usable_size` 拿堆实际给的大小精确记账（[arena.cc:145](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memory/arena.cc#L145) 起）
-- **没有单节点释放**：MemTable 销毁时整个 Arena 一次性释放——这正是推指针分配能成立的对价
 
-**内存统计因此简化**：`ApproximateMemoryUsage() = 已分配块总量 − 当前块剩余`（[arena.h:66-69](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memory/arena.h#L66-L69)）——`SkipListRep::ApproximateMemoryUsage` 直接返回 0，因为账全记在 Arena 这里（[skiplistrep.cc:80-83](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L80-L83)）。
+- **Block 会根据需求增长，但设置一个最大上限**
+  - 内联块 2KB（`kInlineSize`，小 MemTable 零堆分配）
+  - 常规块 4KB 起（`kMinBlockSize`）
+  - 上限 2GB
+- **新块用 `new char[block_bytes]` 向系统申请一整块连续的原始内存**
+- **并用 `malloc_usable_size` 拿堆实际给的大小精确记账**（[arena.cc:145](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memory/arena.cc#L145) 起），比如：
+  - `new char[4096]` 但底层内存分配器可能实际上给了你 `4160 bytes`
+  - 所以 RocksDB 会问一下：哥们，你实际上给我的这块内存到底有多大？
+- **没有单节点释放**
+  - MemTable 销毁时整个 Arena 一次性释放——这正是推指针分配能成立的对价
+  - Arena 不负责一个一个 Node 的释放，而是负责管理这些“大块 Block”
 
-> 🔄 **知识关联**："无单节点释放"听着危险（读者正拿着指针怎么办？）——它恰恰是并发读安全的三大支柱之一，知识点 8 回收这个伏笔。并发写场景 MemTable 会用 `ConcurrentArena`（[concurrent_arena.h:42](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memory/concurrent_arena.h#L42)），选择逻辑这里不展开。
+**块内存统计**：Arena 里所有 Node 的内存，最终都来自 Arena 自己申请的 Block，所以只需要让 Arena 统一记账
+  - 例如：
+    ```
+    Arena 一共申请了 4096B
+    当前这个 Block 还剩 1000B
+
+    实际已经用掉：
+    4096 - 1000 = 3096B
+    ```
+  - 所以：
+    - `ApproximateMemoryUsage() = 已申请的 Block 总大小 - 当前剩余空间`（[arena.h:66-69](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memory/arena.h#L66-L69)）
+    - `SkipListRep::ApproximateMemoryUsage` 直接返回 0，因为账全记在 Arena 这里（[skiplistrep.cc:80-83](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L80-L83)）
+      - `SkipList`：我不统计，返回 0
+
+      - `Arena`：所有内存我统一统计
+
+> 🔄 **知识关联**："无单节点释放"听着危险（读者正拿着指针怎么办？），它恰恰是并发读安全的三大支柱之一，知识点 8 回收这个伏笔。并发写场景 MemTable 会用 `ConcurrentArena`（[concurrent_arena.h:42](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memory/concurrent_arena.h#L42)），选择逻辑这里不展开。
 
 
 ---
