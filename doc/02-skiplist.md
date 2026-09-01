@@ -83,7 +83,8 @@ explicit InlineSkipList(Comparator cmp, Allocator* allocator,
 - 跳表靠 Node 串成链表，RocksDB 的 Node 是"头信息 + 内联数据"的变长结构，用 Arena 内存池管理。
 
 **一个跳表节点要存什么？**
-  - 一个 key 字节串，外加"它参加的每一层"各一个 next 指针（知识点 1：节点身高随机，参加几层有几个指针）。
+  - **一个 key 字节串**
+  - **外加"它参加的每一层"各一个 next 指针**（知识点 1：节点身高随机，参加几层有几个指针）
   - 问题来了：每个节点层数不一样，Node 这个 struct 该怎么摆这些大小不一的东西？
 
 **先看两个朴素设计，才知道 RocksDB 在躲什么：**
@@ -109,7 +110,7 @@ explicit InlineSkipList(Comparator cmp, Allocator* allocator,
   (1)         (2)         (3)         (4)
 ```
 
-逐段拆解：
+**逐段拆解**：
 
 - **(3) header（8 字节，地址 1016）**：
   - `Node` 这个 struct 里**唯一**声明的成员就是 `Atomic<Node*> next_[1]`（[:417-421](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L417-L421)，`Atomic` 是 RocksDB 对 `std::atomic` 的封装，知识点 8 细讲）
@@ -117,9 +118,13 @@ explicit InlineSkipList(Comparator cmp, Allocator* allocator,
 - **(2) (1) 高层指针区（header 前面，(height−1)×8 字节）**：
   - 第 1 层、第 2 层的 next 指针**倒着往低地址排**——第 1 层紧贴 header 前（1008），第 2 层再往前（1000）。
 - **(4) key 区（header 紧后面）**：
-  - key 字节串，零偏移贴合
+  - **key 字节串，零偏移贴合**
   - SkipList Node 本身没有 value 字段，只有一段"key 数据区"
-  - MemTable 把 value 编进这段数据里一起塞进去，跳表不知情也不关心
+  - 在 RocksDB 的 MemTable 里，传给 SkipList 的这段连续内存，通常编码的是一整个 entry:
+    ```
+    [varint key_len][internal_key][varint value_len][value]
+    ```
+  - 实际上在 MemTable 这个使用场景里，**key区 = entry**
 
 **"负索引"是什么？** 
 - C++ 里数组下标本来就可以是负的——`a[-1]` 等价于 `*(a - 1)`，只要指向的是合法内存。
@@ -145,9 +150,14 @@ explicit InlineSkipList(Comparator cmp, Allocator* allocator,
   ```
 
 **StashHeight：身高的"临时便签"**
-- 这里有个微妙问题：节点链入跳表后**根本不需要**存身高——你从第 h 层走进这个节点，h 就必然是它的合法层（[:871-874](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L871-L874) 注释原话）
-- 但 `Insert` 的那一刻又必须知道身高，才能逐层接指针。
-- **解法**：趁节点还没链入、`next_[0]` 这 8 字节还空着，把 int 身高**借**存在里面（[:358-372](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L358-L372)），Insert 时 `UnstashHeight` 取出（[:1032](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1032)）。
+- 这里有个微妙问题：节点链入跳表后**根本不需要**存身高：
+  - **你从第 h 层走进这个节点，h 就必然是它的合法层**（[:871-874](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L871-L874) 注释原话）
+- 但 `Insert` 的那一刻又必须知道身高：
+  - **通过`height` 知道给这个 `node` 留几个 `next` 位置**
+- **解法**：
+  - 趁节点还没链入、`next_[0]` 这 8 字节还空着
+  - 把 int 身高**借**存在里面（[:358-372](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L358-L372)
+  - Insert 时 `UnstashHeight` 取出（[:1032](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1032)）。
 
 > ⚠️ **关键区分**：StashHeight 只是"传递中的便签"——一旦 `SetNext` 往 `next_[0]` 写了真指针，便签即作废（注释原话 "Undefined after a call to SetNext"）。
 > 💡 **理解技巧**：这套布局的收益是"省内存双杀"——① 不存 height 字段；② 高层指针只为高个子节点付费（平均身高 4/3 层 → 平均每节点指针开销 ≈ 8×4/3 ≈ 10.7 字节，对比朴素 A 的 96 字节）。代价是所有访问都要做指针算术，因此全封装进 `Next/SetNext/CASNext` 方法（知识点 8 会看到它们还兼管内存序）。
