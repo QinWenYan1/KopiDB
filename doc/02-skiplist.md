@@ -215,6 +215,40 @@ explicit InlineSkipList(Comparator cmp, Allocator* allocator,
     result = AllocateFallback(bytes, true);  // 当前块不够：向堆要一块新的
   }
   ```
+- 那如果当前 4KB block不够放了呢? **重新申请**！
+  - 意思非常简单：
+    ```
+    当前 Arena Block 不够了
+            ↓
+    再向堆申请一个新的大 block: AllocateFallback(bytes, true);
+            ↓
+    继续 bump allocation
+    ```
+- 那 `slop` 是什么？**就是为了满足内存对齐!**
+  - 比如 RocksDB 要求地址是 8 的倍数:
+    ```
+    当前地址 = 1003
+    1003 % 8 != 0
+    ```
+  - 那么先浪费几个字节：
+    ```
+    1003 → 1008
+          ↑
+          slop
+    ```
+  - 然后从 1008 开始分配
+
+- 为什么需要内存对齐？**提高 CPU 读写数据的效率，并满足某些硬件的特殊限制！**
+  - CPU 读取内存不是一个字节一个字节读的，而是成块读取（比如一次读 4 字节或 8 字节）
+  - **对齐的情况**：如果一个 4 字节的整数（int）存放在能被 4 整除的地址上，CPU 一次就能把它完整读出来。
+  - **不对齐的情况**：如果它存放在奇数地址，CPU 可能需要读取两次内存，再把碎片拼起来，速度慢很多
+
+> ⚠️ **为什么 RocksDB 选 8？**: 因为 Arena 里面可能存放各种对象，选 8 是为了让 Arena 无论在 64 位还是 32 位机器上都能安全地放下需要 8 字节对齐的对象；4 太小，无法保证 8 字节对齐
+> ```
+> uint64_t      // 8 bytes
+> double        // 通常需要 8-byte alignment
+> void*         // 64 位机器通常是 8 bytes
+> ```
 
 
 
