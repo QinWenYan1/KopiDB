@@ -116,7 +116,10 @@ explicit InlineSkipList(Comparator cmp, Allocator* allocator,
   - `sizeof(Node)` 只有 8 字节，这个格子就是**第 0 层**的 next 指针。"header" 听着唬人，其实就一个指针
 - **(2) (1) 高层指针区（header 前面，(height−1)×8 字节）**：
   - 第 1 层、第 2 层的 next 指针**倒着往低地址排**——第 1 层紧贴 header 前（1008），第 2 层再往前（1000）。
-- **(4) key 区（header 紧后面）**：key 字节串，零偏移贴合。
+- **(4) key 区（header 紧后面）**：
+  - key 字节串，零偏移贴合
+  - SkipList Node 本身没有 value 字段，只有一段"key 数据区"
+  - MemTable 把 value 编进这段数据里一起塞进去，跳表不知情也不关心
 
 **"负索引"是什么？** 
 - C++ 里数组下标本来就可以是负的——`a[-1]` 等价于 `*(a - 1)`，只要指向的是合法内存。
@@ -157,12 +160,44 @@ explicit InlineSkipList(Comparator cmp, Allocator* allocator,
 
 **节点的"摆法"定了，但内存从哪儿来？几十万个不规则节点逐个 `new` 行不行？**
 
-- **上一棒结论：节点大小不固定（(height−1)×8 + 8 + key_size 字节），数量几十万级**
-  - **新疑问：这些不规则小块内存从哪儿来？**
-- 逐个 `new` 有三笔账：每次分配进堆管理器（可能拿锁）、节点四处散落（缓存不友好）、大小混杂（碎片）
-  - RocksDB 的答案：**一次向堆要一大块，自己在块里"推指针"分**
+- 比如 RocksDB 要创建 10 万个 **大小不固定`((height−1)×8 + 8 + key_size )字节`的节点**：
+  ```
+  普通 new：
 
-**分配就是推指针（bump allocation）**（`Arena::AllocateAligned`，[arena.cc:108-143](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memory/arena.cc#L108-L143)）：
+  new Node → 堆申请
+  new Node → 堆申请
+  new Node → 堆申请
+  ...
+  10 万次 new
+  ```
+- 这样会产生很多问题：频繁进入堆分配器、可能加锁，而且大量小块内存比较分散
+
+**RocksDB 的答案**：使用 Arena 一次向堆要一大块，自己在块里"推指针"分
+  - Arena 的做法：
+    ```
+      第一次：
+      从堆申请一大块，比如 4KB
+
+      ┌──────────────────────────────┐
+      │ Node │ Node │ Node │         │
+      └──────────────────────────────┘
+             ↑
+        bump pointer
+    ```
+
+  - 然后：
+    ```
+    分配 Node
+    ↓
+    aligned_alloc_ptr_ 往后移动 sizeof(Node)
+    ↓
+    再分配 Node
+    ↓
+    继续往后移动
+    ```
+
+
+所以它叫 **bump allocation** 指针碰撞/指针推进分配（`Arena::AllocateAligned`，[arena.cc:108-143](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memory/arena.cc#L108-L143)）：
 
 ```cpp
 // 对齐：原子指针要求地址是 8 的倍数，先算要补几个字节
@@ -188,12 +223,13 @@ if (needed <= alloc_bytes_remaining_) {
 
 > 🔄 **知识关联**："无单节点释放"听着危险（读者正拿着指针怎么办？）——它恰恰是并发读安全的三大支柱之一，知识点 8 回收这个伏笔。并发写场景 MemTable 会用 `ConcurrentArena`（[concurrent_arena.h:42](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memory/concurrent_arena.h#L42)），选择逻辑这里不展开。
 
-→ **下一站**：内存有了。每个节点能进几层——身高怎么随机出来？知识点 4。
 
 ---
 
 <a id="id4"></a>
 ## ✅ 知识点 4: RandomHeight 与层高参数
+
+内存有了。每个节点能进几层——身高怎么随机出来？知识点 4。
 
 **上一棒结论：节点大小由身高决定。新疑问：身高要满足什么分布、又怎么低成本生成？** 知识点 1 讲过直觉：全 1 层退化成链表（O(n)），层层都满又太刚——要的是**指数衰减**：第 1 层 100%，第 2 层 1/4，第 3 层 1/16……
 
