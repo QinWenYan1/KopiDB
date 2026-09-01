@@ -338,6 +338,19 @@ SkipList::iters_monotony_predicate(
   // ? 分两步: 1. 利用多层跳表快速找到谓词满足区间内的一个节点
   // ?         2. 分别向前/向后扩展, 利用 backward_ 和 forward_ 确定区间边界
   // ? 注意: 向前查找时需要利用 backward_ 指针从当前节点的最高层开始回溯
+  // 1. 多层下降定位区间内任意一个节点 node1：
+  //    谓词即指南针 >0 往右走 / ==0 命中 / <0 下楼细化 
+  std::shared_ptr<SkipListNode> node1 = nullptr;
+  auto current = head;
+  for (int lvl = current_level-1; lvl >= 0 && ! node1 ; --lvl){
+    while (current->forward_[lvl]){
+      int outcome = predicate(current->forward_[lvl]->key_); 
+      if (outcome > 0) current = current->forward_[lvl]; //区间在右侧，前进
+      else if (outcome == 0) node1 = current->forward_[lvl]; //进入到区间
+      else break; // 右侧越界了，下楼
+    }
+  }
+  
   return std::nullopt;
 }
 
