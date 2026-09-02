@@ -1,13 +1,13 @@
 # 📘 Scan：前缀扫描与迭代边界（Prefix Seek & Iterate Bounds）
 
-> RocksDB 源码精读 · 04 扫描 | 源码版本 [`e6a2ee0`](https://github.com/facebook/rocksdb/tree/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7) | 本篇涵盖：SliceTransform 前缀提取器、前缀扫描三模式、PrefixCheck 途中检查、iterate bounds 硬边界
+> RocksDB 源码精读 · 03 扫描 | 源码版本 [`e6a2ee0`](https://github.com/facebook/rocksdb/tree/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7) | 本篇涵盖：SliceTransform 前缀提取器、前缀扫描三模式、PrefixCheck 途中检查、iterate bounds 硬边界
 
-**从 03 走来**：[03-iterator](03-iterator.md) 把迭代器怎么造（§KP3）、怎么归并（§KP4）、怎么过滤版本与墓碑（§KP5）讲完了，§KP2 还埋过一个伏笔——MemTableIterator 的 Seek 入口处有 prefix bloom 拦截。但扫描的**边界问题**始终没答：
+**从 02 走来**：[02-iterator](02-iterator.md) 把迭代器怎么造（§KP3）、怎么归并（§KP4）、怎么过滤版本与墓碑（§KP5）讲完了，§KP2 还埋过一个伏笔——MemTableIterator 的 Seek 入口处有 prefix bloom 拦截。但扫描的**边界问题**始终没答：
 
 - 只想要 `user:123:` 这一个前缀的 key，扫到 `user:124:` 凭什么立刻停？（知识点 1-2）
 - 只想扫 `[m, n)` 这个区间，引擎在哪一刀切断？（知识点 3）
 
-本篇把"扫起来之后怎么停"讲完。读法上依赖 03 的迭代器分层世界观，尤其 [03 §KP2](03-iterator.md#id2) 与 [03 §KP5](03-iterator.md#id5)。
+本篇把"扫起来之后怎么停"讲完。读法上依赖 02 的迭代器分层世界观，尤其 [02 §KP2](02-iterator.md#id2) 与 [02 §KP5](02-iterator.md#id5)。
 
 ---
 
@@ -41,7 +41,7 @@
 | `auto_prefix_mode` | [:2350-2364](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/include/rocksdb/options.h#L2350-L2364) | 默认全序，RocksDB 依 seek key 与 upper bound 自动判定能否安全启用前缀模式 |
 | `total_order_seek` | [:2343-2348](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/include/rocksdb/options.h#L2343-L2348) | 全序扫描，放弃一切前缀优化（hash index 类表格式必须开） |
 
-> 💡 **理解技巧**：开关决定的是"这次扫描配不配用前缀优化"。配用的时候，入口处的 prefix bloom 拦截才会挂上——即 [03 §KP2](03-iterator.md#id2) 讲的 `bloom_ = mem.bloom_filter_.get()` 三开关判定（[memtable.cc:521-531](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L521-L531)）：`prefix_same_as_start`，或 `!total_order_seek && !auto_prefix_mode`。入口拦截讲过了，本篇接下来的问题是：bloom 放行进来了，**途中**怎么保证不越界？
+> 💡 **理解技巧**：开关决定的是"这次扫描配不配用前缀优化"。配用的时候，入口处的 prefix bloom 拦截才会挂上——即 [02 §KP2](02-iterator.md#id2) 讲的 `bloom_ = mem.bloom_filter_.get()` 三开关判定（[memtable.cc:521-531](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L521-L531)）：`prefix_same_as_start`，或 `!total_order_seek && !auto_prefix_mode`。入口拦截讲过了，本篇接下来的问题是：bloom 放行进来了，**途中**怎么保证不越界？
 
 → **下一站**：开关选定模式、Seek 落了地——扫起来之后每一步怎么盯着不越出前缀？知识点 2。
 
@@ -83,7 +83,7 @@ sorted keys:
                                      -> PrefixCheck fails -> valid_ = false
 ```
 
-> 💡 **理解技巧**：为什么需要途中检查，光靠入口 bloom 不够？bloom 是**概率型**过滤器（03 §KP2 📋）——它拦的是"前缀肯定不存在"的 seek；而一旦开扫，key 是一个个真实流出来的，越界的判定必须**精确**：逐 key 切前缀、逐个比对。一个管"要不要开始"，一个管"什么时候停"。
+> 💡 **理解技巧**：为什么需要途中检查，光靠入口 bloom 不够？bloom 是**概率型**过滤器（02 §KP2 📋）——它拦的是"前缀肯定不存在"的 seek；而一旦开扫，key 是一个个真实流出来的，越界的判定必须**精确**：逐 key 切前缀、逐个比对。一个管"要不要开始"，一个管"什么时候停"。
 
 → **下一站**：前缀是"按内容切"的边界；用户直接给定的"按区间切"的边界呢？知识点 3。
 

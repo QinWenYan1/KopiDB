@@ -1,8 +1,8 @@
 # 📘 Iterator：层层包装与可见性过滤（Iterator Stack & Visibility Filtering）
 
-> RocksDB 源码精读 · 03 迭代器 | 源码版本 [`e6a2ee0`](https://github.com/facebook/rocksdb/tree/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7) | 本篇涵盖：两层迭代器接口、MemTableIterator、NewIterator 创建链、MergingIterator 归并、DBIter 可见性过滤
+> RocksDB 源码精读 · 02 迭代器 | 源码版本 [`e6a2ee0`](https://github.com/facebook/rocksdb/tree/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7) | 本篇涵盖：两层迭代器接口、MemTableIterator、NewIterator 创建链、MergingIterator 归并、DBIter 可见性过滤
 
-**从 02 走来**：[02-skiplist](02-skiplist.md) 收尾时的 `InlineSkipList::Iterator`（[02 §KP9](02-skiplist.md#id9)）只是个**裸光标**：
+**从 01 走来**：[01-skiplist](01-skiplist.md) 收尾时的 `InlineSkipList::Iterator`（[01 §KP9](01-skiplist.md#id9)）只是个**裸光标**：
 
 - 它会 Seek/Next/Prev，但 `key()` 吐出的是 internal key 编码字节流——不认 user key，不懂删除标记（tombstone，墓碑），也不管多版本
 - 而用户代码里 `db->NewIterator()` 拿到的 Iterator 却能直接看 user key/value、自动跳过被删与被覆盖的旧版本
@@ -53,7 +53,7 @@ InlineSkipList::Iterator raw cursor: Seek/Next/Prev    memtable/inlineskiplist.h
 
 **RocksDB 的迭代器分内外两层：`InternalIterator` 在引擎内部搬运 internal key 字节流，`Iterator` 面向用户只露 user key/value。分层的意义：每个组件只懂一件事，套娃任意组合。**
 
-[01 §KP5](01-data-path.md#id5) 讲过：引擎里有序存储的全部是 internal key = user key + 8 字节尾巴（seq 与类型）。01 的点查（Get）是"编好 LookupKey 一次性找"；而扫描要把字节流逐条递出去——递出去的每一步是什么形态，就是接口要回答的问题。
+[05 §KP3](05-memtable.md#id3) 讲过：引擎里有序存储的全部是 internal key = user key + 8 字节尾巴（seq 与类型）。04 的点查（Get）是"编好 LookupKey 一次性找"；而扫描要把字节流逐条递出去——递出去的每一步是什么形态，就是接口要回答的问题。
 
 **内层：`InternalIterator`**。它是所有数据源（memtable、SST 文件、归并器）共同实现的抽象，定义在 [internal_iterator.h:24-215](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/table/internal_iterator.h#L24-L215)——e6a2ee0 里它是个模板 `InternalIteratorBase<Slice>`，`InternalIterator` 是别名（[:217](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/table/internal_iterator.h#L217)）。接口方法与用户侧一一对应：`Valid / Seek / SeekToFirst / SeekToLast / SeekForPrev / Next / Prev / key / value / status`。
 
@@ -92,11 +92,13 @@ virtual Slice user_key() const { return ExtractUserKey(key()); }
 
 **MemTableIterator 包的不是跳表裸迭代器，而是 `MemTableRep::Iterator`；它在裸光标上补三件 memtable 级的能力：prefix bloom 提前止损、varint32 长度前缀解码、Seek 的编码分工。**
 
-[01 §KP4](01-data-path.md#id4) 讲过数据进跳表时的节点格式：`[varint32 key 长度][internal key][varint32 value 长度][value]`。读出来就得按同一格式解——02 §KP9 的裸迭代器只会返回整段 buffer 起点，解格式是包装层的事。
+[05 §KP6](05-memtable.md#id6) 讲过数据进跳表时的节点格式：`[varint32 key 长度][internal key][varint32 value 长度][value]`。读出来就得按同一格式解——01 §KP9 的裸迭代器只会返回整段 buffer 起点，解格式是包装层的事。
 
-**包装关系**。`MemTableIterator : public InternalIterator`（[memtable.cc:493-740](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L493-L740)），成员是抽象的 `MemTableRep::Iterator* iter_`（[:716](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L716)）。构造函数三分支（[:519-535](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L519-L535)）：区间墓碑表走 `range_del_table_->GetIterator`；配了前缀提取器且 ReadOptions 允许时走 `GetDynamicPrefixIterator`；默认走 `table_->GetIterator`。对默认跳表 rep，拿到的是 `SkipListRep::Iterator`（[skiplistrep.cc:192](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L192)）——它里面才包着 02 §KP9 的 `InlineSkipList::Iterator`（[inlineskiplist.h:170-227](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L170-L227)）。
+**包装关系**。`MemTableIterator : public InternalIterator`（[memtable.cc:493-740](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L493-L740)），成员是抽象的 `MemTableRep::Iterator* iter_`（[:716](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L716)）。构造函数三分支（[:519-535](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L519-L535)）：区间墓碑表走 `range_del_table_->GetIterator`；配了前缀提取器且 ReadOptions 允许时走 `GetDynamicPrefixIterator`；默认走 `table_->GetIterator`。对默认跳表 rep，拿到的是 `SkipListRep::Iterator`（[skiplistrep.cc:192](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L192)）——它里面才包着 01 §KP9 的 `InlineSkipList::Iterator`（[inlineskiplist.h:170-227](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L170-L227)）。
 
-**Seek 的编码分工**（与 01 §KP8 对照着看）。点查 Get 是调用方编好 LookupKey 直接进跳表；迭代器 Seek 收到的 `k` 已经是上层编好的 internal key，MemTableIterator **原样透传**（[:592](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L592) `iter_->Seek(k, nullptr)`），到 rep 层才由 `EncodeKey` 补上 varint32 长度前缀（[skiplistrep.cc:228-234](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L228-L234)，EncodeKey 本体 [memtable.cc:486-491](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L486-L491)）：
+> 📍 **调用位置**：谁 new 出 `MemTableIterator`？`MemTable::NewIterator`——正是本篇 KP3 第 4 步 `super_version->mem->NewIterator(...)`（[db_impl.cc:2627](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl.cc#L2627)）返回的东西；imm_/SST 两路不经过它。
+
+**Seek 的编码分工**（与 05 §KP7 对照着看）。点查 Get 是调用方编好 LookupKey 直接进跳表；迭代器 Seek 收到的 `k` 已经是上层编好的 internal key，MemTableIterator **原样透传**（[:592](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L592) `iter_->Seek(k, nullptr)`），到 rep 层才由 `EncodeKey` 补上 varint32 长度前缀（[skiplistrep.cc:228-234](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L228-L234)，EncodeKey 本体 [memtable.cc:486-491](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L486-L491)）：
 
 ```cpp
 const char* EncodeKey(std::string* scratch, const Slice& target) {
@@ -150,7 +152,7 @@ Slice value() const override {
 
 **一次 NewIterator = 钉住一个 SuperVersion + 定格一个可见 seq + 把 mem/imm/SST 的迭代器收进归并器；整棵迭代器树住进同一块 Arena。**
 
-[01 §KP9](01-data-path.md#id9) 讲过 Get 的世界观：拿 SuperVersion（数据库某时刻的完整视图：当前 mem + imm 列表 + SST 版本），按 mem → imm → L0 → Ln 的顺序找。扫描共享同一个世界观，差别在姿势：Get 是"编好 LookupKey 逐层点查"，NewIterator 是"给每个数据源各造一个迭代器，归并成一条流"。
+[04 §KP9](04-data-path.md#id9) 讲过 Get 的世界观：拿 SuperVersion（数据库某时刻的完整视图：当前 mem + imm 列表 + SST 版本），按 mem → imm → L0 → Ln 的顺序找。扫描共享同一个世界观，差别在姿势：Get 是"编好 LookupKey 逐层点查"，NewIterator 是"给每个数据源各造一个迭代器，归并成一条流"。
 
 全流程：
 
@@ -301,6 +303,8 @@ bool visible_by_seq = (read_callback_ == nullptr)
 
 **正向主循环** `FindNextUserEntryInternal`（[:482-765](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_iter.cc#L482-L765)），每轮四步：
 
+> 📍 **调用位置**：这个主循环的入口是 `DBIter` 的公开 API——`Next`/`Seek`/`SeekToFirst`（及 `SeekForPrev` 的正向段）：用户每 `it->Next()` 一次就进一轮，直到落定可见 key 或 invalid。
+
 1. `ParseKey`（[:202-212](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_iter.cc#L202-L212)）把 internal key 解成 (user key, seq, type)
 2. `IsVisible` 不可见（seq 比快照大）→ 跳过，注释原话 "This key was inserted after our snapshot was taken"（[:662-681](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_iter.cc#L662-L681)）
 3. 可见但 user key 与上一个相同且处于 skipping → 跳过（[:566-571](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_iter.cc#L566-L571)）
@@ -355,4 +359,4 @@ result: user sees no "foo"
 
 ---
 
-**下一站**：迭代器栈拆完了。但扫描还有两个边界问题没答：只扫一个前缀凭什么停、只扫一个区间在哪切。→ [04-scan](04-scan.md)（MemTable 本体的冻结/flush/并发写顺延至 05-memtable，待写）
+**下一站**：迭代器栈拆完了。但扫描还有两个边界问题没答：只扫一个前缀凭什么停、只扫一个区间在哪切。→ [03-scan](03-scan.md)（MemTable 本体的冻结/flush/并发写顺延至 05-memtable，待写）
