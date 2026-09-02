@@ -354,9 +354,17 @@ SkipList::iters_monotony_predicate(
         break; // 右侧越界了，下楼
     }
   }
-  
+
   if (!node1) // 没有满足谓词条件的key在表中
     return std::nullopt;
+
+  // 3. 沿0层向左边扩张到区间左端 
+  // （backward_ 是 weak_ptr，要 lock()；不能越过 head）
+  auto node0 = node1; 
+  while (auto prev = node0->backward_[0].lock()){
+    if (prev == head || predicate(prev->key_) != 0) break; 
+    node0 = prev; 
+  }
 
   return std::nullopt;
 }
