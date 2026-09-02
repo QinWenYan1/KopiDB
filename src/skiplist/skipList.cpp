@@ -343,14 +343,15 @@ SkipList::iters_monotony_predicate(
   //    谓词即指南针 >0 往右走 / ==0 命中 / <0 下楼细化
   std::shared_ptr<SkipListNode> node = nullptr;
   auto current = head;
-  for (int lvl = current_level - 1; lvl >= 0 && !node1; --lvl) {
+  for (int lvl = current_level - 1; lvl >= 0 && !node; --lvl) {
     while (current->forward_[lvl]) {
       int outcome = predicate(current->forward_[lvl]->key_);
       if (outcome > 0)
         current = current->forward_[lvl]; // 区间在右侧，前进
-      else if (outcome == 0)
-        node = current->forward_[lvl]; // 进入到区间
-      else
+      else if (outcome == 0) {
+        node = current->forward_[lvl]; // 进入到区间，进入到找具体范围阶段
+        break;
+      } else
         break; // 右侧越界了，下楼
     }
   }
@@ -368,16 +369,15 @@ SkipList::iters_monotony_predicate(
   }
 
   // 3. 同理沿 0 层向右扩到区间右端
-  auto right = node; 
-  while (auto next = right->forward_[0]){
-    if (next == nullptr || predicate(next->key_) != 0)
-      break; 
-    right = next; 
+  auto right = node;
+  while (right->forward_[0] && predicate(right->forward_[0]->key_) == 0) {
+    right = right->forward_[0];
   }
 
   // 4. end 是开区间：返回最后一个满足节点的下一个后继
   //  （可能是 nullptr = end()）
-  return std::make_pair(SkipListIterator(left), SkipListIterator(right->forward_[0]));
+  return std::make_pair(SkipListIterator(left),
+                        SkipListIterator(right->forward_[0]));
 }
 
 // ? 打印跳表, 你可以在出错时调用此函数进行调试
