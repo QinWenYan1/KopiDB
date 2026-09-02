@@ -341,7 +341,7 @@ SkipList::iters_monotony_predicate(
   // ? 注意: 向前查找时需要利用 backward_ 指针从当前节点的最高层开始回溯
   // 1. 多层下降定位区间内任意一个节点 node1：
   //    谓词即指南针 >0 往右走 / ==0 命中 / <0 下楼细化
-  std::shared_ptr<SkipListNode> node1 = nullptr;
+  std::shared_ptr<SkipListNode> node = nullptr;
   auto current = head;
   for (int lvl = current_level - 1; lvl >= 0 && !node1; --lvl) {
     while (current->forward_[lvl]) {
@@ -349,25 +349,35 @@ SkipList::iters_monotony_predicate(
       if (outcome > 0)
         current = current->forward_[lvl]; // 区间在右侧，前进
       else if (outcome == 0)
-        node1 = current->forward_[lvl]; // 进入到区间
+        node = current->forward_[lvl]; // 进入到区间
       else
         break; // 右侧越界了，下楼
     }
   }
 
-  if (!node1) // 没有满足谓词条件的key在表中
+  if (!node) // 没有满足谓词条件的key在表中
     return std::nullopt;
 
-  // 3. 沿0层向左边扩张到区间左端
-  // （backward_ 是 weak_ptr，要 lock()；不能越过 head）
-  auto node0 = node1;
-  while (auto prev = node0->backward_[0].lock()) {
+  // 2. 沿0层向左边扩张到区间左端
+  //  （backward_ 是 weak_ptr，要 lock()；不能越过 head）
+  auto left = node;
+  while (auto prev = left->backward_[0].lock()) {
     if (prev == head || predicate(prev->key_) != 0)
       break;
-    node0 = prev;
+    left = prev;
   }
 
-  return std::nullopt;
+  // 3. 同理沿 0 层向右扩到区间右端
+  auto right = node; 
+  while (auto next = right->forward_[0]){
+    if (next == nullptr || predicate(next->key_) != 0)
+      break; 
+    right = next; 
+  }
+
+  // 4. end 是开区间：返回最后一个满足节点的下一个后继
+  //  （可能是 nullptr = end()）
+  return std::make_pair(SkipListIterator(left), SkipListIterator(right->forward_[0]));
 }
 
 // ? 打印跳表, 你可以在出错时调用此函数进行调试
