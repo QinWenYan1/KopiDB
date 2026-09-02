@@ -396,17 +396,18 @@ while (height > max_height) {          // 新节点比现在的表高
 
 **知识点 1 讲过跳表查找的算法骨架，本知识点看它的工业级实现：算法没变，但多了三个工程细节，而且全程没有锁、连一次原子写都没有。**
 
-**Contains：一次查找 + 一次相等判断**（[:1359-1369](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1359-L1369)）：
+**`Contains`：一次查找 + 一次相等判断**（[:1359-1369](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1359-L1369)）：
+- 先调用 `FindGreaterOrEqual` 找到第一个 `>= key` 的节点，然后再判断它是不是 `== key`
 
-```cpp
-bool InlineSkipList<Comparator>::Contains(const char* key) const {
-  Node* x = nullptr;
-  auto status = FindGreaterOrEqual(key, &x, false, false, nullptr);
-  return (x != nullptr && Equal(key, x->Key()));
-}
-```
+  ```cpp
+  bool InlineSkipList<Comparator>::Contains(const char* key) const {
+    Node* x = nullptr;
+    auto status = FindGreaterOrEqual(key, &x, false, false, nullptr);
+    return (x != nullptr && Equal(key, x->Key()));
+  }
+  ```
 
-**FindGreaterOrEqual 的三个工程细节**（[:591-642](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L591-L642)）：
+**`FindGreaterOrEqual` 的三个工程细节**（[:591-642](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L591-L642)）：
 
 1. **相等立即返回**（[:630-632](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L630-L632)）：`cmp == 0` 时在当前层直接命中返回，不降到第 0 层——找到了就别再往下走
 2. **`last_bigger` 复用比较结果**（[:627-639](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L627-L639)）：降层时记下"刚把我拦下的节点"（第一个 ≥ key 的）；降到下一层后，如果下一个节点还是它，直接跳过比较视为"继续降"（`next == last_bigger ? 1 : compare_(...)`）——key 比较是查找的 CPU 热点，省一次是一次
