@@ -96,7 +96,16 @@ SkipListIterator MemTable::frozen_get_(const std::string &key,
 SkipListIterator MemTable::get(const std::string &key, uint64_t tranc_id) {
   // TODO: Lab2.1 查询, 建议复用 cur_get_ 和 frozen_get_
   // ? 先加 cur_mtx 读锁查活跃表, 未命中则释放锁后加 frozen_mtx 读锁查冻结表
-  return SkipListIterator{};
+  { // 先来 current table 寻找
+    std::lock_guard<std::shared_mutex> get_lock(cur_mtx); 
+    auto it = cur_get_(key, tranc_id); 
+    if (it.is_valid()) return it; //命中就返回
+  } //每命中，释放cur_mtx 
+
+  { //没命中，来frozen tables 寻找
+    std::lock_guard<std::shared_mutex> get_lock(frozen_mtx);
+    return frozen_get_(key, tranc_id);
+  }
 }
 
 SkipListIterator MemTable::get_(const std::string &key, uint64_t tranc_id) {
