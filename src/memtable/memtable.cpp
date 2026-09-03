@@ -75,14 +75,14 @@ void MemTable::put_batch(
 
 SkipListIterator MemTable::cur_get_(const std::string &key, uint64_t tranc_id) {
   // 检查当前活跃的memtable
-  // TODO: Lab2.1 从活跃跳表中查询
+  // Lab2.1 从活跃跳表中查询
   // ? 调用 current_table->get(), 找到则返回; 未找到则返回空迭代器
   return current_table->get(key, tranc_id);
 }
 
 SkipListIterator MemTable::frozen_get_(const std::string &key,
                                        uint64_t tranc_id) {
-  // TODO: Lab2.1 从冻结跳表中查询
+  // Lab2.1 从冻结跳表中查询
   // ? 遍历 frozen_tables (注意顺序：越靠前越新), 找到即返回
   // ? tranc_id 直接传递到 get() 即可
   // 冻结队列头新尾旧, 从头扫, 首个命中即最新版本
@@ -95,7 +95,7 @@ SkipListIterator MemTable::frozen_get_(const std::string &key,
 }
 
 SkipListIterator MemTable::get(const std::string &key, uint64_t tranc_id) {
-  // TODO: Lab2.1 查询, 建议复用 cur_get_ 和 frozen_get_
+  // Lab2.1 查询, 建议复用 cur_get_ 和 frozen_get_
   // ? 先加 cur_mtx 读锁查活跃表, 未命中则释放锁后加 frozen_mtx 读锁查冻结表
   { // 先来 current table 寻找
     std::shared_lock<std::shared_mutex> get_lock(cur_mtx);
@@ -111,7 +111,7 @@ SkipListIterator MemTable::get(const std::string &key, uint64_t tranc_id) {
 }
 
 SkipListIterator MemTable::get_(const std::string &key, uint64_t tranc_id) {
-  // TODO: Lab2.1 查询, 无锁版本
+  // Lab2.1 查询, 无锁版本
   // ? 直接调用 cur_get_ 和 frozen_get_
   auto it = cur_get_(key, tranc_id);
   if (it.is_valid())
@@ -175,13 +175,13 @@ MemTable::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
 }
 
 void MemTable::remove_(const std::string &key, uint64_t tranc_id) {
-  // TODO: Lab2.1 无锁版本的remove
+  // Lab2.1 无锁版本的remove
   // ? 在 LSM 中, 删除操作是写入空值, 调用 current_table->put(key, "", tranc_id)
   current_table->put(key, "", tranc_id);
 }
 
 void MemTable::remove(const std::string &key, uint64_t tranc_id) {
-  // TODO: Lab2.1 有锁版本的remove
+  // Lab2.1 有锁版本的remove
   // ? 加 cur_mtx 写锁后调用 remove_()
   // ? 若超限则冻结当前表
   std::lock_guard<std::shared_mutex> write_lock(cur_mtx);
@@ -195,7 +195,7 @@ void MemTable::remove(const std::string &key, uint64_t tranc_id) {
 
 void MemTable::remove_batch(const std::vector<std::string> &keys,
                             uint64_t tranc_id) {
-  // TODO: Lab2.1 有锁版本的remove_batch
+  // Lab2.1 有锁版本的remove_batch
   // ? 加 cur_mtx 写锁后遍历 keys 依次调用 remove_()
   // ? 结束后若超限则冻结当前表
   std::lock_guard<std::shared_mutex> write_lock(cur_mtx);
