@@ -105,7 +105,7 @@ SkipListIterator MemTable::get(const std::string &key, uint64_t tranc_id) {
   }              // 每命中，释放cur_mtx
 
   { // 没命中，来frozen tables 寻找
-    std::lock_guard<std::shared_mutex> get_lock(frozen_mtx);
+    std::shared_lock<std::shared_mutex> get_lock(frozen_mtx);
     return frozen_get_(key, tranc_id);
   }
 }
@@ -113,7 +113,12 @@ SkipListIterator MemTable::get(const std::string &key, uint64_t tranc_id) {
 SkipListIterator MemTable::get_(const std::string &key, uint64_t tranc_id) {
   // TODO: Lab2.1 查询, 无锁版本
   // ? 直接调用 cur_get_ 和 frozen_get_
-  return SkipListIterator{};
+  auto it = cur_get_(key, tranc_id);
+  if (it.is_valid())
+    return it; // 命中就返回
+
+  // 没命中，来frozen tables 寻找
+  return frozen_get_(key, tranc_id);
 }
 
 std::vector<
@@ -249,7 +254,7 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
 }
 
 void MemTable::frozen_cur_table_() {
-  // TODO: Lab2.1 冻结活跃表（无锁版本）
+  // Lab2.1 冻结活跃表（无锁版本）
   // ? 将 current_table 移入 frozen_tables 头部, 并更新 frozen_bytes
   // ? 创建新的空 SkipList 作为 current_table
   // 无锁版本：直接冻结活跃表
@@ -260,7 +265,7 @@ void MemTable::frozen_cur_table_() {
 }
 
 void MemTable::frozen_cur_table() {
-  // TODO: Lab2.1 冻结活跃表（有锁版本）
+  // Lab2.1 冻结活跃表（有锁版本）
   // ? 加 cur_mtx 和 frozen_mtx 写锁后调用 frozen_cur_table_()
   std::lock_guard<std::shared_mutex> table_lock(cur_mtx),
       frozen_lock(frozen_mtx);
