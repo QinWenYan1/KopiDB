@@ -1,8 +1,19 @@
-# 📘 MemTable：双态结构与内存读写路径（Active/Immutable & In-Memory Path）
+# 📘 MemTable 读写与冻结：put / get / remove / frozen 的 RocksDB 对应实现
 
-> RocksDB 源码精读 · 05 MemTable | 源码版本 [`e6a2ee0`](https://github.com/facebook/rocksdb/tree/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7) | 本篇涵盖：MemTable 定位、active/imm 双态结构、Entry 编码体系、WriteBatch 回放、点查内部、冻结与容量管理、并发读写、迭代器契约
+> RocksDB 源码精读 · 05 MemTable·读写与冻结 | 源码版本 [`e6a2ee0`](https://github.com/facebook/rocksdb/tree/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7) | 对应 **Lab 2.1**：`MemTable::put` / `put_batch` / `get` / `remove` / `frozen_cur_table`（含 `frozen_mtx` / `cur_mtx` 双锁）
 >
-> 🧭 导读：容器（[01-skiplist](01-skiplist.md)）、迭代器与扫描（[02](02-iterator.md) / [03](03-scan.md)）都已拆完，本篇轮到装它们的本体——MemTable。其中编码与读写细节（知识点 3-7）自 [04-data-path](04-data-path.md) 整节迁入，正文未做改动；双态生命周期、容量与并发（知识点 1-2、8-10）为本篇新写。
+> 🧭 导读：其中编码与读写细节（知识点 3-7）为早前写就的 MemTable 内部笔记，内容未随本次重组改动；定位、双态、冻结、并发（知识点 1-2、8-9）与墓碑（知识点 10）为配合 Lab 2.1 整理。
+
+**本篇定位**：一篇笔记对应一个子 lab——本篇对应 **Lab 2.1**：
+
+| 你的 lab 函数 | RocksDB 对应实现 | 本篇位置 |
+|---|---|---|
+| `put` / `put_batch` | WriteBatch 回放 → `MemTable::Add` | 知识点 6（编码见 3-5） |
+| `get` | `LookupKey` + `MemTable::Get` | 知识点 7 |
+| `remove` | 无同名对应——`Delete` = 写墓碑 | 知识点 10 |
+| `frozen_cur_table` | `ShouldFlushNow` + `SwitchMemtable` | 知识点 8 |
+| `frozen_mtx` / `cur_mtx` 双锁 | 对照：RocksDB 读写为什么不拿锁 | 知识点 9 |
+| （骨架背景） | MemTable 定位、active/imm 双态 | 知识点 1-2 |
 
 ---
 
@@ -23,8 +34,8 @@
 - [*知识点6: WriteBatch → Node：逐条回放进跳表*](#id6)
 - [*知识点7: 点查：LookupKey 与 MemTable::Get 内部*](#id7)
 - [*知识点8: 冻结与容量管理——ShouldFlushNow 与 SwitchMemtable*](#id8)
-- [*知识点9: 并发读写——读不拿锁，写分两派*](#id9)
-- [*知识点10: 迭代器契约——MemTable 层给上层什么*](#id10)
+- [*知识点9: 并发读写——读不拿锁*](#id9)
+- [*知识点10: 删除=墓碑——remove 的对应机制*](#id10)
 
 ---
 
@@ -35,7 +46,7 @@
 
 - **写路径的位置**：`Put` 的工作流（[04 §KP1](04-data-path.md#id1)）是 WAL 落盘 → 回放进 MemTable——MemTable 是写路径在内存的终点，也是读路径的起点
 - **读路径的位置**：Get 的世界观（[04 §KP9](04-data-path.md#id9)）按 mem → imm → L0 → Ln 从新到旧找，前两级都是 MemTable
-- **它不管的事**：落盘格式（SST，Lab 3）、多版本归并给用户看（DBIter，[02 §KP5](02-iterator.md#id5)）、崩溃恢复（WAL 重放走同一套回放逻辑，见本篇知识点 6）
+- **它不管的事**：落盘格式（SST，Lab 3）、多版本归并给用户看（DBIter，引擎层，本系列不展开）、崩溃恢复（WAL 重放走同一套回放逻辑，见本篇知识点 6）
 
 > 💡 **理解技巧**：MemTable 回答的问题只有一个——**"最近写入的数据，在内存里怎么组织才又快又有序？"** 答案是：可插拔容器（默认跳表）+ 一套编码约定 + 双态生命周期。
 
@@ -227,9 +238,9 @@ char* p = EncodeVarint32(buf, internal_key_size);        // ③ 编码写入 buf
 // ④ 挂链：非并发 InsertKey / 并发 InsertKeyConcurrently
 ```
 
-- **② 拿地**：`SkipListRep::Allocate`（[skiplistrep.cc:35-38](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L35-L38)）就一行：`*buf = skip_list_.AllocateKey(len)` → `AllocateNode(len, RandomHeight())`——**01 知识点 2 的三段式 Node 在这里从 Arena 切出**，身高已随机、已用 StashHeight 暂存好（这个"临时便签"机制在 [01 知识点 2](01-skiplist.md#id2) 有专段讲解），返回的 `buf` 正是 key 区起点
+- **② 拿地**：`SkipListRep::Allocate`（[skiplistrep.cc:35-38](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L35-L38)）就一行：`*buf = skip_list_.AllocateKey(len)` → `AllocateNode(len, RandomHeight())`——**[01 知识点 2](01-skiplist-basic.md#id2) 的三段式 Node 在这里从 Arena 切出**，身高已随机、已用 StashHeight 暂存好，返回的 `buf` 正是 key 区起点
 - **③ 编码**：往 buf 里按格式写字节——逐字段细节见本篇知识点 3
-- **④ 挂链分流**：`concurrent_memtable_writes` 决定走 `InsertKey`（[:1180](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1180) → `skip_list_.Insert`）还是 `InsertKeyConcurrently`（[:1211](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1211) → `skip_list_.InsertConcurrently`）——**01 知识点 7 的"非并发 SetNext"与"CAS 链接"两条路径在这里分道**，也正是 04 §KP1 第 5 步"两种策略"的落地
+- **④ 挂链分流**：`concurrent_memtable_writes` 决定走 `InsertKey`（[:1180](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1180) → `skip_list_.Insert`）还是 `InsertKeyConcurrently`（[:1211](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1211) → `skip_list_.InsertConcurrently`）——[01 知识点 7](01-skiplist-basic.md#id7) 的"备料-发布"挂链在这里落地（并发 CAS 路径与本 lab 无关，不展开）
 
 ```mermaid
 flowchart LR
@@ -242,7 +253,7 @@ flowchart LR
 
 > 📋 **术语提醒**：`sequence_` 是回放器手里的"发号机读数"，随每条 record 递增；batch 头里那个 fixed64 只是起始值。
 > ⚠️ **关键区分**：WAL 里的 seq 是**批次起始值**；跳表里每条 entry 的 seq 是**回放时逐条递增**发出的。崩溃恢复重放 WAL 时走同一套 InsertInto 逻辑，seq 严格重现。
-> 💡 **理解技巧**：这条链上每一环都是别的知识点埋的钩子——04 §KP3 的字节串格式、本篇知识点 3 的编码、01 的 AllocateNode 与 CAS 链接。看懂这一节，01、04 与本篇就焊死了。
+> 💡 **理解技巧**：这条链上每一环都是别的知识点埋的钩子——04 §KP3 的字节串格式、本篇知识点 3 的编码、01 的 AllocateNode 与挂链。看懂这一节，01、04 与本篇就焊死了。
 
 
 ---
@@ -314,12 +325,10 @@ flowchart LR
 
 ---
 
----
-
 <a id="id8"></a>
 ## ✅ 知识点 8: 冻结与容量管理——ShouldFlushNow 与 SwitchMemtable
 
-**active 表什么时候算"写满"？满了之后谁把它冻起来、新表谁接上？**
+**active 表什么时候算"写满"？满了之后谁把它冻起来、新表谁接上？（lab 的 `frozen_cur_table` 对应 RocksDB 这一串动作的核心两步：MarkImmutable + 进 imm 列表。）**
 
 - **容量记账**：`MemTable::ApproximateMemoryUsage`（[memtable.cc:276-293](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L276-L293)）= Arena + 跳表 + 区间墓碑表 + insert hints 四份合计，结果缓存进 `approximate_memory_usage_`（relaxed 原子，[memtable.h:977](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.h#L977)）
 - **满没满**：`ShouldFlushNow`（[memtable.cc:295-367](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L295-L367)）拿记账值和 `write_buffer_size` 比。麻烦在 Arena 按块分配、块大小未必整除 buffer size，所以判据带两个工程常数：
@@ -339,33 +348,32 @@ flowchart LR
 ---
 
 <a id="id9"></a>
-## ✅ 知识点 9: 并发读写——读不拿锁，写分两派
+## ✅ 知识点 9: 并发读写——读为什么不拿锁
 
-**读路径全程无锁；写路径分"组提交单写者"与"并发写跳表"两种模式，并发安全分别由视图钉住和 CAS 保证。**
+**RocksDB 读 memtable 全程不拿锁；对照着看，lab 用 `shared_mutex`（读共享/写独占）保证的是同一份正确性，只是选了更简单的答案。**
 
 - **读为什么不拿锁**（三柱合谋，逐层都有出处）：
   1. SuperVersion 钉住 mem/imm 视图（[04 §KP9](04-data-path.md#id9)），读取途中列表不会被换走
   2. imm 表只读，active 表只增不改——节点不可变
-  3. 跳表本体无锁读（[01 §KP6](01-skiplist.md#id6)/[§KP8](01-skiplist.md#id8)：release 发布 + acquire 订阅 + Arena 保活）
-- **写的第一派：组提交单写者**——leader 统一回放 WriteBatch，同一时刻只有一个线程插跳表，普通 `SetNext` 就够（[04 §KP1](04-data-path.md#id1)）
-- **写的第二派：`concurrent_memtable_writes=true`**——follower 各自回放、并发插同一张跳表，靠 CAS 链接保证正确（[01 §KP7](01-skiplist.md#id7)）；这也是 InlineSkipList 必须无锁的根因
-- **特例才用锁**：`GetLock`（[memtable.cc:1032](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1032)）给特定 key 区间上读写锁，只服务 in-place update 尝试等少数路径，不在普通 Put/Get 热路径上
+  3. 跳表本体无锁读：节点挂链时带 release 发布、读者 acquire 订阅，加上 Arena 保活（[01 §KP3](01-skiplist-basic.md#id3) 伏笔回收：内存与表同生共死，指针永不悬垂）
+- **写侧**：RocksDB 另有组提交单写者与 `concurrent_memtable_writes` 并发写两种模式，后者正是跳表必须无锁的根因（[04 §KP1](04-data-path.md#id1)）——lab 的跳表并发由 MemTable 的锁保证，这两派不展开
 
-> 💡 **理解技巧**：RocksDB 的并发哲学——**热路径无锁化，锁只守冷角落**。读靠不可变 + 发布订阅，写靠 CAS，只有特殊的原地更新才摸锁。
+> 💡 **理解技巧**：RocksDB 的并发哲学——**热路径无锁化**：读靠"视图钉住 + 节点不可变 + 发布订阅"。无锁是性能答案，不是唯一答案；共享锁换来的是实现简单。
 
 ---
 
 <a id="id10"></a>
-## ✅ 知识点 10: 迭代器契约——MemTable 层给上层什么
+## ✅ 知识点 10: 删除=墓碑——remove 的对应机制
 
-**MemTable 对扫描只承诺一件事：按 InternalKeyComparator 序吐出全部条目（含所有版本与墓碑），其余语义都是上层的。**
+**Lab 2.1 的 `MemTable::remove` 在 RocksDB 里没有对应物：`MemTable` 没有删除接口。RocksDB 的 `Delete` 是一次特殊的"写"——往 memtable 插一条 type = `kTypeDeletion` 的墓碑（tombstone）entry。**
 
-- **造迭代器**：`MemTable::NewIterator`（[memtable.cc:742-751](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L742-L751)）在 arena 里 placement-new 一个 `MemTableIterator`——包装与解码细节见 [02 §KP2](02-iterator.md#id2)
-- **imm 列表同等待遇**：`MemTableListVersion::AddIterators`（[memtable_list.cc:289](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable_list.cc#L289)）给每张 imm 各造一个迭代器，和 active 的一起交给归并器（[02 §KP4](02-iterator.md#id4)）
-- **吐出的形态**：编码后的 internal key 字节流（知识点 3 的格式），**不做**版本去重、**不消化**墓碑——那是 DBIter 的活（[02 §KP5](02-iterator.md#id5)）
-- **边界语义**：前缀提前止损靠入口 bloom（[03 §KP2](03-scan.md#id2) 的伏笔就在 MemTableIterator 构造里），区间截断靠上层谓词——MemTable 层只管"有序吐全量"
+- **写入侧**：`Delete(key)` 打包进 WriteBatch——一条 tag = `kTypeDeletion` 的 record，只有 key 没有 value（[write_batch.cc:1290-1295](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L1290-L1295)）；回放时 `MemTableInserter::DeleteCF`（[write_batch.cc:2565](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L2565)）走 `DeleteImpl`（[:2531](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/write_batch.cc#L2531)）→ `mem->Add(sequence_, kTypeDeletion, key, Slice())`——**和 Put 共用同一条 Add 四步**（知识点 6），只是 type 字节不同、value 为空
+- **存储侧**：墓碑就是知识点 3 编码的一条普通 entry（`kTypeDeletion = 0x0`，[dbformat.h:42](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/dbformat.h#L42)）；排序规则（知识点 5）保证它排在同 key 更旧版本之前
+- **读取侧**：点查第 5 关"墓碑短路"（知识点 7）——Seek 卡位后迎面第一个可见版本是墓碑 → 直接 NotFound，更旧版本不可能翻出活口
+- **空间回收**：跳表里从不删节点（[01 §KP8](01-skiplist-basic.md#id8)）；墓碑本身也要等 compaction 确认没有更旧版本依赖后才真正消失（Lab 3/4 的事）
 
-> 🔄 **知识关联**：点查与扫描在 MemTable 层共用同一条 Seek 通道（[01-skiplist](01-skiplist.md) §KP6 📍）——Get 是"Seek 一次 + 逐版本回调"，扫描是"Seek 定位 + 一路 Next"，底层都是跳表迭代器。
+> 💡 **理解技巧**：墓碑把"删除"变成"写入"——写路径因此永远只有追加，读路径统一走"Seek 卡位 + 逐版本判"一条道，删除语义零特殊分支。这是 LSM 追加哲学的自然推论。
+> ⚠️ **关键区分**：点删除墓碑（`kTypeDeletion`，本条）与区间墓碑（`kTypeRangeDeletion`，`DeleteRange`，走独立结构）是两样东西；后者不在 lab 范围内。
 
 ---
 
@@ -381,6 +389,10 @@ flowchart LR
 | 排序规则？ | user key 升序 → seq 降序 → type 降序；seq 降序让 Seek 卡位直接命中可见版本 |
 | MemTable 也有 bloom？ | 有，挡在进跳表 Seek 之前，省 CPU 不省 IO |
 | 点查五道关？ | 空表走人 → range tombstone → bloom → Seek 逐版本回调 → 墓碑短路（Merge 留上层） |
-| 迭代器吐什么？ | 按 comparator 序吐全部版本含墓碑的编码字节流；去重与墓碑消化归 DBIter |
+| Delete 怎么实现？ | 不删节点——写一条 type=`kTypeDeletion` 的墓碑 entry（与 Put 共用 Add 路径），读路径遇墓碑短路，空间等 compaction 回收 |
 
-**记忆口诀**：**"一活多冻新到旧，编码三段 varint 头；回放发号逐条进，卡位 Seek 墓碑收；满了冻结换张表，读无锁来写两派。"**
+**记忆口诀**：**"一活多冻新到旧，编码三段 varint 头；回放发号逐条进，卡位 Seek 墓碑收；满了冻结换张表，读取无锁三柱谋；删除也是写一次，墓碑占位等回收。"**
+
+---
+
+**下一站**：单表的读写与冻结齐了。Lab 2.2 要把 current + 所有 frozen 表揉成一条有序流——MemTable 迭代器与归并。→ [06-memtable-iter](06-memtable-iter.md)

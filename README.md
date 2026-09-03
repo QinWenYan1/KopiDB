@@ -40,11 +40,14 @@ LSM-tree（Log-Structured Merge-Tree，O'Neil et al. 1996）的核心思想是**
 
 `doc/` 下是与实现同步推进的 **RocksDB 源码精读笔记**（workflow / 调用链 / 关键机制，面试导向）：
 
-- [doc/README](doc/README.md)——笔记索引与使用方法
-- [01-skiplist](doc/01-skiplist.md)——跳表：结构原理 + Node 内存布局 + 无锁并发
-- [02-iterator](doc/02-iterator.md)——迭代器体系：两层接口 + 层层包装 + 可见性过滤
-- [03-scan](doc/03-scan.md)——扫描：前缀提取器 + 前缀扫描三模式 + 迭代边界
+- [doc/README](doc/README.md)——笔记索引与使用方法（一篇笔记对应一个子 lab）
+- [01-skiplist-basic](doc/01-skiplist-basic.md)——Lab 1.1：跳表 put/get/remove 的 RocksDB 对应实现
+- [02-skiplist-iter](doc/02-skiplist-iter.md)——Lab 1.2：跳表迭代器
+- [03-skiplist-scan](doc/03-skiplist-scan.md)——Lab 1.3：前缀与边界扫描
 - [04-data-path](doc/04-data-path.md)——数据通路：Put/Get 工作流 + SuperVersion 世界观（Lab 2 前置）
+- [05-memtable-rw](doc/05-memtable-rw.md)——Lab 2.1：MemTable 读写、冻结与墓碑
+- [06-memtable-iter](doc/06-memtable-iter.md)——Lab 2.2：MemTable 迭代器与归并
+- [07-memtable-scan](doc/07-memtable-scan.md)——Lab 2.3：MemTable 前缀扫描
 
 ## 🛠 技术栈
 
@@ -62,8 +65,8 @@ xmake run test_skiplist    # 运行指定模块测试
 ## 🗺️ Roadmap
 
 - [x] Lab 0 环境准备
-- [x] Lab 1 SkipList 跳表｜对照笔记 [01](doc/01-skiplist.md) [04](doc/04-data-path.md)
-- [ ] Lab 2 MemTable（🚧 进行中）｜笔记 05-memtable 起草中
+- [x] Lab 1 SkipList 跳表｜对照笔记 [01](doc/01-skiplist-basic.md) [02](doc/02-skiplist-iter.md) [03](doc/03-skiplist-scan.md) [04](doc/04-data-path.md)
+- [ ] Lab 2 MemTable（🚧 进行中）｜对照笔记 [05](doc/05-memtable-rw.md) [06](doc/06-memtable-iter.md) [07](doc/07-memtable-scan.md)
 - [ ] Lab 3 Block / SST
 - [ ] Lab 4 LSM Engine / Compaction
 - [ ] Lab 5 MVCC 事务

@@ -1,29 +1,30 @@
-# 📘 SkipList：Node 内存布局与无锁并发（Node Layout & Lock-free Concurrency）
+# 📘 SkipList 基础：put / get / remove 的 RocksDB 对应实现（InlineSkipList Basics）
 
-> RocksDB 源码精读 · 01 跳表 | 源码版本 [`e6a2ee0`](https://github.com/facebook/rocksdb/tree/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7) | 本篇涵盖：跳表结构原理、Node 倒装内存布局、Arena 分配器、随机层高、head_ 设计、无锁读、CAS 无锁写、内存序、迭代器能力边界
+> RocksDB 源码精读 · 01 跳表·基础读写 | 源码版本 [`e6a2ee0`](https://github.com/facebook/rocksdb/tree/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7) | 对应 **Lab 1.1**：`SkipList::put` / `get` / `remove` / `random_level`
 
-**本篇定位**：跳表是 MemTable 的内存容器，数据通路的两端都落在它身上：
-- Put 工作流的最后一跳是 `skip_list_.Insert(handle)`（[04-data-path](04-data-path.md) §KP1 第 5 步）
-- Get 工作流的最后一跳是 `MemTable::Get` 进跳表 `Seek`（[05-memtable](05-memtable.md) §KP7）
+**本篇定位**：一篇笔记对应一个子 lab，篇内只讲 lab 函数在 RocksDB 跳表（`InlineSkipList`，[inlineskiplist.h](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h)）里的对应实现：
 
-数据通路（04）全程把跳表当**黑盒**：只要求它"有序、能 Insert、能 Seek、并发安全"。本篇拆开这个黑盒：先补一节跳表结构基础（知识点 1），再依次回答三个问题：
-  1. 一个跳表节点在**内存里到底长什么样**、内存从哪儿来？（知识点 2-3）
-  2. 节点的**层高**怎么随机、整张表的**骨架**怎么搭？（知识点 4-5）
-  3. 多线程同时读写，凭什么**一把锁都不用**？（知识点 6-8——这正是 04 §KP1 第 5 步"并发插跳表"能成立的根）最后看迭代器在这副骨架上的能力边界（知识点 9）。
+| 你的 lab 函数 | RocksDB 对应实现 | 本篇位置 |
+|---|---|---|
+| `random_level()` | `RandomHeight()` | 知识点 4 |
+| `put(k, v)` | `AllocateKey` → `AllocateNode` → `Insert`（挂链） | 知识点 2-3、5、7 |
+| `get(k)` | `Contains` → `FindGreaterOrEqual` | 知识点 6 |
+| `remove(k)` | 跳表层**无对应**——RocksDB 用墓碑删除 | 知识点 8 |
+
+跳表只是 MemTable 的内存容器；容器装进 MemTable 之后的读写路径属于 Lab 2.1，见 [05-memtable-rw](05-memtable-rw.md)。迭代器（Lab 1.2）、范围查询（Lab 1.3）各自成篇。
 
 ---
 
 ## 🧠 核心概念总览
 
 - [*知识点1: 跳表(SkipList)结构原理*](#id1)
-- [*知识点2: Node 的倒装内存布局*](#id2)
-- [*知识点3: Arena 分配器*](#id3)
-- [*知识点4: RandomHeight 与层高参数*](#id4)
+- [*知识点2: Node 的倒装内存布局——put 的节点怎么摆*](#id2)
+- [*知识点3: Arena 分配器——put 的内存从哪来*](#id3)
+- [*知识点4: RandomHeight 与层高参数——random_level 对应物*](#id4)
 - [*知识点5: head_ 与 max_height_ 的松弛设计*](#id5)
-- [*知识点6: 无锁读：FindGreaterOrEqual 与 Contains*](#id6)
-- [*知识点7: 无锁写：Splice 与 CAS 链接*](#id7)
-- [*知识点8: 内存序四件套——无锁正确的根*](#id8)
-- [*知识点9: Iterator 的能力与代价*](#id9)
+- [*知识点6: 查找：FindGreaterOrEqual 与 Contains——get 对应物*](#id6)
+- [*知识点7: 插入挂链：Splice 与"备料-发布"两步——put 对应物*](#id7)
+- [*知识点8: remove 无对应物——删除是墓碑的事*](#id8)
 
 ---
 
@@ -77,7 +78,7 @@ explicit InlineSkipList(Comparator cmp, Allocator* allocator,
 ---
 
 <a id="id2"></a>
-## ✅ 知识点 2: Node 的倒装内存布局
+## ✅ 知识点 2: Node 的倒装内存布局——put 的节点怎么摆
 
 **那 RocksDB 的一个跳表节点在内存里到底怎么摆**？
 
@@ -114,7 +115,7 @@ explicit InlineSkipList(Comparator cmp, Allocator* allocator,
 **逐段拆解**：
 
 - **(3) header（8 字节，地址 1016）**：
-  - `Node` 这个 struct 里**唯一**声明的成员就是 `Atomic<Node*> next_[1]`（[:417-421](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L417-L421)，`Atomic` 是 RocksDB 对 `std::atomic` 的封装，知识点 8 细讲）
+  - `Node` 这个 struct 里**唯一**声明的成员就是 `Atomic<Node*> next_[1]`（[:417-421](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L417-L421)，`Atomic` 是 RocksDB 对 `std::atomic` 的封装）
   - `sizeof(Node)` 只有 8 字节，这个格子就是**第 0 层**的 next 指针。"header" 听着唬人，其实就一个指针
 - **(2) (1) 高层指针区（header 前面，(height−1)×8 字节）**：
   - 第 1 层、第 2 层的 next 指针**倒着往低地址排**——第 1 层紧贴 header 前（1008），第 2 层再往前（1000）。
@@ -150,7 +151,7 @@ explicit InlineSkipList(Comparator cmp, Allocator* allocator,
   x->StashHeight(height);  // 见下
   ```
 
-> 📍 **调用位置**：`AllocateNode` 全库仅两个调用方——① 构造时 `head_(AllocateNode(0, max_height))`（[:840](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L840)，知识点 5 即讲）；② 每次插入前经 `AllocateKey`（[:855](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L855)）。`AllocateKey` 生产环境唯一调用方是 `SkipListRep::Allocate`（[skiplistrep.cc:36](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L36)）——正是 [05 §KP6](05-memtable.md#id6) `MemTable::Add` 第一步 `table->Allocate`（[memtable.cc:1142](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1142)）钻到最里层：**先分节点、stash 身高，再把 key 编码进节点尾部，最后 InsertKey 挂链**。
+> 📍 **调用位置**：`AllocateNode` 全库仅两个调用方——① 构造时 `head_(AllocateNode(0, max_height))`（[:840](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L840)，知识点 5 即讲）；② 每次插入前经 `AllocateKey`（[:855](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L855)）。`AllocateKey` 生产环境唯一调用方是 `SkipListRep::Allocate`（[skiplistrep.cc:36](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L36)）——正是 [05 §KP6](05-memtable-rw.md#id6) `MemTable::Add` 第一步 `table->Allocate`（[memtable.cc:1142](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1142)）钻到最里层：**先分节点、stash 身高，再把 key 编码进节点尾部，最后 InsertKey 挂链**。
 
 **StashHeight：身高的"临时便签"**
 - 这里有个微妙问题：节点链入跳表后**根本不需要**存身高：
@@ -163,13 +164,13 @@ explicit InlineSkipList(Comparator cmp, Allocator* allocator,
   - Insert 时 `UnstashHeight` 取出（[:1032](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1032)）。
 
 > ⚠️ **关键区分**：StashHeight 只是"传递中的便签"——一旦 `SetNext` 往 `next_[0]` 写了真指针，便签即作废（注释原话 "Undefined after a call to SetNext"）。
-> 💡 **理解技巧**：这套布局的收益是"省内存双杀"——① 不存 height 字段；② 高层指针只为高个子节点付费（平均身高 4/3 层 → 平均每节点指针开销 ≈ 8×4/3 ≈ 10.7 字节，对比朴素 A 的 96 字节）。代价是所有访问都要做指针算术，因此全封装进 `Next/SetNext/CASNext` 方法（知识点 8 会看到它们还兼管内存序）。
+> 💡 **理解技巧**：这套布局的收益是"省内存双杀"——① 不存 height 字段；② 高层指针只为高个子节点付费（平均身高 4/3 层 → 平均每节点指针开销 ≈ 8×4/3 ≈ 10.7 字节，对比朴素 A 的 96 字节）。代价是所有访问都要做指针算术，因此全封装进 `Next/SetNext` 方法。
 
 
 ---
 
 <a id="id3"></a>
-## ✅ 知识点 3: Arena 分配器
+## ✅ 知识点 3: Arena 分配器——put 的内存从哪来
 
 **节点的"摆法"定了，但内存从哪儿来？几十万个不规则节点逐个 `new` 行不行？**
 
@@ -296,13 +297,13 @@ explicit InlineSkipList(Comparator cmp, Allocator* allocator,
 
       - `Arena`：所有内存我统一统计
 
-> 🔄 **知识关联**："无单节点释放"听着危险（读者正拿着指针怎么办？），它恰恰是并发读安全的三大支柱之一，知识点 8 回收这个伏笔。并发写场景 MemTable 会用 `ConcurrentArena`（[concurrent_arena.h:42](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memory/concurrent_arena.h#L42)），选择逻辑这里不展开。
+> 🔄 **知识关联**："无单节点释放"听着危险（读者正拿着指针怎么办？）——节点内存与整张 MemTable 同生共死，读者手里的指针永不悬垂。这个性质是 RocksDB 读路径敢不拿锁的底气之一，[05-memtable-rw](05-memtable-rw.md) §KP9 回收这个伏笔。并发写场景 MemTable 会用 `ConcurrentArena`（[concurrent_arena.h:42](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memory/concurrent_arena.h#L42)），选择逻辑这里不展开。
 
 
 ---
 
 <a id="id4"></a>
-## ✅ 知识点 4: RandomHeight 与层高参数
+## ✅ 知识点 4: RandomHeight 与层高参数——random_level 对应物
 
 **节点大小由身高决定，可是要如何决定呢？身高要满足什么分布、又怎么低成本生成？**
 
@@ -342,7 +343,7 @@ explicit InlineSkipList(Comparator cmp, Allocator* allocator,
 
 - `kMaxHeight_ = 12`：**这张表的业务上限/可配置上限**（构造参数，[:831-836](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L831-L836)）
 - `kMaxPossibleHeight = 32`：**物理硬上限/实现安全底线** 
-  - 栈上数组的维度，比如并发插入时 `Node* prev[kMaxPossibleHeight]`（[:914](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L914)）
+  - 栈上数组的维度，比如并发插入路径里 `Node* prev[kMaxPossibleHeight]`（[:914](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L914)）
   - 身高绝不能超过它，否则栈数组越界
 
 > 📋 **术语提醒**：`kScaledInverseBranching_` = 把"概率 1/4"换算成"32 位随机数域里的阈值"——从概率域到比较域的缩放，故名 Scaled Inverse Branching。
@@ -355,7 +356,7 @@ explicit InlineSkipList(Comparator cmp, Allocator* allocator,
 <a id="id5"></a>
 ## ✅ 知识点 5: head_ 与 max_height_ 的松弛设计
 
-**每个节点带着随机身高出生，那么表头长什么样？整张表当前算几层？并发插入都想"拔高"表时怎么办？**
+**每个节点带着随机身高出生，那么表头长什么样？整张表当前算几层？**
 
 **构造**（[:831-851](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L831-L851)）：
 
@@ -383,18 +384,18 @@ while (height > max_height) {          // 新节点比现在的表高
 
 > "Relaxed reads are always OK because starting from higher levels only helps efficiency, not correctness."
 
-——读到**旧值**：从新表高之下的某层开始找，多走几步而已；读到**新值**从"比实际更高的层"开始：那些层只有 head_，比较失败自然下降。**两种"读错"都只是慢一点，不影响对错**。（relaxed 到底是什么、为什么叫"最弱"——知识点 8 系统讲，这里先记住结论。）
+——读到**旧值**：从新表高之下的某层开始找，多走几步而已；读到**新值**从"比实际更高的层"开始：那些层只有 head_，比较失败自然下降。**两种"读错"都只是慢一点，不影响对错**。
 
-> 💡 **理解技巧**：无锁设计的典型思路——先问"读到旧值/错值会怎样"，答案若是"只是慢一点"，就放心用最弱同步；把昂贵的强同步留给真正影响正确性的地方（知识点 8 的发布/订阅配对）。
+> 💡 **理解技巧**：先问"读到旧值/错值会怎样"，答案若是"只是慢一点"，就放心用最弱同步；把昂贵的强同步留给真正影响正确性的地方。
 
-→ **下一站**：骨架就位。看读操作怎么做到全程无锁。知识点 6。
+→ **下一站**：骨架就位。看 get 的对应实现怎么查找。知识点 6。
 
 ---
 
 <a id="id6"></a>
-## ✅ 知识点 6: 无锁读：FindGreaterOrEqual 与 Contains
+## ✅ 知识点 6: 查找：FindGreaterOrEqual 与 Contains——get 对应物
 
-**知识点 1 讲过跳表查找的算法骨架，本知识点看它的工业级实现：算法没变，但多了三个工程细节，而且全程没有锁、连一次原子写都没有。**
+**知识点 1 讲过跳表查找的算法骨架，本知识点看它的工业级实现——也就是 lab 里 `get` 的 RocksDB 对应物：算法没变，但多了三个工程细节。**
 
 **`Contains`：一次查找 + 一次相等判断**（[:1359-1369](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1359-L1369)）：
 - 先调用 `FindGreaterOrEqual` 找到第一个 `>= key` 的节点，然后再判断它是不是 `== key`
@@ -413,142 +414,57 @@ while (height > max_height) {          // 新节点比现在的表高
 2. **`last_bigger` 复用比较结果**（[:627-639](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L627-L639)）：降层时记下"刚把我拦下的节点"（第一个 ≥ key 的）；降到下一层后，如果下一个节点还是它，直接跳过比较视为"继续降"（`next == last_bigger ? 1 : compare_(...)`）——key 比较是查找的 CPU 热点，省一次是一次
 3. **`PREFETCH` 预取**（[:610](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L610)）：比较之前先发预取指令，把 `next->Next(level)` 即将访问的内存提前拉进 CPU 缓存，隐藏内存延迟
 
-**为什么不能用 `FindLessThan(key)->Next(0)` 实现"大于等于"？** 源码注释给了两个理由（[:597-601](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L597-L601)）：① 没法在相等时提前返回；② 两步之间可能有并发插入挤进来，`Next(0)` 拿到的就不是"第一个 ≥ key"的了。**无锁世界里"分两步读"本身就是 bug 温床**——要拿某个位置，必须一次查找直接落位。
+**为什么不能用 `FindLessThan(key)->Next(0)` 实现"大于等于"？** 源码注释给了两个理由（[:597-601](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L597-L601)）：① 没法在相等时提前返回；② 两步之间可能有并发插入挤进来，`Next(0)` 拿到的就不是"第一个 ≥ key"的了——要拿某个位置，必须一次查找直接落位。
 
-> 🔄 **知识关联**：这里 `Next()` 用的是 acquire 读——读者顺着指针拿到的节点，凭什么保证 key 已初始化完整？知识点 8 揭晓。
+> 📍 **调用位置**：表外谁来调？读路径：`MemTable::Get` → `GetFromTable` → `table_->Get(key, &saver, SaveValue)`（[memtable.cc:1684](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1684)）→ `SkipListRep::Get`（[skiplistrep.cc:85-93](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L85-L93)）——它不直接调 `FindGreaterOrEqual`，而是现场建 `SkipListRep::Iterator` 再 `Seek`（[skiplistrep.cc:89](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L89)），Seek 内部才进 `FindGreaterOrEqual`（[:514](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L514)，即 [02-skiplist-iter](02-skiplist-iter.md) §KP1 的 `Iterator::Seek`）。**点查与扫描共用同一条 Seek 通道**；[05 §KP7](05-memtable-rw.md#id7) 的"Seek 命中后逐版本回调 SaveValue"就发生在这个迭代器循环里（[skiplistrep.cc:90-91](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L90-L91)）。
 
-> 📍 **调用位置**：表外谁来调？读路径：`MemTable::Get` → `GetFromTable` → `table_->Get(key, &saver, SaveValue)`（[memtable.cc:1684](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1684)）→ `SkipListRep::Get`（[skiplistrep.cc:85-93](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L85-L93)）——它不直接调 `FindGreaterOrEqual`，而是现场建 `SkipListRep::Iterator` 再 `Seek`（[skiplistrep.cc:89](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L89)），Seek 内部才进 `FindGreaterOrEqual`（[:514](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L514)，即知识点 9 的 `Iterator::Seek`）。**点查与扫描共用同一条 Seek 通道**；05 §KP7 的"Seek 命中后逐版本回调 SaveValue"就发生在这个迭代器循环里（[skiplistrep.cc:90-91](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L90-L91)）。
-
-→ **下一站**：读无锁好理解（只读不改）。写呢？两个线程同时往同一位置插节点，谁赢？知识点 7。
+→ **下一站**：会找了，再看怎么挂进去——put 的对应实现 Insert。知识点 7。
 
 ---
 
 <a id="id7"></a>
-## ✅ 知识点 7: 无锁写：Splice 与 CAS 链接
+## ✅ 知识点 7: 插入挂链：Splice 与"备料-发布"两步——put 对应物
 
-**插入 = 先备好"括号"（Splice）定位，再逐层 CAS 把自己钩进去；失败就重算括号重试。**
+**插入 = 先备好"括号"（Splice）定位，再逐层"备料-发布"把自己钩进去。**
 
-> 📍 **调用位置**：`Insert<UseCAS>` 的入口全部来自 `MemTable::Add`（[05 §KP6](05-memtable.md#id6)）：单写者 `table->InsertKey`（[memtable.cc:1180](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1180)）→ `SkipListRep::InsertKey` → `skip_list_.Insert`（[skiplistrep.cc:47](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L47)）→ `Insert<false>`（[:909](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L909)，复用 `seq_splice_`）；并发 `table->InsertKeyConcurrently`（[memtable.cc:1211](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1211)）→ `InsertConcurrently`（[skiplistrep.cc:72](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L72)）→ 栈上现开 Splice（[:914-918](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L914-L918)）→ `Insert<true>`（[:919](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L919)）。两条链在 `Insert` 内汇合，差别只在发布步用 `SetNext` 还是 `CASNext`。
-
-**先补一课：CAS 是什么？** CAS（Compare-And-Swap，比较并交换）是一条 CPU 原子指令：`CAS(地址, 期望值, 新值)` = "如果这个地址里**现在还是**期望值，就换成新值、返回成功；否则什么都不动、返回失败"。整个过程不可打断；多线程同时 CAS 同一地址，硬件保证只有一个成功。类比抢座：看了一眼 3 号位是空的（期望值），我坐下（换新值）；若坐下的瞬间发现已有人（期望值不符），起来重找。
+> 📍 **调用位置**：`Insert` 的生产环境入口全部来自 `MemTable::Add`（[05 §KP6](05-memtable-rw.md#id6)）：`table->InsertKey`（[memtable.cc:1180](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1180)）→ `SkipListRep::InsertKey` → `skip_list_.Insert`（[skiplistrep.cc:47](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/skiplistrep.cc#L47)）→ `Insert<false>`（[:909](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L909)，复用 `seq_splice_`）。（RocksDB 另有一条 `concurrent_memtable_writes` 并发插入路径，用 CAS 原子指令替代普通指针写；lab 的跳表并发由上层 MemTable 的锁保证，那条路径本篇不展开。）
 
 **Splice 是什么**（[:340-350](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L340-L350)）：每层一对 `prev_[i] / next_[i]`，在第 i 层把新节点该进的位置"括"住：`prev_[i] < key < next_[i]`。注释给出的不变式 `prev_[i+1] ≤ prev_[i] < key < next_[i] ≤ next_[i+1]` 用白话说：**高层的括号必然罩住低层的括号**（高层更稀疏，prev 只会更靠左、next 更靠右）——所以高层定位可以从低层结果出发，不用每层从头搜。
 
-**CAS 链接循环**（`Insert<UseCAS=true>` 核心，[:1134-1171](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1134-L1171)）：
+**挂链循环**（单写者路径 `Insert<UseCAS=false>` 核心，[:1180-1198](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1180-L1198)）：
 
 ```cpp
 for (int i = 0; i < height; ++i) {
-  while (true) {
-    // 第 0 层查重（注释：level 0 is sufficient）
-    if (i == 0 && /* prev 或 next 撞上同 key */ ...) return false;
-    x->NoBarrier_SetNext(i, splice->next_[i]);          // ① 备料：先写好我的 next
-    if (splice->prev_[i]->CASNext(i, splice->next_[i], x)) {
-      break;                                            // ② 发布：CAS 把 prev 的 next 换成我
-    }
-    // ③ 失败 = 有人抢先插了 → 只重算这一层的括号，再试
-    FindSpliceForLevel(key_decoded, splice->prev_[i], nullptr, i,
-                       &splice->prev_[i], &splice->next_[i]);
-  }
+  // 第 0 层查重（注释：level 0 is sufficient）
+  if (i == 0 && /* prev 或 next 撞上同 key */ ...) return false;
+  x->NoBarrier_SetNext(i, splice->next_[i]);   // ① 备料：先写好我的 next
+  splice->prev_[i]->SetNext(i, x);             // ② 发布：把 prev 的 next 换成我
 }
 ```
 
-- **①②的顺序是铁律**：先把新节点的 next 写好（此时没人看得见它，用 relaxed 的 `NoBarrier_` 变体就够），再 CAS 发布——指针一旦换过去，读者立刻就能走进来
-- **CAS 失败只重算当前层**（`FindSpliceForLevel`，[:946-972](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L946-L972)）：从这一层的 prev 往右走一小段找到新位置，不用整表重搜——为什么划算见注释 [:1157-1161](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1157-L1161)；窄化第 i 层括号后可能破坏与 i−1 层的括号关系，代码用 `splice_is_valid = false` 标记留给下轮整体重算（[:1165-1170](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1165-L1170)）
-- **重复检测只在第 0 层做**（[:1137-1147](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1137-L1147)）：所有节点都经过第 0 层，查一次就够
-- **非并发路径**（[:1196-1197](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1196-L1197)）：同样的"①备料②发布"两步，但第②步用普通 `SetNext` 而非 CAS——只有一个写线程，没人抢
+- **①②的顺序是铁律**：先把新节点的 next 写好（此时没人看得见它，`NoBarrier_` 变体不发内存栅栏、最便宜），再发布——指针一旦换过去，读者立刻就能走进来
+- **重复检测只在第 0 层做**（[:1181-1191](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1181-L1191)）：所有节点都经过第 0 层，查一次就够
 
-**Splice 的复用与复用的边界**：非并发 `Insert` 缓存上一次的括号（`seq_splice_`，[:244-247](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L244-L247)）；顺序插入时新 key 就在上个括号旁边，定位从 O(log N) 降到 O(log D)（D = 与上次插入的距离，注释 [:127-136](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L127-L136)）。而**并发路径不复用它**：`InsertConcurrently` 在栈上现开 `prev[kMaxPossibleHeight] / next[kMaxPossibleHeight]` 数组（[:913-919](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L913-L919)）——`seq_splice_` 是跨调用的共享状态，并发场景没有"上一次插入"的概念。
+**Splice 的复用**：非并发 `Insert` 缓存上一次的括号（`seq_splice_`，[:244-247](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L244-L247)）；顺序插入时新 key 就在上个括号旁边，定位从 O(log N) 降到 O(log D)（D = 与上次插入的距离，注释 [:127-136](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L127-L136)）。（并发路径没有"上一次插入"可复用，括号在栈上现开，本篇不展开。）
 
 **彩蛋——Splice 自己的内存布局**：`AllocateSplice`（[:883-893](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L883-L893)）和 Node（知识点 2）是**同款套路**：struct 只当"锚点"，`prev_` / `next_` 两个数组作为尾随内存一次从 Arena 切出。"struct + 自定义尾随内存"这个模式在跳表里出现了两次，值得认出来。
 
-> 💡 **理解技巧**：CAS 的哲学是"乐观假设没人抢，抢了再重来"——竞争少时远快于锁；第 0 层查重、逐层重算，都是把"重来"的成本压到最小。
-> ⚠️ **关键区分**：CAS 链接从第 0 层往高层做（`i` 从 0 递增）——节点先入底层即"对读者可见"，高层只是索引。读路径（知识点 6）因此永远能容忍"高层还没接好"的中间态。
+> ⚠️ **关键区分**：链入从第 0 层往高层做（`i` 从 0 递增）——节点先入底层即"可被找到"，高层只是索引；读者因此永远能容忍"高层还没接好"的中间态。
 
-→ **下一站**：CAS 换了指针，凭什么读者拿到的节点是初始化完整的？——内存序，无锁正确的根。知识点 8。
+→ **下一站**：put/get 都齐了。lab 里还有 `remove`——RocksDB 跳表能删节点吗？知识点 8。
 
 ---
 
 <a id="id8"></a>
-## ✅ 知识点 8: 内存序四件套——无锁正确的根
+## ✅ 知识点 8: remove 无对应物——删除是墓碑的事
 
-**上一棒的幽灵问题：CAS 把指针挂出去的瞬间，读者就能顺着指针走进新节点——可读者凭什么保证看到 key 已经写好了？答案藏在一个反直觉的事实里：程序的执行顺序 ≠ 内存的可见顺序。**
+**Lab 1.1 的 `SkipList::remove` 在 RocksDB 的 `InlineSkipList` 里没有对应物：整张表没有任何删除接口，只增不减。**
 
-**先补两课。第一课：为什么会乱序？** 编译器优化和 CPU 流水线/写缓冲都会重排内存操作的**对外可见顺序**。单线程无所谓（最终结果等价）；多线程下，写方的"先写 key、再挂指针"在读方眼里可能变成"先看到指针、后看到 key"——读者顺着指针读到未初始化的 key，崩。
+- RocksDB 的删除发生在 **MemTable 层**：`Delete(key)` 不碰跳表现有节点，而是**再插一条** type = `kTypeDeletion` 的 entry（墓碑，tombstone）；读路径查到墓碑就判死，空间等后台 compaction 才真正回收
+- 为什么值得：跳表的读者不拿锁（[05 §KP9](05-memtable-rw.md#id9)），靠的是"节点链入后不可变、内存不回收"——真删节点会把这两根柱子都抽掉
+- 墓碑怎么写进 MemTable、读路径怎么短路，见 [05-memtable-rw](05-memtable-rw.md) §KP10；lab 里 `remove` 真删节点是教学简化（KopiDB 没有多版本与 compaction，真删最直观）
 
-**第二课：内存序是什么？** 给原子操作贴的"顺序保证标签"，三个档位最关键：
-
-- **relaxed**：只保证这次读/写本身不被撕坏（原子性），不给任何顺序承诺——最便宜
-- **release**（写方贴）：我这次写**之前**的所有写，必须先于这次写对别人可见——"发布"
-- **acquire**（读方贴）：我这次读**之后**的所有读，必须看到配对 release 之前的一切——"订阅"
-
-release + acquire 配对成功，就在两个线程间建立了"先发生后可见"（happens-before）的通道。类比寄快递：release = 寄件人**装好箱才贴快递单**（单 = 指针）；acquire = 收件人**凭单取件开箱**——只要单子到了，箱里的东西必然完好；relaxed 则只保证"单号本身没印糊"。
-
-**`Node` 的指针访问全部封装成带内存序的方法**（[:379-407](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L379-L407)）：
-
-| 方法 | 内存序 | 用途 |
-|------|--------|------|
-| `Next(n)` | **acquire** 读 | 读者拿到 next 指针 ⇒ 保证看到指向节点的完整初始化 |
-| `SetNext(n, x)` | **release** 写 | 发布方：把"指向新节点"的指针挂出去 ⇒ 之前的初始化对读者可见 |
-| `CASNext(n, exp, x)` | **CAS 强** | 并发写的原子交换（自带最强顺序保证） |
-| `NoBarrier_Next/SetNext` | **relaxed** | 备料阶段用（节点还没发布，别人看不到，不需要顺序保证） |
-
-**发布的正确顺序**（`InsertAfter` 的注释把这个思想说得最直白，[:410-415](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L410-L415)）：
-
-```cpp
-void InsertAfter(Node* prev, int level) {
-  // NoBarrier_SetNext() suffices since we will add a barrier when
-  // we publish a pointer to "this" in prev.
-  NoBarrier_SetNext(level, prev->NoBarrier_Next(level));  // 备料：relaxed 就行
-  prev->SetNext(level, this);                             // 发布：release 兜底
-}
-```
-
-> 📍 **调用位置**：坦白说——`InsertAfter` 在本版本**全库无调用方**，引用它只因为这段注释是"备料/发布"顺序的最佳教材。真实的发布动作内联在 `Insert` 链入循环里：单写者 `NoBarrier_SetNext`+`SetNext`（[:1196-1197](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1196-L1197)）、并发 `NoBarrier_SetNext`+`CASNext`（[:1152-1153](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L1152-L1153)），顺序与这两行一模一样。
-
-现在回看知识点 7 的"①备料②发布"铁律，就是这两行。
-
-**为什么读可以完全不拿锁——三条合谋：**
-
-1. **发布即完成**：节点所有字段（含 key）在 release 挂链之前就绪；读者 acquire 读到指针 ⇒ 指向的必然是完全体
-2. **节点不可变**：链入后 key 和指针数组不再修改——读到的东西不会在你手里变质
-3. **Arena 保活**（知识点 3 伏笔回收）：节点内存永不单独释放 → 读者手里的指针永不悬垂，也**没有 ABA 问题**（ABA = 指针从 A 变 B 又变回 A，CAS 误以为没变过；这里地址永不复用，天然免疫）
-
-> 💡 **理解技巧**：记忆锚点——**写方 release 发布，读方 acquire 订阅，备料 relaxed，交换 CAS**。
-> 📋 **术语提醒**：`Atomic<Node*>` 不是裸 `std::atomic`，是 RocksDB 的封装（[util/atomic.h:105](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/util/atomic.h#L105)，`RelaxedAtomic<T>` 的子类），统一了 Load/Store/CAS 的默认内存序——这也是知识点 2 布局图里"一个格子 8 字节"仍成立的原因。
-
-→ **下一站**：结构、读写、正确性都齐了。最后看迭代器在这副骨架上能做什么、不能做什么。知识点 9。
-
----
-
-<a id="id9"></a>
-## ✅ 知识点 9: Iterator 的能力与代价
-
-**骨架、读写都齐了。收尾问题：在这副只有前向指针的骨架上，"遍历"能做什么、要付什么代价？答案一句话：前进免费，后退昂贵。**
-
-**能力清单**（定义 [:170-227](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L170-L227)）：
-
-- `Next()`：`node_->Next(0)`，第 0 层走一步，O(1)（[:447-457](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L447-L457)）
-- `Seek(target)`：包装 `FindGreaterOrEqual`（[:511-516](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L511-L516)）
-- `SeekToFirst/SeekToLast`：后者走 `FindLast` 逐层到底（[:545-556](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L545-L556)）
-
-**Prev 的真相**（[:482-491](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L482-L491)）：
-
-```cpp
-void Prev() {
-  // Instead of using explicit "prev" links, we just search for the
-  // last node that falls before key.
-  node_ = list_->FindLessThan(node_->Key(), nullptr);   // 重新搜索，O(log N)
-  if (node_ == list_->head_) {
-    node_ = nullptr;
-  }
-}
-```
-
-注释说得很直白：**不存 prev 链接，退一格就重新查一次**。`SeekForPrev` = `Seek` + 必要时 `Prev` 回退（[:528-538](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/memtable/inlineskiplist.h#L528-L538)）。
-
-**这笔账值不值？** 存反向指针的代价：每节点每层多 8 字节——按平均 1.33 层算，每节点指针开销从 ≈10.7 字节涨到 ≈21.3 字节，**直接翻倍**，而这正是知识点 2 的布局设计拼命省下来的东西。RocksDB 的取舍：让低频的 Prev 每次付 O(log N) 搜索费，保住高频路径的内存。
-
-> 💡 **理解技巧**：设计取舍的一般形式——**给低频操作付时间，给高频路径省内存**。
+> ⚠️ **面试考点**："RocksDB 的跳表怎么删元素？"——答"它不删，删除是更高层的墓碑语义"，比答"remove 函数"高一个段位。
 
 ---
 
@@ -561,12 +477,12 @@ void Prev() {
 | 为什么节点内存用 Arena 而不是 new？ | 节点大小随机不均，逐个 new 必碎片；Arena 推指针分配 O(1)、无碎片、缓存友好、整表一次性释放 |
 | 层高怎么随机？ | `rnd->Next() < 阈值(2³²/4)`，一次整数比较 = 一次 1/4 概率抛硬币；期望 4/3 层，软上限 12、硬上限 32 |
 | max_height_ 为什么敢 relaxed？ | 从更高层开始找只是多走空层——"只影响效率，不影响正确性" |
-| 并发读为什么不加锁？ | 三支柱：release/acquire 配对保证"发布即完成"、节点链入后不可变、Arena 保活无悬垂无 ABA |
-| 并发插入怎么做？ | Splice 括号定位 → 逐层 ①relaxed 备料 next ②CAS 发布 prev→next；失败只重算当前层括号重试；第 0 层统一查重 |
-| 为什么 Prev() 是 O(log N)？ | 不存反向指针（每节点内存翻倍不划算），退一格 = 一次 FindLessThan 重搜 |
+| get 的对应实现？ | `Contains` = `FindGreaterOrEqual` + `Equal` 一次落位；三优化：相等立即返回、`last_bigger` 复用比较结果、`PREFETCH` 预取 |
+| put 的对应实现？ | `AllocateKey`（随机身高 + 三段式节点）→ Splice 括号定位 → 逐层①备料写自己的 next ②发布改 prev 的 next；第 0 层查重，顺序插入复用 `seq_splice_` |
+| RocksDB 跳表怎么删元素？ | 不删——跳表只增不减；删除是 MemTable 层写一条 `kTypeDeletion` 墓碑 entry |
 
-**记忆口诀**：**"指针倒装 key 贴后，Arena 推针不回收；抛币一次比阈值，表高懒长 relaxed；备料 relaxed 发布 release，读取 acquire 交换 CAS；Prev 重搜省指针，三柱撑起无锁读。"**
+**记忆口诀**：**"指针倒装 key 贴后，Arena 推针整块收；抛币比阈定身高，表高懒长不用愁；查找三招省比较，备料发布两步走；跳表只增从不删，删除墓碑另起头。"**
 
 ---
 
-**下一站**：跳表这个容器拆完了。但 §KP9 的裸迭代器离用户手里的 `db->NewIterator()` 还差四层包装——编码分工、prefix bloom、N 路归并、可见性过滤。→ [02-iterator](02-iterator.md)（MemTable 本体的冻结/flush/并发写顺延至 05-memtable，待写）
+**下一站**：跳表的读写拆完了。Lab 1.2 要给跳表加光标——迭代器能做什么、Prev 为什么贵。→ [02-skiplist-iter](02-skiplist-iter.md)

@@ -2,7 +2,7 @@
 
 > RocksDB 源码精读 · 04 数据通路（Lab 2 前置） | 源码版本 [`e6a2ee0`](https://github.com/facebook/rocksdb/tree/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7) | 本篇涵盖：Put/Get 完整工作流、三层可插拔设计、WriteBatch 物理格式、Get/SuperVersion 世界观
 >
-> 🧭 导读：本篇把 MemTable 的内存容器（跳表）当**黑盒**——只管数据怎么流进去、怎么查出来；跳表自身是什么、内部怎么工作，全在 [01-skiplist](01-skiplist.md)。**移交说明**：编码、回放、点查等 MemTable 内部细节（原知识点 4-8、10）已整节迁至 [05-memtable](05-memtable.md)，正文未动。
+> 🧭 导读：本篇把 MemTable 的内存容器（跳表）当**黑盒**——只管数据怎么流进去、怎么查出来；跳表自身是什么、内部怎么工作，全在 [01-skiplist-basic](01-skiplist-basic.md)。**移交说明**：编码、回放、点查等 MemTable 内部细节（原知识点 4-8、10）已整节迁至 [05-memtable-rw](05-memtable-rw.md)，正文未动。
 
 ---
 
@@ -11,7 +11,7 @@
 - [*知识点1: Put 完整工作流（组提交）*](#id1)
 - [*知识点2: 三层可插拔设计*](#id2)
 - [*知识点3: 写批量(WriteBatch)的物理格式*](#id3)
-- *（原知识点 4-8、10 —— 回放/编码/InternalKey/LookupKey/点查细节，已整节迁至 [05-memtable](05-memtable.md)）*
+- *（原知识点 4-8、10 —— 回放/编码/InternalKey/LookupKey/点查细节，已整节迁至 [05-memtable-rw](05-memtable-rw.md)）*
 - [*知识点9: Get 完整工作流（SuperVersion 三级查找）*](#id9)
 
 ---
@@ -46,7 +46,7 @@
         - WAL 先落盘，MemTable 后更新——如果进程在 WAL 写完后、MemTable 更新前崩溃，恢复时可以通过重放 WAL 找回数据
 5. **插 MemTable**：WAL 写完后，整组人（leader + followers）的 batch 数据需要插入到内存的 active MemTable（跳表）中，这里分了两种策略：
    - **非并发模式**：**Leader 一个人干**，leader 统一 replay 整组 batch
-   - **并发模式（默认）**：**大家各自干**，leader 写完 WAL 放行，**follower 各自**调 `WriteBatchInternal::InsertInto`（[:1112-1117](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_write.cc#L1112-L1117)），以 `concurrent_memtable_writes=true` **并发**插跳表——**这就是 InlineSkipList 必须做成无锁的根因**（详见 [01-skiplist](01-skiplist.md)）
+   - **并发模式（默认）**：**大家各自干**，leader 写完 WAL 放行，**follower 各自**调 `WriteBatchInternal::InsertInto`（[:1112-1117](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_write.cc#L1112-L1117)），以 `concurrent_memtable_writes=true` **并发**插跳表——**这就是 InlineSkipList 必须做成无锁的根因**
 6. **发布**：等全组人都把数据插进 MemTable 后 `versions_->SetLastSequence(last_sequence)`（[:1137](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_write.cc#L1137)）——新序列号对读者可见，写入返回
     - RocksDB 用序列号（sequence number）实现 MVCC（多版本并发控制）。每个 key-value 在 `MemTable` 里都有一个 seq
     - 读线程读数据时，只读 `seq ≤ last_sequence` 的数据
@@ -79,7 +79,7 @@ flowchart LR
     }
     ```
 
-    - `KeyHandle` 本质就是指向编码字节的裸指针 `char*`（内存由 **Arena 分配器**统一分配，见 [01-skiplist](01-skiplist.md)）
+    - `KeyHandle` 本质就是指向编码字节的裸指针 `char*`（内存由 **Arena 分配器**统一分配，见 [01-skiplist-basic](01-skiplist-basic.md) §KP3）
     - `static_cast` 零开销：设计契约是"调用方保证传进来的就是跳表分配的字节"
 
 > 📍 **调用位置**：`SkipListRep::InsertKey` 的直接调用方是 `MemTable::Add`（[memtable.cc:1180](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1180)；并发走 [:1211](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/memtable.cc#L1211) `InsertKeyConcurrently`）。从本知识点的 `InsertInto` 到它中间还有四跳：`InsertInto` → `Iterate` 逐条回调 → `PutCFImpl` → `mem->Add` → `table->InsertKey`——05 §KP6 逐跳展开。
@@ -191,7 +191,7 @@ std::shared_ptr<MemTableRepFactory> memtable_factory =
    - 未命中 → `sv->imm->Get(...)`——immutable 队列（[:251](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_sync_and_async.h#L251)）（已冻结待 flush 的）
    - 再未命中 → `sv->current->Get(...)`——SST 层（[:296](https://github.com/facebook/rocksdb/blob/e6a2ee0bd211489e64a45a6a0f6ce1dc67e195d7/db/db_impl/db_impl_sync_and_async.h#L296)）（落盘数据）
    - 找到即返回，越新的数据查得越快
-5. **每层内部**：`MemTable::Get` 的细节见 [05 §KP7](05-memtable.md#id7)
+5. **每层内部**：`MemTable::Get` 的细节见 [05 §KP7](05-memtable-rw.md#id7)
 
 ```mermaid
 flowchart LR
@@ -245,11 +245,11 @@ flowchart LR
 | 一次 Get 经历什么？ | 拿 SuperVersion 一致视图 → 定快照 seq → 拼 LookupKey → active → imm → SST 三级查找（新→旧） |
 | SuperVersion 是什么？ | active + imm + Version 的一致快照，引用计数固定，读路径不加 DB 大锁；必须先引用再取 seq（防 flush 间隙） |
 
-> （编码、回放、排序规则、LookupKey、MemTable::Get 细节的速记条目随正文迁至 [05-memtable](05-memtable.md) 📌）
+> （编码、回放、排序规则、LookupKey、MemTable::Get 细节的速记条目随正文迁至 [05-memtable-rw](05-memtable-rw.md) 📌）
 
 **记忆口诀**：**"Put 组队 WAL 先行，seq 发布才算成；user 升序 seq 降序，Seek 一步见版本；Get 拿框三级找，新到旧、墓碑停。"**
 
 ---
 
-**下一站**：本篇把跳表当黑盒用——只管把编码好的字节串 `Insert` 进去、`Seek` 出来。这个黑盒内部已在 [01-skiplist](01-skiplist.md) 拆开；下一站轮到 MemTable 本体——冻结与 flush 触发、容量管理、并发读写。→ 05-memtable（待写）
+**下一站**：本篇把跳表当黑盒用——只管把编码好的字节串 `Insert` 进去、`Seek` 出来。这个黑盒内部已在 [01-skiplist-basic](01-skiplist-basic.md) 拆开；下一站轮到 MemTable 本体——冻结与 flush 触发、容量管理、并发读写。→ [05-memtable-rw](05-memtable-rw.md)（Lab 2.1）
 
