@@ -197,6 +197,14 @@ void MemTable::remove_batch(const std::vector<std::string> &keys,
   // TODO: Lab2.1 有锁版本的remove_batch
   // ? 加 cur_mtx 写锁后遍历 keys 依次调用 remove_()
   // ? 结束后若超限则冻结当前表
+  std::lock_guard<std::shared_mutex> write_lock(cur_mtx); 
+  for (const auto &key : keys){
+    remove_(key, tranc_id);
+  }
+  if (current_table->get_size() >= TomlConfig::getInstance().getLsmPerMemSizeLimit()){
+    std::lock_guard<std::shared_mutex> frozen_lock(frozen_mtx); 
+    frozen_cur_table_(); 
+  }
 }
 
 void MemTable::clear() {
