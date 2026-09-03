@@ -29,6 +29,8 @@ void MemTable::put_(const std::string &key, const std::string &value,
                     uint64_t tranc_id) {
   // TODO: Lab2.1 无锁版本的 put
   // ? 直接调用 current_table 的 put 方法
+  spdlog::trace("MemTable--put({}, {}, {})", key, value, tranc_id);
+  current_table->put(key, value, tranc_id);
 }
 
 void MemTable::put(const std::string &key, const std::string &value,
@@ -36,6 +38,17 @@ void MemTable::put(const std::string &key, const std::string &value,
   // TODO: Lab2.1 有锁版本的 put
   // ? 加 cur_mtx 写锁后调用 put_()
   // ? 若 current_table 超过 LsmPerMemSizeLimit, 还需加 frozen_mtx 写锁并调用 frozen_cur_table_()
+  // 加写入锁，保护 current_table
+  std::lock_guard<std::shared_mutex> put_lock(cur_mtx); 
+  put_(key, value, tranc_id);
+
+  // 检查是否需要 froze memtable 
+  if (get_cur_size() >= TomlConfig::getInstance().getLsmPerMemSizeLimit()){
+    // 加入冻结锁，保护 frozen table / frozen 队列
+    std::lock_guard<std::shared_mutex> frozen_lock(frozen_mtx); 
+    frozen_cur_table(); 
+  }
+
 }
 
 void MemTable::put_batch(
