@@ -27,7 +27,7 @@ MemTable::~MemTable() = default;
 
 void MemTable::put_(const std::string &key, const std::string &value,
                     uint64_t tranc_id) {
-  // TODO: Lab2.1 无锁版本的 put
+  // Lab2.1 无锁版本的 put
   // ? 直接调用 current_table 的 put 方法
   spdlog::trace("MemTable--put({}, {}, {})", key, value, tranc_id);
   current_table->put(key, value, tranc_id);
@@ -35,7 +35,7 @@ void MemTable::put_(const std::string &key, const std::string &value,
 
 void MemTable::put(const std::string &key, const std::string &value,
                    uint64_t tranc_id) {
-  // TODO: Lab2.1 有锁版本的 put
+  // Lab2.1 有锁版本的 put
   // ? 加 cur_mtx 写锁后调用 put_()
   // ? 若 current_table 超过 LsmPerMemSizeLimit, 还需加 frozen_mtx 写锁并调用 frozen_cur_table_()
   // 加写入锁，保护 current_table
@@ -54,7 +54,7 @@ void MemTable::put(const std::string &key, const std::string &value,
 void MemTable::put_batch(
     const std::vector<std::pair<std::string, std::string>> &kvs,
     uint64_t tranc_id) {
-  // TODO: Lab2.1 有锁版本的 put_batch
+  // Lab2.1 有锁版本的 put_batch
   // ? 加 cur_mtx 写锁后遍历 kvs 依次调用 put_()
   // ? 结束后若超限则冻结当前表
   spdlog::trace("MemTable--put_batch with {} kvs", kvs.size());
@@ -77,7 +77,7 @@ SkipListIterator MemTable::cur_get_(const std::string &key, uint64_t tranc_id) {
   // 检查当前活跃的memtable
   // TODO: Lab2.1 从活跃跳表中查询
   // ? 调用 current_table->get(), 找到则返回; 未找到则返回空迭代器
-  return SkipListIterator{};
+  return current_table->get(key, tranc_id);
 }
 
 SkipListIterator MemTable::frozen_get_(const std::string &key,
@@ -85,7 +85,12 @@ SkipListIterator MemTable::frozen_get_(const std::string &key,
   // TODO: Lab2.1 从冻结跳表中查询
   // ? 遍历 frozen_tables (注意顺序：越靠前越新), 找到即返回
   // ? tranc_id 直接传递到 get() 即可
-  return SkipListIterator{};
+  // 冻结队列头新尾旧, 从头扫, 首个命中即最新版本
+  for (const auto & e: frozen_tables){
+    auto iter = e->get(key, tranc_id); 
+    if (iter.is_valid()) return iter; 
+  }
+  return SkipListIterator{}; 
 }
 
 SkipListIterator MemTable::get(const std::string &key, uint64_t tranc_id) {
