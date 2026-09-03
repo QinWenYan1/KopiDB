@@ -177,18 +177,19 @@ MemTable::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
 void MemTable::remove_(const std::string &key, uint64_t tranc_id) {
   // TODO: Lab2.1 无锁版本的remove
   // ? 在 LSM 中, 删除操作是写入空值, 调用 current_table->put(key, "", tranc_id)
-  current_table->put(key, "", tranc_id); 
+  current_table->put(key, "", tranc_id);
 }
 
 void MemTable::remove(const std::string &key, uint64_t tranc_id) {
   // TODO: Lab2.1 有锁版本的remove
   // ? 加 cur_mtx 写锁后调用 remove_()
   // ? 若超限则冻结当前表
-  std::lock_guard<std::shared_mutex> write_lock(cur_mtx); 
+  std::lock_guard<std::shared_mutex> write_lock(cur_mtx);
   remove_(key, tranc_id);
-  if (current_table->get_size() >= TomlConfig::getInstance().getLsmPerMemSizeLimit()){
-    std::lock_guard<std::shared_mutex> frozen_lock(frozen_mtx); 
-    frozen_cur_table_(); 
+  if (current_table->get_size() >=
+      TomlConfig::getInstance().getLsmPerMemSizeLimit()) {
+    std::lock_guard<std::shared_mutex> frozen_lock(frozen_mtx);
+    frozen_cur_table_();
   }
 }
 
@@ -197,13 +198,14 @@ void MemTable::remove_batch(const std::vector<std::string> &keys,
   // TODO: Lab2.1 有锁版本的remove_batch
   // ? 加 cur_mtx 写锁后遍历 keys 依次调用 remove_()
   // ? 结束后若超限则冻结当前表
-  std::lock_guard<std::shared_mutex> write_lock(cur_mtx); 
-  for (const auto &key : keys){
+  std::lock_guard<std::shared_mutex> write_lock(cur_mtx);
+  for (const auto &key : keys) {
     remove_(key, tranc_id);
   }
-  if (current_table->get_size() >= TomlConfig::getInstance().getLsmPerMemSizeLimit()){
-    std::lock_guard<std::shared_mutex> frozen_lock(frozen_mtx); 
-    frozen_cur_table_(); 
+  if (current_table->get_size() >=
+      TomlConfig::getInstance().getLsmPerMemSizeLimit()) {
+    std::lock_guard<std::shared_mutex> frozen_lock(frozen_mtx);
+    frozen_cur_table_();
   }
 }
 
