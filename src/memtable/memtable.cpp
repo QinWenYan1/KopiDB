@@ -46,7 +46,7 @@ void MemTable::put(const std::string &key, const std::string &value,
   if (current_table->get_size() >= TomlConfig::getInstance().getLsmPerMemSizeLimit()){
     // 加入冻结锁，保护 frozen table / frozen 队列
     std::lock_guard<std::shared_mutex> frozen_lock(frozen_mtx); 
-    frozen_cur_table(); 
+    frozen_cur_table_(); 
   }
 
 }
@@ -68,7 +68,7 @@ void MemTable::put_batch(
   if (current_table->get_size() >= TomlConfig::getInstance().getLsmPerMemSizeLimit()){
     // 加入冻结锁，保护 frozen table / frozen 队列
     std::lock_guard<std::shared_mutex> frozen_lock(frozen_mtx); 
-    frozen_cur_table(); 
+    frozen_cur_table_(); 
   }
 
 }
@@ -236,8 +236,9 @@ void MemTable::frozen_cur_table_() {
   // TODO: Lab2.1 冻结活跃表（无锁版本）
   // ? 将 current_table 移入 frozen_tables 头部, 并更新 frozen_bytes
   // ? 创建新的空 SkipList 作为 current_table
-  // 无锁版本：直接写入活跃跳表
-  frozen_tables.push_back(current_table); 
+  // 无锁版本：直接冻结活跃表
+  // 注意链表最前面是最新的
+  frozen_tables.push_front(current_table); 
   frozen_bytes += current_table->get_size(); 
   current_table = std::make_shared<SkipList>(); 
 }
