@@ -8,28 +8,28 @@ namespace tiny_lsm {
 bool operator<(const SearchItem &a, const SearchItem &b) {
   // TODO: Lab2.2 实现比较规则
   // 1. 实现方法为 key 升序比较
-  if (a.key_ != b.key_){
-    return a.key_ < b.key_; 
+  if (a.key_ != b.key_) {
+    return a.key_ < b.key_;
   }
 
   // 2. 同key的情况下比较 tranc_id事务版本，方式为降序
-  if (a.tranc_id_ != b.tranc_id_){
-    return a.tranc_id_ > b.tranc_id_; 
+  if (a.tranc_id_ != b.tranc_id_) {
+    return a.tranc_id_ > b.tranc_id_;
   }
 
-   // 3. 同 key 同版本: 表新者赢
-  return a.idx_ > b.idx_; 
+  // 3. 同 key 同版本: 表新者赢
+  return a.idx_ > b.idx_;
 }
 
 bool operator>(const SearchItem &a, const SearchItem &b) {
   // TODO: Lab2.2 实现比较规则
   // 直接逆关系，不用重写逻辑
-  return operator < (b, a); 
+  return operator<(b, a);
 }
 
 bool operator==(const SearchItem &a, const SearchItem &b) {
   // TODO: Lab2.2 实现比较规则
-  return a.key_ == b.key_ && a.tranc_id_ == b.tranc_id_ && a.idx_ == b.idx_; 
+  return a.key_ == b.key_ && a.tranc_id_ == b.tranc_id_ && a.idx_ == b.idx_;
 }
 
 // *************************** HeapIterator ***************************
