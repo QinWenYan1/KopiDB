@@ -36,6 +36,7 @@ bool operator==(const SearchItem &a, const SearchItem &b) {
 HeapIterator::HeapIterator(bool skip_delete, bool keep_all_versions) {
   // 默认构造函数
   // TODO: Lab2.2 实现 HeapIterator 构造函数
+  // 空堆，什么都不用写入，成员初始化列表是唯一要做的事情
 }
 HeapIterator::HeapIterator(std::vector<SearchItem> item_vec,
                            uint64_t max_tranc_id, bool skip_delete,
@@ -43,6 +44,24 @@ HeapIterator::HeapIterator(std::vector<SearchItem> item_vec,
     : max_tranc_id_(max_tranc_id), skip_delete_(skip_delete),
       keep_all_versions_(keep_all_versions) {
   // TODO: Lab2.2 实现 HeapIterator 构造函数
+  // 1. 全部灌入到最小堆，堆中自动按照SearchItem 的 operator< 排列好
+  for (auto &item : item_vec){
+    items.push(std::move(item)); 
+  }
+  // 2. 初始滤除(对应教程 Hint 1):
+  //    堆顶 = 最小 key 的最新版本; 它若是墓碑(空 value),
+  //    说明该 key 已被删除, 整组(墓碑 + 同 key 旧版本)一起弹出
+  while(!items.empty() && skip_delete_ && items.top().value_.empty()){
+    std::string key = items.top().key_; 
+    items.pop(); 
+    while (!items.empty() && items.top().key_ == key) 
+      // 墓碑下面还压着同 key 的旧版本，一并清除
+      items.pop(); 
+  }
+
+  // 3. 缓存当前元素 (依赖 update_current)
+  update_current(); 
+
 }
 
 HeapIterator::pointer HeapIterator::operator->() const {
