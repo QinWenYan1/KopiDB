@@ -73,12 +73,12 @@ HeapIterator::pointer HeapIterator::operator->() const {
 HeapIterator::value_type HeapIterator::operator*() const {
   // Lab2.2 实现 * 重载
   // 解引用缓存; value_type = pair<string, string>
-  return *current; 
+  return *current;
 }
 
 BaseIterator &HeapIterator::operator++() {
-  // TODO: Lab2.2 实现 ++ 重载
-  if (items.empty()) //节点已经耗尽，防御性返回
+  // Lab2.2 实现 ++ 重载
+  if (items.empty()) // 节点已经耗尽，防御性返回
     return *this;
 
   // 1. 当前 key 消费完毕：弹出堆顶 + 连同 key 旧版本（去重）
@@ -87,7 +87,7 @@ BaseIterator &HeapIterator::operator++() {
   while (!items.empty() && items.top().key_ == key)
     // 下面还压着同 key 的旧版本，一并跳过
     items.pop();
-  
+
   // 2. 新堆顶如果是墓碑，整组弹掉; 循环直到堆顶合法或堆空
   while (!top_value_legal()) {
     key = items.top().key_;
@@ -96,46 +96,49 @@ BaseIterator &HeapIterator::operator++() {
       // 墓碑下面还压着同 key 的旧版本，一并清除
       items.pop();
   }
-  
-  // 3. 刷新缓存
-  update_current(); 
-  return *this; 
 
+  // 3. 刷新缓存
+  update_current();
+  return *this;
 }
 
 bool HeapIterator::operator==(const BaseIterator &other) const {
-  // TODO: Lab2.2 实现 == 重载
+  // Lab2.2 实现 == 重载
   // 1. 检查类型相等不相等, 不相等返回false
-  if (other.get_type() != IteratorType::HeapIterator) return false; 
+  if (other.get_type() != IteratorType::HeapIterator)
+    return false;
 
   // 2. 如果有一方耗尽，双方耗尽才能相等
-  if (items.empty() || other.is_end()) return items.empty() && other.is_end(); 
+  if (items.empty() || other.is_end())
+    return items.empty() && other.is_end();
 
   // 3. 两边都是有效的：比当前key-value对
-  return *(*this) == *other; 
+  return *(*this) == *other;
 }
 
 bool HeapIterator::operator!=(const BaseIterator &other) const {
-  // TODO: Lab2.2 实现 != 重载
+  // Lab2.2 实现 != 重载
   // 使用 operator == 语法糖，逆关系而已
-  return !operator==(other); 
+  return !operator==(other);
 }
 
 bool HeapIterator::top_value_legal() const {
-  // TODO: Lab2.2 判断顶部元素是否合法
+  // Lab2.2 判断顶部元素是否合法
   // ? 被删除的值是不合法
   // ? 不允许访问的事务创建或更改的键值对不合法(暂时忽略)
   // 对外暴露 skip_delete_ = true， 墓碑不合法
   // false: 不合法，true: 合法
-  if (!items.empty() && skip_delete_ && items.top().value_.empty()) return false; 
+  if (!items.empty() && skip_delete_ && items.top().value_.empty())
+    return false;
   return true;
   // TODO: Lab5 在这里加事务可见性判断
-  // (条目 tranc_id_ 对 max_tranc_id_ 不可见 -> 不合法) 
+  // (条目 tranc_id_ 对 max_tranc_id_ 不可见 -> 不合法)
 }
 
 void HeapIterator::skip_by_tranc_id() {
   // Lab2.2 仅作标记, 函数体留空
-  // TODO: Lab5 实现: 若堆顶条目的事务对 max_tranc_id_ 不可见, 弹出整组同 key 项, 循环直到堆顶可见或堆空
+  // TODO: Lab5 实现: 若堆顶条目的事务对 max_tranc_id_ 不可见, 弹出整组同 key
+  // 项, 循环直到堆顶可见或堆空
 }
 
 bool HeapIterator::is_end() const { return items.empty(); }
@@ -143,10 +146,12 @@ bool HeapIterator::is_valid() const { return !items.empty(); }
 
 void HeapIterator::update_current() const {
   // current 缓存了当前键值对的值, 你实现 -> 重载时可能需要
-  // TODO: Lab2.2 更新当前缓存值
+  // Lab2.2 更新当前缓存值
   if (items.empty())
-    current.reset(); 
-  else current = std::make_shared<value_type>(items.top().key_, items.top().value_); 
+    current.reset();
+  else
+    current =
+        std::make_shared<value_type>(items.top().key_, items.top().value_);
 }
 
 IteratorType HeapIterator::get_type() const {
