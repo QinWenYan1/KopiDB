@@ -76,7 +76,29 @@ HeapIterator::value_type HeapIterator::operator*() const {
 
 BaseIterator &HeapIterator::operator++() {
   // TODO: Lab2.2 实现 ++ 重载
-  return *this;
+  if (items.empty()) //节点已经耗尽，防御性返回
+    return *this;
+
+  // 1. 当前 key 消费完毕：弹出堆顶 + 连同 key 旧版本（去重）
+  std::string key = items.top().key_;
+  items.pop();
+  while (!items.empty() && items.top().key_ == key)
+    // 下面还压着同 key 的旧版本，一并跳过
+    items.pop();
+  
+  // 2. 新堆顶如果是墓碑，整组弹掉; 循环知道堆顶合法或堆空
+  while (!items.empty() && skip_delete_ && items.top().value_.empty()) {
+    std::string key = items.top().key_;
+    items.pop();
+    while (!items.empty() && items.top().key_ == key)
+      // 墓碑下面还压着同 key 的旧版本，一并清除
+      items.pop();
+  }
+  
+  // 3. 刷新缓存
+  update_current(); 
+  return *this; 
+
 }
 
 bool HeapIterator::operator==(const BaseIterator &other) const {
