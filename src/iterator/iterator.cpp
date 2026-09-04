@@ -67,12 +67,13 @@ HeapIterator::HeapIterator(std::vector<SearchItem> item_vec,
 
 HeapIterator::pointer HeapIterator::operator->() const {
   // TODO: Lab2.2 实现 -> 重载
-  return nullptr;
+  return current.get();
 }
 
 HeapIterator::value_type HeapIterator::operator*() const {
   // TODO: Lab2.2 实现 * 重载
-  return {};
+  // 解引用缓存; value_type = pair<string, string>
+  return *current; 
 }
 
 BaseIterator &HeapIterator::operator++() {
