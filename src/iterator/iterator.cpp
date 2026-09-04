@@ -1,4 +1,5 @@
 #include "iterator/iterator.h"
+#include <memory>
 #include <tuple>
 #include <vector>
 
@@ -103,12 +104,20 @@ BaseIterator &HeapIterator::operator++() {
 
 bool HeapIterator::operator==(const BaseIterator &other) const {
   // TODO: Lab2.2 实现 == 重载
-  return true;
+  // 1. 检查类型相等不相等, 不相等返回false
+  if (other.get_type() != IteratorType::HeapIterator) return false; 
+
+  // 2. 如果有一方耗尽，双方耗尽才能相等
+  if (items.empty() || other.is_end()) return items.empty() && other.is_end(); 
+
+  // 3. 两边都是有效的：比当前key-value对
+  return *(*this) == *other; 
 }
 
 bool HeapIterator::operator!=(const BaseIterator &other) const {
   // TODO: Lab2.2 实现 != 重载
-  return true;
+  // 使用 operator == 语法糖，逆关系而已
+  return !operator==(other); 
 }
 
 bool HeapIterator::top_value_legal() const {
@@ -128,6 +137,9 @@ bool HeapIterator::is_valid() const { return !items.empty(); }
 void HeapIterator::update_current() const {
   // current 缓存了当前键值对的值, 你实现 -> 重载时可能需要
   // TODO: Lab2.2 更新当前缓存值
+  if (items.empty())
+    current.reset(); 
+  else current = std::make_shared<value_type>(items.top().key_, items.top().value_); 
 }
 
 IteratorType HeapIterator::get_type() const {
