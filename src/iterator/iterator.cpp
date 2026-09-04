@@ -86,9 +86,9 @@ BaseIterator &HeapIterator::operator++() {
     // 下面还压着同 key 的旧版本，一并跳过
     items.pop();
   
-  // 2. 新堆顶如果是墓碑，整组弹掉; 循环知道堆顶合法或堆空
+  // 2. 新堆顶如果是墓碑，整组弹掉; 循环直到堆顶合法或堆空
   while (!items.empty() && skip_delete_ && items.top().value_.empty()) {
-    std::string key = items.top().key_;
+    key = items.top().key_;
     items.pop();
     while (!items.empty() && items.top().key_ == key)
       // 墓碑下面还压着同 key 的旧版本，一并清除
