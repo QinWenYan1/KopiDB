@@ -7,7 +7,7 @@ namespace tiny_lsm {
 
 // *************************** SearchItem ***************************
 bool operator<(const SearchItem &a, const SearchItem &b) {
-  // TODO: Lab2.2 实现比较规则
+  // Lab2.2 实现比较规则
   // 1. 实现方法为 key 升序比较
   if (a.key_ != b.key_) {
     return a.key_ < b.key_;
@@ -23,13 +23,13 @@ bool operator<(const SearchItem &a, const SearchItem &b) {
 }
 
 bool operator>(const SearchItem &a, const SearchItem &b) {
-  // TODO: Lab2.2 实现比较规则
+  // Lab2.2 实现比较规则
   // 直接逆关系，不用重写逻辑
   return operator<(b, a);
 }
 
 bool operator==(const SearchItem &a, const SearchItem &b) {
-  // TODO: Lab2.2 实现比较规则
+  // Lab2.2 实现比较规则
   return a.key_ == b.key_ && a.tranc_id_ == b.tranc_id_ && a.idx_ == b.idx_;
 }
 
@@ -37,7 +37,7 @@ bool operator==(const SearchItem &a, const SearchItem &b) {
 HeapIterator::HeapIterator(bool skip_delete, bool keep_all_versions)
     : skip_delete_(skip_delete), keep_all_versions_(keep_all_versions) {
   // 默认构造函数
-  // TODO: Lab2.2 实现 HeapIterator 构造函数
+  // Lab2.2 实现 HeapIterator 构造函数
   // 空堆，什么都不用写入，成员初始化列表是唯一要做的事情
 }
 HeapIterator::HeapIterator(std::vector<SearchItem> item_vec,
@@ -45,7 +45,7 @@ HeapIterator::HeapIterator(std::vector<SearchItem> item_vec,
                            bool keep_all_versions)
     : max_tranc_id_(max_tranc_id), skip_delete_(skip_delete),
       keep_all_versions_(keep_all_versions) {
-  // TODO: Lab2.2 实现 HeapIterator 构造函数
+  // Lab2.2 实现 HeapIterator 构造函数
   // 1. 全部灌入到最小堆，堆中自动按照SearchItem 的 operator< 排列好
   for (auto &item : item_vec) {
     items.push(std::move(item));
@@ -53,7 +53,7 @@ HeapIterator::HeapIterator(std::vector<SearchItem> item_vec,
   // 2. 初始滤除(对应教程 Hint 1):
   //    堆顶 = 最小 key 的最新版本; 它若是墓碑(空 value),
   //    说明该 key 已被删除, 整组(墓碑 + 同 key 旧版本)一起弹出
-  while (!items.empty() && skip_delete_ && items.top().value_.empty()) {
+  while (!top_value_legal()) {
     std::string key = items.top().key_;
     items.pop();
     while (!items.empty() && items.top().key_ == key)
@@ -66,12 +66,12 @@ HeapIterator::HeapIterator(std::vector<SearchItem> item_vec,
 }
 
 HeapIterator::pointer HeapIterator::operator->() const {
-  // TODO: Lab2.2 实现 -> 重载
+  // Lab2.2 实现 -> 重载
   return current.get();
 }
 
 HeapIterator::value_type HeapIterator::operator*() const {
-  // TODO: Lab2.2 实现 * 重载
+  // Lab2.2 实现 * 重载
   // 解引用缓存; value_type = pair<string, string>
   return *current; 
 }
@@ -89,7 +89,7 @@ BaseIterator &HeapIterator::operator++() {
     items.pop();
   
   // 2. 新堆顶如果是墓碑，整组弹掉; 循环直到堆顶合法或堆空
-  while (!items.empty() && skip_delete_ && items.top().value_.empty()) {
+  while (!top_value_legal()) {
     key = items.top().key_;
     items.pop();
     while (!items.empty() && items.top().key_ == key)
@@ -125,14 +125,12 @@ bool HeapIterator::top_value_legal() const {
   // TODO: Lab2.2 判断顶部元素是否合法
   // ? 被删除的值是不合法
   // ? 不允许访问的事务创建或更改的键值对不合法(暂时忽略)
-  // 堆都空了，当然不合法了
-  if (items.empty()) return false; 
   // 对外暴露 skip_delete_ = true， 墓碑不合法
-  if (skip_delete_ && items.top().value_.empty()) return false; 
-
+  // false: 不合法，true: 合法
+  if (!items.empty() && skip_delete_ && items.top().value_.empty()) return false; 
+  return true;
   // TODO: Lab5 在这里加事务可见性判断
-  // (条目 tranc_id_ 对 max_tranc_id_ 不可见 -> 不合法)
-  return true; 
+  // (条目 tranc_id_ 对 max_tranc_id_ 不可见 -> 不合法) 
 }
 
 void HeapIterator::skip_by_tranc_id() {
