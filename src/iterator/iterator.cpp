@@ -29,7 +29,7 @@ bool operator>(const SearchItem &a, const SearchItem &b) {
 
 bool operator==(const SearchItem &a, const SearchItem &b) {
   // TODO: Lab2.2 实现比较规则
-  return true;
+  return a.key_ == b.key_ && a.tranc_id_ == b.tranc_id_ && a.idx_ == b.idx_; 
 }
 
 // *************************** HeapIterator ***************************
