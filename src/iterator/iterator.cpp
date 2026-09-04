@@ -23,7 +23,8 @@ bool operator<(const SearchItem &a, const SearchItem &b) {
 
 bool operator>(const SearchItem &a, const SearchItem &b) {
   // TODO: Lab2.2 实现比较规则
-  return true;
+  // 直接逆关系，不用重写逻辑
+  return operator < (b, a); 
 }
 
 bool operator==(const SearchItem &a, const SearchItem &b) {
