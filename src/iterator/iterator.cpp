@@ -125,11 +125,19 @@ bool HeapIterator::top_value_legal() const {
   // TODO: Lab2.2 判断顶部元素是否合法
   // ? 被删除的值是不合法
   // ? 不允许访问的事务创建或更改的键值对不合法(暂时忽略)
-  return true;
+  // 堆都空了，当然不合法了
+  if (items.empty()) return false; 
+  // 对外暴露 skip_delete_ = true， 墓碑不合法
+  if (skip_delete_ && items.top().value_.empty()) return false; 
+
+  // TODO: Lab5 在这里加事务可见性判断
+  // (条目 tranc_id_ 对 max_tranc_id_ 不可见 -> 不合法)
+  return true; 
 }
 
 void HeapIterator::skip_by_tranc_id() {
-  // TODO: Lab2.2 后续的Lab实现, 只是作为标记提醒
+  // Lab2.2 仅作标记, 函数体留空
+  // TODO: Lab5 实现: 若堆顶条目的事务对 max_tranc_id_ 不可见, 弹出整组同 key 项, 循环直到堆顶可见或堆空
 }
 
 bool HeapIterator::is_end() const { return items.empty(); }
