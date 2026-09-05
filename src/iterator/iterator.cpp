@@ -87,9 +87,15 @@ BaseIterator &HeapIterator::operator++() {
   while (!items.empty() && items.top().key_ == key)
     // 下面还压着同 key 的旧版本，一并跳过
     items.pop();
+ 
 
-  // 2. 新堆顶如果是墓碑，整组弹掉; 循环直到堆顶合法或堆空
-  while (!top_value_legal()) {
+  // 2. 开始过滤非法元素
+  while (true) {
+    // 过滤非法版本号，直到遇到合法版本 tranc_id
+    skip_by_tranc_id();
+
+    // 新堆顶如果是墓碑，整组弹掉; 循环直到堆顶合法或堆空
+    if (top_value_legal()) break; 
     key = items.top().key_;
     items.pop();
     while (!items.empty() && items.top().key_ == key)
@@ -122,6 +128,7 @@ bool HeapIterator::operator!=(const BaseIterator &other) const {
   return !operator==(other);
 }
 
+// 判断顶部元素是否合法
 bool HeapIterator::top_value_legal() const {
   // Lab2.2 判断顶部元素是否合法
   // ? 被删除的值是不合法
@@ -135,6 +142,7 @@ bool HeapIterator::top_value_legal() const {
   return true;
 }
 
+// 跳过非法版本
 void HeapIterator::skip_by_tranc_id() {
   // Lab2.2
   // 闸 2, 管"版本": 这个版本的 tranc_id 比读者快照新
