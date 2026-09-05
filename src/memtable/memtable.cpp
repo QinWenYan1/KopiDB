@@ -320,35 +320,35 @@ HeapIterator MemTable::begin(uint64_t tranc_id) {
   // ? 每个 item 包含 key, value, table_idx, 0, tranc_id
   // ? 过滤 tranc_id 不可见的记录 (tranc_id != 0 && iter.get_tranc_id() >
   // tranc_id) ? 返回 HeapIterator(item_vec, tranc_id)
-  std::vector<SearchItem> items; 
-  //先 curr 后 frozen mtx，都是读锁
+  std::vector<SearchItem> items;
+  // 先 curr 后 frozen mtx，都是读锁
   std::shared_lock<std::shared_mutex> cur_lock(cur_mtx);
   std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
 
-  //idx 约定： 表越新 idx 越大
-  // 取现现在 frozen_tables 个数就是 现在最新的 table index 
-  int idx = static_cast<int>(frozen_tables.size()); 
-  
-  //1. 取活跃表中的元素放入到heap中
-  // tranc_id 过滤：tranc_id != 0 && 条目tranc_id > tranc_id 才跳过
-  // tranc_id == 0 表示"非事务读"，
-  // 事务读只滤掉比自己新的版本。注意这个过滤是"收集时"做的，比灌进堆再滤便宜
-  for (auto it = current_table->begin(); it != current_table->end(); ++it){
+  // idx 约定： 表越新 idx 越大
+  //  取现现在 frozen_tables 个数就是 现在最新的 table index
+  int idx = static_cast<int>(frozen_tables.size());
+
+  // 1. 取活跃表中的元素放入到heap中
+  //  tranc_id 过滤：tranc_id != 0 && 条目tranc_id > tranc_id 才跳过
+  //  tranc_id == 0 表示"非事务读"，
+  //  事务读只滤掉比自己新的版本。注意这个过滤是"收集时"做的，比灌进堆再滤便宜
+  for (auto it = current_table->begin(); it != current_table->end(); ++it) {
     // 事务太新，对现版本不可见，跳过
     if (tranc_id != 0 && it.get_tranc_id() > tranc_id)
-      continue; 
-    items.emplace_back(it.get_key(), it.get_value(), idx, 0, it.get_tranc_id()); 
+      continue;
+    items.emplace_back(it.get_key(), it.get_value(), idx, 0, it.get_tranc_id());
   }
 
-
   // 2. 从冻结表取元素放到heap中: front 新 back 旧, idx 从大到小递减
-  for (const auto &table: frozen_tables){
-    --idx; 
-    for (auto it = table->begin(); it != table->end(); ++it){
+  for (const auto &table : frozen_tables) {
+    --idx;
+    for (auto it = table->begin(); it != table->end(); ++it) {
       // 事务太新，对现版本不可见，跳过
       if (tranc_id != 0 && it.get_tranc_id() > tranc_id)
-        continue; 
-      items.emplace_back(it.get_key(), it.get_value(), idx, 0, it.get_tranc_id()); 
+        continue;
+      items.emplace_back(it.get_key(), it.get_value(), idx, 0,
+                         it.get_tranc_id());
     }
   }
 

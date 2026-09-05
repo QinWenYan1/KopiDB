@@ -139,7 +139,9 @@ bool HeapIterator::operator!=(const BaseIterator &other) const {
 bool HeapIterator::top_value_legal() const {
   // Lab2.2 判断顶部元素是否合法
   // ? 被删除的值是不合法
-  // ? 不允许访问的事务创建或更改的键值对不合法(暂时忽略)
+  // ? 不允许访问的事务创建或更改的键值对不合法(暂时忽略)（在 skip_by_tranc_id
+  // 里面实现）
+
   // 闸 1, 管"key": 空 value = 删除标记
   //       -> 这个 key 已死, 且要对外暴露(skip_delete_) -> 不合法
   // 本函数只管墓碑, 不管可见性(那是闸 2 的事)
