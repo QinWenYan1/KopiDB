@@ -374,7 +374,7 @@ HeapIterator MemTable::end() {
 // 唯一变化是每张表从全量 [begin, end) 换成前缀区间 [begin_preffix, end_preffix)
 HeapIterator MemTable::iters_preffix(const std::string &preffix,
                                      uint64_t tranc_id) {
-  // TODO: Lab2.3 MemTable 的前缀迭代器
+  // Lab2.3 MemTable 的前缀迭代器
   // ? 加读锁, 对所有表调用 begin_preffix/end_preffix 遍历前缀范围
   // ? 过滤事务可见性, 同 key 只保留最新版本
   std::vector<SearchItem> items;
@@ -414,7 +414,7 @@ HeapIterator MemTable::iters_preffix(const std::string &preffix,
 std::optional<std::pair<HeapIterator, HeapIterator>>
 MemTable::iters_monotony_predicate(
     uint64_t tranc_id, std::function<int(const std::string &)> predicate) {
-  // TODO: Lab2.3 MemTable 的谓词查询迭代器起始范围
+  // Lab2.3 MemTable 的谓词查询迭代器起始范围
   // ? 加读锁, 对所有表调用 iters_monotony_predicate 获取结果
   // ? 过滤事务可见性, 同 key 只保留最新版本
   // ? 若结果为空返回 nullopt;
