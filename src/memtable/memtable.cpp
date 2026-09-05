@@ -361,6 +361,8 @@ HeapIterator MemTable::end() {
   return HeapIterator{};
 }
 
+// 它就是 begin() 的区间版——锁、idx 约定、tranc 过滤、收集进堆全套复用
+// 唯一变化是每张表从全量 [begin, end) 换成前缀区间 [begin_preffix, end_preffix)
 HeapIterator MemTable::iters_preffix(const std::string &preffix,
                                      uint64_t tranc_id) {
   // TODO: Lab2.3 MemTable 的前缀迭代器
