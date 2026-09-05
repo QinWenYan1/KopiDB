@@ -126,19 +126,24 @@ bool HeapIterator::top_value_legal() const {
   // Lab2.2 判断顶部元素是否合法
   // ? 被删除的值是不合法
   // ? 不允许访问的事务创建或更改的键值对不合法(暂时忽略)
-  // 对外暴露 skip_delete_ = true， 墓碑不合法
-  // false: 不合法，true: 合法
+  // 闸 1, 管"key": 空 value = 删除标记
+  //       -> 这个 key 已死, 且要对外暴露(skip_delete_) -> 不合法
+  // 本函数只管墓碑, 不管可见性(那是闸 2 的事)
+  // 堆空时返回 true: "空集即合法", 滤除循环靠这个约定安全退出
   if (!items.empty() && skip_delete_ && items.top().value_.empty())
     return false;
   return true;
-  // TODO: Lab5 在这里加事务可见性判断
-  // (条目 tranc_id_ 对 max_tranc_id_ 不可见 -> 不合法)
 }
 
 void HeapIterator::skip_by_tranc_id() {
-  // Lab2.2 仅作标记, 函数体留空
-  // TODO: Lab5 实现: 若堆顶条目的事务对 max_tranc_id_ 不可见, 弹出整组同 key
-  // 项, 循环直到堆顶可见或堆空
+  // Lab2.2 
+  // 闸 2, 管"版本": 这个版本的 tranc_id 比读者快照新
+  //       -> 说明它是在读者拍照之后才写入的, 这个读者不能看, 弹掉
+  // 只弹单个: 同一 key 还有更旧的版本, 弹一个让旧版本浮上来;
+  //          若旧版本也太新, while 继续弹; 全太新则 key 自然消失
+  // max_tranc_id_ == 0 表示非事务读, 什么都可见, 一个都不弹
+  while(!items.empty() && max_tranc_id_ !=0 && items.top().tranc_id_ > max_tranc_id_)
+    items.pop(); 
 }
 
 bool HeapIterator::is_end() const { return items.empty(); }

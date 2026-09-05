@@ -313,9 +313,9 @@ size_t MemTable::get_total_size() {
   return get_frozen_size() + get_cur_size();
 }
 
-// TODO: 需要进一步判断这里的 HeapIterator 能否跳过删除元素
+// 需要进一步判断这里的 HeapIterator 能否跳过删除元素
 HeapIterator MemTable::begin(uint64_t tranc_id) {
-  // TODO: Lab2.2 MemTable 的迭代器
+  // Lab2.2 MemTable 的迭代器
   // ? 加 cur_mtx 和 frozen_mtx 读锁, 遍历所有表收集 SearchItem
   // ? 每个 item 包含 key, value, table_idx, 0, tranc_id
   // ? 过滤 tranc_id 不可见的记录 (tranc_id != 0 && iter.get_tranc_id() >
@@ -356,7 +356,7 @@ HeapIterator MemTable::begin(uint64_t tranc_id) {
 }
 
 HeapIterator MemTable::end() {
-  // TODO: Lab2.2 MemTable 的迭代器
+  // Lab2.2 MemTable 的迭代器
   // ? 加读锁后返回空 HeapIterator
   return HeapIterator{};
 }
