@@ -136,14 +136,15 @@ bool HeapIterator::top_value_legal() const {
 }
 
 void HeapIterator::skip_by_tranc_id() {
-  // Lab2.2 
+  // Lab2.2
   // 闸 2, 管"版本": 这个版本的 tranc_id 比读者快照新
   //       -> 说明它是在读者拍照之后才写入的, 这个读者不能看, 弹掉
   // 只弹单个: 同一 key 还有更旧的版本, 弹一个让旧版本浮上来;
   //          若旧版本也太新, while 继续弹; 全太新则 key 自然消失
   // max_tranc_id_ == 0 表示非事务读, 什么都可见, 一个都不弹
-  while(!items.empty() && max_tranc_id_ !=0 && items.top().tranc_id_ > max_tranc_id_)
-    items.pop(); 
+  while (!items.empty() && max_tranc_id_ != 0 &&
+         items.top().tranc_id_ > max_tranc_id_)
+    items.pop();
 }
 
 bool HeapIterator::is_end() const { return items.empty(); }
