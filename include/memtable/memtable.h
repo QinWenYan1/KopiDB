@@ -4,14 +4,11 @@
 #include "skiplist/skiplist.h"
 #include <cstddef>
 #include <functional>
-#include <iostream>
 #include <list>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <shared_mutex>
 #include <string>
-#include <unordered_map>
 #include <utility>
 
 namespace tiny_lsm {
@@ -37,6 +34,11 @@ private:
 
   void remove_(const std::string &key, uint64_t tranc_id);
   void frozen_cur_table_(); // _ 表示不需要锁的版本
+
+  // 用于检查本元素是否是合法事务版本
+  // 事务可见性: tranc_id == 0 的条目(非事务写入)对所有读者可见;
+  // 否则仅当 条目不比读者的快照新 时可见。Lab 5 改可见性规则只动这里
+  static bool tranc_visible(uint64_t entry_tranc_id, uint64_t read_tranc_id);
 
 public:
   MemTable();

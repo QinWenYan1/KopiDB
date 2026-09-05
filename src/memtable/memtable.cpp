@@ -25,6 +25,15 @@ MemTable::MemTable() : frozen_bytes(0) {
 }
 MemTable::~MemTable() = default;
 
+  // 用于检查本元素是否是合法事务版本
+  // 事务可见性: tranc_id == 0 的条目(非事务写入)对所有读者可见;
+  // 否则仅当 条目不比读者的快照新 时可见。Lab 5 改可见性规则只动这里
+  bool MemTable::tranc_visible(uint64_t entry_tranc_id, uint64_t read_tranc_id){
+    // read == 0: 非事务读, 看全部
+    // 否则: 条目是在读者拍照之后写入的(条目 > read) -> 不可见
+    return read_tranc_id == 0 || entry_tranc_id <= read_tranc_id;
+  }
+
 void MemTable::put_(const std::string &key, const std::string &value,
                     uint64_t tranc_id) {
   // Lab2.1 无锁版本的 put
@@ -335,7 +344,7 @@ HeapIterator MemTable::begin(uint64_t tranc_id) {
   //  事务读只滤掉比自己新的版本。注意这个过滤是"收集时"做的，比灌进堆再滤便宜
   for (auto it = current_table->begin(); it != current_table->end(); ++it) {
     // 事务太新，对现版本不可见，跳过
-    if (tranc_id != 0 && it.get_tranc_id() > tranc_id)
+    if (!tranc_visible(it.get_tranc_id(), tranc_id))
       continue;
     items.emplace_back(it.get_key(), it.get_value(), idx, 0, it.get_tranc_id());
   }
@@ -345,7 +354,7 @@ HeapIterator MemTable::begin(uint64_t tranc_id) {
     --idx;
     for (auto it = table->begin(); it != table->end(); ++it) {
       // 事务太新，对现版本不可见，跳过
-      if (tranc_id != 0 && it.get_tranc_id() > tranc_id)
+      if (!tranc_visible(it.get_tranc_id(), tranc_id))
         continue;
       items.emplace_back(it.get_key(), it.get_value(), idx, 0,
                          it.get_tranc_id());
@@ -380,7 +389,7 @@ HeapIterator MemTable::iters_preffix(const std::string &preffix,
   for (auto it = current_table->begin_preffix(preffix); 
       it != current_table->end_preffix(preffix); ++it){
         // 事务不可见，跳过
-        if ( tranc_id != 0 && it.get_tranc_id() > tranc_id) continue; 
+        if ( !tranc_visible(it.get_tranc_id(), tranc_id)) continue; 
         items.emplace_back(it.get_key(), it.get_value(), idx, 0, it.get_tranc_id()); 
       }
   
@@ -390,7 +399,7 @@ HeapIterator MemTable::iters_preffix(const std::string &preffix,
     for (auto it = table->begin_preffix(preffix); 
       it != table->end_preffix(preffix); ++it){
         // 事务不可见，跳过
-        if ( tranc_id != 0 && it.get_tranc_id() > tranc_id) continue; 
+        if ( !tranc_visible(it.get_tranc_id(), tranc_id)) continue; 
         items.emplace_back(it.get_key(), it.get_value(), idx, 0, it.get_tranc_id()); 
       }
   }
@@ -416,7 +425,7 @@ MemTable::iters_monotony_predicate(
 
   int idx = static_cast<int>(frozen_tables.size());
 
-  // 1. 收集一张表饿谓词命中区间（单词谓词 -> 命中集连续 -> 每表一段）
+  // 1. 收集一张表谓词命中区间（单词谓词 -> 命中集连续 -> 每表一段）
   auto collect = [&](SkipList &table, const int& table_idx){
     auto range = table.iters_monotony_predicate(predicate); 
     // 本表没命中不算错误，别的表可能有
@@ -424,8 +433,8 @@ MemTable::iters_monotony_predicate(
 
     for (auto it = range->first; it != range->second; ++it){
       // 事务不可见，跳过
-      if (tranc_id != 0 && it.get_tranc_id() > tranc_id) continue; 
-      items.emplace_back(it.get_key(), it.get_value(), idx, 0, it.get_tranc_id()); 
+      if (!tranc_visible(it.get_tranc_id(), tranc_id)) continue; 
+      items.emplace_back(it.get_key(), it.get_value(), table_idx, 0, it.get_tranc_id()); 
     }
   }; 
 
