@@ -415,7 +415,12 @@ MemTable::iters_monotony_predicate(
   std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
 
   int idx = static_cast<int>(frozen_tables.size());
-  
+
+  // 1. 收集一张表饿谓词命中区间（单词谓词 -> 命中集连续 -> 每表一段）
+  auto collect = [&](SkipList &table, const int& table_idx){
+    
+  }; 
+
   return std::nullopt;
 }
 } // namespace tiny_lsm
