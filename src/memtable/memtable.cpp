@@ -418,9 +418,30 @@ MemTable::iters_monotony_predicate(
 
   // 1. 收集一张表饿谓词命中区间（单词谓词 -> 命中集连续 -> 每表一段）
   auto collect = [&](SkipList &table, const int& table_idx){
-    
+    auto range = table.iters_monotony_predicate(predicate); 
+    // 本表没命中不算错误，别的表可能有
+    if (!range.has_value()) return ; 
+
+    for (auto it = range->first; it != range->second; ++it){
+      // 事务不可见，跳过
+      if (tranc_id != 0 && it.get_tranc_id() > tranc_id) continue; 
+      items.emplace_back(it.get_key(), it.get_value(), idx, 0, it.get_tranc_id()); 
+    }
   }; 
 
-  return std::nullopt;
+  // 现在在curr, frozen tables 里面都收集
+  collect(*current_table, idx); 
+  for (const auto &table: frozen_tables){
+    --idx; 
+    collect(*table, idx); 
+  }
+
+  // 所有表都没命中, 整体无结果
+  if(items.empty()){
+    return std::nullopt; 
+  }
+
+    // 命中: (归并迭代器, 空哨兵), 与 begin()/end() 同款的用法
+  return std::make_pair(HeapIterator(items, tranc_id), HeapIterator{});
 }
 } // namespace tiny_lsm
