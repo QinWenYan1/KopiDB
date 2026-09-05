@@ -406,8 +406,16 @@ MemTable::iters_monotony_predicate(
   // TODO: Lab2.3 MemTable 的谓词查询迭代器起始范围
   // ? 加读锁, 对所有表调用 iters_monotony_predicate 获取结果
   // ? 过滤事务可见性, 同 key 只保留最新版本
-  // ? 若结果为空返回 nullopt; 否则返回 make_pair(HeapIterator(item_vec,
-  // tranc_id, true), HeapIterator{})
+  // ? 若结果为空返回 nullopt; 
+  // 否则返回 make_pair(HeapIterator(item_vec,ctranc_id, true), HeapIterator{})
+
+  std::vector<SearchItem> items; 
+  // 加curr 和 frozen 读锁
+  std::shared_lock<std::shared_mutex> cur_lock(cur_mtx); 
+  std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
+
+  int idx = static_cast<int>(frozen_tables.size());
+  
   return std::nullopt;
 }
 } // namespace tiny_lsm
