@@ -366,7 +366,36 @@ HeapIterator MemTable::iters_preffix(const std::string &preffix,
   // TODO: Lab2.3 MemTable 的前缀迭代器
   // ? 加读锁, 对所有表调用 begin_preffix/end_preffix 遍历前缀范围
   // ? 过滤事务可见性, 同 key 只保留最新版本
-  return {};
+  std::vector<SearchItem> items; 
+  // 加curr 和 frozen 读锁
+  std::shared_lock<std::shared_mutex> cur_lock(cur_mtx); 
+  std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
+
+  // idx 约定同 begin(): 表越新 idx 越大，current 最大
+  int idx = static_cast<int>(frozen_tables.size());
+
+  // 1. 活跃表：左开右闭 [begin_preffix, end_preffix)
+  for (auto it = current_table->begin_preffix(preffix); 
+      it != current_table->end_preffix(preffix); ++it){
+        // 事务不可见，跳过
+        if ( tranc_id != 0 && it.get_tranc_id() > tranc_id) continue; 
+        items.emplace_back(it.get_key(), it.get_value(), idx, 0, it.get_tranc_id()); 
+      }
+  
+  // 2. 冻结表：靠前的新，靠后的旧，idx递减
+  for (const auto &table:frozen_tables){
+    --idx; 
+    for (auto it = table->begin_preffix(preffix); 
+      it != table->end_preffix(preffix); ++it){
+        // 事务不可见，跳过
+        if ( tranc_id != 0 && it.get_tranc_id() > tranc_id) continue; 
+        items.emplace_back(it.get_key(), it.get_value(), idx, 0, it.get_tranc_id()); 
+      }
+  }
+
+  // skip_delete 默认 true
+  return HeapIterator(items, tranc_id); 
+
 }
 
 std::optional<std::pair<HeapIterator, HeapIterator>>
