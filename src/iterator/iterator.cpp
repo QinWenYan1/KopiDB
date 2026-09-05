@@ -53,7 +53,13 @@ HeapIterator::HeapIterator(std::vector<SearchItem> item_vec,
   // 2. 初始滤除(对应教程 Hint 1):
   //    堆顶 = 最小 key 的最新版本; 它若是墓碑(空 value),
   //    说明该 key 已被删除, 整组(墓碑 + 同 key 旧版本)一起弹出
-  while (!top_value_legal()) {
+  //    另外还要讲版本号过大的元素也过滤掉
+  while (true) {
+    // 过滤非法版本号，直到遇到合法版本 tranc_id
+    skip_by_tranc_id();
+
+    // 新堆顶如果是墓碑，整组弹掉; 循环直到堆顶合法或堆空
+    if (top_value_legal()) break; 
     std::string key = items.top().key_;
     items.pop();
     while (!items.empty() && items.top().key_ == key)
