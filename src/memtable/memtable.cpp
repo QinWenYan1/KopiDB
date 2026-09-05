@@ -25,14 +25,14 @@ MemTable::MemTable() : frozen_bytes(0) {
 }
 MemTable::~MemTable() = default;
 
-  // 用于检查本元素是否是合法事务版本
-  // 事务可见性: tranc_id == 0 的条目(非事务写入)对所有读者可见;
-  // 否则仅当 条目不比读者的快照新 时可见。Lab 5 改可见性规则只动这里
-  bool MemTable::tranc_visible(uint64_t entry_tranc_id, uint64_t read_tranc_id){
-    // read == 0: 非事务读, 看全部
-    // 否则: 条目是在读者拍照之后写入的(条目 > read) -> 不可见
-    return read_tranc_id == 0 || entry_tranc_id <= read_tranc_id;
-  }
+// 用于检查本元素是否是合法事务版本
+// 事务可见性: tranc_id == 0 的条目(非事务写入)对所有读者可见;
+// 否则仅当 条目不比读者的快照新 时可见。Lab 5 改可见性规则只动这里
+bool MemTable::tranc_visible(uint64_t entry_tranc_id, uint64_t read_tranc_id) {
+  // read == 0: 非事务读, 看全部
+  // 否则: 条目是在读者拍照之后写入的(条目 > read) -> 不可见
+  return read_tranc_id == 0 || entry_tranc_id <= read_tranc_id;
+}
 
 void MemTable::put_(const std::string &key, const std::string &value,
                     uint64_t tranc_id) {
@@ -377,36 +377,38 @@ HeapIterator MemTable::iters_preffix(const std::string &preffix,
   // TODO: Lab2.3 MemTable 的前缀迭代器
   // ? 加读锁, 对所有表调用 begin_preffix/end_preffix 遍历前缀范围
   // ? 过滤事务可见性, 同 key 只保留最新版本
-  std::vector<SearchItem> items; 
+  std::vector<SearchItem> items;
   // 加curr 和 frozen 读锁
-  std::shared_lock<std::shared_mutex> cur_lock(cur_mtx); 
+  std::shared_lock<std::shared_mutex> cur_lock(cur_mtx);
   std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
 
   // idx 约定同 begin(): 表越新 idx 越大，current 最大
   int idx = static_cast<int>(frozen_tables.size());
 
   // 1. 活跃表：左开右闭 [begin_preffix, end_preffix)
-  for (auto it = current_table->begin_preffix(preffix); 
-      it != current_table->end_preffix(preffix); ++it){
-        // 事务不可见，跳过
-        if ( !tranc_visible(it.get_tranc_id(), tranc_id)) continue; 
-        items.emplace_back(it.get_key(), it.get_value(), idx, 0, it.get_tranc_id()); 
-      }
-  
+  for (auto it = current_table->begin_preffix(preffix);
+       it != current_table->end_preffix(preffix); ++it) {
+    // 事务不可见，跳过
+    if (!tranc_visible(it.get_tranc_id(), tranc_id))
+      continue;
+    items.emplace_back(it.get_key(), it.get_value(), idx, 0, it.get_tranc_id());
+  }
+
   // 2. 冻结表：靠前的新，靠后的旧，idx递减
-  for (const auto &table:frozen_tables){
-    --idx; 
-    for (auto it = table->begin_preffix(preffix); 
-      it != table->end_preffix(preffix); ++it){
-        // 事务不可见，跳过
-        if ( !tranc_visible(it.get_tranc_id(), tranc_id)) continue; 
-        items.emplace_back(it.get_key(), it.get_value(), idx, 0, it.get_tranc_id()); 
-      }
+  for (const auto &table : frozen_tables) {
+    --idx;
+    for (auto it = table->begin_preffix(preffix);
+         it != table->end_preffix(preffix); ++it) {
+      // 事务不可见，跳过
+      if (!tranc_visible(it.get_tranc_id(), tranc_id))
+        continue;
+      items.emplace_back(it.get_key(), it.get_value(), idx, 0,
+                         it.get_tranc_id());
+    }
   }
 
   // skip_delete 默认 true
-  return HeapIterator(items, tranc_id); 
-
+  return HeapIterator(items, tranc_id);
 }
 
 std::optional<std::pair<HeapIterator, HeapIterator>>
@@ -415,42 +417,45 @@ MemTable::iters_monotony_predicate(
   // TODO: Lab2.3 MemTable 的谓词查询迭代器起始范围
   // ? 加读锁, 对所有表调用 iters_monotony_predicate 获取结果
   // ? 过滤事务可见性, 同 key 只保留最新版本
-  // ? 若结果为空返回 nullopt; 
+  // ? 若结果为空返回 nullopt;
   // 否则返回 make_pair(HeapIterator(item_vec,ctranc_id, true), HeapIterator{})
 
-  std::vector<SearchItem> items; 
+  std::vector<SearchItem> items;
   // 加curr 和 frozen 读锁
-  std::shared_lock<std::shared_mutex> cur_lock(cur_mtx); 
+  std::shared_lock<std::shared_mutex> cur_lock(cur_mtx);
   std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
 
   int idx = static_cast<int>(frozen_tables.size());
 
-  // 1. 收集一张表谓词命中区间（单词谓词 -> 命中集连续 -> 每表一段）
-  auto collect = [&](SkipList &table, const int& table_idx){
-    auto range = table.iters_monotony_predicate(predicate); 
+  // 1. 收集一张表谓词命中区间（单调谓词 -> 命中集连续 -> 每表一段）
+  auto collect = [&](SkipList &table, const int &table_idx) {
+    auto range = table.iters_monotony_predicate(predicate);
     // 本表没命中不算错误，别的表可能有
-    if (!range.has_value()) return ; 
+    if (!range.has_value())
+      return;
 
-    for (auto it = range->first; it != range->second; ++it){
+    for (auto it = range->first; it != range->second; ++it) {
       // 事务不可见，跳过
-      if (!tranc_visible(it.get_tranc_id(), tranc_id)) continue; 
-      items.emplace_back(it.get_key(), it.get_value(), table_idx, 0, it.get_tranc_id()); 
+      if (!tranc_visible(it.get_tranc_id(), tranc_id))
+        continue;
+      items.emplace_back(it.get_key(), it.get_value(), table_idx, 0,
+                         it.get_tranc_id());
     }
-  }; 
+  };
 
   // 现在在curr, frozen tables 里面都收集
-  collect(*current_table, idx); 
-  for (const auto &table: frozen_tables){
-    --idx; 
-    collect(*table, idx); 
+  collect(*current_table, idx);
+  for (const auto &table : frozen_tables) {
+    --idx;
+    collect(*table, idx);
   }
 
   // 所有表都没命中, 整体无结果
-  if(items.empty()){
-    return std::nullopt; 
+  if (items.empty()) {
+    return std::nullopt;
   }
 
-    // 命中: (归并迭代器, 空哨兵), 与 begin()/end() 同款的用法
+  // 命中: (归并迭代器, 空哨兵), 与 begin()/end() 同款的用法
   return std::make_pair(HeapIterator(items, tranc_id), HeapIterator{});
 }
 } // namespace tiny_lsm
