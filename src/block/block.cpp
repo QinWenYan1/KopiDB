@@ -112,7 +112,24 @@ std::shared_ptr<Block> Block::decode(const std::vector<uint8_t> &encoded,
   // offset 段：num 个条目 * 每个 2 字节，紧贴在 num 段前面
   size_t offset_sec_end = body_size - 2; 
   size_t offset_sec_begin = offset_sec_end - num * 2; 
-  
+
+  // data 段：从头到 offset 段的开头
+  // 4. 将 data 段整段拷贝
+  auto block = std::make_shared<Block>(); 
+  block->data.assign(encoded.begin(), encoded.begin() + offset_sec_begin); 
+
+  // 5. offset 段：每 2 字节小端拼一个 uint16_t 
+  block->offsets.reserve(num); 
+  for (size_t i = 0; i < num; ++i){
+    uint16_t off = static_cast<uint16_t>(
+      encoded[offset_sec_begin+2*i] | (encoded[offset_sec_begin+2*1+1] << 8)
+    ); 
+    block->offsets.push_back(off); 
+  }
+
+  // 6. capacity: 解码产物只读，填当前实际大小（此决定无测试约束）
+  block->capacity = block->cur_size(); 
+
   return nullptr;
 }
 
