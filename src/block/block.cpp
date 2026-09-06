@@ -58,6 +58,11 @@ std::vector<uint8_t> Block::encode(bool with_hash) {
   }
 
   // 3. num 段：元素个数，同样是 uint16_t 小端
+  // uint16_t 将数量转换成 uint16_t，超过 65535 会截断
+  // 正常合法块不会达到这个数量，但可以在函数开头加一层防御检查
+  if (offsets.size() > UINT16_MAX) {
+    throw std::runtime_error("Too many entries");
+  } 
   uint16_t num = static_cast<uint16_t>(offsets.size());
   encoded.push_back(num & 0xFF); 
   encoded.push_back((num >> 8) & 0xFF);
