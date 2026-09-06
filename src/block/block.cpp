@@ -111,6 +111,16 @@ std::shared_ptr<Block> Block::decode(const std::vector<uint8_t> &encoded,
 
   // offset 段：num 个条目 * 每个 2 字节，紧贴在 num 段前面
   size_t offset_sec_end = body_size - 2; 
+
+  // 在确定 offset_sec_begin 前，要先确认空间足够，再做减法
+  // 因为需要避免 size_t 下溢
+  // offset_sec_end 是“条目数” num 字段的起始下标，
+  // 也等于它前面 data + offsets 的总字节数
+  // 因此，需要确认 offset_sec_end 起码是 >= offsets(也就是 2 * num)
+  if (2 * num > offset_sec_end) {
+    throw std::runtime_error("Invalid offset table");
+  }
+
   size_t offset_sec_begin = offset_sec_end - num * 2; 
 
   // data 段：从头到 offset 段的开头
