@@ -88,22 +88,31 @@ std::shared_ptr<Block> Block::decode(const std::vector<uint8_t> &encoded,
     throw std::runtime_error("Block::decode: data too short");
 
   // 正文：[data][offsets][条目数]，不包含 CRC
+  //  encoded 里只有 data + offsets + num——CRC 还没 push 进去。
+  //  所以 encoded.size() 天然不含 CRC
+  //  传进来的 buffer 是完整成品，CRC 已经在末尾占着 4 字节了。
+  //  不减 4 就会把 CRC 自己也算进去
   const size_t body_size = encoded.size() - crc_size;
                               
   // 2. 带 hash 时先校验 CRC32 (覆盖除末 4 字节外的全部)
-
-  // encoded 里只有 data + offsets + num——CRC 还没 push 进去。
-  // 所以 encoded.size() 天然不含 CRC
-
-  // 传进来的 buffer 是完整成品，CRC 已经在末尾占着 4 字节了。
-  // 不减 4 就会把 CRC 自己也算进去
   if (with_hash){
-    uint32_t actual = 0, expect = crc32_compute(encoded.data(), encoded.size() - 4 ); 
+    uint32_t actual = 0, expect = crc32_compute(encoded.data(), body_size ); 
     for (int i = 0; i < 4; ++i) {
       actual |= static_cast<uint32_t>(encoded[body_size + i])
                     << (8 * i);
     }
+    if (expect != actual)
+      throw std::runtime_error("Block::decode: CRC32 mismatch"); 
   }
+
+  // 3. 从尾部往前切三段: [ data ... | offset x num | num(2B) | crc(4B)? ]
+  // num 永远在最后 2 字节: 低位在前拼回 uint16_t 
+  uint16_t num = static_cast<uint16_t>(encoded[body_size - 2] | (encoded[body_size - 1] << 8));
+
+  // offset 段：num 个条目 * 每个 2 字节，紧贴在 num 段前面
+  size_t offset_sec_end = body_size - 2; 
+  size_t offset_sec_begin = offset_sec_end - num * 2; 
+  
   return nullptr;
 }
 
