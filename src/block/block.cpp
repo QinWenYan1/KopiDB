@@ -9,10 +9,8 @@
 #include <stdexcept>
 #include <string>
 
-
 namespace tiny_lsm {
 Block::Block(size_t capacity) : capacity(capacity) {}
-
 
 // CRC32 校验实现 (polynomial 0xEDB88320), 抄自 vlog.cpp
 uint32_t Block::crc32_compute(const uint8_t *data, size_t len) {
@@ -30,30 +28,30 @@ uint32_t Block::crc32_compute(const uint8_t *data, size_t len) {
   return crc ^ 0xFFFFFFFF;
 }
 
-
-
 std::vector<uint8_t> Block::encode(bool with_hash) {
   // TODO: Lab 3.1 编码单个类实例形成一段字节数组
   // ? 格式: [data段] + [offsets数组, 每项uint16_t] + [元素个数 uint16_t]
   // ? 若 with_hash == true, 末尾额外追加 uint32_t 的 CRC 校验值
   // ? CRC 覆盖除自身之外的所有字节
-  std::vector<uint8_t> encoded; 
-  // data 段 + offset 段 + num 段 + crc32段 (optional)，先估计一个容量避免反复扩容
-  // [data][offsets：每项 2B][条目数：2B][可选 CRC32：4B]
-  encoded.reserve(data.size() + offsets.size()*2 + 2 + (with_hash? 4 : 0));
+  std::vector<uint8_t> encoded;
+  // data 段 + offset 段 + num 段 + crc32段
+  // (optional)，先估计一个容量避免反复扩容 [data][offsets：每项
+  // 2B][条目数：2B][可选 CRC32：4B]
+  encoded.reserve(data.size() + offsets.size() * 2 + 2 + (with_hash ? 4 : 0));
 
   // 1. data 段，原样拷贝
-  encoded.insert(encoded.end(), data.begin(), data.end()); 
+  encoded.insert(encoded.end(), data.begin(), data.end());
 
-  // 2. offset 段，每个offset 是 uint16_t(2 字节) 所以占两元素，拆成字节逐个 push
+  // 2. offset 段，每个offset 是 uint16_t(2 字节) 所以占两元素，拆成字节逐个
+  // push
   //    push_back 只收单字节(uint8_t), 所以要手动把一个 16 位数拆两半
   //    字节序约定: 低位在前 (小端), 与测试数据里 key_len=5 存成 [5, 0] 一致
   //    先 push 低 8 位: & 0xFF 砍掉高位, 只留下最底下那一截
   //    再 push 高 8 位: >> 8 把原来的高 8 位挪到低 8 位的位置, 再 & 0xFF 砍干净
   //    例: off = 20 = 0x0014 -> 低字节 0x14 (20), 高字节 0x00 (0) -> [20, 0]
-  
-  for(uint16_t offset:offsets){
-    encoded.push_back(offset & 0xFF); // 低字节
+
+  for (uint16_t offset : offsets) {
+    encoded.push_back(offset & 0xFF);        // 低字节
     encoded.push_back((offset >> 8) & 0xFF); // 高字节
   }
 
@@ -62,18 +60,17 @@ std::vector<uint8_t> Block::encode(bool with_hash) {
   // 正常合法块不会达到这个数量，但可以在函数开头加一层防御检查
   if (offsets.size() > UINT16_MAX) {
     throw std::runtime_error("Too many entries");
-  } 
+  }
   uint16_t num = static_cast<uint16_t>(offsets.size());
-  encoded.push_back(num & 0xFF); 
+  encoded.push_back(num & 0xFF);
   encoded.push_back((num >> 8) & 0xFF);
 
   // 4. 可选 CRC32: 覆盖前面所有字节。然后插入到最后4个字节
-  if (with_hash){
-    uint32_t crc = crc32_compute(encoded.data(), encoded.size()); 
-    for (int i = 0 ; i < 4; ++i)
-      encoded.push_back(crc >> (8*i) & 0xFF); 
+  if (with_hash) {
+    uint32_t crc = crc32_compute(encoded.data(), encoded.size());
+    for (int i = 0; i < 4; ++i)
+      encoded.push_back(crc >> (8 * i) & 0xFF);
   }
-
 
   return encoded;
 }
@@ -111,9 +108,10 @@ size_t Block::get_offset_at(size_t idx) const {
 bool Block::add_entry(const std::string &key, const std::string &value,
                       uint64_t tranc_id, bool force_write) {
   // TODO: Lab 3.1 添加一个键值对到block中
-  // ? 每条 entry 格式: [key_len:uint16_t][key][value_len:uint16_t][value][tranc_id:uint64_t]
-  // ? 若 !force_write 且当前容量不足则返回 false
-  // ? 成功添加后记录偏移到 offsets, 返回 true
+  // ? 每条 entry 格式:
+  // [key_len:uint16_t][key][value_len:uint16_t][value][tranc_id:uint64_t] ? 若
+  // !force_write 且当前容量不足则返回 false ? 成功添加后记录偏移到 offsets,
+  // 返回 true
   return false;
 }
 
@@ -226,7 +224,8 @@ bool Block::is_empty() const { return offsets.empty(); }
 
 BlockIterator Block::begin(uint64_t tranc_id) {
   // TODO: Lab 3.2 获取begin迭代器
-  // ? 返回指向第 0 个 entry 的迭代器: BlockIterator(shared_from_this(), 0, tranc_id)
+  // ? 返回指向第 0 个 entry 的迭代器: BlockIterator(shared_from_this(), 0,
+  // tranc_id)
   return BlockIterator(nullptr, 0, 0);
 }
 
