@@ -17,6 +17,26 @@ std::vector<uint8_t> Block::encode(bool with_hash) {
   // ? 格式: [data段] + [offsets数组, 每项uint16_t] + [元素个数 uint16_t]
   // ? 若 with_hash == true, 末尾额外追加 uint32_t 的 CRC 校验值
   // ? CRC 覆盖除自身之外的所有字节
+  std::vector<uint8_t> encoded; 
+  // data 段 + offset 段 + num 段 + crc32段，先估计一个容量避免反复扩容
+  // reserve 只影响性能不影响正确性：要多了，多出的 4 字节内存随 vector 析构回收，零副作用；
+  // 要少了，push_back 时自动扩容
+  encoded.reserve(data.size() + offsets.size()*2 + 2 + 4);
+
+  // 1. data 段，原样拷贝
+  encoded.insert(encoded.end(), data.begin(), data.end()); 
+
+  // 2. offset 段，每个offset 是 uint16_t(2 字节) 所以占两元素，拆成字节逐个 push
+  //    push_back 只收单字节(uint8_t), 所以要手动把一个 16 位数拆两半
+  //    字节序约定: 低位在前 (小端), 与测试数据里 key_len=5 存成 [5, 0] 一致
+  //    先 push 低 8 位: & 0xFF 砍掉高位, 只留下最底下那一截
+  //    再 push 高 8 位: >> 8 把原来的高 8 位挪到低 8 位的位置, 再 & 0xFF 砍干净
+  //    例: off = 20 = 0x0014 -> 低字节 0x14 (20), 高字节 0x00 (0) -> [20, 0]
+  for(uint16_t offset:offsets){
+    encoded.push_back(offset & 0xFF); // 低字节
+    encoded.push_back((offset >> 8) & 0xFF); // 高字节
+  }
+
   return {};
 }
 
