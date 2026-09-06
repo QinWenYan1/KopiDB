@@ -9,8 +9,28 @@
 #include <stdexcept>
 #include <string>
 
+
 namespace tiny_lsm {
 Block::Block(size_t capacity) : capacity(capacity) {}
+
+
+// CRC32 校验实现 (polynomial 0xEDB88320), 抄自 vlog.cpp
+uint32_t Block::crc32_compute(const uint8_t *data, size_t len) {
+  uint32_t crc = 0xFFFFFFFF;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (int j = 0; j < 8; j++) {
+      if (crc & 1) {
+        crc = (crc >> 1) ^ 0xEDB88320;
+      } else {
+        crc >>= 1;
+      }
+    }
+  }
+  return crc ^ 0xFFFFFFFF;
+}
+
+
 
 std::vector<uint8_t> Block::encode(bool with_hash) {
   // TODO: Lab 3.1 编码单个类实例形成一段字节数组
@@ -19,6 +39,7 @@ std::vector<uint8_t> Block::encode(bool with_hash) {
   // ? CRC 覆盖除自身之外的所有字节
   std::vector<uint8_t> encoded; 
   // data 段 + offset 段 + num 段 + crc32段 (optional)，先估计一个容量避免反复扩容
+  // [data][offsets：每项 2B][条目数：2B][可选 CRC32：4B]
   encoded.reserve(data.size() + offsets.size()*2 + 2 + (with_hash? 4 : 0));
 
   // 1. data 段，原样拷贝
@@ -41,9 +62,15 @@ std::vector<uint8_t> Block::encode(bool with_hash) {
   encoded.push_back(num & 0xFF); 
   encoded.push_back((num >> 8) & 0xFF);
 
-  
+  // 4. 可选 CRC32: 覆盖前面所有字节。然后插入到最后4个字节
+  if (with_hash){
+    uint32_t crc = crc32_compute(encoded.data(), encoded.size()); 
+    for (int i = 0 ; i < 4; ++i)
+      encoded.push_back(crc >> (8*i) & 0xFF); 
+  }
 
-  return {};
+
+  return encoded;
 }
 
 std::shared_ptr<Block> Block::decode(const std::vector<uint8_t> &encoded,

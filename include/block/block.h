@@ -53,6 +53,9 @@ private:
 
   bool is_same_key(size_t idx, const std::string &target_key) const;
 
+  // CRC32 校验实现 (polynomial 0xEDB88320), 抄自 vlog.cpp
+  static uint32_t crc32_compute(const uint8_t *data, size_t len); 
+  
 public:
   Block() = default;
   Block(size_t capacity);
