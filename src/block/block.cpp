@@ -179,7 +179,16 @@ bool Block::add_entry(const std::string &key, const std::string &value,
 std::string Block::get_key_at(size_t offset) const {
   // TODO: Lab 3.1 从指定偏移量获取entry的key
   // ? 读取 data[offset] 处的 uint16_t key_len, 再取后续 key_len 个字节
-  return "";
+  // 1. 读取 key_len: data[offset] 处的 2 字节，小端（低字节在前面）
+  uint16_t key_len = static_cast<uint16_t>(
+    data[offset] | (data[offset+1] << 8)
+  ); 
+
+  // 2. key 内容紧跟 key_len 字段后面，从 offset + 2 开始
+  //    一共 key_len 个 字节
+  //    data 是 vector<uint8_t>, string 要 const char* 所以是reinterpret
+  return std::string(reinterpret_cast<const char*>(data.data() + offset + 2), key_len); 
+
 }
 
 // 从指定偏移量获取entry的value
