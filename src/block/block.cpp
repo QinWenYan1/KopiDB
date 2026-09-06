@@ -80,6 +80,30 @@ std::shared_ptr<Block> Block::decode(const std::vector<uint8_t> &encoded,
   // TODO: Lab 3.1 解码字节数组形成类实例
   // ? 从末尾读取元素个数, 若 with_hash 为 true 先校验 CRC
   // ? 然后依次读取 offsets 和 data 段
+
+  // 1. 最小长度检查：至少得装下 num (2B), 带 hash 则再加 4B
+  // 至少包含条目数 2B，以及可选的 CRC32 4B
+  const size_t crc_size = with_hash ? 4 : 0;
+  if (encoded.size() < 2 + crc_size) 
+    throw std::runtime_error("Block::decode: data too short");
+
+  // 正文：[data][offsets][条目数]，不包含 CRC
+  const size_t body_size = encoded.size() - crc_size;
+                              
+  // 2. 带 hash 时先校验 CRC32 (覆盖除末 4 字节外的全部)
+
+  // encoded 里只有 data + offsets + num——CRC 还没 push 进去。
+  // 所以 encoded.size() 天然不含 CRC
+
+  // 传进来的 buffer 是完整成品，CRC 已经在末尾占着 4 字节了。
+  // 不减 4 就会把 CRC 自己也算进去
+  if (with_hash){
+    uint32_t actual = 0, expect = crc32_compute(encoded.data(), encoded.size() - 4 ); 
+    for (int i = 0; i < 4; ++i) {
+      actual |= static_cast<uint32_t>(encoded[body_size + i])
+                    << (8 * i);
+    }
+  }
   return nullptr;
 }
 
