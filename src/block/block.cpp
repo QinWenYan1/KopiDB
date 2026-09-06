@@ -86,31 +86,31 @@ std::shared_ptr<Block> Block::decode(const std::vector<uint8_t> &encoded,
   // 1. 最小长度检查：至少得装下 num (2B), 带 hash 则再加 4B
   // 至少包含条目数 2B，以及可选的 CRC32 4B
   const size_t crc_size = with_hash ? 4 : 0;
-  if (encoded.size() < 2 + crc_size) 
+  if (encoded.size() < 2 + crc_size)
     throw std::runtime_error("Block::decode: data too short");
 
   // 正文：[data][offsets][条目数]，不包含 CRC
   //  传进来的 buffer 是完整成品，CRC 已经在末尾占着 4 字节了。
   //  不减 4 就会把 CRC 自己也算进去
   const size_t body_size = encoded.size() - crc_size;
-                              
+
   // 2. 带 hash 时先校验 CRC32 (覆盖除末 4 字节外的全部)
-  if (with_hash){
-    uint32_t actual = 0, expect = crc32_compute(encoded.data(), body_size ); 
+  if (with_hash) {
+    uint32_t actual = 0, expect = crc32_compute(encoded.data(), body_size);
     for (int i = 0; i < 4; ++i) {
-      actual |= static_cast<uint32_t>(encoded[body_size + i])
-                    << (8 * i);
+      actual |= static_cast<uint32_t>(encoded[body_size + i]) << (8 * i);
     }
     if (expect != actual)
-      throw std::runtime_error("Block::decode: CRC32 mismatch"); 
+      throw std::runtime_error("Block::decode: CRC32 mismatch");
   }
 
   // 3. 从尾部往前切三段: [ data ... | offset x num | num(2B) | crc(4B)? ]
-  // num 永远在最后 2 字节: 低位在前拼回 uint16_t 
-  uint16_t num = static_cast<uint16_t>(encoded[body_size - 2] | (encoded[body_size - 1] << 8));
+  // num 永远在最后 2 字节: 低位在前拼回 uint16_t
+  uint16_t num = static_cast<uint16_t>(encoded[body_size - 2] |
+                                       (encoded[body_size - 1] << 8));
 
   // offset 段：num 个条目 * 每个 2 字节，紧贴在 num 段前面
-  size_t offset_sec_end = body_size - 2; 
+  size_t offset_sec_end = body_size - 2;
 
   // 在确定 offset_sec_begin 前，要先确认空间足够，再做减法
   // 因为需要避免 size_t 下溢
@@ -121,24 +121,24 @@ std::shared_ptr<Block> Block::decode(const std::vector<uint8_t> &encoded,
     throw std::runtime_error("Invalid offset table");
   }
 
-  size_t offset_sec_begin = offset_sec_end - num * 2; 
+  size_t offset_sec_begin = offset_sec_end - num * 2;
 
   // data 段：从头到 offset 段的开头
   // 4. 将 data 段整段拷贝
-  auto block = std::make_shared<Block>(); 
-  block->data.assign(encoded.begin(), encoded.begin() + offset_sec_begin); 
+  auto block = std::make_shared<Block>();
+  block->data.assign(encoded.begin(), encoded.begin() + offset_sec_begin);
 
-  // 5. offset 段：每 2 字节小端拼一个 uint16_t 
-  block->offsets.reserve(num); 
-  for (size_t i = 0; i < num; ++i){
-    uint16_t off = static_cast<uint16_t>(
-      encoded[offset_sec_begin+2*i] | (encoded[offset_sec_begin+2*i+1] << 8)
-    ); 
-    block->offsets.push_back(off); 
+  // 5. offset 段：每 2 字节小端拼一个 uint16_t
+  block->offsets.reserve(num);
+  for (size_t i = 0; i < num; ++i) {
+    uint16_t off =
+        static_cast<uint16_t>(encoded[offset_sec_begin + 2 * i] |
+                              (encoded[offset_sec_begin + 2 * i + 1] << 8));
+    block->offsets.push_back(off);
   }
 
   // 6. capacity: 解码产物只读，填当前实际大小（此决定无测试约束）
-  block->capacity = block->cur_size(); 
+  block->capacity = block->cur_size();
 
   return block;
 }
