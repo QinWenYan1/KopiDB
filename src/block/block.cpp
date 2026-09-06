@@ -66,6 +66,8 @@ std::vector<uint8_t> Block::encode(bool with_hash) {
   encoded.push_back((num >> 8) & 0xFF);
 
   // 4. 可选 CRC32: 覆盖前面所有字节。然后插入到最后4个字节
+  //  encoded 里只有 data + offsets + num——CRC 还没 push 进去。
+  //  所以 encoded.size() 天然不含 CRC
   if (with_hash) {
     uint32_t crc = crc32_compute(encoded.data(), encoded.size());
     for (int i = 0; i < 4; ++i)
@@ -88,8 +90,6 @@ std::shared_ptr<Block> Block::decode(const std::vector<uint8_t> &encoded,
     throw std::runtime_error("Block::decode: data too short");
 
   // 正文：[data][offsets][条目数]，不包含 CRC
-  //  encoded 里只有 data + offsets + num——CRC 还没 push 进去。
-  //  所以 encoded.size() 天然不含 CRC
   //  传进来的 buffer 是完整成品，CRC 已经在末尾占着 4 字节了。
   //  不减 4 就会把 CRC 自己也算进去
   const size_t body_size = encoded.size() - crc_size;
@@ -132,7 +132,7 @@ std::shared_ptr<Block> Block::decode(const std::vector<uint8_t> &encoded,
   block->offsets.reserve(num); 
   for (size_t i = 0; i < num; ++i){
     uint16_t off = static_cast<uint16_t>(
-      encoded[offset_sec_begin+2*i] | (encoded[offset_sec_begin+2*1+1] << 8)
+      encoded[offset_sec_begin+2*i] | (encoded[offset_sec_begin+2*i+1] << 8)
     ); 
     block->offsets.push_back(off); 
   }
@@ -140,7 +140,7 @@ std::shared_ptr<Block> Block::decode(const std::vector<uint8_t> &encoded,
   // 6. capacity: 解码产物只读，填当前实际大小（此决定无测试约束）
   block->capacity = block->cur_size(); 
 
-  return nullptr;
+  return block;
 }
 
 std::string Block::get_first_key() {
