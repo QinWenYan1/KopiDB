@@ -217,18 +217,18 @@ std::string Block::get_key_at(size_t offset) const {
   // TODO: Lab 3.1 从指定偏移量获取entry的key
   // ? 读取 data[offset] 处的 uint16_t key_len, 再取后续 key_len 个字节
   // 边界检查：读取 key_len 前，确认 offset 合法且剩余至少 2B
-  if (offset > data.size() || data.size() - offset < 2) {
+  if (offset > data.size() || data.size() - offset < 2) 
     throw std::runtime_error("Block::get_key_at: Incomplete key length header");
-  }
+  
 
   // 1. 读取 key_len: data[offset] 处的 2 字节，小端（低字节在前面）
   uint16_t key_len =
       static_cast<uint16_t>(data[offset] | (data[offset + 1] << 8));
 
   // 边界检查：扣除长度字段的 2B 后，剩余空间必须够放 key
-  if (key_len > data.size() - offset - 2) {
+  if (key_len > data.size() - offset - 2) 
     throw std::runtime_error("Block::get_key_at: Incomplete key");
-  }
+  
 
   // 2. key 内容紧跟 key_len 字段后面，从 offset + 2 开始
   //    一共 key_len 个 字节
@@ -242,9 +242,9 @@ std::string Block::get_value_at(size_t offset) const {
   // TODO: Lab 3.1 从指定偏移量获取entry的value
   // ? 先跳过 key_len + key, 再读取 uint16_t value_len, 最后取 value
   // 边界检查：读取 key_len 前，确认至少有 2B
-  if (offset > data.size() || data.size() - offset < 2) {
+  if (offset > data.size() || data.size() - offset < 2) 
     throw std::runtime_error("Block::get_value_at: Incomplete key length header");
-  }
+  
 
   // 1. 先读 key_len，算出 value len 字段的位置：
   //    [key_len(2B) | key (key_len B)] [val_len(2B) ...]
@@ -252,25 +252,25 @@ std::string Block::get_value_at(size_t offset) const {
       static_cast<uint16_t>(data[offset] | (data[offset + 1] << 8));
 
   // 边界检查：计算 val_len_start 前，确认 key 完整
-  if (key_len > data.size() - offset - 2) {
+  if (key_len > data.size() - offset - 2) 
     throw std::runtime_error("Block::get_value_at: Incomplete key");
-  }
+  
 
   // 2. 读 value_len (2B)
   size_t val_len_start = offset + 2 + key_len;
 
   // 边界检查：读取 val_len 前，确认该位置至少还有 2B
-  if (data.size() - val_len_start < 2) {
+  if (data.size() - val_len_start < 2) 
     throw std::runtime_error("Block::get_value_at: Incomplete value length header");
-  }
+  
 
   uint16_t val_len = static_cast<uint16_t>(data[val_len_start] |
                                            (data[val_len_start + 1] << 8));
   
   // 边界检查：构造字符串前，确认 value 完整
-  if (val_len > data.size() - val_len_start - 2) {
+  if (val_len > data.size() - val_len_start - 2) 
     throw std::runtime_error("Block::get_value_at: Incomplete value");
-  }
+  
 
   // 3. value 内容紧跟 val_len 字段，从 val_len_start + 2 开始读
   return std::string(
@@ -283,9 +283,9 @@ uint64_t Block::get_tranc_id_at(size_t offset) const {
   // 走同一条路线: key_len -> val_len 位置 -> val_len
 
   // 边界检查：读取 key_len 前，确认至少有 2B
-  if (offset > data.size() || data.size() - offset < 2) {
+  if (offset > data.size() || data.size() - offset < 2) 
     throw std::runtime_error("Block::get_tranc_id_at: Incomplete key length header");
-  }
+  
 
   // 1. 先读 key_len，算出 value len 字段的位置：
   //    [key_len(2B) | key (key_len B)] [val_len(2B) ...]
@@ -293,33 +293,32 @@ uint64_t Block::get_tranc_id_at(size_t offset) const {
       static_cast<uint16_t>(data[offset] | (data[offset + 1] << 8));
 
   // 边界检查：计算 val_len_start 前，确认 key 完整
-  if (key_len > data.size() - offset - 2) {
+  if (key_len > data.size() - offset - 2) 
     throw std::runtime_error("Block::get_tranc_id_at: Incomplete key");
-  }
+  
 
   // 2. 读 value_len (2B)
   size_t val_len_start = offset + 2 + key_len;
 
   // 边界检查：读取 val_len 前，确认该位置至少还有 2B
-  if (data.size() - val_len_start < 2) {
+  if (data.size() - val_len_start < 2) 
     throw std::runtime_error("Block::get_tranc_id_at: Incomplete value length header");
-  }
+  
 
   uint16_t val_len = static_cast<uint16_t>(data[val_len_start] |
                                            (data[val_len_start + 1] << 8));
 
   // 边界检查：构造字符串前，确认 value 完整
-  if (val_len > data.size() - val_len_start - 2) {
+  if (val_len > data.size() - val_len_start - 2) 
     throw std::runtime_error("Block::get_tranc_id_at: Incomplete value");
-  }
+  
 
   // 3. 开始读 tranc_id (8B)
   size_t tranc_id_start = val_len_start + val_len + 2;
 
   // 边界检查：进入读取循环前，确认事务 ID 的 8B 完整
-  if (data.size() - tranc_id_start < 8) {
+  if (data.size() - tranc_id_start < 8) 
     throw std::runtime_error("Block::get_tranc_id_at: Incomplete transaction ID");
-  }
 
   uint64_t tranc_id = 0;
   for (int i = 0; i < 8; ++i) {
