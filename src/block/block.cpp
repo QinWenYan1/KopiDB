@@ -356,6 +356,10 @@ int Block::adjust_idx_by_tranc_id(size_t idx, uint64_t tranc_id) {
     ++ idx; 
 
   // 4. 走出小组还没有找到 = 整个小组对读者都不可见
+  if (idx >= offsets.size() || ! is_same_key(idx, key))
+    return -1; 
+  
+  return static_cast<int>(idx); 
   
 }
 
