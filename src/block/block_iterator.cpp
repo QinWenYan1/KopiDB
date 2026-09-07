@@ -33,64 +33,30 @@ BlockIterator::BlockIterator(std::shared_ptr<Block> b, const std::string &key,
 // }
 
 BlockIterator::pointer BlockIterator::operator->() const {
-  update_current();
-  return &(*cached_value);
+  // TODO: Lab3.2 -> 重载
+  return nullptr;
 }
 
 BlockIterator &BlockIterator::operator++() {
-  if (block && current_index < block->size()) {
-    auto prev_idx = current_index;
-    auto prev_offset = block->get_offset_at(prev_idx);
-    auto prev_entry = block->get_entry_at(prev_offset);
-
-    ++current_index;
-
-    // 跳过相同的key
-    if (!keep_all_versions_) {
-      while (block && current_index < block->size()) {
-        auto cur_offset = block->get_offset_at(current_index);
-        auto cur_entry = block->get_entry_at(cur_offset);
-        if (cur_entry.key != prev_entry.key) {
-          break;
-        }
-        // 可能会连续出现多个key, 但由不同事务创建, 同样的key直接跳过
-        ++current_index;
-      }
-    }
-
-    // 出现不同的key时, 还需要跳过不可见事务的键值对
-    skip_by_tranc_id();
-  }
+  // TODO: Lab3.2 ++ 重载
+  // ? 在后续的Lab实现事务后，你可能需要对这个函数进行返修
   return *this;
-}
-
-bool BlockIterator::operator==(const BlockIterator &other) const {
-  if (block == nullptr && other.block == nullptr) {
-    return true;
-  }
-  if (block == nullptr || other.block == nullptr) {
-    return false;
-  }
-  auto cmp = block == other.block && current_index == other.current_index;
-  return cmp;
+  
 }
 
 bool BlockIterator::operator!=(const BlockIterator &other) const {
-  return !(*this == other);
+  // TODO: Lab3.2 != 重载
+  return true;
+}
+
+bool BlockIterator::operator==(const BlockIterator &other) const {
+  // TODO: Lab3.2 == 重载
+  return true;
 }
 
 BlockIterator::value_type BlockIterator::operator*() const {
-  if (!block || current_index >= block->size()) {
-    throw std::out_of_range("Iterator out of range");
-  }
-
-  // 使用缓存避免重复解析
-  if (!cached_value.has_value()) {
-    size_t offset = block->get_offset_at(current_index);
-    cached_value =
-        std::make_pair(block->get_key_at(offset), block->get_value_at(offset));
-  }
-  return *cached_value;
+  // TODO: Lab3.2 * 重载
+  return {};
 }
 
 bool BlockIterator::is_end() { return current_index == block->offsets.size(); }
