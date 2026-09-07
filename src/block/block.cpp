@@ -159,8 +159,9 @@ std::string Block::get_first_key() {
   return key;
 }
 
+// 这里只要是 等于或者大于了 offsets 的容量都会报越界错误
 size_t Block::get_offset_at(size_t idx) const {
-  if (idx > offsets.size()) {
+  if (idx >= offsets.size()) {
     throw std::runtime_error("idx out of offsets range");
   }
   return offsets[idx];
@@ -182,7 +183,8 @@ bool Block::add_entry(const std::string &key, const std::string &value,
   //    新增一条 entry，offsets 也会多一项
   //    把新的账一起加入进去，超了就拒写
   //    另外，空 block 永远收下第一条 entry，哪怕它超 capacity
-  if (!force_write && !offsets.empty() && cur_size() + entry_size + 2 > capacity) {
+  if (!force_write && !offsets.empty() &&
+      cur_size() + entry_size + 2 > capacity) {
     return false;
   }
 
