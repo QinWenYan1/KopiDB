@@ -25,6 +25,12 @@ KopiDB：类 RocksDB 的教学级 LSM-tree KV 存储引擎（C++20），跟随 [
 
 **Claude 可以主动做的**：跑构建/测试、环境与工具杂务、按约定起草笔记、整理文档。
 
+## Lab 实现参考
+
+- 遇到 Lab 代码的接口语义、边界行为或设计取舍不确定时，优先查阅 [Vanilla-Beauty/tiny-lsm 的 master 分支](https://github.com/Vanilla-Beauty/tiny-lsm/tree/master)，作为指导 KopiDB 实现的参考。
+- 核对对应函数及其调用关系，结合本地 Lab 阶段、接口和测试解释取舍；明确区分参考源码的实际行为、推断和可选增强，不确定时直接说明。
+- 若参考实现与本地代码、教材或用户已确认的取舍不同，先说明差异；继续遵守用户亲手实现、分级提示的工作流。
+
 ## Git 纪律
 
 - **所有 git 写操作（commit / push / branch 等）由用户自己执行，Claude 一律不代劳**

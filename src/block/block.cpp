@@ -178,9 +178,11 @@ bool Block::add_entry(const std::string &key, const std::string &value,
   //    [key_len:2B][key:key.size()][val_len:2B][value:value.size()][tranc_id:8B]
   size_t entry_size = 2 + key.size() + 2 + value.size() + 8;
 
-  // 2. 容量检查：cur_size() 统计的是 "data + 现有 offsets + num占位"
+  // 2. 容量检查：cur_size() 统计的是 "现有 data + 现有 offsets + num占位 "
+  //    新增一条 entry，offsets 也会多一项
   //    把新的账一起加入进去，超了就拒写
-  if (!force_write && cur_size() + entry_size > capacity) {
+  //    另外，空 block 永远收下第一条 entry，哪怕它超 capacity
+  if (!force_write && !offsets.empty() && cur_size() + entry_size + 2 > capacity) {
     return false;
   }
 
