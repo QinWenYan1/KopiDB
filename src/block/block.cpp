@@ -200,10 +200,10 @@ std::string Block::get_value_at(size_t offset) const {
   //   [key_len(2B) | key (key_len B)] [val_len(2B) ...]
   uint16_t key_len = static_cast<uint16_t>(
     data[offset] | (data[offset+1] << 8)
-  );
-  size_t val_len_start = offset + 2 + key_len; 
+  ); 
 
   // 2. 读 value_len (2B)
+  size_t val_len_start = offset + 2 + key_len;
   uint16_t val_len = static_cast<uint16_t>(
     data[val_len_start] | (data[val_len_start+1] << 8)
   );
@@ -215,7 +215,28 @@ std::string Block::get_value_at(size_t offset) const {
 uint64_t Block::get_tranc_id_at(size_t offset) const {
   // TODO: Lab 3.1 从指定偏移量获取entry的tranc_id
   // ? 先跳过 key 和 value, 读取末尾的 uint64_t tranc_id
-  return 0;
+  //走同一条路线: key_len -> val_len 位置 -> val_len
+
+  //1. 先读 key_len，算出 value len 字段的位置：
+  //   [key_len(2B) | key (key_len B)] [val_len(2B) ...]
+  uint16_t key_len = static_cast<uint16_t>(
+    data[offset] | (data[offset+1] << 8)
+  );
+
+  // 2. 读 value_len (2B)
+  size_t val_len_start = offset + 2 + key_len; 
+  uint16_t val_len = static_cast<uint16_t>(
+    data[val_len_start] | (data[val_len_start+1] << 8)
+  );
+
+  // 3. 开始读 tranc_id (8B)
+  size_t tranc_id_start = val_len_start + val_len + 2;
+  uint64_t tranc_id = 0;
+  for (int i = 0; i < 8; ++i) {
+    tranc_id |= static_cast<uint64_t>(data[tranc_id_start + i]) << (8 * i);
+  }
+  return tranc_id; 
+
 }
 
 // 比较指定偏移量处的key与目标key
