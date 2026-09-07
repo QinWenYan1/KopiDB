@@ -30,7 +30,7 @@ uint32_t Block::crc32_compute(const uint8_t *data, size_t len) {
 }
 
 std::vector<uint8_t> Block::encode(bool with_hash) {
-  // TODO: Lab 3.1 编码单个类实例形成一段字节数组
+  // Lab 3.1 编码单个类实例形成一段字节数组
   // ? 格式: [data段] + [offsets数组, 每项uint16_t] + [元素个数 uint16_t]
   // ? 若 with_hash == true, 末尾额外追加 uint32_t 的 CRC 校验值
   // ? CRC 覆盖除自身之外的所有字节
@@ -80,7 +80,7 @@ std::vector<uint8_t> Block::encode(bool with_hash) {
 
 std::shared_ptr<Block> Block::decode(const std::vector<uint8_t> &encoded,
                                      bool with_hash) {
-  // TODO: Lab 3.1 解码字节数组形成类实例
+  // Lab 3.1 解码字节数组形成类实例
   // ? 从末尾读取元素个数, 若 with_hash 为 true 先校验 CRC
   // ? 然后依次读取 offsets 和 data 段
 
@@ -170,10 +170,10 @@ size_t Block::get_offset_at(size_t idx) const {
 // Block构建是由SST控制的, 其会不断地调用下面这个函数添加键值对
 bool Block::add_entry(const std::string &key, const std::string &value,
                       uint64_t tranc_id, bool force_write) {
-  // TODO: Lab 3.1 添加一个键值对到block中
+  // Lab 3.1 添加一个键值对到block中
   // ? 每条 entry 格式:
   // [key_len:uint16_t][key][value_len:uint16_t][value][tranc_id:uint64_t] ? 若
-  // !force_write 且当前容量不足则返回 false ? 成功添加后记录偏移到 offsets,
+  // force_write 且当前容量不足则返回 false ? 成功添加后记录偏移到 offsets,
   // 返回 true
   // 1. 本条 entry 字节数：
   //    [key_len:2B][key:key.size()][val_len:2B][value:value.size()][tranc_id:8B]
@@ -218,7 +218,7 @@ bool Block::add_entry(const std::string &key, const std::string &value,
 
 // 从指定偏移量获取entry的key
 std::string Block::get_key_at(size_t offset) const {
-  // TODO: Lab 3.1 从指定偏移量获取entry的key
+  // Lab 3.1 从指定偏移量获取entry的key
   // ? 读取 data[offset] 处的 uint16_t key_len, 再取后续 key_len 个字节
   // 边界检查：读取 key_len 前，确认 offset 合法且剩余至少 2B
   if (offset > data.size() || data.size() - offset < 2)
@@ -241,7 +241,7 @@ std::string Block::get_key_at(size_t offset) const {
 
 // 从指定偏移量获取entry的value
 std::string Block::get_value_at(size_t offset) const {
-  // TODO: Lab 3.1 从指定偏移量获取entry的value
+  // Lab 3.1 从指定偏移量获取entry的value
   // ? 先跳过 key_len + key, 再读取 uint16_t value_len, 最后取 value
   // 边界检查：读取 key_len 前，确认至少有 2B
   if (offset > data.size() || data.size() - offset < 2)
@@ -278,7 +278,7 @@ std::string Block::get_value_at(size_t offset) const {
 }
 
 uint64_t Block::get_tranc_id_at(size_t offset) const {
-  // TODO: Lab 3.1 从指定偏移量获取entry的tranc_id
+  // Lab 3.1 从指定偏移量获取entry的tranc_id
   // ? 先跳过 key 和 value, 读取末尾的 uint64_t tranc_id
   // 走同一条路线: key_len -> val_len 位置 -> val_len
 
