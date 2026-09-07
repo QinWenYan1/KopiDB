@@ -165,6 +165,7 @@ size_t Block::get_offset_at(size_t idx) const {
   return offsets[idx];
 }
 
+// Block构建是由SST控制的, 其会不断地调用下面这个函数添加键值对
 bool Block::add_entry(const std::string &key, const std::string &value,
                       uint64_t tranc_id, bool force_write) {
   // TODO: Lab 3.1 添加一个键值对到block中
@@ -172,7 +173,42 @@ bool Block::add_entry(const std::string &key, const std::string &value,
   // [key_len:uint16_t][key][value_len:uint16_t][value][tranc_id:uint64_t] ? 若
   // !force_write 且当前容量不足则返回 false ? 成功添加后记录偏移到 offsets,
   // 返回 true
-  return false;
+  // 1. 本条 entry 字节数：
+  //    [key_len:2B][key:key.size()][val_len:2B][value:value.size()][tranc_id:8B]
+  size_t entry_size = 2 + key.size() + 2 + value.size() + 8; 
+
+  // 2. 容量检查：cur_size() 统计的是 "data + 现有 offsets + num占位"
+  //    把新的账一起加入进去，超了就拒写
+  if (!force_write && cur_size() + entry_size > capacity ){
+    return false; 
+  }
+
+  // 3. 记偏移：必须在追加之前！offset 指向本条 entry 起点
+  offsets.push_back(static_cast<uint16_t>(data.size())); 
+
+  //4. 逐字段追加入 data
+  //4.1 key_len: 小端 2 字节压入方式
+  uint16_t key_len = static_cast<uint16_t>(key.size());
+  data.push_back(key_len & 0xFF); 
+  data.push_back((key_len >> 8) & 0xFF);
+
+  //4.2 内容：直接拷贝 string 的字节
+  data.insert(data.end(), key.begin(), key.end()); 
+
+  //4.3 val_len: 小端 2 字节
+  uint16_t val_len = static_cast<uint16_t>(value.size()); 
+  data.push_back(val_len & 0xFF); 
+  data.push_back((val_len >> 8) & 0xFF);
+
+  //4.4 压入内容
+  data.insert(data.end(), value.begin(), value.end());
+
+  //4.5 tranc_id: 小端 8 字节 （与 get_tranc_id_at 镜像读法）
+  for (int i = 0; i < 8; ++i){
+    data.push_back(static_cast<uint8_t>((tranc_id >> (8*i)) & 0XFF));
+  }
+
+  return true; 
 }
 
 // 从指定偏移量获取entry的key
