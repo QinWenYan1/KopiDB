@@ -195,7 +195,21 @@ std::string Block::get_key_at(size_t offset) const {
 std::string Block::get_value_at(size_t offset) const {
   // TODO: Lab 3.1 从指定偏移量获取entry的value
   // ? 先跳过 key_len + key, 再读取 uint16_t value_len, 最后取 value
-  return "";
+  
+  //1. 先读 key_len，算出 value len 字段的位置：
+  //   [key_len(2B) | key (key_len B)] [val_len(2B) ...]
+  uint16_t key_len = static_cast<uint16_t>(
+    data[offset] | (data[offset+1] << 8)
+  );
+  size_t val_len_start = offset + 2 + key_len; 
+
+  // 2. 读 value_len (2B)
+  uint16_t val_len = static_cast<uint16_t>(
+    data[val_len_start] | (data[val_len_start+1] << 8)
+  );
+
+  // 3. value 内容紧跟 val_len 字段，从 val_len_start + 2 开始读
+  return std::string(reinterpret_cast<const char*>(data.data() + val_len_start + 2), val_len); 
 }
 
 uint64_t Block::get_tranc_id_at(size_t offset) const {
