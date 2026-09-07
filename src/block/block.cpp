@@ -339,28 +339,28 @@ int Block::compare_key_at(size_t offset, const std::string &target) const {
 int Block::adjust_idx_by_tranc_id(size_t idx, uint64_t tranc_id) {
   // Lab3.1 不需要在Lab3.1中实现, 只是进行标记
   // ? 后续实现事务后需要更新这里的实现
-  
-  //1. 先回退到同 key 组的最左端：组首 = 最新版本（tranc_id 最大）
-  //   因为同 key 的版本降序连续存放，往左只要有同 key 就继续退
-  const std::string key = get_key_at(offsets[idx]); 
-  while (idx > 0 && is_same_key(idx-1, key))
-    --idx; 
+
+  // 1. 先回退到同 key 组的最左端：组首 = 最新版本（tranc_id 最大）
+  //    因为同 key 的版本降序连续存放，往左只要有同 key 就继续退
+  const std::string key = get_key_at(offsets[idx]);
+  while (idx > 0 && is_same_key(idx - 1, key))
+    --idx;
 
   // 2. tranc_id == 0, 非事务读，就直接看最新版本 = 同 key 组的最左端, 直接返回
   if (tranc_id == 0)
-    return static_cast<int>(idx); 
+    return static_cast<int>(idx);
 
   // 3. 事务读：从同 key 组的最左端向右边找第一个entry_tranc_id <= tranc_id
   //    降序排列： 组首最新 -> 越往后越旧 tranc_id越小
-  while (idx < offsets.size() && is_same_key(idx, key) && get_tranc_id_at(offsets[idx]) > tranc_id)
-    ++ idx; 
+  while (idx < offsets.size() && is_same_key(idx, key) &&
+         get_tranc_id_at(offsets[idx]) > tranc_id)
+    ++idx;
 
   // 4. 走出小组还没有找到 = 整个小组对读者都不可见
-  if (idx >= offsets.size() || ! is_same_key(idx, key))
-    return -1; 
+  if (idx >= offsets.size() || !is_same_key(idx, key))
+    return -1;
 
-  return static_cast<int>(idx); 
-  
+  return static_cast<int>(idx);
 }
 
 bool Block::is_same_key(size_t idx, const std::string &target_key) const {
