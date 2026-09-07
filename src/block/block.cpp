@@ -361,12 +361,32 @@ std::optional<std::string> Block::get_value_binary(const std::string &key,
   return get_value_at(offsets[*idx]);
 }
 
+// Lab 3.1 使用二分查找获取key对应的索引
 std::optional<size_t> Block::get_idx_binary(const std::string &key,
                                             uint64_t tranc_id) {
-  // TODO: Lab 3.1 使用二分查找获取key对应的索引
   // ? 在 offsets 数组上做二分查找, 利用 compare_key_at 比较
   // ? 找到后调用 adjust_idx_by_tranc_id 进行事务可见性修正
-  return std::nullopt;
+  
+  // 在 offsets 上二分: 比较 data 里每条 entry 的 key 
+  // [left, right) 左闭右开
+  size_t left = 0, right = offsets.size(); 
+  while (left < right){
+    size_t mid = left + (right-left)/2; 
+    int cmp = compare_key_at(offsets[mid], key);
+    if (cmp == 0){
+      //命中 key: 但同 key 可能多个版本，交给 adjust 挑读者可见的那个
+      int adjusted = adjust_idx_by_tranc_id(mid, tranc_id); 
+      // 发现所有的目标版本都太新了，视为不存在
+      if (adjusted < 0)
+        return std::nullopt; 
+      return static_cast<size_t>(adjusted); 
+    }else if (cmp > 0){
+      right = mid; // mid 的 key 比目标更大， 往左边找
+    }else{
+      left = mid + 1; // mid 的 key 比目标更小， 往右边找
+    }
+  }
+  return std::nullopt; // key 不存在
 }
 
 std::optional<
