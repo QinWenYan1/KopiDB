@@ -334,11 +334,11 @@ int Block::compare_key_at(size_t offset, const std::string &target) const {
 
 // 相同的key连续分布, 且相同的key的事务id从大到小排布
 // 这里的逻辑是找到最接近 tranc_id 的键值对的索引位置
+// tranc_id == 0: 向前找最小索引 (最大事务id) 版本
+// tranc_id != 0: 找满足 tranc_id_ <= tranc_id 的最新版本
 int Block::adjust_idx_by_tranc_id(size_t idx, uint64_t tranc_id) {
-  // TODO: Lab3.1 不需要在Lab3.1中实现, 只是进行标记
+  // Lab3.1 不需要在Lab3.1中实现, 只是进行标记
   // ? 后续实现事务后需要更新这里的实现
-  // ? tranc_id == 0: 向前找最小索引 (最大事务id) 版本
-  // ? tranc_id != 0: 找满足 tranc_id_ <= tranc_id 的最新版本
   
   //1. 先回退到同 key 组的最左端：组首 = 最新版本（tranc_id 最大）
   //   因为同 key 的版本降序连续存放，往左只要有同 key 就继续退
@@ -358,7 +358,7 @@ int Block::adjust_idx_by_tranc_id(size_t idx, uint64_t tranc_id) {
   // 4. 走出小组还没有找到 = 整个小组对读者都不可见
   if (idx >= offsets.size() || ! is_same_key(idx, key))
     return -1; 
-  
+
   return static_cast<int>(idx); 
   
 }
