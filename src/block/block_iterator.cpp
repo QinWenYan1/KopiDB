@@ -2,6 +2,7 @@
 #include "block/block.h"
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -130,5 +131,23 @@ void BlockIterator::skip_by_tranc_id() {
   // TODO: Lab3.2 * 跳过事务ID
   // ? 只是进行标记以供你在后续Lab实现事务功能后修改
   // ? 现在你不需要考虑这个函数
+
+  if (tranc_id_ == 0){
+    // 非事务读：不过滤，但缓存必须失败（调用方刚移动过位置）
+    cached_value = std::nullopt; 
+    return; 
+  }
+
+  // 逐条跳过最新的版本，知道第一个 entry_tranc_id <= tranc_id_ (或者耗尽)
+  // 注意：弹单个不弹整组，同key 旧版本可能可见，与 Heapiterator 闸 2 同规则
+  while (current_index < block->size()){
+    size_t offset  = block->get_offset_at(current_index); 
+    if (block->get_tranc_id_at(offset) <= tranc_id_)
+      break; //位置合法
+    ++ current_index; 
+  }
+
+  // 位置变了，缓存作废
+  cached_value = std::nullopt; 
 }
 } // namespace tiny_lsm
