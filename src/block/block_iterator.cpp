@@ -34,8 +34,8 @@ BlockIterator::BlockIterator(std::shared_ptr<Block> b, const std::string &key,
 //   skip_by_tranc_id();
 // }
 
+// Lab3.2 -> 重载
 BlockIterator::pointer BlockIterator::operator->() const {
-  // TODO: Lab3.2 -> 重载
   if (!block || current_index >= block->size())
     throw std::out_of_range("BlockIterator::Operator->: Iterator out of range");
 
@@ -44,8 +44,8 @@ BlockIterator::pointer BlockIterator::operator->() const {
   return &(*cached_value);
 }
 
+// Lab3.2 ++ 重载
 BlockIterator &BlockIterator::operator++() {
-  // TODO: Lab3.2 ++ 重载
   // ? 在后续的Lab实现事务后，你可能需要对这个函数进行返修
   // 已在末尾/空迭代器：防御性返回
   if (!block || current_index >= block->size())
@@ -74,13 +74,13 @@ BlockIterator &BlockIterator::operator++() {
   return *this;
 }
 
+// Lab3.2 != 重载
 bool BlockIterator::operator!=(const BlockIterator &other) const {
-  // TODO: Lab3.2 != 重载
   return !(operator==(other));
 }
 
+// Lab3.2 == 重载
 bool BlockIterator::operator==(const BlockIterator &other) const {
-  // TODO: Lab3.2 == 重载
   // 1. 双方都为 block: 两个哨兵相等
   if (block == nullptr && other.block == nullptr)
     return true;
@@ -93,7 +93,7 @@ bool BlockIterator::operator==(const BlockIterator &other) const {
   return block == other.block && current_index == other.current_index;
 }
 
-// TODO: Lab3.2 * 重载
+// Lab3.2 * 重载
 BlockIterator::value_type BlockIterator::operator*() const {
   // 尾后或迭代器不可解引用
   if (!block || current_index >= block->size())
@@ -115,8 +115,8 @@ uint64_t BlockIterator::get_cur_tranc_id() const {
   return block->get_tranc_id_at(offset);
 }
 
+// Lab3.2 更新当前指针
 void BlockIterator::update_current() const {
-  // TODO: Lab3.2 更新当前指针
   // ? 该函数是可选的实现, 你可以采用自己的其他方案实现->, 而不是使用
   // ? cached_value 来缓存当前指针
 
@@ -128,8 +128,8 @@ void BlockIterator::update_current() const {
   }
 }
 
+// Lab3.2 * 跳过不可见事务ID
 void BlockIterator::skip_by_tranc_id() {
-  // TODO: Lab3.2 * 跳过事务ID
   // ? 只是进行标记以供你在后续Lab实现事务功能后修改
   // ? 现在你不需要考虑这个函数
 
