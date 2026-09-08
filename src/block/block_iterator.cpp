@@ -57,6 +57,7 @@ BlockIterator &BlockIterator::operator++() {
 
   // 2. 去重：同 key 的旧版本连续排在后面，全跳过
   // keep_all_versions_ = true 时不跳 (Lab 5 compaction 要看全部版本)
+  // keep_all_versions_ 是"要不要保留同 key 的全部版本"的开关，控制 ++ 里去不去重
   if (!keep_all_versions_) {
     while (current_index < block->size() &&
            block->is_same_key(current_index, prev_key)) {
@@ -72,12 +73,22 @@ BlockIterator &BlockIterator::operator++() {
 
 bool BlockIterator::operator!=(const BlockIterator &other) const {
   // TODO: Lab3.2 != 重载
-  return true;
+  return !(operator==(other));
 }
 
 bool BlockIterator::operator==(const BlockIterator &other) const {
   // TODO: Lab3.2 == 重载
-  return true;
+  //1. 双方都为 block: 两个哨兵相等
+  if (block == nullptr && other.block == nullptr)
+    return true; 
+
+  //2. 一方空，一方非空：不相等
+  if (block == nullptr || other.block == nullptr)
+    return false; 
+
+  //3. 同一 block 且同一位置才算相等
+  return block == other.block && current_index == other.current_index; 
+
 }
 
 // TODO: Lab3.2 * 重载
@@ -103,30 +114,14 @@ uint64_t BlockIterator::get_cur_tranc_id() const {
 }
 
 void BlockIterator::update_current() const {
-  if (!cached_value && current_index < block->offsets.size()) {
-    size_t offset = block->get_offset_at(current_index);
-    cached_value =
-        std::make_pair(block->get_key_at(offset), block->get_value_at(offset));
-  }
+  // TODO: Lab3.2 更新当前指针
+  // ? 该函数是可选的实现, 你可以采用自己的其他方案实现->, 而不是使用
+  // ? cached_value 来缓存当前指针
 }
 
 void BlockIterator::skip_by_tranc_id() {
-  if (tranc_id_ == 0) {
-    // 没有开启事务功能
-    cached_value = std::nullopt;
-    return;
-  }
-
-  while (current_index < block->offsets.size()) {
-    size_t offset = block->get_offset_at(current_index);
-    auto tranc_id = block->get_tranc_id_at(offset);
-    if (tranc_id <= tranc_id_) {
-      // 位置合法
-      break;
-    }
-    // 否则跳过不可见事务的键值对
-    ++current_index;
-  }
-  cached_value = std::nullopt;
+  // TODO: Lab3.2 * 跳过事务ID
+  // ? 只是进行标记以供你在后续Lab实现事务功能后修改
+  // ? 现在你不需要考虑这个函数
 }
 } // namespace tiny_lsm
