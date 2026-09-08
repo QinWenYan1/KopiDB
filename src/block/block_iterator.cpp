@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
+#include <utility>
 
 class Block;
 
@@ -117,6 +118,12 @@ void BlockIterator::update_current() const {
   // TODO: Lab3.2 更新当前指针
   // ? 该函数是可选的实现, 你可以采用自己的其他方案实现->, 而不是使用
   // ? cached_value 来缓存当前指针
+
+  // 惰性填充：缓存空且位置合法时才解析 (block 判空是你的防御风格，加上无妨)
+  if (!cached_value && block && current_index < block->size()){
+    size_t offset = block->get_offset_at(current_index); 
+    cached_value = std::make_pair(block->get_key_at(offset), block->get_value_at(offset)); 
+  }
 }
 
 void BlockIterator::skip_by_tranc_id() {
