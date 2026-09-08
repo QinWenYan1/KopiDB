@@ -47,27 +47,27 @@ BlockIterator &BlockIterator::operator++() {
   // ? 在后续的Lab实现事务后，你可能需要对这个函数进行返修
   // 已在末尾/空迭代器：防御性返回
   if (!block || current_index >= block->size())
-    return *this; 
+    return *this;
 
   // 1. 记下当前 key，用于跨版本去重
-  size_t prev_offset = block->get_offset_at(current_index); 
-  std::string prev_key = block->get_key_at(prev_offset); 
+  size_t prev_offset = block->get_offset_at(current_index);
+  std::string prev_key = block->get_key_at(prev_offset);
 
-  ++ current_index; 
+  ++current_index;
 
   // 2. 去重：同 key 的旧版本连续排在后面，全跳过
   // keep_all_versions_ = true 时不跳 (Lab 5 compaction 要看全部版本)
-  if (!keep_all_versions_){
-    while (current_index < block->size() && block->is_same_key(current_index, prev_key)){
-      ++ current_index; 
+  if (!keep_all_versions_) {
+    while (current_index < block->size() &&
+           block->is_same_key(current_index, prev_key)) {
+      ++current_index;
     }
   }
 
   // 3. 跳过不可见版本；内部同时把cahched_value 重置 (位置变了缓存作废)
   //    在 skip_by_tranc_id 里面已经更新了 cached_value
-  skip_by_tranc_id(); 
-  return *this; 
-
+  skip_by_tranc_id();
+  return *this;
 }
 
 bool BlockIterator::operator!=(const BlockIterator &other) const {
