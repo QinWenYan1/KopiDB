@@ -35,18 +35,17 @@ BlockIterator::BlockIterator(std::shared_ptr<Block> b, const std::string &key,
 BlockIterator::pointer BlockIterator::operator->() const {
   // TODO: Lab3.2 -> 重载
   if (!block || current_index >= block->size())
-    throw std::out_of_range("BlockIterator::Operator->: Iterator out of range"); 
-  
+    throw std::out_of_range("BlockIterator::Operator->: Iterator out of range");
+
   // 与 * 共用缓存值
-  update_current(); 
-  return &(*cached_value); 
+  update_current();
+  return &(*cached_value);
 }
 
 BlockIterator &BlockIterator::operator++() {
   // TODO: Lab3.2 ++ 重载
   // ? 在后续的Lab实现事务后，你可能需要对这个函数进行返修
   return *this;
-  
 }
 
 bool BlockIterator::operator!=(const BlockIterator &other) const {
@@ -63,12 +62,12 @@ bool BlockIterator::operator==(const BlockIterator &other) const {
 BlockIterator::value_type BlockIterator::operator*() const {
   // 尾后或迭代器不可解引用
   if (!block || current_index >= block->size())
-    throw std::out_of_range("BlockIterator::Operator*: Iterator out of range"); 
+    throw std::out_of_range("BlockIterator::Operator*: Iterator out of range");
 
-  // 惰性缓存：首次解引用才通过 update_current 解析 entry，之后复用（update_current 内部判空）
-  update_current(); 
-  return *cached_value; 
-
+  // 惰性缓存：首次解引用才通过 update_current 解析
+  // entry，之后复用（update_current 内部判空）
+  update_current();
+  return *cached_value;
 }
 
 bool BlockIterator::is_end() { return current_index == block->offsets.size(); }
