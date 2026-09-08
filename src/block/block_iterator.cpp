@@ -64,6 +64,7 @@ BlockIterator &BlockIterator::operator++() {
   }
 
   // 3. 跳过不可见版本；内部同时把cahched_value 重置 (位置变了缓存作废)
+  //    在 skip_by_tranc_id 里面已经更新了 cached_value
   skip_by_tranc_id(); 
   return *this; 
 
