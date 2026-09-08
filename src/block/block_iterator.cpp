@@ -59,7 +59,8 @@ BlockIterator &BlockIterator::operator++() {
 
   // 2. 去重：同 key 的旧版本连续排在后面，全跳过
   // keep_all_versions_ = true 时不跳 (Lab 5 compaction 要看全部版本)
-  // keep_all_versions_ 是"要不要保留同 key 的全部版本"的开关，控制 ++ 里去不去重
+  // keep_all_versions_ 是"要不要保留同 key 的全部版本"的开关，控制 ++
+  // 里去不去重
   if (!keep_all_versions_) {
     while (current_index < block->size() &&
            block->is_same_key(current_index, prev_key)) {
@@ -80,17 +81,16 @@ bool BlockIterator::operator!=(const BlockIterator &other) const {
 
 bool BlockIterator::operator==(const BlockIterator &other) const {
   // TODO: Lab3.2 == 重载
-  //1. 双方都为 block: 两个哨兵相等
+  // 1. 双方都为 block: 两个哨兵相等
   if (block == nullptr && other.block == nullptr)
-    return true; 
+    return true;
 
-  //2. 一方空，一方非空：不相等
+  // 2. 一方空，一方非空：不相等
   if (block == nullptr || other.block == nullptr)
-    return false; 
+    return false;
 
-  //3. 同一 block 且同一位置才算相等
-  return block == other.block && current_index == other.current_index; 
-
+  // 3. 同一 block 且同一位置才算相等
+  return block == other.block && current_index == other.current_index;
 }
 
 // TODO: Lab3.2 * 重载
@@ -121,9 +121,10 @@ void BlockIterator::update_current() const {
   // ? cached_value 来缓存当前指针
 
   // 惰性填充：缓存空且位置合法时才解析 (block 判空是你的防御风格，加上无妨)
-  if (!cached_value && block && current_index < block->size()){
-    size_t offset = block->get_offset_at(current_index); 
-    cached_value = std::make_pair(block->get_key_at(offset), block->get_value_at(offset)); 
+  if (!cached_value && block && current_index < block->size()) {
+    size_t offset = block->get_offset_at(current_index);
+    cached_value =
+        std::make_pair(block->get_key_at(offset), block->get_value_at(offset));
   }
 }
 
@@ -132,22 +133,22 @@ void BlockIterator::skip_by_tranc_id() {
   // ? 只是进行标记以供你在后续Lab实现事务功能后修改
   // ? 现在你不需要考虑这个函数
 
-  if (tranc_id_ == 0){
+  if (tranc_id_ == 0) {
     // 非事务读：不过滤，但缓存必须失败（调用方刚移动过位置）
-    cached_value = std::nullopt; 
-    return; 
+    cached_value = std::nullopt;
+    return;
   }
 
   // 逐条跳过最新的版本，知道第一个 entry_tranc_id <= tranc_id_ (或者耗尽)
   // 注意：弹单个不弹整组，同key 旧版本可能可见，与 Heapiterator 闸 2 同规则
-  while (current_index < block->size()){
-    size_t offset  = block->get_offset_at(current_index); 
+  while (current_index < block->size()) {
+    size_t offset = block->get_offset_at(current_index);
     if (block->get_tranc_id_at(offset) <= tranc_id_)
-      break; //位置合法
-    ++ current_index; 
+      break; // 位置合法
+    ++current_index;
   }
 
   // 位置变了，缓存作废
-  cached_value = std::nullopt; 
+  cached_value = std::nullopt;
 }
 } // namespace tiny_lsm
