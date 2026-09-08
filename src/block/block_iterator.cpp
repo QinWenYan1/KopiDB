@@ -34,7 +34,12 @@ BlockIterator::BlockIterator(std::shared_ptr<Block> b, const std::string &key,
 
 BlockIterator::pointer BlockIterator::operator->() const {
   // TODO: Lab3.2 -> 重载
-  return nullptr;
+  if (!block || current_index >= block->size())
+    throw std::out_of_range("BlockIterator::Operator->: Iterator out of range"); 
+  
+  // 与 * 共用缓存值
+  update_current(); 
+  return &(*cached_value); 
 }
 
 BlockIterator &BlockIterator::operator++() {
@@ -59,7 +64,7 @@ BlockIterator::value_type BlockIterator::operator*() const {
   // 尾后或迭代器不可解引用
   if (!block || current_index >= block->size())
     throw std::out_of_range("BlockIterator::Operator*: Iterator out of range"); 
-  
+
   // 惰性缓存：首次解引用才通过 update_current 解析 entry，之后复用（update_current 内部判空）
   update_current(); 
   return *cached_value; 
