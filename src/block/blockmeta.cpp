@@ -71,7 +71,11 @@ void BlockMeta::encode_meta_to_slice(std::vector<BlockMeta> &meta_entries,
  // TODO: Lab 3.4 将二进制字节数组解码为内存中的`Blcok`元数据
 std::vector<BlockMeta>
 BlockMeta::decode_meta_from_slice(const std::vector<uint8_t> &metadata) {
-  return {};
+  // 布局同 encode: [num_entries:32][MetaEntry]...[Hash:32]
+
+  //1. 长度下限：至少 num_entries + hash 一共 8 个字节
+  if(metadata.size() < sizeof(uint32_t) * 2)
+    throw std::runtime_error("BlockMeta::decode_meta_from_slice: Invalid metadata size"); 
 }
 
 } // namespace tiny_lsm
