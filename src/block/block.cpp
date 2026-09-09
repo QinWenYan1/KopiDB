@@ -426,6 +426,7 @@ Block::iters_preffix(uint64_t tranc_id, const std::string &preffix) {
       });
 }
 
+// Lab 3.3 使用二分查找获取满足谓词的区间迭代器
 // 返回第一个满足谓词的位置和最后一个满足谓词的位置
 // 如果不存在, 返回nullopt
 // 谓词作用于key, 且保证满足谓词的结果只在一段连续的区间内, 例如前缀匹配的谓词
@@ -438,7 +439,6 @@ std::optional<
     std::pair<std::shared_ptr<BlockIterator>, std::shared_ptr<BlockIterator>>>
 Block::get_monotony_predicate_iters(
     uint64_t tranc_id, std::function<int(const std::string &)> predicate) {
-  // TODO: Lab 3.3 使用二分查找获取满足谓词的区间迭代器
   // ? 第一次二分: 找到 first (满足谓词的最左边索引)
   // ? 第二次二分: 找到 last  (满足谓词的最右边索引)
   // ? 返回 [BlockIterator(first), BlockIterator(last+1)]
