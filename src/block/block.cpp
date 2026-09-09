@@ -418,8 +418,8 @@ Block::iters_preffix(uint64_t tranc_id, const std::string &preffix) {
   // ? 谓词: -key.compare(0, preffix.size(), preffix)
   // 前缀匹配转单调谓词: compare 比的是 key 的前 preffix.size() 个字符
   //   相等(有此前缀) ->  0 -> -0 = 0  命中
-  //   key 前缀较小   -> 负 -> 取负得正 -> >0 往右
-  //   key 前缀较大   -> 正 -> 取负得负 -> <0 往左
+  //   key 前缀较小  -> 负 -> 取负得正 -> >0 往右
+  //   key 前缀较大  -> 正 -> 取负得负 -> <0 往左
   return get_monotony_predicate_iters(
       tranc_id, [&preffix](const std::string &key) {
         return -key.compare(0, preffix.size(), preffix);
