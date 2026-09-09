@@ -1,4 +1,5 @@
 #include "block/blockmeta.h"
+#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <iterator>
@@ -90,8 +91,24 @@ BlockMeta::decode_meta_from_slice(const std::vector<uint8_t> &metadata) {
 
   // 将算出来的 hash 值和存放的拿出来比对
   uint32_t actual, expect = static_cast<uint32_t>(std::hash<std::string_view>{}(entries_view)); 
-  
-  memcpy(&actual,entries_begin + total , sizeof(uint32_t)); 
+  memcpy(&actual,entries_begin + entries_len , sizeof(uint32_t)); 
+  if (expect != actual)
+    std::runtime_error("BlockMeta::decode_meta_from_slice: Metadata hash mismatch"); 
+
+  //3. 读条目数量，读指针从 entries 段开始走
+  uint32_t num_entries; 
+  memcpy(&num_entries, data, sizeof(uint32_t)); 
+  const uint8_t* ptr = entries_begin; 
+
+  // 4. 逐条还原（encode 步骤 3 的逆运算）
+  std::vector<BlockMeta> metas; 
+  for (uint32_t i = 0; i < num_entries; i++){
+    BlockMeta meta; 
+
+    uint32_t off; 
+  }
+
+
 
 }
 
