@@ -1,4 +1,5 @@
 #include "block/blockmeta.h"
+#include "memtable/memtable.h"
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -95,7 +96,7 @@ BlockMeta::decode_meta_from_slice(const std::vector<uint8_t> &metadata) {
   if (expect != actual)
     std::runtime_error("BlockMeta::decode_meta_from_slice: Metadata hash mismatch"); 
 
-  //3. 读条目数量，读指针从 entries 段开始走
+  //3. 读条目数量，读指针从 entries_begin 段开始走
   uint32_t num_entries; 
   memcpy(&num_entries, data, sizeof(uint32_t)); 
   const uint8_t* ptr = entries_begin; 
@@ -105,10 +106,31 @@ BlockMeta::decode_meta_from_slice(const std::vector<uint8_t> &metadata) {
   for (uint32_t i = 0; i < num_entries; i++){
     BlockMeta meta; 
 
+    // 先读单个 Meta 的 offset  
     uint32_t off; 
+    memcpy(&off, ptr, sizeof(uint32_t)); 
+    ptr += sizeof(uint32_t);
+    meta.offset = off; 
+
+    // 读 fk_len 和 first key 
+    uint16_t fk_len; 
+    memcpy(&fk_len, ptr, sizeof(uint16_t)); 
+    ptr += sizeof(uint16_t); 
+    meta.first_key.assign(reinterpret_cast<const char*>(ptr), fk_len); 
+    ptr += fk_len; 
+
+    // 读 lk_len 和 last key 
+    uint16_t lk_len; 
+    memcpy(&lk_len, ptr, sizeof(uint16_t)); 
+    ptr += sizeof(uint16_t); 
+    meta.last_key.assign(reinterpret_cast<const char*>(ptr), lk_len); 
+    ptr += lk_len;
+
+    metas.push_back(meta);
+
   }
 
-
+  return metas; 
 
 }
 
