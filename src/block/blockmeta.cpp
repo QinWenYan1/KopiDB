@@ -17,7 +17,7 @@ void BlockMeta::encode_meta_to_slice(std::vector<BlockMeta> &meta_entries,
   // ? 输入输出都由参数中的引用给定, 你不需要自己创建`vector`
   // 布局 blockmeta.h 已经钉死：
   // [num_entries:32][MetaEntry]...[Hash:32]
-  // MetaEntry = offset(32) | first_key_len(16) | last_key_len(16) | last_key
+  // MetaEntry = offset(32) | first_key_len(16) | first_key | last_key_len(16) | last_key
 
   // 1. 预计算总大小，一次 resize 到位（覆盖式，不是append）
   //    头尾各一个 uint32: num_entries 和 hash 
