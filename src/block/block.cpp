@@ -416,9 +416,10 @@ std::optional<
 Block::iters_preffix(uint64_t tranc_id, const std::string &preffix) {
   // ? 将前缀匹配转化为单调谓词, 调用 get_monotony_predicate_iters
   // ? 谓词: -key.compare(0, preffix.size(), preffix)
-  return get_monotony_predicate_iters(tranc_id, [&preffix](const std::string &key){
-    return -key.compare(0, preffix.size(), preffix); 
-  }); 
+  return get_monotony_predicate_iters(
+      tranc_id, [&preffix](const std::string &key) {
+        return -key.compare(0, preffix.size(), preffix);
+      });
 }
 
 // 返回第一个满足谓词的位置和最后一个满足谓词的位置
@@ -438,16 +439,16 @@ Block::get_monotony_predicate_iters(
   // ? 第二次二分: 找到 last  (满足谓词的最右边索引)
   // ? 返回 [BlockIterator(first), BlockIterator(last+1)]
   if (offsets.empty())
-      return std::nullopt;
-  
+    return std::nullopt;
+
   // 1. 第一次二分：找最左命中 first
   //    命中区连续 ——> 命中不能停，收缩右边界继续往左边逼
   size_t left = 0, right = offsets.size(); // [left,right)
-  while (left < right){
-    size_t mid = left + (right-left)/2; 
+  while (left < right) {
+    size_t mid = left + (right - left) / 2;
     int p = predicate(get_key_at(offsets[mid]));
-    if (p == 0) 
-      right = mid; // 命中但左边可能还有，继续收缩 
+    if (p == 0)
+      right = mid; // 命中但左边可能还有，继续收缩
     else if (p > 0)
       left = mid + 1; // 未命中区，往右
     else
@@ -455,34 +456,32 @@ Block::get_monotony_predicate_iters(
   }
 
   // 循环收敛到“最左命中”或“越界/未命中”
-  if(left >= offsets.size() || predicate(get_key_at(offsets[left])) != 0)
+  if (left >= offsets.size() || predicate(get_key_at(offsets[left])) != 0)
     return std::nullopt; // 全block 无命中
-  size_t first = left; 
+  size_t first = left;
 
-  //2. 第二次二分：从 first 出发找命中区右端
-  //   命中收缩左边界; 循环结束 left = 第一个非命中区域 = last命中元素 + 1
-  left = first; 
-  right = offsets.size(); 
+  // 2. 第二次二分：从 first 出发找命中区右端
+  //    命中收缩左边界; 循环结束 left = 第一个非命中区域 = last命中元素 + 1
+  left = first;
+  right = offsets.size();
   while (left < right) {
-    size_t mid = left + (right-left) / 2; 
-    int p = predicate(get_key_at(offsets[mid])); 
+    size_t mid = left + (right - left) / 2;
+    int p = predicate(get_key_at(offsets[mid]));
     if (p == 0)
       left = mid + 1; // 命中但右边可能还有
     else if (p > 0)
       left = mid + 1; // 理论到不了（mid >= first 已在命中区右侧)，防御性保留
-    else 
+    else
       right = mid; // 已过命中区，往左
   }
 
   // last命中元素 + 1，天然左闭右开
-  size_t end_idx = left; 
+  size_t end_idx = left;
 
   // 3. 造迭代器对; 构造里的 skip_by_tranc_id 自动处理版本可见性
   return std::make_pair(
-    std::make_shared<BlockIterator>(shared_from_this(), first, tranc_id),
-    std::make_shared<BlockIterator>(shared_from_this(), end_idx, tranc_id)
-  );
-
+      std::make_shared<BlockIterator>(shared_from_this(), first, tranc_id),
+      std::make_shared<BlockIterator>(shared_from_this(), end_idx, tranc_id));
 }
 
 Block::Entry Block::get_entry_at(size_t offset) const {
