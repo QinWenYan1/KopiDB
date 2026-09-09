@@ -461,6 +461,28 @@ Block::get_monotony_predicate_iters(
   size_t first = left; 
 
   //2. 第二次二分：从 first 出发找命中区右端
+  //   命中收缩左边界; 循环结束 left = 第一个非命中区域 = last命中元素 + 1
+  left = first; 
+  right = offsets.size(); 
+  while (left < right) {
+    size_t mid = left + (right-left) / 2; 
+    int p = predicate(get_key_at(offsets[mid])); 
+    if (p == 0)
+      left = mid + 1; // 命中但右边可能还有
+    else if (p > 0)
+      left = mid + 1; // 理论到不了（mid >= first 已在命中区右侧)，防御性保留
+    else 
+      right = mid; // 已过命中区，往左
+  }
+
+  // last命中元素 + 1，天然左闭右开
+  size_t end_idx = left; 
+
+  // 3. 造迭代器对; 构造里的 skip_by_tranc_id 自动处理版本可见性
+  return std::make_pair(
+    std::make_shared<BlockIterator>(shared_from_this(), first, tranc_id),
+    std::make_shared<BlockIterator>(shared_from_this(), end_idx, tranc_id)
+  );
 
 }
 
