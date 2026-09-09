@@ -410,13 +410,16 @@ std::optional<size_t> Block::get_idx_binary(const std::string &key,
   return std::nullopt; // key 不存在
 }
 
+// TODO: Lab 3.3 获取前缀匹配的区间迭代器
 std::optional<
     std::pair<std::shared_ptr<BlockIterator>, std::shared_ptr<BlockIterator>>>
 Block::iters_preffix(uint64_t tranc_id, const std::string &preffix) {
-  // TODO: Lab 3.3 获取前缀匹配的区间迭代器
   // ? 将前缀匹配转化为单调谓词, 调用 get_monotony_predicate_iters
   // ? 谓词: -key.compare(0, preffix.size(), preffix)
   return std::nullopt;
+
+  // 相等(有此前缀) -> 0 -> -0 = 0 命中
+  // key 前缀较小  -> 负
 }
 
 // 返回第一个满足谓词的位置和最后一个满足谓词的位置
@@ -435,7 +438,30 @@ Block::get_monotony_predicate_iters(
   // ? 第一次二分: 找到 first (满足谓词的最左边索引)
   // ? 第二次二分: 找到 last  (满足谓词的最右边索引)
   // ? 返回 [BlockIterator(first), BlockIterator(last+1)]
-  return std::nullopt;
+  if (offsets.empty())
+      return std::nullopt;
+  
+  // 1. 第一次二分：找最左命中 first
+  //    命中区连续 ——> 命中不能停，收缩右边界继续往左边逼
+  size_t left = 0, right = offsets.size(); // [left,right)
+  while (left < right){
+    size_t mid = left + (right-left)/2; 
+    int p = predicate(get_key_at(offsets[mid]));
+    if (p == 0) 
+      right = mid; // 命中但左边可能还有，继续收缩 
+    else if (p > 0)
+      left = mid + 1; // 未命中区，往右
+    else
+      right = mid; // 未命中区，往左
+  }
+
+  // 循环收敛到“最左命中”或“越界/未命中”
+  if(left >= offsets.size() || predicate(get_key_at(offsets[left])) != 0)
+    return std::nullopt; // 全block 无命中
+  size_t first = left; 
+
+  //2. 第二次二分：从 first 出发找命中区右端
+
 }
 
 Block::Entry Block::get_entry_at(size_t offset) const {
