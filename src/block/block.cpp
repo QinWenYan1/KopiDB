@@ -416,10 +416,9 @@ std::optional<
 Block::iters_preffix(uint64_t tranc_id, const std::string &preffix) {
   // ? 将前缀匹配转化为单调谓词, 调用 get_monotony_predicate_iters
   // ? 谓词: -key.compare(0, preffix.size(), preffix)
-  return std::nullopt;
-
-  // 相等(有此前缀) -> 0 -> -0 = 0 命中
-  // key 前缀较小  -> 负
+  return get_monotony_predicate_iters(tranc_id, [&preffix](const std::string &key){
+    return -key.compare(0, preffix.size(), preffix); 
+  }); 
 }
 
 // 返回第一个满足谓词的位置和最后一个满足谓词的位置
