@@ -410,7 +410,7 @@ std::optional<size_t> Block::get_idx_binary(const std::string &key,
   return std::nullopt; // key 不存在
 }
 
-// TODO: Lab 3.3 获取前缀匹配的区间迭代器
+// Lab 3.3 获取前缀匹配的区间迭代器
 std::optional<
     std::pair<std::shared_ptr<BlockIterator>, std::shared_ptr<BlockIterator>>>
 Block::iters_preffix(uint64_t tranc_id, const std::string &preffix) {
