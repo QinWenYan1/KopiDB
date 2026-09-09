@@ -55,7 +55,11 @@ void BlockMeta::encode_meta_to_slice(std::vector<BlockMeta> &meta_entries,
     ptr += lk_len; 
   }
 
-  
+  //4. ! hash 只盖 entries 段 [data+4, ptr), 不含 num_entries
+  //    std::hash 返回 size_t，截断保留低 32 位
+  const uint8_t *entries_begin = metadata.data() + sizeof(uint32_t); // 段起点
+  size_t entries_len = ptr - entries_begin;   
+  auto entries_view = std::string_view(); 
 }
 
  // TODO: Lab 3.4 将二进制字节数组解码为内存中的`Blcok`元数据
