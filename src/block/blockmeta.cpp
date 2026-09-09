@@ -94,7 +94,7 @@ BlockMeta::decode_meta_from_slice(const std::vector<uint8_t> &metadata) {
   uint32_t actual, expect = static_cast<uint32_t>(std::hash<std::string_view>{}(entries_view)); 
   memcpy(&actual,entries_begin + entries_len , sizeof(uint32_t)); 
   if (expect != actual)
-    std::runtime_error("BlockMeta::decode_meta_from_slice: Metadata hash mismatch"); 
+    throw std::runtime_error("BlockMeta::decode_meta_from_slice: Metadata hash mismatch"); 
 
   //3. 读条目数量，读指针从 entries_begin 段开始走
   uint32_t num_entries; 
