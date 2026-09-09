@@ -1,6 +1,7 @@
 #include "block/blockmeta.h"
 #include <cstring>
 #include <functional>
+#include <iterator>
 #include <stdexcept>
 
 namespace tiny_lsm {
@@ -29,6 +30,31 @@ void BlockMeta::encode_meta_to_slice(std::vector<BlockMeta> &meta_entries,
   uint8_t *ptr = metadata.data(); 
 
   //2. 条目数 (uint32 memcpy 本机字节序)
+  uint32_t num = static_cast<uint32_t>(meta_entries.size()); 
+  memcpy(ptr, &num, sizeof(uint32_t)); 
+  ptr += sizeof(uint32_t); 
+
+  //3. 逐条写 MetaEntry: offset(32) | fk_len(16) | fk | lk_len(16) | lk 
+  for (const auto &m : meta_entries){
+    // size_t 收窄为 uint32
+    uint32_t off = static_cast<uint32_t>(m.offset); 
+    memcpy(ptr, &off, sizeof(uint32_t)); 
+    ptr += sizeof(uint32_t); 
+
+    uint16_t fk_len = static_cast<uint16_t>(m.first_key.size()); 
+    memcpy(ptr, &fk_len, sizeof(uint16_t)); 
+    ptr += sizeof(uint16_t); 
+    memcpy(ptr, m.first_key.data(), fk_len); 
+    ptr += fk_len;
+
+
+    uint16_t lk_len = static_cast<uint16_t>(m.last_key.size()); 
+    memcpy(ptr, &lk_len, sizeof(uint16_t)); 
+    ptr += sizeof(uint16_t); 
+    memcpy(ptr, m.last_key.data(), lk_len); 
+    ptr += lk_len; 
+  }
+
   
 }
 
