@@ -3,6 +3,7 @@
 #include <functional>
 #include <iterator>
 #include <stdexcept>
+#include <string_view>
 
 namespace tiny_lsm {
 BlockMeta::BlockMeta() : offset(0), first_key(""), last_key("") {}
@@ -76,6 +77,22 @@ BlockMeta::decode_meta_from_slice(const std::vector<uint8_t> &metadata) {
   //1. 长度下限：至少 num_entries + hash 一共 8 个字节
   if(metadata.size() < sizeof(uint32_t) * 2)
     throw std::runtime_error("BlockMeta::decode_meta_from_slice: Invalid metadata size"); 
+
+  const uint8_t* data = metadata.data(); 
+  size_t total = metadata.size(); 
+
+  //2. hash 校验：重算 entries 段 [data+4 , size-4), 和尾部存的比对
+  const uint8_t* entries_begin = data + sizeof(uint32_t); 
+  size_t entries_len = total - sizeof(uint32_t)*2; //掐头(num)去尾(hash)
+  auto entries_view = std::string_view(
+    reinterpret_cast<const char*>(entries_begin), entries_len 
+  ); 
+
+  // 将算出来的 hash 值和存放的拿出来比对
+  uint32_t actual, expect = static_cast<uint32_t>(std::hash<std::string_view>{}(entries_view)); 
+  
+  memcpy(&actual,entries_begin + total , sizeof(uint32_t)); 
+
 }
 
 } // namespace tiny_lsm
