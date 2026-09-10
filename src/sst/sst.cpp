@@ -188,12 +188,12 @@ void SSTBuilder::add(const std::string &key, const std::string &value,
     uint64_t offset = vlog_->append(key, value); 
 
     //vlog 引用格式: [offset:8][size:4], memcpy 本机序 (同 block 的取舍)
-    vlog_ref.resize(sizeof(uint32_t) + sizeof(uint32_t)); 
+    vlog_ref.resize(sizeof(uint64_t) + sizeof(uint32_t)); 
     memcpy(vlog_ref.data(), &offset, sizeof(uint64_t));
     uint32_t vlen = static_cast<uint32_t>(value.size()); 
     memcpy(vlog_ref.data()+sizeof(uint64_t), &vlen, sizeof(uint32_t)); 
 
-    // 指针改道，大 value 不发生拷贝
+    //指针改道，大 value 不发生拷贝
     actual_value = &vlog_ref; 
   }
   
