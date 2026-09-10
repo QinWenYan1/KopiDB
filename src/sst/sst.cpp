@@ -282,9 +282,14 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   if (meta_entries.empty())
     throw std::runtime_error("SSTBuilder::build: Cannot build empty SST"); 
 
-  //3. 元数据段：必须编码到临时 vector 在追加
+  //3. 元数据段：必须编码到临时 vector 再追加
   //   你写的 encode_meta_to_slice 是 resize 覆盖式，直接传 data 会把所有 block 字节冲掉
   //   覆盖式语意的代价：调用方负责给空容器
+  uint32_t meta_offset = static_cast<uint32_t>(data.size()); 
+  std::vector<uint8_t> meta_section; 
+  BlockMeta::encode_meta_to_slice(meta_entries, meta_section); 
+  data.insert(data.end(), meta_section.begin(), meta_section.end()); 
+  
   
 }
 } // namespace tiny_lsm
