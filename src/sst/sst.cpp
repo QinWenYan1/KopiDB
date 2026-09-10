@@ -234,6 +234,16 @@ void SSTBuilder::finish_block() {
   // ? 将当前 block 编码并追加到 data, 同时向 meta_entries 添加元数据
   // ? 然后重置 block 为新的空 Block
   // ? meta_entries 记录: (当前data起始偏移, first_key, last_key)
+
+  // 1. 把当前 block 挪出来编码（默认带CRC32）
+  auto old_block = std::move(block);
+  auto encoded_block = old_block.encode();
+  
+  //2. 草稿定格为 BlockMeta: (块起始偏移)
+  //   偏移 = 此刻 data 的末尾：之前所有块的字节都在 data 里,
+  //   本块将要写在这个位置，所以 data.size() 就是它在文件中的偏移
+  meta_entries.emplace_back(data.size(), first_key, last_key);
+
 }
 
 // TODO: Lab 3.5 构建一个SST
