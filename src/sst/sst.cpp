@@ -252,7 +252,7 @@ void SSTBuilder::finish_block() {
   block = Block(block_size); 
 }
 
-// TODO: Lab 3.5 构建一个SST
+// TODO: Lab 3.5 构建一个SST，并落盘
 // SST.first_key = meta_entries.front().first_key
 // SST.last_key  = meta_entries.back().last_key
 //               = 整个文件的首尾 key
@@ -268,6 +268,9 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   // ?    WiscKey 额外: [storage_mode_:uint8][WISCKEY_MAGIC:uint8]
   // ? 6. 调用 FileObj::create_and_write 写文件
   // ? 7. 构造并返回 SST 对象
-  return nullptr;
+  
+  //1. 收尾，将当前的 block 里面没有定格的 entry， 先封盘
+  if (!block.is_empty())
+    finish_block(); 
 }
 } // namespace tiny_lsm
