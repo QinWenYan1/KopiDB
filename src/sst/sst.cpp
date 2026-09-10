@@ -296,6 +296,15 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
     auto bloom_bytes = bloom_filter->encode(); 
     data.insert(data.end(), bloom_bytes.begin(), bloom_bytes.end()); 
   }
+
+  //5. extra information 段: 老格式 24B; WiscKey 模式 26B (多一个storage_mode + 魔数)
+  //   [meta_offset:u32][bloom_offset:u32][min_tranc:u64][max_tranc:u64]
+  size_t footer_size = (storage_mode_ == 1) ? 26 : 24; 
+  size_t footer_base = data.size(); 
+  data.resize(footer_base + footer_size); 
+  uint8_t* p = data.data() + data.size(); 
+  memcpy(p, &meta_offset, sizeof(uint32_t)); 
+
 }
 } // namespace tiny_lsm
  
