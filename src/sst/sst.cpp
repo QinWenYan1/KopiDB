@@ -149,7 +149,9 @@ SSTBuilder::SSTBuilder(size_t block_size, bool has_bloom,
   last_key.clear();
 }
 
-// TODO: Lab 3.5 添加键值对
+// Lab 3.5 添加键值对
+// 当前在建 block 的首尾 key (草稿)
+// 每收下一条 entry, last_key 就刷新一次
 void SSTBuilder::add(const std::string &key, const std::string &value,
                      uint64_t tranc_id) {
   // ? 尝试向 block 添加 entry; 若返回 false (block满) 先调用 finish_block() 再添加
@@ -215,12 +217,9 @@ void SSTBuilder::add(const std::string &key, const std::string &value,
   //6. block满了: 封盘开新块。空 block 有 “必收第一条” key-value 对，这次必成功
   finish_block(); 
   block.add_entry(key, *actual_value, tranc_id, false);
-  //finish_block 把旧的 first_key 
+  //finish_block 把旧的 first_key 快照进 meta, 这里开新章
   first_key = key;
-
-
-
-  
+  last_key = key; 
 
 }
 
@@ -228,17 +227,22 @@ size_t SSTBuilder::real_size() const { return data.size() + block.cur_size(); }
 
 size_t SSTBuilder::estimated_size() const { return data.size(); }
 
+// TODO: Lab 3.5 构建块
+// 草稿定格 → BlockMeta(offset, first_key, last_key)
+// 压进 meta_entries, 一个 block 一张
 void SSTBuilder::finish_block() {
-  // TODO: Lab 3.5 构建块
   // ? 将当前 block 编码并追加到 data, 同时向 meta_entries 添加元数据
   // ? 然后重置 block 为新的空 Block
   // ? meta_entries 记录: (当前data起始偏移, first_key, last_key)
 }
 
+// TODO: Lab 3.5 构建一个SST
+// SST.first_key = meta_entries.front().first_key
+// SST.last_key  = meta_entries.back().last_key
+//               = 整个文件的首尾 key
 std::shared_ptr<SST>
 SSTBuilder::build(size_t sst_id, const std::string &path,
                   std::shared_ptr<BlockCache> block_cache) {
-  // TODO: Lab 3.5 构建一个SST
   // ? 1. 若 block 非空则调用 finish_block()
   // ? 2. 若 meta_entries 为空则抛出异常
   // ? 3. 编码元数据块并追加到 data (BlockMeta::encode_meta_to_slice)
