@@ -274,13 +274,18 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   // ? 6. 调用 FileObj::create_and_write 写文件
   // ? 7. 构造并返回 SST 对象
 
-  // 1. 收尾，将当前的 block 里面没有定格的 entry， 先封盘
+  //1. 收尾，将当前的 block 里面没有定格的 entry， 先封盘
   if (!block.is_empty())
     finish_block();
 
-  // 2. 一个块都没有 = 空 SST，拒绝 build，直接throw error 
+  //2. 一个块都没有 = 空 SST，拒绝 build，直接throw error 
   if (meta_entries.empty())
     throw std::runtime_error("SSTBuilder::build: Cannot build empty SST"); 
+
+  //3. 元数据段：必须编码到临时 vector 在追加
+  //   你写的 encode_meta_to_slice 是 resize 覆盖式，直接传 data 会把所有 block 字节冲掉
+  //   覆盖式语意的代价：调用方负责给空容器
+  
 }
 } // namespace tiny_lsm
  
