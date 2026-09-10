@@ -152,17 +152,12 @@ SSTBuilder::SSTBuilder(size_t block_size, bool has_bloom,
 // TODO: Lab 3.5 添加键值对
 void SSTBuilder::add(const std::string &key, const std::string &value,
                      uint64_t tranc_id) {
-  // ? 记录 first_key (第一次调用时)
-  // ? 向 bloom_filter 中 add key
-  // ? 更新 max_tranc_id_ / min_tranc_id_
-  // ? WiscKey 模式下: 若 value 非空且超过 wisckey_threshold_, 将 value 写入 vlog
-  // ?   并将 vlog 引用 [offset:8][size:4] 作为 actual_value
   // ? 尝试向 block 添加 entry; 若返回 false (block满) 先调用 finish_block() 再添加
   // ? 注意: 相同 key 必须在同一个 block 中 (force_write = key == last_key)
   // ? 更新 last_key
   
-  //1. 首个 block 的 first key 只在第一次调用时记录（构造时已 clear）
-  //   后续每个新 block 的 first_key 在步骤 6 里更新
+  //1.  首个 block 的 first key 只在第一次调用时记录（构造时已 clear）
+  //    后续每个新 block 的 first_key 在步骤 6 里更新
   if(first_key.empty())
     first_key = key; 
 
@@ -170,17 +165,38 @@ void SSTBuilder::add(const std::string &key, const std::string &value,
   if (bloom_filter)
     bloom_filter->add(key); 
 
-  //3. 维护事务 id 区间，build 时写进 footer 供上层按 tranc 过滤整个 SST
+  //3.  维护事务 id 区间，build 时写进 footer 供上层按 tranc 过滤整个 SST
+  //    更新 max_tranc_id_ / min_tranc_id_
   max_tranc_id_ = std::max(max_tranc_id_, tranc_id); 
   min_tranc_id_ = std::min(min_tranc_id_, tranc_id); 
 
 
-  //4. Wisckey 大 value 分离
-  //   本 lab 用 inline 构造 (storage_mode = 0)
-  //   此分支不会促发，先按骨架埋好
+  //4.  WiscKey 模式下: 若 value 非空且超过 wisckey_threshold_, 将 value 写入 vlog
+  //    并将 vlog 引用 [offset:8][size:4] 作为 actual_value
+  // 
+  //WiscKey 是什么: 一种"值分离"设计
+  // 默认模式下 value 跟着 key 一起住进 block（inline）
+  // 但 LSM 的 compaction 会反复重写 SST，大 value 每次都被原样重搬一遍（写放大）
+  // WiscKey 的做法：大 value 不写进 block，追加到一个专门的日志文件（vlog）
+  // block 里只存一张 12 字节的"提货单" [offset:8][size:4]，读的时候拿单子去 vlog 取货
+  // 就像搬家：钥匙串随身带，大家具走物流
+  const std::string* actual_value = &value; 
+  std::string vlog_ref; 
+  if(storage_mode_ == 1 && vlog_ && !value.empty() && wisckey_threshold_ > 0
+      && value.size() > wisckey_threshold_){
+    //空value (tombstone 删除标记) 永不分离: 没体积还可省白送一次 IO 
+    uint64_t offset = vlog_->append(key, value); 
+
+    //vlog 引用格式: [offset:8][size:4], memcpy 本机序 (同 block 的取舍)
+    vlog_ref.resize(sizeof(uint32_t) + sizeof(uint32_t)); 
+    memcpy(vlog_ref.data(), &offset, sizeof(uint64_t));
+    uint32_t vlen = static_cast<uint32_t>(value.size()); 
+    memcpy(vlog_ref.data()+sizeof(uint64_t), &vlen, sizeof(uint32_t)); 
+
+    // 指针改道，大 value 不发生拷贝
+    actual_value = &vlog_ref; 
+  }
   
-
-
 
 }
 
