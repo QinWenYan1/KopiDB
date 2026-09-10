@@ -244,6 +244,9 @@ void SSTBuilder::finish_block() {
   //   本块将要写在这个位置，所以 data.size() 就是它在文件中的偏移
   meta_entries.emplace_back(data.size(), first_key, last_key);
 
+  //3. 编码字节追加进入到 data [存放该SST的多block位置]
+  data.insert(data.end(), encoded_block.begin(), encoded_block.end()); 
+
 }
 
 // TODO: Lab 3.5 构建一个SST
