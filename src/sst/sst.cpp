@@ -290,7 +290,12 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   BlockMeta::encode_meta_to_slice(meta_entries, meta_section); 
   data.insert(data.end(), meta_section.begin(), meta_section.end()); 
   
-  
+  //4. bloom filter，记下其偏移量再追加
+  uint32_t bloom_off = static_cast<uint32_t>(data.size()); 
+  if(bloom_filter){
+    auto bloom_bytes = bloom_filter->encode(); 
+    data.insert(data.end(), bloom_bytes.begin(), bloom_bytes.end()); 
+  }
 }
 } // namespace tiny_lsm
  
