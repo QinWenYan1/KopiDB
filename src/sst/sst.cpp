@@ -277,6 +277,10 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   // 1. 收尾，将当前的 block 里面没有定格的 entry， 先封盘
   if (!block.is_empty())
     finish_block();
+
+  // 2. 一个块都没有 = 空 SST，拒绝 build，直接throw error 
+  if (meta_entries.empty())
+    throw std::runtime_error("SSTBuilder::build: Cannot build empty SST"); 
 }
 } // namespace tiny_lsm
  
