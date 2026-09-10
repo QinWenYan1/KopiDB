@@ -185,6 +185,7 @@ void SSTBuilder::add(const std::string &key, const std::string &value,
   if(storage_mode_ == 1 && vlog_ && !value.empty() && wisckey_threshold_ > 0
       && value.size() > wisckey_threshold_){
     //空value (tombstone 删除标记) 永不分离: 没体积还可省白送一次 IO 
+    //把 value 本体追加到 vlog 文件末尾，返回写入位置的偏移量——相当于物流揽件后给你的单号
     uint64_t offset = vlog_->append(key, value); 
 
     //vlog 引用格式: [offset:8][size:4], memcpy 本机序 (同 block 的取舍)
@@ -196,6 +197,29 @@ void SSTBuilder::add(const std::string &key, const std::string &value,
     //指针改道，大 value 不发生拷贝
     actual_value = &vlog_ref; 
   }
+
+  //5. 核心不变式：连续相同 key 的所有版本必须挤在同一个 block 
+  //  (Block 的二分/迭代器都假设)
+  //  同 key → force_write=true → 即使 block 已经满了也硬塞。为什么？
+  //  你写的 adjust_idx_by_tranc_id 假设"同 key 的所有版本连续存放在同一个 block 内"
+  //  先退到组首、再往后找可见版本。
+  //  要是两个版本被切到不同 block，SST 层的 find_block_idx 二分只会命中其中一个块，另一个块里的版本就永远找不到了。
+  //  版本团聚是正确性问题，不是优化。
+  //  不同 key → force_write=false → 遵守容量纪律，满了就被拒（返回 false)
+  bool force_write = (key == last_key);
+  if (block.add_entry(key, *actual_value, tranc_id, force_write)){
+    last_key = key; 
+    return; 
+  }
+
+  //6. block满了: 封盘开新块。空 block 有 “必收第一条” key-value 对，这次必成功
+  finish_block(); 
+  block.add_entry(key, *actual_value, tranc_id, false);
+  //finish_block 把旧的 first_key 
+  first_key = key;
+
+
+
   
 
 }
