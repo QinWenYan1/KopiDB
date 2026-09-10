@@ -149,9 +149,9 @@ SSTBuilder::SSTBuilder(size_t block_size, bool has_bloom,
   last_key.clear();
 }
 
+// TODO: Lab 3.5 添加键值对
 void SSTBuilder::add(const std::string &key, const std::string &value,
                      uint64_t tranc_id) {
-  // TODO: Lab 3.5 添加键值对
   // ? 记录 first_key (第一次调用时)
   // ? 向 bloom_filter 中 add key
   // ? 更新 max_tranc_id_ / min_tranc_id_
@@ -160,6 +160,28 @@ void SSTBuilder::add(const std::string &key, const std::string &value,
   // ? 尝试向 block 添加 entry; 若返回 false (block满) 先调用 finish_block() 再添加
   // ? 注意: 相同 key 必须在同一个 block 中 (force_write = key == last_key)
   // ? 更新 last_key
+  
+  //1. 首个 block 的 first key 只在第一次调用时记录（构造时已 clear）
+  //   后续每个新 block 的 first_key 在步骤 6 里更新
+  if(first_key.empty())
+    first_key = key; 
+
+  // 2. bloom filter 收录 key （将来 SST::get 先问 bloom 再读 block）
+  if (bloom_filter)
+    bloom_filter->add(key); 
+
+  //3. 维护事务 id 区间，build 时写进 footer 供上层按 tranc 过滤整个 SST
+  max_tranc_id_ = std::max(max_tranc_id_, tranc_id); 
+  min_tranc_id_ = std::min(min_tranc_id_, tranc_id); 
+
+
+  //4. Wisckey 大 value 分离
+  //   本 lab 用 inline 构造 (storage_mode = 0)
+  //   此分支不会促发，先按骨架埋好
+  
+
+
+
 }
 
 size_t SSTBuilder::real_size() const { return data.size() + block.cur_size(); }
