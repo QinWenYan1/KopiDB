@@ -247,6 +247,9 @@ void SSTBuilder::finish_block() {
   //3. 编码字节追加进入到 data [存放该SST的多block位置]
   data.insert(data.end(), encoded_block.begin(), encoded_block.end()); 
 
+  //4. 然后重建 block std::move 之后的对象是"有效但未指定"状态
+  //   标准不保证它是空的——显式重建一个同容量新块, 不靠实现细节
+  block = Block(block_size); 
 }
 
 // TODO: Lab 3.5 构建一个SST
