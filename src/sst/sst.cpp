@@ -47,6 +47,18 @@ std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
   sst->file = std::move(file);
   sst->block_cache = std::move(block_cache); 
   sst->vlog_ = std::move(vlog); 
+
+  size_t file_size = sst->file.size(); 
+
+  //0. 格式探测：默认老格式 24B footer; 尾字节 == 0x4B 才可能是 WiscKey 26B
+  size_t footer_size = OLD_FOOTER_SIZE;
+  if (file_size < footer_size)
+    throw std::runtime_error("SST::open: Invalid SST file, too small"); 
+ 
+  if (file_size >= WISCKEY_FOOTER_SIZE && sst->file.read_uint8(file_size - 1) == WISCKEY_MAGIC){
+    // 防止巧合：老格式尾字节是 max_tranc_id 的最高字节，恰好恰好 0x4B 理论上可能
+    // 双重保险: 按 26B 假设读出候选 meta_offset, 必须落在 footer 之前才采信
+  }
 }
 
 void SST::del_sst() { file.del_file(); }
