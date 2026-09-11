@@ -2,6 +2,7 @@
 #include "config/config.h"
 #include "consts.h"
 #include "sst/sst_iterator.h"
+#include "utils/files.h"
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -9,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <stdexcept>
+#include <utility>
 
 namespace tiny_lsm {
 
@@ -310,12 +312,23 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   memcpy(p, &min_tranc_id_, sizeof(uint64_t));
   p += sizeof(uint64_t); 
   memcpy(p, &max_tranc_id_, sizeof(uint64_t));
-  p += sizeof(uint64_t);
 
   if (storage_mode_ == 1){
     data[data.size() - 2] = storage_mode_; 
+    // 'k' 魔数 (WiscKey lab 在定义正式常量)
     data[data.size() - 1] = 0x4B; 
   }
+
+  //6. 整个 data 一次落盘整个 SST
+  FileObj file = FileObj::create_and_write(path, data); 
+
+  //7. 组装 SST 描述对象（SSTBuilder 是 SST 的 friend, 可直接填私有成员）
+  auto res = std::make_shared<SST>(); 
+  res->sst_id = sst_id; 
+  res->file = std::move(file); 
+
+
+
 }
 } // namespace tiny_lsm
  
