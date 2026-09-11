@@ -304,7 +304,18 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   data.resize(footer_base + footer_size); 
   uint8_t* p = data.data() + data.size(); 
   memcpy(p, &meta_offset, sizeof(uint32_t)); 
+  p += sizeof(uint32_t);
+  memcpy(p, &bloom_off, sizeof(uint32_t)); 
+  p += sizeof(uint32_t); 
+  memcpy(p, &min_tranc_id_, sizeof(uint64_t));
+  p += sizeof(uint64_t); 
+  memcpy(p, &max_tranc_id_, sizeof(uint64_t));
+  p += sizeof(uint64_t);
 
+  if (storage_mode_ == 1){
+    data[data.size() - 2] = storage_mode_; 
+    data[data.size() - 1] = 0x4B; 
+  }
 }
 } // namespace tiny_lsm
  
