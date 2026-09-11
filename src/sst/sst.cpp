@@ -59,14 +59,25 @@ std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
     // 防止巧合：老格式尾字节是 max_tranc_id 的最高字节，恰好恰好 0x4B 理论上可能
     // 双重保险: 按 26B 假设读出候选 meta_offset
     uint32_t meta_off = sst->file.read_uint32(file_size - WISCKEY_FOOTER_SIZE);
-    //  这个meta offset 必须落在 footer / extra info 前面的位置才算这个footer_size合法:
-    //  [block][meta][bloom][extra info / footer]
+    // 这个meta offset 必须落在 footer / extra info 前面的位置才算这个 footer_size 的确是 WISCKEY_FOOTER_SIZE:
+    // [block][meta][bloom][extra info / footer]
+    // 如果是老格式 24B 那里是 [bloom 最后2字节] -> 不是任何偏移, 是垃圾 → 没有理由 < size-26
     if (meta_off < file_size - WISCKEY_FOOTER_SIZE){
       footer_size = WISCKEY_FOOTER_SIZE; 
       sst->storage_mode_ = sst->file.read_uint8(file_size - 2); 
     }
-
   }
+
+  //1. 读 footer/etra info 的四个字段: 两种格式的后 24 字节布局完全一致
+  //   [meta_offset:u32][bloom_offset:u32][min_tranc:u64][max_tranc:u64]
+  size_t footer_base = file_size - footer_size; 
+  sst->meta_block_offset = sst->file.read_uint32(footer_base);  
+  sst->bloom_offset = sst->file.read_uint32(footer_base + sizeof(uint32_t));
+  sst->min_tranc_id_ = sst->file.read_uint64(footer_base + 2*sizeof(uint32_t));
+  sst->max_tranc_id_ = sst->file.read_uint64(footer_base + 4*sizeof(uint32_t));
+
+
+
 }
 
 void SST::del_sst() { file.del_file(); }
