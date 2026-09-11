@@ -1,4 +1,5 @@
 #include "sst/sst.h"
+#include "block/blockmeta.h"
 #include "config/config.h"
 #include "consts.h"
 #include "sst/sst_iterator.h"
@@ -62,6 +63,7 @@ std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
     // 这个meta offset 必须落在 footer / extra info 前面的位置才算这个 footer_size 的确是 WISCKEY_FOOTER_SIZE:
     // [block][meta][bloom][extra info / footer]
     // 如果是老格式 24B 那里是 [bloom 最后2字节] -> 不是任何偏移, 是垃圾 → 没有理由 < size-26
+    // 这也是格式嗅探的通用套路：magic byte 负责立案，布局不变式负责定罪
     if (meta_off < file_size - WISCKEY_FOOTER_SIZE){
       footer_size = WISCKEY_FOOTER_SIZE; 
       sst->storage_mode_ = sst->file.read_uint8(file_size - 2); 
@@ -76,6 +78,10 @@ std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
   sst->min_tranc_id_ = sst->file.read_uint64(footer_base + 2*sizeof(uint32_t));
   sst->max_tranc_id_ = sst->file.read_uint64(footer_base + 4*sizeof(uint32_t));
 
+  //2. 读元数据段 [meta_block_offset, bloom_offset), 解码出 meta_entries
+  auto meta_bytes = sst->file.read_to_slice(sst->meta_block_offset, sst->bloom_offset - sst->meta_block_offset); 
+  sst->meta_entries = BlockMeta::decode_meta_from_slice(meta_bytes); 
+  
 
 
 }
