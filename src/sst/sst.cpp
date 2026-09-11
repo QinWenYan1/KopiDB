@@ -26,21 +26,27 @@ static constexpr size_t WISCKEY_FOOTER_SIZE = OLD_FOOTER_SIZE + 2;
 // SST
 // **************************************************
 
+// TODO: Lab 3.6 打开一个SST文件, 返回一个描述类
 std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
                                std::shared_ptr<BlockCache> block_cache,
                                std::shared_ptr<VLog> vlog) {
-  // TODO: Lab 3.6 打开一个SST文件, 返回一个描述类
   // ? 步骤:
-  // ?   0. 检测文件末尾 magic byte 判断是否为 WiscKey 格式 (WISCKEY_MAGIC =
-  // 0x4B) ?      footer 共 24 字节 (老格式) 或 26 字节 (WiscKey, 末尾多
-  // storage_mode + magic) ?   1. 从文件末尾读取 footer: meta_block_offset,
-  // bloom_offset, min_tranc_id, max_tranc_id ?      如为 WiscKey 格式, 还需读取
-  // storage_mode_ ?   2. 读取并解码 Bloom Filter (bloom_offset ~
-  // meta_block_offset 之间) ?   3. 读取并解码元数据块 (meta_block_offset ~
-  // bloom_offset 之间) ?      调用 BlockMeta::decode_meta_from_slice ?   4.
-  // 设置 first_key 和 last_key ?   注: vlog 用于 WiscKey 模式下的 value 读取,
-  // 直接赋值给 sst->vlog_
-  return nullptr;
+  // 0. 检测文件末尾 magic byte 判断是否为 WiscKey 格式 (WISCKEY_MAGIC =0x4B)     
+  //    footer 共 24 字节 (老格式) 或 26 字节 (WiscKey, 末尾多 storage_mode + magic)
+  // 1. 从文件末尾读取 footer: meta_block_offset, bloom_offset, min_tranc_id, max_tranc_id       
+  //    如为 WiscKey 格式, 还需读取 storage_mode_ 
+  // 2. 读取并解码 Bloom Filter (bloom_offset ~ meta_block_offset 之间)    
+  // 3. 读取并解码元数据块 (meta_block_offset ~ bloom_offset 之间)       
+  //    调用 BlockMeta::decode_meta_from_slice 
+  // 4. 设置 first_key 和 last_key 
+  //    注: vlog 用于 WiscKey 模式下的 value 读取, 直接赋值给 sst->vlog_
+  
+  //open 是 SST 的静态成员函数，和 build 一样可以直接填私有成员
+  auto sst = std::make_shared<SST>();
+  sst->sst_id = sst_id; 
+  sst->file = std::move(file);
+  sst->block_cache = std::move(block_cache); 
+  sst->vlog_ = std::move(vlog); 
 }
 
 void SST::del_sst() { file.del_file(); }
