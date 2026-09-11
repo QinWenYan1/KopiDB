@@ -326,8 +326,20 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   auto res = std::make_shared<SST>(); 
   res->sst_id = sst_id; 
   res->file = std::move(file); 
-
-
+  //必须赶在 move 之前读
+  res->first_key = meta_entries.front().first_key; 
+  res->last_key = meta_entries.back().last_key; 
+  res->meta_block_offset = meta_offset; 
+  res->bloom_offset = bloom_off; 
+  // shared_ptr 拷贝，此后归 SST 持有
+  res->bloom_filter = bloom_filter; 
+  res->block_cache = std::move(block_cache); 
+  res->min_tranc_id_ = min_tranc_id_; 
+  res->max_tranc_id_ = max_tranc_id_; 
+  res->storage_mode_ = storage_mode_; 
+  res->vlog_ = vlog_; 
+  res->meta_entries = std::move(meta_entries); 
+  return res; 
 
 }
 } // namespace tiny_lsm
