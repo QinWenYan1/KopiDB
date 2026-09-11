@@ -57,7 +57,15 @@ std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
  
   if (file_size >= WISCKEY_FOOTER_SIZE && sst->file.read_uint8(file_size - 1) == WISCKEY_MAGIC){
     // 防止巧合：老格式尾字节是 max_tranc_id 的最高字节，恰好恰好 0x4B 理论上可能
-    // 双重保险: 按 26B 假设读出候选 meta_offset, 必须落在 footer 之前才采信
+    // 双重保险: 按 26B 假设读出候选 meta_offset
+    uint32_t meta_off = sst->file.read_uint32(file_size - WISCKEY_FOOTER_SIZE);
+    //  这个meta offset 必须落在 footer / extra info 前面的位置才算这个footer_size合法:
+    //  [block][meta][bloom][extra info / footer]
+    if (meta_off < file_size - WISCKEY_FOOTER_SIZE){
+      footer_size = WISCKEY_FOOTER_SIZE; 
+      sst->storage_mode_ = sst->file.read_uint8(file_size - 2); 
+    }
+
   }
 }
 
