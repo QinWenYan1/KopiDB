@@ -315,7 +315,7 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
 
   if (storage_mode_ == 1){
     data[data.size() - 2] = storage_mode_; 
-    // 'k' 魔数 (WiscKey lab 在定义正式常量)
+    // 'k'/0x4B 魔数 放入到对应位置 (WiscKey lab 在定义正式常量)
     data[data.size() - 1] = 0x4B; 
   }
 
