@@ -233,7 +233,7 @@ size_t SSTBuilder::real_size() const { return data.size() + block.cur_size(); }
 
 size_t SSTBuilder::estimated_size() const { return data.size(); }
 
-// TODO: Lab 3.5 构建块
+// Lab 3.5 构建块
 // 草稿定格 → BlockMeta(offset, first_key, last_key)
 // 压进 meta_entries, 一个 block 一张
 void SSTBuilder::finish_block() {
@@ -258,7 +258,7 @@ void SSTBuilder::finish_block() {
   block = Block(block_size);
 }
 
-// TODO: Lab 3.5 构建一个SST，并落盘
+// Lab 3.5 构建一个SST，并落盘
 // SST.first_key = meta_entries.front().first_key
 // SST.last_key  = meta_entries.back().last_key
 //               = 整个文件的首尾 key
@@ -323,6 +323,7 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   FileObj file = FileObj::create_and_write(path, data); 
 
   //7. 组装 SST 描述对象（SSTBuilder 是 SST 的 friend, 可直接填私有成员）
+  //   SST 对象是文件的"遥控器"
   auto res = std::make_shared<SST>(); 
   res->sst_id = sst_id; 
   res->file = std::move(file); 
@@ -332,6 +333,7 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   res->meta_block_offset = meta_offset; 
   res->bloom_offset = bloom_off; 
   // shared_ptr 拷贝，此后归 SST 持有
+  // bloom_filter 的关系是"共享"
   res->bloom_filter = bloom_filter; 
   res->block_cache = std::move(block_cache); 
   res->min_tranc_id_ = min_tranc_id_; 
@@ -342,5 +344,6 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   return res; 
 
 }
+
 } // namespace tiny_lsm
  
