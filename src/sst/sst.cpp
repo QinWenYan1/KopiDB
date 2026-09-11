@@ -276,74 +276,73 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   // ? 6. 调用 FileObj::create_and_write 写文件
   // ? 7. 构造并返回 SST 对象
 
-  //1. 收尾，将当前的 block 里面没有定格的 entry， 先封盘
+  // 1. 收尾，将当前的 block 里面没有定格的 entry， 先封盘
   if (!block.is_empty())
     finish_block();
 
-  //2. 一个块都没有 = 空 SST，拒绝 build，直接throw error 
+  // 2. 一个块都没有 = 空 SST，拒绝 build，直接throw error
   if (meta_entries.empty())
-    throw std::runtime_error("SSTBuilder::build: Cannot build empty SST"); 
+    throw std::runtime_error("SSTBuilder::build: Cannot build empty SST");
 
-  //3. 元数据段：必须编码到临时 vector 再追加
-  //   你写的 encode_meta_to_slice 是 resize 覆盖式，直接传 data 会把所有 block 字节冲掉
-  //   覆盖式语意的代价：调用方负责给空容器
-  uint32_t meta_offset = static_cast<uint32_t>(data.size()); 
-  std::vector<uint8_t> meta_section; 
-  BlockMeta::encode_meta_to_slice(meta_entries, meta_section); 
-  data.insert(data.end(), meta_section.begin(), meta_section.end()); 
-  
-  //4. bloom filter，记下其偏移量再追加
-  uint32_t bloom_off = static_cast<uint32_t>(data.size()); 
-  if(bloom_filter){
-    auto bloom_bytes = bloom_filter->encode(); 
-    data.insert(data.end(), bloom_bytes.begin(), bloom_bytes.end()); 
+  // 3. 元数据段：必须编码到临时 vector 再追加
+  //    你写的 encode_meta_to_slice 是 resize 覆盖式，直接传 data 会把所有 block
+  //    字节冲掉 覆盖式语意的代价：调用方负责给空容器
+  uint32_t meta_offset = static_cast<uint32_t>(data.size());
+  std::vector<uint8_t> meta_section;
+  BlockMeta::encode_meta_to_slice(meta_entries, meta_section);
+  data.insert(data.end(), meta_section.begin(), meta_section.end());
+
+  // 4. bloom filter，记下其偏移量再追加
+  uint32_t bloom_off = static_cast<uint32_t>(data.size());
+  if (bloom_filter) {
+    auto bloom_bytes = bloom_filter->encode();
+    data.insert(data.end(), bloom_bytes.begin(), bloom_bytes.end());
   }
 
-  //5. extra information 段: 老格式 24B; WiscKey 模式 26B (多一个storage_mode + 魔数)
-  //   [meta_offset:u32][bloom_offset:u32][min_tranc:u64][max_tranc:u64]
-  size_t footer_size = (storage_mode_ == 1) ? 26 : 24; 
-  size_t footer_base = data.size(); 
-  data.resize(footer_base + footer_size); 
-  uint8_t* p = data.data() + data.size(); 
-  memcpy(p, &meta_offset, sizeof(uint32_t)); 
+  // 5. extra information 段: 老格式 24B; WiscKey 模式 26B (多一个storage_mode +
+  // 魔数)
+  //    [meta_offset:u32][bloom_offset:u32][min_tranc:u64][max_tranc:u64]
+  size_t footer_size = (storage_mode_ == 1) ? 26 : 24;
+  size_t footer_base = data.size();
+  data.resize(footer_base + footer_size);
+  uint8_t *p = data.data() + data.size();
+  memcpy(p, &meta_offset, sizeof(uint32_t));
   p += sizeof(uint32_t);
-  memcpy(p, &bloom_off, sizeof(uint32_t)); 
-  p += sizeof(uint32_t); 
+  memcpy(p, &bloom_off, sizeof(uint32_t));
+  p += sizeof(uint32_t);
   memcpy(p, &min_tranc_id_, sizeof(uint64_t));
-  p += sizeof(uint64_t); 
+  p += sizeof(uint64_t);
   memcpy(p, &max_tranc_id_, sizeof(uint64_t));
 
-  if (storage_mode_ == 1){
-    data[data.size() - 2] = storage_mode_; 
+  if (storage_mode_ == 1) {
+    data[data.size() - 2] = storage_mode_;
     // 'k'/0x4B 魔数 放入到对应位置 (WiscKey lab 在定义正式常量)
-    data[data.size() - 1] = 0x4B; 
+    data[data.size() - 1] = 0x4B;
   }
 
-  //6. 整个 data 一次落盘整个 SST
-  FileObj file = FileObj::create_and_write(path, data); 
+  // 6. 整个 data 一次落盘整个 SST
+  FileObj file = FileObj::create_and_write(path, data);
 
-  //7. 组装 SST 描述对象（SSTBuilder 是 SST 的 friend, 可直接填私有成员）
-  //   SST 对象是文件的"遥控器"
-  auto res = std::make_shared<SST>(); 
-  res->sst_id = sst_id; 
-  res->file = std::move(file); 
-  //必须赶在 move 之前读
-  res->first_key = meta_entries.front().first_key; 
-  res->last_key = meta_entries.back().last_key; 
-  res->meta_block_offset = meta_offset; 
-  res->bloom_offset = bloom_off; 
+  // 7. 组装 SST 描述对象（SSTBuilder 是 SST 的 friend, 可直接填私有成员）
+  //    SST 对象是文件的"遥控器"
+  auto res = std::make_shared<SST>();
+  res->sst_id = sst_id;
+  res->file = std::move(file);
+  // 必须赶在 move 之前读
+  res->first_key = meta_entries.front().first_key;
+  res->last_key = meta_entries.back().last_key;
+  res->meta_block_offset = meta_offset;
+  res->bloom_offset = bloom_off;
   // shared_ptr 拷贝，此后归 SST 持有
   // bloom_filter 的关系是"共享"
-  res->bloom_filter = bloom_filter; 
-  res->block_cache = std::move(block_cache); 
-  res->min_tranc_id_ = min_tranc_id_; 
-  res->max_tranc_id_ = max_tranc_id_; 
-  res->storage_mode_ = storage_mode_; 
-  res->vlog_ = vlog_; 
-  res->meta_entries = std::move(meta_entries); 
-  return res; 
-
+  res->bloom_filter = bloom_filter;
+  res->block_cache = std::move(block_cache);
+  res->min_tranc_id_ = min_tranc_id_;
+  res->max_tranc_id_ = max_tranc_id_;
+  res->storage_mode_ = storage_mode_;
+  res->vlog_ = vlog_;
+  res->meta_entries = std::move(meta_entries);
+  return res;
 }
 
 } // namespace tiny_lsm
- 
