@@ -305,7 +305,7 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   size_t footer_size = (storage_mode_ == 1) ? 26 : 24;
   size_t footer_base = data.size();
   data.resize(footer_base + footer_size);
-  uint8_t *p = data.data() + data.size();
+  uint8_t *p = data.data() + footer_base;
   memcpy(p, &meta_offset, sizeof(uint32_t));
   p += sizeof(uint32_t);
   memcpy(p, &bloom_off, sizeof(uint32_t));
