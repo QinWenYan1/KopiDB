@@ -137,8 +137,13 @@ std::shared_ptr<Block> SST::read_block(int64_t block_idx) {
   if (cached)
     return cached; 
 
-  // 2. 
-
+  // 2. 计算本块字节范围 [offset, block_end)
+  //    下一块的起点 = 本块的终点，末块的终点是 meta 段的起点
+  const auto& meta = meta_entries[block_idx]; 
+  size_t block_end = (block_idx + 1 < static_cast<int64_t>(meta_entries.size()))
+          ? meta_entries[block_idx + 1].offset
+          : meta_block_offset; 
+  size_t block_len = block_end - meta.offset; 
 }
 
 int64_t SST::find_block_idx(const std::string &key) {
