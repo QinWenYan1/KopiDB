@@ -125,7 +125,19 @@ std::shared_ptr<Block> SST::read_block(int64_t block_idx) {
   if(!block_cache)
     throw std::runtime_error("SST::read_block: Block cache not set");
   
-  
+  // 1. 先问缓存，命中直接返回
+  //    缓存键是 (sst_id, block_idx) 二元组:
+  //    缓存全局共享，不同 SST 都有 block 0, 单靠 block_idx 会张冠李戴
+  //    ? 为什么 block cache 是多个 sst 共享的：
+  //      1. 缓存管理的资源是"这台机器的内存"，总内存 = SST 数量 × 每个缓存容量 -> SST 越多内存吃越多, 无法封顶
+  //         但是如果是全局缓存：容量启动时定死 (比如 1000 块)
+  //      2. 冷热不均是常态，平均分配就是浪费，冷 SST 的缓存槽位空着积灰，热 SST 的槽位不够用
+
+  auto cached = block_cache->get(sst_id, block_idx); 
+  if (cached)
+    return cached; 
+
+  // 2. 
 
 }
 
