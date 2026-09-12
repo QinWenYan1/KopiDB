@@ -73,50 +73,14 @@ void SstIterator::set_block_it(std::shared_ptr<BlockIterator> it) {
   m_block_it = it;
 }
 
+// TODO: Lab 3.6 将迭代器定位到第一个key
 void SstIterator::seek_first() {
-  if (!m_sst || m_sst->num_blocks() == 0) {
-    m_block_it = nullptr;
-    return;
-  }
-
-  m_block_idx = 0;
-  auto block = m_sst->read_block(m_block_idx);
-  m_block_it = std::make_shared<BlockIterator>(block, 0, max_tranc_id_,
-                                               keep_all_versions_);
+  
 }
 
+// TODO: Lab 3.6 将迭代器定位到指定key的位置
 void SstIterator::seek(const std::string &key) {
-  if (!m_sst) {
-    m_block_it = nullptr;
-    return;
-  }
 
-  try {
-    m_block_idx = m_sst->find_block_idx(key);
-    if (m_block_idx == -1 || m_block_idx >= m_sst->num_blocks()) {
-      // 置为 end
-      // TODO: 这个边界情况需要添加单元测试
-      m_block_it = nullptr;
-      m_block_idx = m_sst->num_blocks();
-      return;
-    }
-    auto block = m_sst->read_block(m_block_idx);
-    if (!block) {
-      m_block_it = nullptr;
-      return;
-    }
-    m_block_it = std::make_shared<BlockIterator>(block, key, max_tranc_id_,
-                                                 keep_all_versions_);
-    if (m_block_it->is_end()) {
-      // block 中找不到
-      m_block_idx = m_sst->num_blocks();
-      m_block_it = nullptr;
-      return;
-    }
-  } catch (const std::exception &) {
-    m_block_it = nullptr;
-    return;
-  }
 }
 
 std::string SstIterator::key() {

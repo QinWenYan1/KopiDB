@@ -169,16 +169,16 @@ int64_t SST::find_block_idx(const std::string &key) {
   if(bloom_filter && !bloom_filter->possibly_contains(key))
     return -1; 
 
-  // 2. meta_entries 上二分: 各块 [first_key, last_key) 有序且不重叠
+  // 2. meta_entries 上二分: 各块 [first_key, last_key] 有序且不重叠
   //    (add 里 force_write 保证同 key 不跨块 -> 相邻范围严格不相交)
   int64_t left = 0, right = static_cast<int64_t>(meta_entries.size());
   while (left < right){
     int64_t mid = (left + right)/2; 
     const auto& meta = meta_entries[mid]; 
-    if (key < first_key)
-      mid = right; 
-    else if (key > last_key)
-      mid = left + 1; 
+    if (key < meta.first_key)
+      right = mid; 
+    else if (key > meta.last_key)
+      left = mid + 1;  
     else //如果上面两个条件都不成立，一定在该 block 里面
       return mid;
   }
@@ -186,6 +186,10 @@ int64_t SST::find_block_idx(const std::string &key) {
   // 3. 循环走完没命中: left 收敛 "key 的位置"
   //    越过最后一块 -> 真没有，-1 
   //    否则返回候选块（可能落在块间缝隙里，由调用方进块最终裁决）
+  // 
+  //    因为块的边界记录的是实际存在的 key，不是对 key 空间的划分
+  //    key 空间是无限连续的（任意字符串都能来查）
+  //    而 SST 只覆盖了有数据的点
   if (left >= static_cast<int64_t>(meta_entries.size()))
     return -1; 
   return left; 
