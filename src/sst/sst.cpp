@@ -26,7 +26,7 @@ static constexpr size_t WISCKEY_FOOTER_SIZE = OLD_FOOTER_SIZE + 2;
 // SST
 // **************************************************
 
-//Lab 3.6 打开一个SST文件, 返回一个描述类
+// Lab 3.6 打开一个SST文件, 返回一个描述类
 std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
                                std::shared_ptr<BlockCache> block_cache,
                                std::shared_ptr<VLog> vlog) {
@@ -109,7 +109,7 @@ std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
 
 void SST::del_sst() { file.del_file(); }
 
-//Lab 3.6 根据 block 的 id 读取一个 Block
+// Lab 3.6 根据 block 的 id 读取一个 Block
 std::shared_ptr<Block> SST::read_block(int64_t block_idx) {
   // 传入的有可能是非法的 index，因为配套寻找 index 函数 find_block_idx
   // 被设计为返回 -1 表示没有 ? 先从 block_cache 查找; 未命中则计算该 block
@@ -156,7 +156,7 @@ std::shared_ptr<Block> SST::read_block(int64_t block_idx) {
   return block_res;
 }
 
-//Lab 3.6 二分查找目标 block
+// Lab 3.6 二分查找目标 block
 int64_t SST::find_block_idx(const std::string &key) {
   // ? 先用布隆过滤器快速排除 (bloom_filter->possibly_contains(key))
   // ? 再在 meta_entries 上二分查找: first_key <= key <= last_key
@@ -164,34 +164,33 @@ int64_t SST::find_block_idx(const std::string &key) {
 
   // 1. bloom 快速排除: 明确不存在直接 -1, 一次磁盘 IO 都不用
   //    bloom 可能误报 (通过了还得搜), 但绝不漏报 (说没有就真没有)
-  if(bloom_filter && !bloom_filter->possibly_contains(key))
-    return -1; 
+  if (bloom_filter && !bloom_filter->possibly_contains(key))
+    return -1;
 
   // 2. meta_entries 上二分: 各块 [first_key, last_key] 有序且不重叠
   //    (add 里 force_write 保证同 key 不跨块 -> 相邻范围严格不相交)
   int64_t left = 0, right = static_cast<int64_t>(meta_entries.size());
-  while (left < right){
-    int64_t mid = (left + right)/2; 
-    const auto& meta = meta_entries[mid]; 
+  while (left < right) {
+    int64_t mid = (left + right) / 2;
+    const auto &meta = meta_entries[mid];
     if (key < meta.first_key)
-      right = mid; 
+      right = mid;
     else if (key > meta.last_key)
-      left = mid + 1;  
-    else //如果上面两个条件都不成立，一定在该 block 里面
+      left = mid + 1;
+    else // 如果上面两个条件都不成立，一定在该 block 里面
       return mid;
   }
 
   // 3. 循环走完没命中: left 收敛 "key 的位置"
-  //    越过最后一块 -> 真没有，-1 
+  //    越过最后一块 -> 真没有，-1
   //    否则返回候选块（可能落在块间缝隙里，由调用方进块最终裁决）
-  // 
+  //
   //    因为块的边界记录的是实际存在的 key，不是对 key 空间的划分
   //    key 空间是无限连续的（任意字符串都能来查）
   //    而 SST 只覆盖了有数据的点
   if (left >= static_cast<int64_t>(meta_entries.size()))
-    return -1; 
-  return left; 
-
+    return -1;
+  return left;
 }
 
 // TODO: Lab 3.6 根据查询 key 返回一个迭代器
