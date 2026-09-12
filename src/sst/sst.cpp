@@ -32,58 +32,62 @@ std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
                                std::shared_ptr<BlockCache> block_cache,
                                std::shared_ptr<VLog> vlog) {
   // ? 步骤:
-  // 0. 检测文件末尾 magic byte 判断是否为 WiscKey 格式 (WISCKEY_MAGIC =0x4B)     
-  //    footer 共 24 字节 (老格式) 或 26 字节 (WiscKey, 末尾多 storage_mode + magic)
-  // 1. 从文件末尾读取 footer: meta_block_offset, bloom_offset, min_tranc_id, max_tranc_id       
-  //    如为 WiscKey 格式, 还需读取 storage_mode_ 
-  // 2. 读取并解码 Bloom Filter (bloom_offset ~ meta_block_offset 之间)    
-  // 3. 读取并解码元数据块 (meta_block_offset ~ bloom_offset 之间)       
-  //    调用 BlockMeta::decode_meta_from_slice 
-  // 4. 设置 first_key 和 last_key 
+  // 0. 检测文件末尾 magic byte 判断是否为 WiscKey 格式 (WISCKEY_MAGIC =0x4B)
+  //    footer 共 24 字节 (老格式) 或 26 字节 (WiscKey, 末尾多 storage_mode +
+  //    magic)
+  // 1. 从文件末尾读取 footer: meta_block_offset, bloom_offset, min_tranc_id,
+  // max_tranc_id
+  //    如为 WiscKey 格式, 还需读取 storage_mode_
+  // 2. 读取并解码 Bloom Filter (bloom_offset ~ meta_block_offset 之间)
+  // 3. 读取并解码元数据块 (meta_block_offset ~ bloom_offset 之间)
+  //    调用 BlockMeta::decode_meta_from_slice
+  // 4. 设置 first_key 和 last_key
   //    注: vlog 用于 WiscKey 模式下的 value 读取, 直接赋值给 sst->vlog_
-  
-  //open 是 SST 的静态成员函数，和 build 一样可以直接填私有成员
+
+  // open 是 SST 的静态成员函数，和 build 一样可以直接填私有成员
   auto sst = std::make_shared<SST>();
-  sst->sst_id = sst_id; 
+  sst->sst_id = sst_id;
   sst->file = std::move(file);
-  sst->block_cache = std::move(block_cache); 
-  sst->vlog_ = std::move(vlog); 
+  sst->block_cache = std::move(block_cache);
+  sst->vlog_ = std::move(vlog);
 
-  size_t file_size = sst->file.size(); 
+  size_t file_size = sst->file.size();
 
-  //0. 格式探测：默认老格式 24B footer; 尾字节 == 0x4B 才可能是 WiscKey 26B
+  // 0. 格式探测：默认老格式 24B footer; 尾字节 == 0x4B 才可能是 WiscKey 26B
   size_t footer_size = OLD_FOOTER_SIZE;
   if (file_size < footer_size)
-    throw std::runtime_error("SST::open: Invalid SST file, too small"); 
- 
-  if (file_size >= WISCKEY_FOOTER_SIZE && sst->file.read_uint8(file_size - 1) == WISCKEY_MAGIC){
-    // 防止巧合：老格式尾字节是 max_tranc_id 的最高字节，恰好恰好 0x4B 理论上可能
-    // 双重保险: 按 26B 假设读出候选 meta_offset
+    throw std::runtime_error("SST::open: Invalid SST file, too small");
+
+  if (file_size >= WISCKEY_FOOTER_SIZE &&
+      sst->file.read_uint8(file_size - 1) == WISCKEY_MAGIC) {
+    // 防止巧合：老格式尾字节是 max_tranc_id 的最高字节，恰好恰好 0x4B
+    // 理论上可能 双重保险: 按 26B 假设读出候选 meta_offset
     uint32_t meta_off = sst->file.read_uint32(file_size - WISCKEY_FOOTER_SIZE);
-    // 这个meta offset 必须落在 footer / extra info 前面的位置才算这个 footer_size 的确是 WISCKEY_FOOTER_SIZE:
-    // [block][meta][bloom][extra info / footer]
-    // 如果是老格式 24B 那里是 [bloom 最后2字节] -> 不是任何偏移, 是垃圾 → 没有理由 < size-26
-    // 这也是格式嗅探的通用套路：magic byte 负责立案，布局不变式负责定罪
-    if (meta_off < file_size - WISCKEY_FOOTER_SIZE){
-      footer_size = WISCKEY_FOOTER_SIZE; 
-      sst->storage_mode_ = sst->file.read_uint8(file_size - 2); 
+    // 这个meta offset 必须落在 footer / extra info 前面的位置才算这个
+    // footer_size 的确是 WISCKEY_FOOTER_SIZE: [block][meta][bloom][extra info /
+    // footer] 如果是老格式 24B 那里是 [bloom 最后2字节] -> 不是任何偏移, 是垃圾
+    // → 没有理由 < size-26 这也是格式嗅探的通用套路：magic byte
+    // 负责立案，布局不变式负责定罪 即使绕开了还有第三道：你自己写的 hash 校验
+    if (meta_off < file_size - WISCKEY_FOOTER_SIZE) {
+      footer_size = WISCKEY_FOOTER_SIZE;
+      sst->storage_mode_ = sst->file.read_uint8(file_size - 2);
     }
   }
 
-  //1. 读 footer/etra info 的四个字段: 两种格式的后 24 字节布局完全一致
-  //   [meta_offset:u32][bloom_offset:u32][min_tranc:u64][max_tranc:u64]
-  size_t footer_base = file_size - footer_size; 
-  sst->meta_block_offset = sst->file.read_uint32(footer_base);  
+  // 1. 读 footer/etra info 的四个字段: 两种格式的后 24 字节布局完全一致
+  //    [meta_offset:u32][bloom_offset:u32][min_tranc:u64][max_tranc:u64]
+  size_t footer_base = file_size - footer_size;
+  sst->meta_block_offset = sst->file.read_uint32(footer_base);
   sst->bloom_offset = sst->file.read_uint32(footer_base + sizeof(uint32_t));
-  sst->min_tranc_id_ = sst->file.read_uint64(footer_base + 2*sizeof(uint32_t));
-  sst->max_tranc_id_ = sst->file.read_uint64(footer_base + 4*sizeof(uint32_t));
+  sst->min_tranc_id_ =
+      sst->file.read_uint64(footer_base + 2 * sizeof(uint32_t));
+  sst->max_tranc_id_ =
+      sst->file.read_uint64(footer_base + 4 * sizeof(uint32_t));
 
-  //2. 读元数据段 [meta_block_offset, bloom_offset), 解码出 meta_entries
-  auto meta_bytes = sst->file.read_to_slice(sst->meta_block_offset, sst->bloom_offset - sst->meta_block_offset); 
-  sst->meta_entries = BlockMeta::decode_meta_from_slice(meta_bytes); 
-  
-
-
+  // 2. 读元数据段 [meta_block_offset, bloom_offset), 解码出 meta_entries
+  auto meta_bytes = sst->file.read_to_slice(
+      sst->meta_block_offset, sst->bloom_offset - sst->meta_block_offset);
+  sst->meta_entries = BlockMeta::decode_meta_from_slice(meta_bytes);
 }
 
 void SST::del_sst() { file.del_file(); }
