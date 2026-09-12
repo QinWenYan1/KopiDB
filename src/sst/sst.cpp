@@ -158,7 +158,7 @@ std::shared_ptr<Block> SST::read_block(int64_t block_idx) {
   return block_res;
 }
 
-// TODO: Lab 3.6 二分查找
+// TODO: Lab 3.6 二分查找目标 block
 int64_t SST::find_block_idx(const std::string &key) {
   // ? 先用布隆过滤器快速排除 (bloom_filter->possibly_contains(key))
   // ? 再在 meta_entries 上二分查找: first_key <= key <= last_key
@@ -183,7 +183,13 @@ int64_t SST::find_block_idx(const std::string &key) {
       return mid;
   }
 
-  
+  // 3. 循环走完没命中: left 收敛 "key 的位置"
+  //    越过最后一块 -> 真没有，-1 
+  //    否则返回候选块（可能落在块间缝隙里，由调用方进块最终裁决）
+  if (left >= static_cast<int64_t>(meta_entries.size()))
+    return -1; 
+  return left; 
+
 }
 
 SstIterator SST::get(const std::string &key, uint64_t tranc_id) {
