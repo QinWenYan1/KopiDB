@@ -172,6 +172,18 @@ int64_t SST::find_block_idx(const std::string &key) {
   // 2. meta_entries 上二分: 各块 [first_key, last_key) 有序且不重叠
   //    (add 里 force_write 保证同 key 不跨块 -> 相邻范围严格不相交)
   int64_t left = 0, right = static_cast<int64_t>(meta_entries.size());
+  while (left < right){
+    int64_t mid = (left + right)/2; 
+    const auto& meta = meta_entries[mid]; 
+    if (key < first_key)
+      mid = right; 
+    else if (key > last_key)
+      mid = left + 1; 
+    else //如果上面两个条件都不成立，一定在该 block 里面
+      return mid;
+  }
+
+  
 }
 
 SstIterator SST::get(const std::string &key, uint64_t tranc_id) {
