@@ -1,7 +1,6 @@
 #include "sst/sst.h"
 #include "block/blockmeta.h"
 #include "config/config.h"
-#include "consts.h"
 #include "sst/sst_iterator.h"
 #include "utils/bloom_filter.h"
 #include "utils/files.h"
@@ -9,7 +8,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -28,7 +26,7 @@ static constexpr size_t WISCKEY_FOOTER_SIZE = OLD_FOOTER_SIZE + 2;
 // SST
 // **************************************************
 
-// TODO: Lab 3.6 打开一个SST文件, 返回一个描述类
+//Lab 3.6 打开一个SST文件, 返回一个描述类
 std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
                                std::shared_ptr<BlockCache> block_cache,
                                std::shared_ptr<VLog> vlog) {
@@ -111,7 +109,7 @@ std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
 
 void SST::del_sst() { file.del_file(); }
 
-// TODO: Lab 3.6 根据 block 的 id 读取一个 Block
+//Lab 3.6 根据 block 的 id 读取一个 Block
 std::shared_ptr<Block> SST::read_block(int64_t block_idx) {
   // 传入的有可能是非法的 index，因为配套寻找 index 函数 find_block_idx
   // 被设计为返回 -1 表示没有 ? 先从 block_cache 查找; 未命中则计算该 block
@@ -158,7 +156,7 @@ std::shared_ptr<Block> SST::read_block(int64_t block_idx) {
   return block_res;
 }
 
-// TODO: Lab 3.6 二分查找目标 block
+//Lab 3.6 二分查找目标 block
 int64_t SST::find_block_idx(const std::string &key) {
   // ? 先用布隆过滤器快速排除 (bloom_filter->possibly_contains(key))
   // ? 再在 meta_entries 上二分查找: first_key <= key <= last_key
@@ -196,8 +194,8 @@ int64_t SST::find_block_idx(const std::string &key) {
 
 }
 
+// TODO: Lab 3.6 根据查询 key 返回一个迭代器
 SstIterator SST::get(const std::string &key, uint64_t tranc_id) {
-  // TODO: Lab 3.6 根据查询 key 返回一个迭代器
   // ? 先检查 key 是否在 [first_key, last_key] 范围内, 否则返回 end()
   // ? 再用 bloom_filter 快速排除
   // ? 返回 SstIterator(shared_from_this(), key, tranc_id)
