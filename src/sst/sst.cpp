@@ -98,8 +98,14 @@ std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
     sst->bloom_filter = std::make_shared<BloomFilter>(BloomFilter::decode(bloom_bytes)); 
   }
 
-  
+  // 4. 整个文件的首尾 key = 元数据组的两端（直接和 build 步骤 7 镜像）
+  if (!sst->meta_entries.empty()){
+    sst->first_key = sst->meta_entries.front().first_key; 
+    sst->last_key = sst->meta_entries.back().last_key; 
+  }
 
+  return sst; 
+  
 }
 
 void SST::del_sst() { file.del_file(); }
