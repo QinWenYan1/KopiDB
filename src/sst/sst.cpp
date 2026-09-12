@@ -3,6 +3,7 @@
 #include "config/config.h"
 #include "consts.h"
 #include "sst/sst_iterator.h"
+#include "utils/bloom_filter.h"
 #include "utils/files.h"
 #include <algorithm>
 #include <cstddef>
@@ -88,6 +89,17 @@ std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
   auto meta_bytes = sst->file.read_to_slice(
       sst->meta_block_offset, sst->bloom_offset - sst->meta_block_offset);
   sst->meta_entries = BlockMeta::decode_meta_from_slice(meta_bytes);
+
+  // 3. 读 bloom 段 [bloom offset, extra info offset)
+  //    长度为 0 = build 时候没有开 bloom (bloom_offset) 记录在了 footer 起点
+  //    保持 nullptr, 读取侧 (find_block_idx/get) 用前判空即可
+  if(sst->bloom_offset < footer_base){
+    auto bloom_bytes = sst->file.read_to_slice(sst->bloom_offset, footer_base - sst->bloom_offset);
+    sst->bloom_filter = std::make_shared<BloomFilter>(BloomFilter::decode(bloom_bytes)); 
+  }
+
+  
+
 }
 
 void SST::del_sst() { file.del_file(); }
