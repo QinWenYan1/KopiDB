@@ -32,7 +32,7 @@ static constexpr size_t WISCKEY_FOOTER_SIZE = OLD_FOOTER_SIZE + 2;
 std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
                                std::shared_ptr<BlockCache> block_cache,
                                std::shared_ptr<VLog> vlog) {
-  // ? 步骤:
+  //步骤:
   // 0. 检测文件末尾 magic byte 判断是否为 WiscKey 格式 (WISCKEY_MAGIC =0x4B)
   //    footer 共 24 字节 (老格式) 或 26 字节 (WiscKey, 末尾多 storage_mode +
   //    magic)
@@ -110,14 +110,23 @@ std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
 
 void SST::del_sst() { file.del_file(); }
 
+// TODO: Lab 3.6 根据 block 的 id 读取一个 Block
 std::shared_ptr<Block> SST::read_block(int64_t block_idx) {
-  // TODO: Lab 3.6 根据 block 的 id 读取一个 Block
   // ? 先从 block_cache 查找; 未命中则计算该 block 的偏移和大小
   // ? 读取数据后调用 Block::decode(data, true) 解码
   // ? 解码后存入 block_cache 并返回
-  // ? block 大小: 相邻 meta_entries 的 offset 差值; 最后一个 block 到
-  // meta_block_offset
-  return nullptr;
+  // ? block 大小: 相邻 meta_entries 的 offset 差值; 最后一个 block 到 meta_block_offset
+  
+  // 0. 边界检查
+  if (block_idx < 0 || block_idx >= meta_entries.size())
+    throw std::runtime_error("SST::read_block: block_idx out of range"); 
+
+  // 参考实际行为：没有缓存直接throw (静默退化为裸 IO 会掩盖配置错误)
+  if(!block_cache)
+    throw std::runtime_error("SST::read_block: Block cache not set");
+  
+  
+
 }
 
 int64_t SST::find_block_idx(const std::string &key) {
