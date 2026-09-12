@@ -75,11 +75,31 @@ void SstIterator::set_block_it(std::shared_ptr<BlockIterator> it) {
 
 // TODO: Lab 3.6 将迭代器定位到第一个key
 void SstIterator::seek_first() {
+
+
   
 }
 
 // TODO: Lab 3.6 将迭代器定位到指定key的位置
 void SstIterator::seek(const std::string &key) {
+
+  if (!m_sst){
+    m_block_it = nullptr; 
+    return; 
+  }
+
+  try{
+    // 1. 两级定位的第一级: 哪个块 (bloom + meta 二分, 返回候选块)
+    //    全 SST 都不可能有 -> end 态: (num_blocks, nullptr)
+    m_block_idx = m_sst->find_block_idx(key); 
+    if (m_block_idx == -1 || m_block_idx >= static_cast<int64_t>(m_sst->num_blocks())){
+      m_block_idx = m_sst->num_blocks(); 
+      m_block_it = nullptr; 
+      return; 
+    }
+  }
+
+
 
 }
 
