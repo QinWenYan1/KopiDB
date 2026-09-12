@@ -164,7 +164,14 @@ int64_t SST::find_block_idx(const std::string &key) {
   // ? 再在 meta_entries 上二分查找: first_key <= key <= last_key
   // ? 若未找到合适 block 返回 -1
 
-  // 1.
+  // 1. bloom 快速排除: 明确不存在直接 -1, 一次磁盘 IO 都不用
+  //    bloom 可能误报 (通过了还得搜), 但绝不漏报 (说没有就真没有)
+  if(bloom_filter && !bloom_filter->possibly_contains(key))
+    return -1; 
+
+  // 2. meta_entries 上二分: 各块 [first_key, last_key) 有序且不重叠
+  //    (add 里 force_write 保证同 key 不跨块 -> 相邻范围严格不相交)
+  int64_t left = 0, right = static_cast<int64_t>(meta_entries.size());
 }
 
 SstIterator SST::get(const std::string &key, uint64_t tranc_id) {
