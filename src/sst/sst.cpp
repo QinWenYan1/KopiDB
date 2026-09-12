@@ -32,18 +32,18 @@ static constexpr size_t WISCKEY_FOOTER_SIZE = OLD_FOOTER_SIZE + 2;
 std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
                                std::shared_ptr<BlockCache> block_cache,
                                std::shared_ptr<VLog> vlog) {
-  //步骤:
-  // 0. 检测文件末尾 magic byte 判断是否为 WiscKey 格式 (WISCKEY_MAGIC =0x4B)
-  //    footer 共 24 字节 (老格式) 或 26 字节 (WiscKey, 末尾多 storage_mode +
-  //    magic)
-  // 1. 从文件末尾读取 footer: meta_block_offset, bloom_offset, min_tranc_id,
-  // max_tranc_id
-  //    如为 WiscKey 格式, 还需读取 storage_mode_
-  // 2. 读取并解码 Bloom Filter (bloom_offset ~ meta_block_offset 之间)
-  // 3. 读取并解码元数据块 (meta_block_offset ~ bloom_offset 之间)
-  //    调用 BlockMeta::decode_meta_from_slice
-  // 4. 设置 first_key 和 last_key
-  //    注: vlog 用于 WiscKey 模式下的 value 读取, 直接赋值给 sst->vlog_
+  // 步骤:
+  //  0. 检测文件末尾 magic byte 判断是否为 WiscKey 格式 (WISCKEY_MAGIC =0x4B)
+  //     footer 共 24 字节 (老格式) 或 26 字节 (WiscKey, 末尾多 storage_mode +
+  //     magic)
+  //  1. 从文件末尾读取 footer: meta_block_offset, bloom_offset, min_tranc_id,
+  //  max_tranc_id
+  //     如为 WiscKey 格式, 还需读取 storage_mode_
+  //  2. 读取并解码 Bloom Filter (bloom_offset ~ meta_block_offset 之间)
+  //  3. 读取并解码元数据块 (meta_block_offset ~ bloom_offset 之间)
+  //     调用 BlockMeta::decode_meta_from_slice
+  //  4. 设置 first_key 和 last_key
+  //     注: vlog 用于 WiscKey 模式下的 value 读取, 直接赋值给 sst->vlog_
 
   // open 是 SST 的静态成员函数，和 build 一样可以直接填私有成员
   auto sst = std::make_shared<SST>();
@@ -93,65 +93,78 @@ std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
   // 3. 读 bloom 段 [bloom offset, extra info offset)
   //    长度为 0 = build 时候没有开 bloom (bloom_offset) 记录在了 footer 起点
   //    保持 nullptr, 读取侧 (find_block_idx/get) 用前判空即可
-  if(sst->bloom_offset < footer_base){
-    auto bloom_bytes = sst->file.read_to_slice(sst->bloom_offset, footer_base - sst->bloom_offset);
-    sst->bloom_filter = std::make_shared<BloomFilter>(BloomFilter::decode(bloom_bytes)); 
+  if (sst->bloom_offset < footer_base) {
+    auto bloom_bytes = sst->file.read_to_slice(sst->bloom_offset,
+                                               footer_base - sst->bloom_offset);
+    sst->bloom_filter =
+        std::make_shared<BloomFilter>(BloomFilter::decode(bloom_bytes));
   }
 
   // 4. 整个文件的首尾 key = 元数据组的两端（直接和 build 步骤 7 镜像）
-  if (!sst->meta_entries.empty()){
-    sst->first_key = sst->meta_entries.front().first_key; 
-    sst->last_key = sst->meta_entries.back().last_key; 
+  if (!sst->meta_entries.empty()) {
+    sst->first_key = sst->meta_entries.front().first_key;
+    sst->last_key = sst->meta_entries.back().last_key;
   }
 
-  return sst; 
-  
+  return sst;
 }
 
 void SST::del_sst() { file.del_file(); }
 
 // TODO: Lab 3.6 根据 block 的 id 读取一个 Block
 std::shared_ptr<Block> SST::read_block(int64_t block_idx) {
-  // ? 先从 block_cache 查找; 未命中则计算该 block 的偏移和大小
-  // ? 读取数据后调用 Block::decode(data, true) 解码
-  // ? 解码后存入 block_cache 并返回
-  // ? block 大小: 相邻 meta_entries 的 offset 差值; 最后一个 block 到 meta_block_offset
-  
+  // 传入的有可能是非法的 index，因为配套寻找 index 函数 find_block_idx
+  // 被设计为返回 -1 表示没有 ? 先从 block_cache 查找; 未命中则计算该 block
+  // 的偏移和大小 ? 读取数据后调用 Block::decode(data, true) 解码 ? 解码后存入
+  // block_cache 并返回 ? block 大小: 相邻 meta_entries 的 offset 差值; 最后一个
+  // block 到 meta_block_offset
+
   // 0. 边界检查
   if (block_idx < 0 || block_idx >= meta_entries.size())
-    throw std::runtime_error("SST::read_block: block_idx out of range"); 
+    throw std::runtime_error("SST::read_block: block_idx out of range");
 
   // 参考实际行为：没有缓存直接throw (静默退化为裸 IO 会掩盖配置错误)
-  if(!block_cache)
-    throw std::runtime_error("SST::read_block: Block cache not set");
-  
+  if (!block_cache)
+    throw std::out_of_range("SST::read_block: Block cache not set");
+
   // 1. 先问缓存，命中直接返回
   //    缓存键是 (sst_id, block_idx) 二元组:
   //    缓存全局共享，不同 SST 都有 block 0, 单靠 block_idx 会张冠李戴
   //    ? 为什么 block cache 是多个 sst 共享的：
-  //      1. 缓存管理的资源是"这台机器的内存"，总内存 = SST 数量 × 每个缓存容量 -> SST 越多内存吃越多, 无法封顶
+  //      1. 缓存管理的资源是"这台机器的内存"，总内存 = SST 数量 × 每个缓存容量
+  //      -> SST 越多内存吃越多, 无法封顶
   //         但是如果是全局缓存：容量启动时定死 (比如 1000 块)
-  //      2. 冷热不均是常态，平均分配就是浪费，冷 SST 的缓存槽位空着积灰，热 SST 的槽位不够用
+  //      2. 冷热不均是常态，平均分配就是浪费，冷 SST 的缓存槽位空着积灰，热 SST
+  //      的槽位不够用
 
-  auto cached = block_cache->get(sst_id, block_idx); 
+  auto cached = block_cache->get(sst_id, block_idx);
   if (cached)
-    return cached; 
+    return cached;
 
   // 2. 计算本块字节范围 [offset, block_end)
   //    下一块的起点 = 本块的终点，末块的终点是 meta 段的起点
-  const auto& meta = meta_entries[block_idx]; 
+  const auto &meta = meta_entries[block_idx];
   size_t block_end = (block_idx + 1 < static_cast<int64_t>(meta_entries.size()))
-          ? meta_entries[block_idx + 1].offset
-          : meta_block_offset; 
-  size_t block_len = block_end - meta.offset; 
+                         ? meta_entries[block_idx + 1].offset
+                         : meta_block_offset;
+  size_t block_len = block_end - meta.offset;
+
+  // 3. 读字节并解码; true = 切片带CRC32 校验，和finish_block 的 encode 对称
+  auto block_data = file.read_to_slice(meta.offset, block_len);
+  auto block_res = Block::decode(block_data, true);
+
+  // 4. 回填缓存再返回
+  block_cache->put(sst_id, block_idx, block_res);
+  return block_res;
 }
 
+// TODO: Lab 3.6 二分查找
 int64_t SST::find_block_idx(const std::string &key) {
-  // TODO: Lab 3.6 二分查找
   // ? 先用布隆过滤器快速排除 (bloom_filter->possibly_contains(key))
   // ? 再在 meta_entries 上二分查找: first_key <= key <= last_key
   // ? 若未找到合适 block 返回 -1
-  return 0;
+
+  // 1.
 }
 
 SstIterator SST::get(const std::string &key, uint64_t tranc_id) {
