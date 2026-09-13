@@ -204,13 +204,18 @@ bool SstIterator::operator!=(const BaseIterator &other) const {
   return !operator==(other);
 }
 
+
+ // TODO: Lab 3.6 实现迭代器解引用
 SstIterator::value_type SstIterator::operator*() const {
-  if (!m_block_it) {
-    throw std::runtime_error("Iterator is invalid");
-  }
-  auto entry = **m_block_it;
-  entry.second = m_sst->resolve_value(entry.second);
-  return entry;
+
+  if (!m_block_it) throw std::runtime_error("SstIterator::operator*: Iterator is invalid");
+
+  auto raw = **m_block_it; 
+  // WiscKey 模式: value 是 12 字节提货单 [offset:8][size:4]
+  // resolve_value 拿单子去 vlog 取真值; 普通模式原样返回 (零成本直通)
+  raw.second = m_sst->resolve_value(raw.second); 
+  return raw; 
+
 }
 
 IteratorType SstIterator::get_type() const { return IteratorType::SstIterator; }
