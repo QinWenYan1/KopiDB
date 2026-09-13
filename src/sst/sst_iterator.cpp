@@ -1,4 +1,5 @@
 #include "sst/sst_iterator.h"
+#include "block/block_iterator.h"
 #include "sst/sst.h"
 #include <cstddef>
 #include <optional>
@@ -97,7 +98,22 @@ void SstIterator::seek(const std::string &key) {
       m_block_it = nullptr; 
       return; 
     }
+
+    // 2. 第二级: 进块, 块内二分 (key 构造版 BlockIterator, 找不到会指到块尾)
+    auto block_ptr = m_sst->read_block(m_block_idx);
+    m_block_it = std::make_shared<BlockIterator>(block_ptr, key, max_tranc_id_, keep_all_versions_); 
+    
+    // 3. 终审: 缝隙 key / 版本全不可见 → 块内没找到 → end 态
+    if (m_block_it->is_end()){
+      m_block_idx = m_sst->num_blocks(); 
+      m_block_it = nullptr; 
+    }
+  }catch (const std::exception &){
+    // 参考实现行为: 读盘/解码异常一律按 "没找到" 处理
+    m_block_it = nullptr; 
   }
+
+
 
 
 
