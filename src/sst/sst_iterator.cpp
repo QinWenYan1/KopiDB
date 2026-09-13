@@ -198,14 +198,19 @@ bool SstIterator::operator==(const BaseIterator &other) const {
 
 }
 
+// TODO: Lab 3.6 实现迭代器比较
+// 由 operator==委托
 bool SstIterator::operator!=(const BaseIterator &other) const {
-  // TODO: Lab 3.6 实现迭代器比较
-  return false;
+  return !operator==(other);
 }
 
 SstIterator::value_type SstIterator::operator*() const {
-  // TODO: Lab 3.6 实现迭代器解引用
-  return {};
+  if (!m_block_it) {
+    throw std::runtime_error("Iterator is invalid");
+  }
+  auto entry = **m_block_it;
+  entry.second = m_sst->resolve_value(entry.second);
+  return entry;
 }
 
 IteratorType SstIterator::get_type() const { return IteratorType::SstIterator; }
