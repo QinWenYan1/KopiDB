@@ -184,7 +184,18 @@ bool SstIterator::operator==(const BaseIterator &other) const {
 
   // 2. get_type 已保证类型, dynamic_cast 引用版必然成功 (失败会抛 bad_cast)
   auto other2 = dynamic_cast<const SstIterator&>(other);
-  return false; 
+
+  // 3. 不同 SST 或不同块，直接不等
+  if (m_sst != other2.m_sst || m_block_idx != other2.m_block_idx)
+    return false; 
+
+  // 4. 双空 = 两个 end 哨兵, 相等; 一空一非空, 不等
+  if (!m_block_it && !other2.m_block_it) return true; 
+  if (!m_block_it || !other2.m_block_it) return false; 
+
+  // 5. 同 SST 同块, 比块内位置 (委托 BlockIterator::operator==)
+  return *m_block_it == *other2.m_block_it;
+
 }
 
 bool SstIterator::operator!=(const BaseIterator &other) const {
