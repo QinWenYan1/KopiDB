@@ -1,3 +1,4 @@
+#include "iterator/iterator.h"
 #include "sst/sst_iterator.h"
 #include "block/block_iterator.h"
 #include "sst/sst.h"
@@ -145,8 +146,10 @@ std::string SstIterator::value() {
   return m_sst->resolve_value((*m_block_it)->second);
 }
 
+// TODO: Lab 3.6 实现迭代器自增
 BaseIterator &SstIterator::operator++() {
-  // TODO: Lab 3.6 实现迭代器自增
+  if (!m_block_idx) // end 态防御：已经到头再 ++ 原地不动了
+    return *this; 
   return *this;
 }
 
