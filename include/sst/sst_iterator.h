@@ -1,4 +1,6 @@
 #pragma once
+
+#include "iterator/iterator.h"
 #include "block/block_iterator.h"
 #include <cstddef>
 #include <functional>

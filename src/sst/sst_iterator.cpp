@@ -1,4 +1,3 @@
-#include "iterator/iterator.h"
 #include "sst/sst_iterator.h"
 #include "block/block_iterator.h"
 #include "sst/sst.h"
@@ -149,14 +148,13 @@ std::string SstIterator::value() {
   return m_sst->resolve_value((*m_block_it)->second);
 }
 
-// TODO: Lab 3.6 实现迭代器自增
+// Lab 3.6 实现迭代器自增
 BaseIterator &SstIterator::operator++() {
-  if (!m_block_idx) // end 态防御：已经到头再 ++ 原地不动了
+  if (!m_block_it) // end 态防御：已经到头再 ++ 原地不动了
     return *this;
 
   // 块内前进：版本去重复和trnac过滤都在BlockIterator::++ 里
   ++(*m_block_it);
-  return *this;
 
   // 当前块阅读完 -> 跨块
   if (m_block_it->is_end()) {
@@ -174,10 +172,12 @@ BaseIterator &SstIterator::operator++() {
     }
   }
 
+  // 位置动了，缓存作废
+  cached_value = std::nullopt;
   return *this;
 }
 
-// TODO: Lab 3.6 实现迭代器比较
+// Lab 3.6 实现迭代器比较
 bool SstIterator::operator==(const BaseIterator &other) const {
 
   // 1. 类型不同永不相等 (基类引用可能装着 MemIterator/HeapIterator...)
@@ -201,23 +201,22 @@ bool SstIterator::operator==(const BaseIterator &other) const {
   return *m_block_it == *other2.m_block_it;
 }
 
-// TODO: Lab 3.6 实现迭代器比较
-// 由 operator==委托
+// Lab 3.6 实现迭代器比较
+//  由 operator==委托
 bool SstIterator::operator!=(const BaseIterator &other) const {
   return !operator==(other);
 }
 
-// TODO: Lab 3.6 实现迭代器解引用
+// Lab 3.6 实现迭代器解引用
 SstIterator::value_type SstIterator::operator*() const {
 
   if (!m_block_it)
     throw std::runtime_error("SstIterator::operator*: Iterator is invalid");
 
-  auto raw = **m_block_it;
   // WiscKey 模式: value 是 12 字节提货单 [offset:8][size:4]
   // resolve_value 拿单子去 vlog 取真值; 普通模式原样返回 (零成本直通)
-  raw.second = m_sst->resolve_value(raw.second);
-  return raw;
+  // 由于 operator -> 直接实现好了，我们直接委托
+  return *(operator->());
 }
 
 IteratorType SstIterator::get_type() const { return IteratorType::SstIterator; }
