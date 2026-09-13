@@ -146,57 +146,23 @@ std::string SstIterator::value() {
 }
 
 BaseIterator &SstIterator::operator++() {
-  if (!m_block_it) { // 添加空指针检查
-    return *this;
-  }
-  ++(*m_block_it);
-  if (m_block_it->is_end()) {
-    m_block_idx++;
-    if (m_block_idx < m_sst->num_blocks()) {
-      // 读取下一个block
-      auto next_block = m_sst->read_block(m_block_idx);
-      BlockIterator new_blk_it(next_block, 0, max_tranc_id_,
-                               keep_all_versions_);
-      (*m_block_it) = new_blk_it;
-    } else {
-      // 没有下一个block
-      m_block_it = nullptr;
-    }
-  }
+  // TODO: Lab 3.6 实现迭代器自增
   return *this;
 }
 
 bool SstIterator::operator==(const BaseIterator &other) const {
-  if (other.get_type() != IteratorType::SstIterator) {
-    return false;
-  }
-  auto other2 = dynamic_cast<const SstIterator &>(other);
-  if (m_sst != other2.m_sst || m_block_idx != other2.m_block_idx) {
-    return false;
-  }
-
-  if (!m_block_it && !other2.m_block_it) {
-    return true;
-  }
-
-  if (!m_block_it || !other2.m_block_it) {
-    return false;
-  }
-
-  return *m_block_it == *other2.m_block_it;
+  // TODO: Lab 3.6 实现迭代器比较
+  return false;
 }
 
 bool SstIterator::operator!=(const BaseIterator &other) const {
-  return !(*this == other);
+  // TODO: Lab 3.6 实现迭代器比较
+  return false;
 }
 
 SstIterator::value_type SstIterator::operator*() const {
-  if (!m_block_it) {
-    throw std::runtime_error("Iterator is invalid");
-  }
-  auto raw = (**m_block_it);
-  raw.second = m_sst->resolve_value(raw.second);
-  return raw;
+  // TODO: Lab 3.6 实现迭代器解引用
+  return {};
 }
 
 IteratorType SstIterator::get_type() const { return IteratorType::SstIterator; }
