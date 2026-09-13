@@ -3,6 +3,7 @@
 #include "block/block_iterator.h"
 #include "sst/sst.h"
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -157,8 +158,22 @@ BaseIterator &SstIterator::operator++() {
 
   // 当前块阅读完 -> 跨块
   if(m_block_it->is_end()){
-
+    ++ m_block_idx; 
+    // 边界检查，是否到了本 SST 的最后一个 block
+    if (m_block_idx < static_cast<int64_t>(m_sst->num_blocks())){
+      auto next_block = m_sst->read_block(m_block_idx); 
+      // 新块从头开始 (下标构造, 自动 skip_by_tranc_id)
+      // 复用同一个 shared_ptr，把新迭代器放入到原对象内部
+      (*m_block_it) = BlockIterator(next_block, 0, max_tranc_id_, keep_all_versions_); 
+    }else{
+      // 已经到了边界，全部读完了 -> end 状态（约定为直接置空）
+      m_block_it = nullptr; 
+    }
   }
+
+  return *this; 
+
+}
 
 bool SstIterator::operator==(const BaseIterator &other) const {
   // TODO: Lab 3.6 实现迭代器比较
