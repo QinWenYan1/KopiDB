@@ -100,6 +100,8 @@ void SstIterator::seek(const std::string &key) {
     }
 
     // 2. 第二级: 进块, 块内二分 (key 构造版 BlockIterator, 找不到会指到块尾)
+    //    → 若块中二分找不到目标 key → 返回 nullopt
+    //    → 构造器把 current_index 设为 block->offsets.size() (块尾)
     auto block_ptr = m_sst->read_block(m_block_idx);
     m_block_it = std::make_shared<BlockIterator>(block_ptr, key, max_tranc_id_, keep_all_versions_); 
     
