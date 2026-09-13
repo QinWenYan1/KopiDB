@@ -1,6 +1,6 @@
-#include "iterator/iterator.h"
 #include "sst/sst_iterator.h"
 #include "block/block_iterator.h"
+#include "iterator/iterator.h"
 #include "sst/sst.h"
 #include <cstddef>
 #include <cstdint>
@@ -80,57 +80,59 @@ void SstIterator::set_block_it(std::shared_ptr<BlockIterator> it) {
 // TODO: Lab 3.6 将迭代器定位到第一个key
 void SstIterator::seek_first() {
   // 是否能使用 seek() 来委托？ 不能！
-  // seek_first 锁的是"位置 0 + tranc_id"，滑到的是第一个可见 entry——它落点可能已经不在第一个 key 上了。
-  // 然而，seek 是必须锁定一个 key 
-  // 一个是 key 空间查询，一个是位置空间查询，维度不同，无法委托 
+  // seek_first 锁的是"位置 0 + tranc_id"，滑到的是第一个可见
+  // entry——它落点可能已经不在第一个 key 上了。 然而，seek 是必须锁定一个 key
+  // 一个是 key 空间查询，一个是位置空间查询，维度不同，无法委托
 
   // 迭代器的状态 = (m_sst, m_block_idx, m_block_it) 三元组
-  //seek_first = 钉到第 0 个 block 的第 0 条 entry
-  if (!m_sst || m_sst->num_blocks() == 0){
-    m_block_it = nullptr; 
-    return; 
+  // seek_first = 钉到第 0 个 block 的第 0 条 entry
+  if (!m_sst || m_sst->num_blocks() == 0) {
+    m_block_it = nullptr;
+    return;
   }
 
-  m_block_idx = 0; 
-  auto block = m_sst->read_block(m_block_idx); 
-  //BlockIterator 的下标构造: 定位到 idx = 0，构造内部自动 skip_by_tranc_id
-  m_block_it = std::make_shared<BlockIterator>(block, 0, max_tranc_id_, keep_all_versions_);
+  m_block_idx = 0;
+  auto block = m_sst->read_block(m_block_idx);
+  // BlockIterator 的下标构造: 定位到 idx = 0，构造内部自动 skip_by_tranc_id
+  m_block_it = std::make_shared<BlockIterator>(block, 0, max_tranc_id_,
+                                               keep_all_versions_);
 }
 
 // TODO: Lab 3.6 将迭代器定位到指定key的位置
 void SstIterator::seek(const std::string &key) {
 
-  if (!m_sst){
-    m_block_it = nullptr; 
-    return; 
+  if (!m_sst) {
+    m_block_it = nullptr;
+    return;
   }
 
-  try{
+  try {
     // 1. 两级定位的第一级: 哪个块 (bloom + meta 二分, 返回候选块)
     //    全 SST 都不可能有 -> end 态: (num_blocks, nullptr)
-    m_block_idx = m_sst->find_block_idx(key); 
-    if (m_block_idx == -1 || m_block_idx >= static_cast<int64_t>(m_sst->num_blocks())){
-      m_block_idx = m_sst->num_blocks(); 
-      m_block_it = nullptr; 
-      return; 
+    m_block_idx = m_sst->find_block_idx(key);
+    if (m_block_idx == -1 ||
+        m_block_idx >= static_cast<int64_t>(m_sst->num_blocks())) {
+      m_block_idx = m_sst->num_blocks();
+      m_block_it = nullptr;
+      return;
     }
 
     // 2. 第二级: 进块, 块内二分 (key 构造版 BlockIterator, 找不到会指到块尾)
     //    → 若块中二分找不到目标 key → 返回 nullopt
     //    → 构造器把 current_index 设为 block->offsets.size() (块尾)
     auto block_ptr = m_sst->read_block(m_block_idx);
-    m_block_it = std::make_shared<BlockIterator>(block_ptr, key, max_tranc_id_, keep_all_versions_); 
-    
-    // 3. 终审: 缝隙 key / 版本全不可见 → 块内没找到 → end 态
-    if (m_block_it->is_end()){
-      m_block_idx = m_sst->num_blocks(); 
-      m_block_it = nullptr; 
-    }
-  }catch (const std::exception &){
-    // 参考实现行为: 读盘/解码异常一律按 "没找到" 处理
-    m_block_it = nullptr; 
-  }
+    m_block_it = std::make_shared<BlockIterator>(block_ptr, key, max_tranc_id_,
+                                                 keep_all_versions_);
 
+    // 3. 终审: 缝隙 key / 版本全不可见 → 块内没找到 → end 态
+    if (m_block_it->is_end()) {
+      m_block_idx = m_sst->num_blocks();
+      m_block_it = nullptr;
+    }
+  } catch (const std::exception &) {
+    // 参考实现行为: 读盘/解码异常一律按 "没找到" 处理
+    m_block_it = nullptr;
+  }
 }
 
 std::string SstIterator::key() {
@@ -150,29 +152,29 @@ std::string SstIterator::value() {
 // TODO: Lab 3.6 实现迭代器自增
 BaseIterator &SstIterator::operator++() {
   if (!m_block_idx) // end 态防御：已经到头再 ++ 原地不动了
-    return *this; 
-  
+    return *this;
+
   // 块内前进：版本去重复和trnac过滤都在BlockIterator::++ 里
-  ++(*m_block_it); 
+  ++(*m_block_it);
   return *this;
 
   // 当前块阅读完 -> 跨块
-  if(m_block_it->is_end()){
-    ++ m_block_idx; 
+  if (m_block_it->is_end()) {
+    ++m_block_idx;
     // 边界检查，是否到了本 SST 的最后一个 block
-    if (m_block_idx < static_cast<int64_t>(m_sst->num_blocks())){
-      auto next_block = m_sst->read_block(m_block_idx); 
+    if (m_block_idx < static_cast<int64_t>(m_sst->num_blocks())) {
+      auto next_block = m_sst->read_block(m_block_idx);
       // 新块从头开始 (下标构造, 自动 skip_by_tranc_id)
       // 复用同一个 shared_ptr，把新迭代器放入到原对象内部
-      (*m_block_it) = BlockIterator(next_block, 0, max_tranc_id_, keep_all_versions_); 
-    }else{
+      (*m_block_it) =
+          BlockIterator(next_block, 0, max_tranc_id_, keep_all_versions_);
+    } else {
       // 已经到了边界，全部读完了 -> end 状态（约定为直接置空）
-      m_block_it = nullptr; 
+      m_block_it = nullptr;
     }
   }
 
-  return *this; 
-
+  return *this;
 }
 
 // TODO: Lab 3.6 实现迭代器比较
@@ -180,22 +182,23 @@ bool SstIterator::operator==(const BaseIterator &other) const {
 
   // 1. 类型不同永不相等 (基类引用可能装着 MemIterator/HeapIterator...)
   if (other.get_type() != IteratorType::SstIterator)
-    return false; 
+    return false;
 
   // 2. get_type 已保证类型, dynamic_cast 引用版必然成功 (失败会抛 bad_cast)
-  auto other2 = dynamic_cast<const SstIterator&>(other);
+  auto other2 = dynamic_cast<const SstIterator &>(other);
 
   // 3. 不同 SST 或不同块，直接不等
   if (m_sst != other2.m_sst || m_block_idx != other2.m_block_idx)
-    return false; 
+    return false;
 
   // 4. 双空 = 两个 end 哨兵, 相等; 一空一非空, 不等
-  if (!m_block_it && !other2.m_block_it) return true; 
-  if (!m_block_it || !other2.m_block_it) return false; 
+  if (!m_block_it && !other2.m_block_it)
+    return true;
+  if (!m_block_it || !other2.m_block_it)
+    return false;
 
   // 5. 同 SST 同块, 比块内位置 (委托 BlockIterator::operator==)
   return *m_block_it == *other2.m_block_it;
-
 }
 
 // TODO: Lab 3.6 实现迭代器比较
@@ -204,18 +207,17 @@ bool SstIterator::operator!=(const BaseIterator &other) const {
   return !operator==(other);
 }
 
-
- // TODO: Lab 3.6 实现迭代器解引用
+// TODO: Lab 3.6 实现迭代器解引用
 SstIterator::value_type SstIterator::operator*() const {
 
-  if (!m_block_it) throw std::runtime_error("SstIterator::operator*: Iterator is invalid");
+  if (!m_block_it)
+    throw std::runtime_error("SstIterator::operator*: Iterator is invalid");
 
-  auto raw = **m_block_it; 
+  auto raw = **m_block_it;
   // WiscKey 模式: value 是 12 字节提货单 [offset:8][size:4]
   // resolve_value 拿单子去 vlog 取真值; 普通模式原样返回 (零成本直通)
-  raw.second = m_sst->resolve_value(raw.second); 
-  return raw; 
-
+  raw.second = m_sst->resolve_value(raw.second);
+  return raw;
 }
 
 IteratorType SstIterator::get_type() const { return IteratorType::SstIterator; }
@@ -263,9 +265,11 @@ SstIterator::merge_sst_iterator(std::vector<SstIterator> iter_vec,
   for (auto &iter : iter_vec) {
     while (iter.is_valid() && !iter.is_end()) {
       it_begin.items.emplace(
-          iter.key(), iter.m_sst->resolve_value(iter.m_block_it->operator*().second),
+          iter.key(),
+          iter.m_sst->resolve_value(iter.m_block_it->operator*().second),
           -iter.m_sst->get_sst_id(), 0,
-          iter.get_cur_tranc_id()); // ! 此处的level暂时没有作用, 都作用于同一层的比较
+          iter.get_cur_tranc_id()); // ! 此处的level暂时没有作用,
+                                    // 都作用于同一层的比较
       ++iter;
     }
   }
