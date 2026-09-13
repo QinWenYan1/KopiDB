@@ -76,9 +76,12 @@ void SstIterator::set_block_it(std::shared_ptr<BlockIterator> it) {
 
 // TODO: Lab 3.6 将迭代器定位到第一个key
 void SstIterator::seek_first() {
-
-
-  
+  // 迭代器的状态 = (m_sst, m_block_idx, m_block_it) 三元组
+  //seek_first = 钉到第 0 个 block 的第 0 条 entry
+  if (!m_sst || m_sst->num_blocks() == 0){
+    m_block_it = nullptr; 
+    return; 
+  }
 }
 
 // TODO: Lab 3.6 将迭代器定位到指定key的位置
@@ -114,10 +117,6 @@ void SstIterator::seek(const std::string &key) {
     // 参考实现行为: 读盘/解码异常一律按 "没找到" 处理
     m_block_it = nullptr; 
   }
-
-
-
-
 
 }
 

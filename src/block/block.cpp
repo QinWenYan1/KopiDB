@@ -1,6 +1,5 @@
 #include "block/block.h"
 #include "block/block_iterator.h"
-#include "config/config.h"
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
