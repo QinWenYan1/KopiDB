@@ -175,9 +175,16 @@ BaseIterator &SstIterator::operator++() {
 
 }
 
+// TODO: Lab 3.6 实现迭代器比较
 bool SstIterator::operator==(const BaseIterator &other) const {
-  // TODO: Lab 3.6 实现迭代器比较
-  return false;
+
+  // 1. 类型不同永不相等 (基类引用可能装着 MemIterator/HeapIterator...)
+  if (other.get_type() != IteratorType::SstIterator)
+    return false; 
+
+  // 2. get_type 已保证类型, dynamic_cast 引用版必然成功 (失败会抛 bad_cast)
+  auto other2 = dynamic_cast<const SstIterator&>(other);
+  return false; 
 }
 
 bool SstIterator::operator!=(const BaseIterator &other) const {
