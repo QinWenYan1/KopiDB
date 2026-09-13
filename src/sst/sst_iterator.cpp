@@ -2,6 +2,7 @@
 #include "block/block_iterator.h"
 #include "sst/sst.h"
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 
@@ -76,12 +77,22 @@ void SstIterator::set_block_it(std::shared_ptr<BlockIterator> it) {
 
 // TODO: Lab 3.6 将迭代器定位到第一个key
 void SstIterator::seek_first() {
+  // 是否能使用 seek() 来委托？ 不能！
+  // seek_first 锁的是"位置 0 + tranc_id"，滑到的是第一个可见 entry——它落点可能已经不在第一个 key 上了。
+  // 然而，seek 是必须锁定一个 key 
+  // 一个是 key 空间查询，一个是位置空间查询，维度不同，无法委托 
+
   // 迭代器的状态 = (m_sst, m_block_idx, m_block_it) 三元组
   //seek_first = 钉到第 0 个 block 的第 0 条 entry
   if (!m_sst || m_sst->num_blocks() == 0){
     m_block_it = nullptr; 
     return; 
   }
+
+  m_block_idx = 0; 
+  auto block = m_sst->read_block(m_block_idx); 
+  //BlockIterator 的下标构造: 定位到 idx = 0，构造内部自动 skip_by_tranc_id
+  m_block_it = std::make_shared<BlockIterator>(block, 0, max_tranc_id_, keep_all_versions_);
 }
 
 // TODO: Lab 3.6 将迭代器定位到指定key的位置
