@@ -76,7 +76,7 @@ void SstIterator::set_block_it(std::shared_ptr<BlockIterator> it) {
   m_block_it = it;
 }
 
-// TODO: Lab 3.6 将迭代器定位到第一个key
+// Lab 3.6 将迭代器定位到第一个key
 void SstIterator::seek_first() {
   // 是否能使用 seek() 来委托？ 不能！
   // seek_first 锁的是"位置 0 + tranc_id"，滑到的是第一个可见
@@ -97,7 +97,7 @@ void SstIterator::seek_first() {
                                                keep_all_versions_);
 }
 
-// TODO: Lab 3.6 将迭代器定位到指定key的位置
+// Lab 3.6 将迭代器定位到指定key的位置
 void SstIterator::seek(const std::string &key) {
 
   if (!m_sst) {
