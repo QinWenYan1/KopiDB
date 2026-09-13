@@ -150,8 +150,15 @@ std::string SstIterator::value() {
 BaseIterator &SstIterator::operator++() {
   if (!m_block_idx) // end 态防御：已经到头再 ++ 原地不动了
     return *this; 
+  
+  // 块内前进：版本去重复和trnac过滤都在BlockIterator::++ 里
+  ++(*m_block_it); 
   return *this;
-}
+
+  // 当前块阅读完 -> 跨块
+  if(m_block_it->is_end()){
+
+  }
 
 bool SstIterator::operator==(const BaseIterator &other) const {
   // TODO: Lab 3.6 实现迭代器比较
