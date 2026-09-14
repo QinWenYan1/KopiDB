@@ -21,55 +21,56 @@ std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
   // 块级别枝剪 -> 块中精找
   //    命中区是连续的 (谓词单调), 所以块与命中区只有三种关系:
   //    整块在左 (跳过) / 相交 (进块二分) / 整块在右 (后面的块更右, 收工)
-  std::optional<SstIterator> final_begin = std::nullopt; 
-  std::optional<SstIterator> final_end = std::nullopt; 
+  std::optional<SstIterator> final_begin = std::nullopt;
+  std::optional<SstIterator> final_end = std::nullopt;
 
-  for (size_t block_idx = 0; block_idx < sst->meta_entries.size(); ++block_idx){
-    const auto& meta_i = sst->meta_entries[block_idx]; 
+  for (size_t block_idx = 0; block_idx < sst->meta_entries.size();
+       ++block_idx) {
+    const auto &meta_i = sst->meta_entries[block_idx];
 
     // 1. 块级剪枝: 只看 meta 的首尾 key, 不读块 (省 IO 的核心)
     if (predicate(meta_i.first_key) < 0)
       // 块首都过了命中区右界 → 后面块更右 → 整体结束
-      break; 
+      break;
     if (predicate(meta_i.last_key) > 0)
       // 块尾还在命中区左界之前 → 整块不相交, 跳过
-      continue; 
-    
+      continue;
+
     // 2. 落到范围中 → 读块精找 (块内两次二分, 返回 [first, last+1) 迭代器对)
-    auto block = sst->read_block(block_idx); 
-    auto result_i = block->get_monotony_predicate_iters(tranc_id, predicate); 
+    auto block = sst->read_block(block_idx);
+    auto result_i = block->get_monotony_predicate_iters(tranc_id, predicate);
     if (!result_i.has_value())
       // 范围命中但可见性过滤后无命中 (tranc 太旧)
-      continue; 
-    auto [i_begin, i_end] = result_i.value(); 
+      continue;
+    auto [i_begin, i_end] = result_i.value();
 
     // 3. 组装 SST 级迭代器: 把"块内迭代器"升级成"SST 级迭代器"
     //    begin 只在第一个命中块定一次; end 每个命中块都刷新
     //    (循环结束自然留下最右命中块的 end)
-    if (!final_begin.has_value()){
-      auto tmp_it = SstIterator(sst, tranc_id); 
-      tmp_it.set_block_idx(block_idx); 
-      tmp_it.set_block_it(i_begin); 
-      final_begin = tmp_it; 
+    if (!final_begin.has_value()) {
+      auto tmp_it = SstIterator(sst, tranc_id);
+      tmp_it.set_block_idx(block_idx);
+      tmp_it.set_block_it(i_begin);
+      final_begin = tmp_it;
     }
 
-    auto tmp_it = SstIterator(sst, tranc_id); 
-    tmp_it.set_block_idx(block_idx); 
-    tmp_it.set_block_it(i_end); 
+    auto tmp_it = SstIterator(sst, tranc_id);
+    tmp_it.set_block_idx(block_idx);
+    tmp_it.set_block_it(i_end);
 
     // 4. 命中区顶到 SST 末尾: i_end 已是末块块尾 → 归一化成全局 end 态
     //    参考实现这里的条件写错了 (is_end() 在 set_block_it 后恒 false,
     //    永远不触发); 这里按意图修正, 否则边界场景扫到末尾会死循环
-    if (block_idx + 1 == sst->num_blocks() && i_end->is_end()){
-      tmp_it.set_block_idx(sst->num_blocks()); 
+    if (block_idx + 1 == sst->num_blocks() && i_end->is_end()) {
+      tmp_it.set_block_idx(sst->num_blocks());
       tmp_it.set_block_it(nullptr);
     }
-    final_end = tmp_it;  
+    final_end = tmp_it;
   }
 
   // 5. 一个命中块都没有 → 无区间
   if (!final_begin.has_value() || !final_end.has_value())
-    return std::nullopt; 
+    return std::nullopt;
   return std::make_pair(final_begin.value(), final_end.value());
 }
 
