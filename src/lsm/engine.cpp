@@ -156,8 +156,6 @@ void LSMEngine::clear() {
 
 // TODO: Lab 4.1 刷盘形成sst文件
 uint64_t LSMEngine::flush() {
-  // ? 7. 将 flushed_tranc_ids 通知给 tran_manager
-  // ? 8. 返回新 SST 的 max_tranc_id
 
   // 0. 若 memtable 为空直接返回 0
   if (memtable.get_total_size() == 0)
@@ -199,9 +197,19 @@ uint64_t LSMEngine::flush() {
   ssts[new_sst_id] = new_sst; 
   level_sst_ids[0].push_front(new_sst_id); 
 
-  
+  // 7. 将 flushed_tranc_ids 通知给 tran_manager
+  //    通知事务管理器哪些 tranc 已落盘
+  //    参考实现这里没判空, 不炸纯属侥幸: flush_last 只给
+  //    "空key+空value" 的 checkpoint 标记 entry 收集 id, 普通写入恒空
+  //    我们补判空 (防御性偏离, 明说)
+  if (auto tm = tran_manager.lock()){
+    for (auto &id : flushed_tranc_ids)
+      tm -> add_flushed_tranc_id(id);
+  }
 
-
+  // 8. 返回本次刷入 SST 的最大 tranc_id
+  //    返回新 SST 的 max_tranc_id
+  return new_sst->get_tranc_id_range().second; 
   
 }
 
