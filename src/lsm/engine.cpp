@@ -15,6 +15,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -69,13 +70,12 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
 // TODO: Lab 4.1 插入
 uint64_t LSMEngine::put(const std::string &key, const std::string &value,
                         uint64_t tranc_id) {
-  // ? 调用 memtable.put(key, value, tranc_id)
-  // ? 若 memtable 总大小 >= LsmTolMemSizeLimit 则调用 flush() 并返回其结果
-  // ? 否则返回 0
   spdlog::trace("LSMEngine--put({}, {}, tranc_id={})", key, value, tranc_id);
   memtable.put(key, value, tranc_id);
 
   // 先写后查阈值: 单条超大 value 也能进, memtable 允许短暂超限
+  // 若 memtable 总大小 >= LsmTolMemSizeLimit 则调用 flush() 并返回其结果
+  // 否则返回 0
   if (memtable.get_total_size() >=
       TomlConfig::getInstance().getLsmTolMemSizeLimit())
     return flush();
@@ -101,13 +101,11 @@ uint64_t LSMEngine::put_batch(
 
 // TODO: Lab 4.1 删除
 uint64_t LSMEngine::remove(const std::string &key, uint64_t tranc_id) {
-  // ? 在 LSM 中，删除实际上是插入一个空值
-  // ? 调用 memtable.remove(key, tranc_id)
-  // ? 若超限则 flush() 并返回其结果
   spdlog::trace("LSMEngine--remove({}, tranc_id={})", key, tranc_id);
   // LSM 的删除 = 插一个空值墓碑, 墓碑本体在 memtable.remove 里完成
   memtable.remove(key, tranc_id);
 
+  // 若超限则 flush() 并返回其结果
   if (memtable.get_total_size() >=
       TomlConfig::getInstance().getLsmTolMemSizeLimit())
     return flush();
@@ -117,12 +115,11 @@ uint64_t LSMEngine::remove(const std::string &key, uint64_t tranc_id) {
 // TODO: Lab 4.1 批量删除
 uint64_t LSMEngine::remove_batch(const std::vector<std::string> &keys,
                                  uint64_t tranc_id) {
-  // ? 调用 memtable.remove_batch(keys, tranc_id)
-  // ? 若超限则 flush() 并返回其结果
   spdlog::trace("LSMEngine--put_batch(tranc_id={})", tranc_id);
   memtable.remove_batch(keys, tranc_id);
 
   // 先写后查阈值: 单条超大 value 也能进, memtable 允许短暂超限
+  // 若超限则 flush() 并返回其结果
   if (memtable.get_total_size() >=
       TomlConfig::getInstance().getLsmTolMemSizeLimit())
     return flush();
@@ -157,12 +154,8 @@ void LSMEngine::clear() {
   }
 }
 
+// TODO: Lab 4.1 刷盘形成sst文件
 uint64_t LSMEngine::flush() {
-  // TODO: Lab 4.1 刷盘形成sst文件
-  // ? 0. 若 memtable 为空直接返回 0
-  // ? 1. 加 ssts_mtx 写锁
-  // ? 2. 若 L0 层 SST 数量 >= LsmSstLevelRatio, 先触发 full_compact(0)
-  // ? 3. 分配新的 sst_id: next_sst_id++
   // ? 4. 构造 SSTBuilder:
   // ?    - 若 WiscKey 阈值 > 0 且 vlog_ 存在, 使用 WiscKey 模式的构造函数
   // ?    - 否则使用普通模式
@@ -170,7 +163,23 @@ uint64_t LSMEngine::flush() {
   // ? 6. 更新 ssts 和 level_sst_ids[0] (push_front 保证新的在前)
   // ? 7. 将 flushed_tranc_ids 通知给 tran_manager
   // ? 8. 返回新 SST 的 max_tranc_id
-  return 0;
+
+  // 0. 若 memtable 为空直接返回 0
+  if (memtable.get_total_size() == 0)
+    return 0; 
+
+  // 1. 加 ssts_mtx 写锁
+  //    写锁: 要改 ssts / level_sst_ids, 与未来的读路径 get() 互斥
+  std::unique_lock<std::shared_mutex> lock(ssts_mtx); 
+
+  // 2. 若 L0 层 SST 数量 >= LsmSstLevelRatio, 先触发 full_compact(0) 
+  //    L0 堆满 -> 先 compact (Lab 4.5 才实现, 现在是空桩, 调用无害先挂着)
+  //    步骤 2 的 find(0) != end() 守卫：防 map 的 operator[] 凭空造出空 L0 队列参与比较
+  if (level_sst_ids.find(0) != level_sst_ids.end() && 
+      level_sst_ids[0].size() >= TomlConfig::getInstance().getLsmSstLevelRatio())
+    full_compact(0); 
+
+  // 3. 分配新的 sst_id: next_sst_id++
 }
 
 std::string LSMEngine::get_sst_path(size_t sst_id, size_t target_level) {
