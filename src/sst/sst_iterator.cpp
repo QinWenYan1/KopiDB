@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 
 namespace tiny_lsm {
 
@@ -42,7 +43,7 @@ std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
       continue; 
     auto [i_begin, i_end] = result_i.value(); 
 
-    // 3. 组装 SST 级迭代器: 换壳——块内位置 + 块号
+    // 3. 组装 SST 级迭代器: 把"块内迭代器"升级成"SST 级迭代器"
     //    begin 只在第一个命中块定一次; end 每个命中块都刷新
     //    (循环结束自然留下最右命中块的 end)
     if (!final_begin.has_value()){
@@ -59,10 +60,18 @@ std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
     // 4. 命中区顶到 SST 末尾: i_end 已是末块块尾 → 归一化成全局 end 态
     //    参考实现这里的条件写错了 (is_end() 在 set_block_it 后恒 false,
     //    永远不触发); 这里按意图修正, 否则边界场景扫到末尾会死循环
+    if (block_idx + 1 == sst->num_blocks() && i_end->is_end()){
+      tmp_it.set_block_idx(sst->num_blocks()); 
+      tmp_it.set_block_it(nullptr);
+    }
 
-    
-
+    final_end = tmp_it;  
   }
+
+  // 5. 一个命中块都没有 → 无区间
+  if (!final_begin.has_value() || !final_end.has_value())
+    return std::nullopt; 
+  return std::make_pair(final_begin.value(), final_end.value());
 }
 
 SstIterator::SstIterator(std::shared_ptr<SST> sst, uint64_t tranc_id,
