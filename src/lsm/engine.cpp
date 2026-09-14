@@ -72,7 +72,13 @@ uint64_t LSMEngine::put(const std::string &key, const std::string &value,
   // ? 调用 memtable.put(key, value, tranc_id)
   // ? 若 memtable 总大小 >= LsmTolMemSizeLimit 则调用 flush() 并返回其结果
   // ? 否则返回 0
-  return 0;
+  spdlog::trace("LSMEngine--put({}, {}, tranc_id={})", key, value, tranc_id);
+  memtable.put(key, value, tranc_id);
+
+  // 先写后查阈值: 单条超大 value 也能进, memtable 允许短暂超限
+  if (memtable.get_total_size() >= TomlConfig::getInstance().getLsmTolMemSizeLimit())
+    return flush(); 
+
 }
 
 // TODO: Lab 4.1 批量插入
