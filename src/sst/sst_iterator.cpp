@@ -17,7 +17,30 @@ namespace tiny_lsm {
 std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
     std::shared_ptr<SST> sst, uint64_t tranc_id,
     std::function<int(const std::string &)> predicate) {
-  return {};
+  // 块级别枝剪 -> 块中精找
+  //    命中区是连续的 (谓词单调), 所以块与命中区只有三种关系:
+  //    整块在左 (跳过) / 相交 (进块二分) / 整块在右 (后面的块更右, 收工)
+  std::optional<SstIterator> final_begin = std::nullopt; 
+  std::optional<SstIterator> final_end = std::nullopt; 
+
+  for (size_t block_idx = 0; block_idx < sst->meta_entries.size(); ++block_idx){
+    const auto& meta_i = sst->meta_entries[block_idx]; 
+
+    // 1. 块级剪枝: 只看 meta 的首尾 key, 不读块 (省 IO 的核心)
+    if (predicate(meta_i.first_key) < 0)
+      // 块首都过了命中区右界 → 后面块更右 → 整体结束
+      break; 
+    if (predicate(meta_i.last_key) > 0)
+      // 块尾还在命中区左界之前 → 整块不相交, 跳过
+      continue; 
+    
+    // 2. 相交 → 读块精找 (块内两次二分, 返回 [first, last+1) 迭代器对)
+    auto block = sst->read_block(block_idx); 
+    auto result_i = block->get_monotony_predicate_iters(tranc_id, predicate); 
+    if (!result_i.has_value())
+      // 范围相交但可见性过滤后无命中 (tranc 太旧)
+      continue; 
+  }
 }
 
 SstIterator::SstIterator(std::shared_ptr<SST> sst, uint64_t tranc_id,
