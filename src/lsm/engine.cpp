@@ -88,7 +88,7 @@ uint64_t LSMEngine::put_batch(
     uint64_t tranc_id) {
   // ? 调用 memtable.put_batch(kvs, tranc_id)
   // ? 若超限则 flush() 并返回其结果
-  return 0;
+  
 }
 
 // TODO: Lab 4.1 删除
@@ -96,6 +96,13 @@ uint64_t LSMEngine::remove(const std::string &key, uint64_t tranc_id) {
   // ? 在 LSM 中，删除实际上是插入一个空值
   // ? 调用 memtable.remove(key, tranc_id)
   // ? 若超限则 flush() 并返回其结果
+  spdlog::trace("LSMEngine--remove({}, tranc_id={})", key, tranc_id);
+  // LSM 的删除 = 插一个空值墓碑, 墓碑本体在 memtable.remove 里完成
+  memtable.remove(key, tranc_id);
+
+  if (memtable.get_total_size() >=
+      TomlConfig::getInstance().getLsmTolMemSizeLimit())
+    return flush();
   return 0;
 }
 
