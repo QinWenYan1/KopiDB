@@ -198,7 +198,16 @@ SstIterator SST::get(const std::string &key, uint64_t tranc_id) {
   // ? 先检查 key 是否在 [first_key, last_key] 范围内, 否则返回 end()
   // ? 再用 bloom_filter 快速排除
   // ? 返回 SstIterator(shared_from_this(), key, tranc_id)
-  throw std::runtime_error("Not implemented");
+  
+  // 1. 文件级范围快筛: 整个 SST 的 [first_key, last_key] 不含 key, 直接 end
+  if (key < first_key || last_key > key) return end(); 
+
+  // 2. bloom 快筛 (find_block_idx 里还会查一次, 这里先查省掉迭代器构造)
+  if (bloom_filter && !bloom_filter->possibly_contains(key)) return end(); 
+
+  // 3. 构造 seek 迭代器: 两级定位 (find_block_idx → 块内二分) 全在构造函数里
+  return SstIterator(shared_from_this(), key, tranc_id); 
+
 }
 
 size_t SST::num_blocks() const { return meta_entries.size(); }
