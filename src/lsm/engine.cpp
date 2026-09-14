@@ -96,7 +96,6 @@ uint64_t LSMEngine::put_batch(
       TomlConfig::getInstance().getLsmTolMemSizeLimit())
     return flush();
   return 0;
-  
 }
 
 // TODO: Lab 4.1 删除
@@ -154,63 +153,67 @@ void LSMEngine::clear() {
   }
 }
 
-// TODO: Lab 4.1 刷盘形成sst文件
+// Lab 4.1 刷盘形成sst文件
 uint64_t LSMEngine::flush() {
 
   // 0. 若 memtable 为空直接返回 0
   if (memtable.get_total_size() == 0)
-    return 0; 
+    return 0;
 
   // 1. 加 ssts_mtx 写锁
   //    写锁: 要改 ssts / level_sst_ids, 与未来的读路径 get() 互斥
-  std::unique_lock<std::shared_mutex> lock(ssts_mtx); 
+  std::unique_lock<std::shared_mutex> lock(ssts_mtx);
 
-  // 2. 若 L0 层 SST 数量 >= LsmSstLevelRatio, 先触发 full_compact(0) 
+  // 2. 若 L0 层 SST 数量 >= LsmSstLevelRatio, 先触发 full_compact(0)
   //    L0 堆满 -> 先 compact (Lab 4.5 才实现, 现在是空桩, 调用无害先挂着)
-  //    步骤 2 的 find(0) != end() 守卫：防 map 的 operator[] 凭空造出空 L0 队列参与比较
-  if (level_sst_ids.find(0) != level_sst_ids.end() && 
-      level_sst_ids[0].size() >= TomlConfig::getInstance().getLsmSstLevelRatio())
-    full_compact(0); 
+  //    步骤 2 的 find(0) != end() 守卫：防 map 的 operator[] 凭空造出空 L0
+  //    队列参与比较
+  if (level_sst_ids.find(0) != level_sst_ids.end() &&
+      level_sst_ids[0].size() >=
+          TomlConfig::getInstance().getLsmSstLevelRatio())
+    full_compact(0);
 
   // 3. 分配新的 sst_id: next_sst_id++
-  size_t new_sst_id = next_sst_id++; 
-  auto sst_path = get_sst_path(new_sst_id, 0); 
+  size_t new_sst_id = next_sst_id++;
+  auto sst_path = get_sst_path(new_sst_id, 0);
 
   // 4+5. 选 builder 模式, 把最老的冻结表刷成 L0 SST
   // 4. 构造 SSTBuilder:
   //    - 若 WiscKey 阈值 > 0 且 vlog_ 存在, 使用 WiscKey 模式的构造函数
   //    - 否则使用普通模式
   // 5. 调用 memtable.flush_last() 生成 SST 文件
-  std::vector<uint64_t> flushed_tranc_ids; 
-  std::shared_ptr<SST> new_sst; 
-  size_t wk = TomlConfig::getInstance().getWisckeyValueThreshold(); 
+  std::vector<uint64_t> flushed_tranc_ids;
+  std::shared_ptr<SST> new_sst;
+  size_t wk = TomlConfig::getInstance().getWisckeyValueThreshold();
   if (wk > 0 && vlog_) {
-    SSTBuilder builder(TomlConfig::getInstance().getLsmBlockSize(), true, vlog_, wk); 
-    new_sst = memtable.flush_last(builder, sst_path, new_sst_id, flushed_tranc_ids, block_cache); 
+    SSTBuilder builder(TomlConfig::getInstance().getLsmBlockSize(), true, vlog_,
+                       wk);
+    new_sst = memtable.flush_last(builder, sst_path, new_sst_id,
+                                  flushed_tranc_ids, block_cache);
   } else {
-    SSTBuilder builder(TomlConfig::getInstance().getLsmBlockSize(), true); 
-    new_sst = memtable.flush_last(builder, sst_path, new_sst_id, flushed_tranc_ids, block_cache); 
+    SSTBuilder builder(TomlConfig::getInstance().getLsmBlockSize(), true);
+    new_sst = memtable.flush_last(builder, sst_path, new_sst_id,
+                                  flushed_tranc_ids, block_cache);
   }
 
   // 6. 更新 ssts 和 level_sst_ids[0] (push_front 保证新的在前)
   //    登记: id->SST 映射 + L0 队列头插 (新的在前, 查询从新到旧)
-  ssts[new_sst_id] = new_sst; 
-  level_sst_ids[0].push_front(new_sst_id); 
+  ssts[new_sst_id] = new_sst;
+  level_sst_ids[0].push_front(new_sst_id);
 
   // 7. 将 flushed_tranc_ids 通知给 tran_manager
   //    通知事务管理器哪些 tranc 已落盘
   //    参考实现这里没判空, 不炸纯属侥幸: flush_last 只给
   //    "空key+空value" 的 checkpoint 标记 entry 收集 id, 普通写入恒空
   //    我们补判空 (防御性偏离, 明说)
-  if (auto tm = tran_manager.lock()){
+  if (auto tm = tran_manager.lock()) {
     for (auto &id : flushed_tranc_ids)
-      tm -> add_flushed_tranc_id(id);
+      tm->add_flushed_tranc_id(id);
   }
 
   // 8. 返回本次刷入 SST 的最大 tranc_id
   //    返回新 SST 的 max_tranc_id
-  return new_sst->get_tranc_id_range().second; 
-  
+  return new_sst->get_tranc_id_range().second;
 }
 
 std::string LSMEngine::get_sst_path(size_t sst_id, size_t target_level) {
