@@ -78,6 +78,7 @@ uint64_t LSMEngine::put(const std::string &key, const std::string &value,
   // 先写后查阈值: 单条超大 value 也能进, memtable 允许短暂超限
   if (memtable.get_total_size() >= TomlConfig::getInstance().getLsmTolMemSizeLimit())
     return flush(); 
+  return 0; 
 
 }
 
