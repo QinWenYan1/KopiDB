@@ -66,35 +66,35 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
   return std::nullopt;
 }
 
+// TODO: Lab 4.1 插入
 uint64_t LSMEngine::put(const std::string &key, const std::string &value,
                         uint64_t tranc_id) {
-  // TODO: Lab 4.1 插入
   // ? 调用 memtable.put(key, value, tranc_id)
   // ? 若 memtable 总大小 >= LsmTolMemSizeLimit 则调用 flush() 并返回其结果
   // ? 否则返回 0
   return 0;
 }
 
+// TODO: Lab 4.1 批量插入
 uint64_t LSMEngine::put_batch(
     const std::vector<std::pair<std::string, std::string>> &kvs,
     uint64_t tranc_id) {
-  // TODO: Lab 4.1 批量插入
   // ? 调用 memtable.put_batch(kvs, tranc_id)
   // ? 若超限则 flush() 并返回其结果
   return 0;
 }
 
+// TODO: Lab 4.1 删除
 uint64_t LSMEngine::remove(const std::string &key, uint64_t tranc_id) {
-  // TODO: Lab 4.1 删除
   // ? 在 LSM 中，删除实际上是插入一个空值
   // ? 调用 memtable.remove(key, tranc_id)
   // ? 若超限则 flush() 并返回其结果
   return 0;
 }
 
+// TODO: Lab 4.1 批量删除
 uint64_t LSMEngine::remove_batch(const std::vector<std::string> &keys,
                                  uint64_t tranc_id) {
-  // TODO: Lab 4.1 批量删除
   // ? 调用 memtable.remove_batch(keys, tranc_id)
   // ? 若超限则 flush() 并返回其结果
   return 0;
