@@ -156,10 +156,6 @@ void LSMEngine::clear() {
 
 // TODO: Lab 4.1 刷盘形成sst文件
 uint64_t LSMEngine::flush() {
-  // ? 4. 构造 SSTBuilder:
-  // ?    - 若 WiscKey 阈值 > 0 且 vlog_ 存在, 使用 WiscKey 模式的构造函数
-  // ?    - 否则使用普通模式
-  // ? 5. 调用 memtable.flush_last() 生成 SST 文件
   // ? 6. 更新 ssts 和 level_sst_ids[0] (push_front 保证新的在前)
   // ? 7. 将 flushed_tranc_ids 通知给 tran_manager
   // ? 8. 返回新 SST 的 max_tranc_id
@@ -182,6 +178,23 @@ uint64_t LSMEngine::flush() {
   // 3. 分配新的 sst_id: next_sst_id++
   size_t new_sst_id = next_sst_id++; 
   auto sst_path = get_sst_path(new_sst_id, 0); 
+
+  // 4+5. 选 builder 模式, 把最老的冻结表刷成 L0 SST
+  // 4. 构造 SSTBuilder:
+  //    - 若 WiscKey 阈值 > 0 且 vlog_ 存在, 使用 WiscKey 模式的构造函数
+  //    - 否则使用普通模式
+  // 5. 调用 memtable.flush_last() 生成 SST 文件
+  std::vector<uint64_t> flushed_tranc_ids; 
+  std::shared_ptr<SST> new_sst; 
+  size_t wk = TomlConfig::getInstance().getWisckeyValueThreshold(); 
+  if (wk > 0 && vlog_) {
+    SSTBuilder builder(TomlConfig::getInstance().getLsmBlockSize(), true, vlog_, wk); 
+    new_sst = memtable.flush_last(builder, sst_path, new_sst_id, flushed_tranc_ids, block_cache); 
+  } else {
+    SSTBuilder builder(TomlConfig::getInstance().getLsmBlockSize(), true); 
+    new_sst = memtable.flush_last(builder, sst_path, new_sst_id, flushed_tranc_ids, block_cache); 
+  }
+  
 }
 
 std::string LSMEngine::get_sst_path(size_t sst_id, size_t target_level) {

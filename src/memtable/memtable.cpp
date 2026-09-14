@@ -1,6 +1,5 @@
 #include "memtable/memtable.h"
 #include "config/config.h"
-#include "consts.h"
 #include "iterator/iterator.h"
 #include "skiplist/skiplist.h"
 #include "spdlog/spdlog.h"
