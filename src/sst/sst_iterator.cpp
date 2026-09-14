@@ -10,7 +10,7 @@
 
 namespace tiny_lsm {
 
-// TODO: Lab 3.7 实现谓词查询功能
+// Lab 3.7 实现谓词查询功能
 // predicate返回值:
 //   0: 谓词
 //   >0: 不满足谓词, 需要向右移动
@@ -64,7 +64,6 @@ std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
       tmp_it.set_block_idx(sst->num_blocks()); 
       tmp_it.set_block_it(nullptr);
     }
-
     final_end = tmp_it;  
   }
 
