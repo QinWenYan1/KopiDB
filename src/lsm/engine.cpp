@@ -88,6 +88,14 @@ uint64_t LSMEngine::put_batch(
     uint64_t tranc_id) {
   // ? 调用 memtable.put_batch(kvs, tranc_id)
   // ? 若超限则 flush() 并返回其结果
+  spdlog::trace("LSMEngine--put_batch(tranc_id={})", tranc_id);
+  memtable.put_batch(kvs, tranc_id);
+
+  // 先写后查阈值: 单条超大 value 也能进, memtable 允许短暂超限
+  if (memtable.get_total_size() >=
+      TomlConfig::getInstance().getLsmTolMemSizeLimit())
+    return flush();
+  return 0;
   
 }
 
@@ -111,6 +119,13 @@ uint64_t LSMEngine::remove_batch(const std::vector<std::string> &keys,
                                  uint64_t tranc_id) {
   // ? 调用 memtable.remove_batch(keys, tranc_id)
   // ? 若超限则 flush() 并返回其结果
+  spdlog::trace("LSMEngine--put_batch(tranc_id={})", tranc_id);
+  memtable.remove_batch(keys, tranc_id);
+
+  // 先写后查阈值: 单条超大 value 也能进, memtable 允许短暂超限
+  if (memtable.get_total_size() >=
+      TomlConfig::getInstance().getLsmTolMemSizeLimit())
+    return flush();
   return 0;
 }
 
