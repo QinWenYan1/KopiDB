@@ -180,6 +180,8 @@ uint64_t LSMEngine::flush() {
     full_compact(0); 
 
   // 3. 分配新的 sst_id: next_sst_id++
+  size_t new_sst_id = next_sst_id++; 
+  auto sst_path = get_sst_path(new_sst_id, 0); 
 }
 
 std::string LSMEngine::get_sst_path(size_t sst_id, size_t target_level) {
