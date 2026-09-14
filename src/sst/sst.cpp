@@ -198,16 +198,17 @@ SstIterator SST::get(const std::string &key, uint64_t tranc_id) {
   // ? 先检查 key 是否在 [first_key, last_key] 范围内, 否则返回 end()
   // ? 再用 bloom_filter 快速排除
   // ? 返回 SstIterator(shared_from_this(), key, tranc_id)
-  
+
   // 1. 文件级范围快筛: 整个 SST 的 [first_key, last_key] 不含 key, 直接 end
-  if (key < first_key || last_key > key) return end(); 
+  if (key < first_key || last_key > key)
+    return end();
 
   // 2. bloom 快筛 (find_block_idx 里还会查一次, 这里先查省掉迭代器构造)
-  if (bloom_filter && !bloom_filter->possibly_contains(key)) return end(); 
+  if (bloom_filter && !bloom_filter->possibly_contains(key))
+    return end();
 
   // 3. 构造 seek 迭代器: 两级定位 (find_block_idx → 块内二分) 全在构造函数里
-  return SstIterator(shared_from_this(), key, tranc_id); 
-
+  return SstIterator(shared_from_this(), key, tranc_id);
 }
 
 size_t SST::num_blocks() const { return meta_entries.size(); }
@@ -245,7 +246,7 @@ bool SST::is_wisckey() const { return storage_mode_ == 1; }
 // Lab 3.6 返回起始位置迭代器
 SstIterator SST::begin(uint64_t tranc_id, bool keep_all_versions) {
   // ? 返回 SstIterator(shared_from_this(), tranc_id, keep_all_versions)
-  return SstIterator(shared_from_this(), tranc_id, keep_all_versions); 
+  return SstIterator(shared_from_this(), tranc_id, keep_all_versions);
 }
 
 // Lab 3.6 返回终止位置迭代器
@@ -258,9 +259,9 @@ SstIterator SST::end() {
 
   // 构造已跑了一遍 seek_first (白读 block 0), 随即被覆盖
   // 参考实现接受这点浪费 (block 0 反正会进缓存; 且没有默认构造可用)
-  ret.set_block_idx(meta_entries.size()); 
-  ret.set_block_it(nullptr); 
-  return ret; 
+  ret.set_block_idx(meta_entries.size());
+  ret.set_block_it(nullptr);
+  return ret;
 }
 
 std::pair<uint64_t, uint64_t> SST::get_tranc_id_range() const {
