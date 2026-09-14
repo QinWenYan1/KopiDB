@@ -193,7 +193,7 @@ int64_t SST::find_block_idx(const std::string &key) {
   return left;
 }
 
-// TODO: Lab 3.6 根据查询 key 返回一个迭代器
+// Lab 3.6 根据查询 key 返回一个迭代器
 SstIterator SST::get(const std::string &key, uint64_t tranc_id) {
   // ? 先检查 key 是否在 [first_key, last_key] 范围内, 否则返回 end()
   // ? 再用 bloom_filter 快速排除
@@ -242,14 +242,14 @@ std::string SST::resolve_value(const std::string &raw_value) const {
 
 bool SST::is_wisckey() const { return storage_mode_ == 1; }
 
-// TODO: Lab 3.6 返回起始位置迭代器
+// Lab 3.6 返回起始位置迭代器
 SstIterator SST::begin(uint64_t tranc_id, bool keep_all_versions) {
   // ? 返回 SstIterator(shared_from_this(), tranc_id, keep_all_versions)
   return SstIterator(shared_from_this(), tranc_id, keep_all_versions); 
 }
 
+// Lab 3.6 返回终止位置迭代器
 SstIterator SST::end() {
-  // TODO: Lab 3.6 返回终止位置迭代器
   // 构造一个 SstIterator 并将 m_block_idx 设为 meta_entries.size(),
   // m_block_it 设为 nullptr
 
