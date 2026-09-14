@@ -200,7 +200,7 @@ SstIterator SST::get(const std::string &key, uint64_t tranc_id) {
   // ? 返回 SstIterator(shared_from_this(), key, tranc_id)
 
   // 1. 文件级范围快筛: 整个 SST 的 [first_key, last_key] 不含 key, 直接 end
-  if (key < first_key || last_key > key)
+  if (key < first_key || last_key < key)
     return end();
 
   // 2. bloom 快筛 (find_block_idx 里还会查一次, 这里先查省掉迭代器构造)
