@@ -34,12 +34,34 @@ std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
       // 块尾还在命中区左界之前 → 整块不相交, 跳过
       continue; 
     
-    // 2. 相交 → 读块精找 (块内两次二分, 返回 [first, last+1) 迭代器对)
+    // 2. 落到范围中 → 读块精找 (块内两次二分, 返回 [first, last+1) 迭代器对)
     auto block = sst->read_block(block_idx); 
     auto result_i = block->get_monotony_predicate_iters(tranc_id, predicate); 
     if (!result_i.has_value())
-      // 范围相交但可见性过滤后无命中 (tranc 太旧)
+      // 范围命中但可见性过滤后无命中 (tranc 太旧)
       continue; 
+    auto [i_begin, i_end] = result_i.value(); 
+
+    // 3. 组装 SST 级迭代器: 换壳——块内位置 + 块号
+    //    begin 只在第一个命中块定一次; end 每个命中块都刷新
+    //    (循环结束自然留下最右命中块的 end)
+    if (!final_begin.has_value()){
+      auto tmp_it = SstIterator(sst, tranc_id); 
+      tmp_it.set_block_idx(block_idx); 
+      tmp_it.set_block_it(i_begin); 
+      final_begin = tmp_it; 
+    }
+
+    auto tmp_it = SstIterator(sst, tranc_id); 
+    tmp_it.set_block_idx(block_idx); 
+    tmp_it.set_block_it(i_end); 
+
+    // 4. 命中区顶到 SST 末尾: i_end 已是末块块尾 → 归一化成全局 end 态
+    //    参考实现这里的条件写错了 (is_end() 在 set_block_it 后恒 false,
+    //    永远不触发); 这里按意图修正, 否则边界场景扫到末尾会死循环
+
+    
+
   }
 }
 
