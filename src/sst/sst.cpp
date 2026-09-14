@@ -242,17 +242,25 @@ std::string SST::resolve_value(const std::string &raw_value) const {
 
 bool SST::is_wisckey() const { return storage_mode_ == 1; }
 
+// TODO: Lab 3.6 返回起始位置迭代器
 SstIterator SST::begin(uint64_t tranc_id, bool keep_all_versions) {
-  // TODO: Lab 3.6 返回起始位置迭代器
   // ? 返回 SstIterator(shared_from_this(), tranc_id, keep_all_versions)
-  throw std::runtime_error("Not implemented");
+  return SstIterator(shared_from_this(), tranc_id, keep_all_versions); 
 }
 
 SstIterator SST::end() {
   // TODO: Lab 3.6 返回终止位置迭代器
-  // ? 构造一个 SstIterator 并将 m_block_idx 设为 meta_entries.size(),
+  // 构造一个 SstIterator 并将 m_block_idx 设为 meta_entries.size(),
   // m_block_it 设为 nullptr
-  throw std::runtime_error("Not implemented");
+
+  // SST 是 SstIterator 的 friend, 直接捏私有成员
+  SstIterator ret(shared_from_this(), 0);
+
+  // 构造已跑了一遍 seek_first (白读 block 0), 随即被覆盖
+  // 参考实现接受这点浪费 (block 0 反正会进缓存; 且没有默认构造可用)
+  ret.set_block_idx(meta_entries.size()); 
+  ret.set_block_it(nullptr); 
+  return ret; 
 }
 
 std::pair<uint64_t, uint64_t> SST::get_tranc_id_range() const {
