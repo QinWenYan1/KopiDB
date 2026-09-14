@@ -42,10 +42,10 @@ LSMEngine::~LSMEngine() = default;
 std::optional<std::pair<std::string, uint64_t>>
 LSMEngine::get(const std::string &key, uint64_t tranc_id) {
   // TODO: Lab 4.2 查询
-  // ? 1. 先查 memtable.get(key, tranc_id), 命中则返回 (value 非空) 或 nullopt (value 为空=删除)
-  // ? 2. 加 ssts_mtx 读锁, 遍历 L0 的 sst_ids (越大越新), 通过 sst->get() 查询
-  // ? 3. 遍历 L1 及以上各层, 对每层做二分查找确定 key 所在的 SST 文件
-  // ? 注意: value 为空字符串表示 key 已被删除, 此时返回 nullopt
+  // ? 1. 先查 memtable.get(key, tranc_id), 命中则返回 (value 非空) 或 nullopt
+  // (value 为空=删除) ? 2. 加 ssts_mtx 读锁, 遍历 L0 的 sst_ids (越大越新),
+  // 通过 sst->get() 查询 ? 3. 遍历 L1 及以上各层, 对每层做二分查找确定 key
+  // 所在的 SST 文件 ? 注意: value 为空字符串表示 key 已被删除, 此时返回 nullopt
   return std::nullopt;
 }
 
@@ -76,10 +76,10 @@ uint64_t LSMEngine::put(const std::string &key, const std::string &value,
   memtable.put(key, value, tranc_id);
 
   // 先写后查阈值: 单条超大 value 也能进, memtable 允许短暂超限
-  if (memtable.get_total_size() >= TomlConfig::getInstance().getLsmTolMemSizeLimit())
-    return flush(); 
-  return 0; 
-
+  if (memtable.get_total_size() >=
+      TomlConfig::getInstance().getLsmTolMemSizeLimit())
+    return flush();
+  return 0;
 }
 
 // TODO: Lab 4.1 批量插入
@@ -163,10 +163,10 @@ std::optional<std::pair<TwoMergeIterator, TwoMergeIterator>>
 LSMEngine::lsm_iters_monotony_predicate(
     uint64_t tranc_id, std::function<int(const std::string &)> predicate) {
   // TODO: Lab 4.7 谓词查询
-  // ? 1. 从 memtable 查询: memtable.iters_monotony_predicate(tranc_id, predicate)
-  // ? 2. 遍历所有 SST, 对每个 SST 调用 sst_iters_monotony_predicate
-  // ?    将所有结果合并到 item_vec (注意过滤事务可见性和相同 key 只保留最新版本)
-  // ? 3. 构造 TwoMergeIterator 合并 memtable 结果和 sst 结果
+  // ? 1. 从 memtable 查询: memtable.iters_monotony_predicate(tranc_id,
+  // predicate) ? 2. 遍历所有 SST, 对每个 SST 调用 sst_iters_monotony_predicate
+  // ?    将所有结果合并到 item_vec (注意过滤事务可见性和相同 key
+  // 只保留最新版本) ? 3. 构造 TwoMergeIterator 合并 memtable 结果和 sst 结果
   // ? 4. 若均为空返回 nullopt
   return std::nullopt;
 }
@@ -185,11 +185,11 @@ Level_Iterator LSMEngine::end() {
 
 void LSMEngine::full_compact(size_t src_level) {
   // TODO: Lab 4.5 负责完成整个 full compact
-  // ? 1. 递归判断下一级 level 是否需要 compact (level_sst_ids[src_level+1].size() >= ratio)
-  // ? 2. 根据 src_level 是否为 0 分别调用 full_l0_l1_compact 或 full_common_compact
-  // ? 3. 删除旧 SST 文件并从 ssts/level_sst_ids 中移除记录
-  // ? 4. 将新的 SST 加入 level_sst_ids[src_level+1] 并排序
-  // ? 5. 更新 cur_max_level
+  // ? 1. 递归判断下一级 level 是否需要 compact
+  // (level_sst_ids[src_level+1].size() >= ratio) ? 2. 根据 src_level 是否为 0
+  // 分别调用 full_l0_l1_compact 或 full_common_compact ? 3. 删除旧 SST 文件并从
+  // ssts/level_sst_ids 中移除记录 ? 4. 将新的 SST 加入
+  // level_sst_ids[src_level+1] 并排序 ? 5. 更新 cur_max_level
 }
 
 std::vector<std::shared_ptr<SST>>
@@ -198,7 +198,8 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
   // TODO: Lab 4.5 负责完成 l0 和 l1 的 full compact
   // ? L0 各 SST 的 key 有重叠, 需要先通过 SstIterator::merge_sst_iterator 合并
   // ? 再用 TwoMergeIterator 与 L1 的 ConcactIterator 合并
-  // ? 最后调用 gen_sst_from_iter 生成新的 SST 文件 (目标大小 = PerMemSizeLimit * SstLevelRatio)
+  // ? 最后调用 gen_sst_from_iter 生成新的 SST 文件 (目标大小 = PerMemSizeLimit
+  // * SstLevelRatio)
   return {};
 }
 
@@ -216,10 +217,10 @@ LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
                              size_t target_level) {
   // TODO: Lab 4.5 实现从迭代器构造新的 SST
   // ? 循环从迭代器取 key-value 写入 SSTBuilder
-  // ? 当 estimated_size >= target_sst_size 时 (注意不能在相同 key 的不同版本之间切分)
-  // ?   调用 builder.build() 生成 SST 并重置 builder
-  // ? 迭代结束后若 builder 非空则再次 build
-  // ? 注意: WiscKey 模式下需使用带 vlog 参数的 SSTBuilder 构造函数
+  // ? 当 estimated_size >= target_sst_size 时 (注意不能在相同 key
+  // 的不同版本之间切分) ?   调用 builder.build() 生成 SST 并重置 builder ?
+  // 迭代结束后若 builder 非空则再次 build ? 注意: WiscKey 模式下需使用带 vlog
+  // 参数的 SSTBuilder 构造函数
   return {};
 }
 
@@ -246,8 +247,9 @@ LSM::LSM(std::string path)
   // ? 2. 调用 tran_manager_->check_recover() 获取需要重放的事务记录
   // ? 3. 遍历返回的 map<tranc_id, records>:
   // ?    - 若该 tranc_id 已在 flushed_tranc_ids 中则跳过 (已刷盘无需重放)
-  // ?    - 否则根据 record.getOperationType() 调用 engine->put() 或 engine->remove()
-  // ? 4. 调用 tran_manager_->init_new_wal() 开启新的 WAL 文件准备接收新写入
+  // ?    - 否则根据 record.getOperationType() 调用 engine->put() 或
+  // engine->remove() ? 4. 调用 tran_manager_->init_new_wal() 开启新的 WAL
+  // 文件准备接收新写入
 }
 
 LSM::~LSM() {
