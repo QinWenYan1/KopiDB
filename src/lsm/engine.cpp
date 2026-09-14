@@ -156,7 +156,6 @@ void LSMEngine::clear() {
 
 // TODO: Lab 4.1 刷盘形成sst文件
 uint64_t LSMEngine::flush() {
-  // ? 6. 更新 ssts 和 level_sst_ids[0] (push_front 保证新的在前)
   // ? 7. 将 flushed_tranc_ids 通知给 tran_manager
   // ? 8. 返回新 SST 的 max_tranc_id
 
@@ -194,6 +193,15 @@ uint64_t LSMEngine::flush() {
     SSTBuilder builder(TomlConfig::getInstance().getLsmBlockSize(), true); 
     new_sst = memtable.flush_last(builder, sst_path, new_sst_id, flushed_tranc_ids, block_cache); 
   }
+
+  // 6. 更新 ssts 和 level_sst_ids[0] (push_front 保证新的在前)
+  //    登记: id->SST 映射 + L0 队列头插 (新的在前, 查询从新到旧)
+  ssts[new_sst_id] = new_sst; 
+  level_sst_ids[0].push_front(new_sst_id); 
+
+  
+
+
   
 }
 
