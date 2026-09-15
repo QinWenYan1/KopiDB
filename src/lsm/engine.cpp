@@ -233,10 +233,20 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
         if (sst_it != sst->end()){
           // 被标记为墓碑了，直接返回空值
           if (sst_it -> second.empty()) return std::nullopt;
+          // 不是空，那么就是有效值，组装后返回
+          return std::make_pair(sst_it->second, sst_it.get_tranc_id()); 
         }
-      }
+        // 本层只有这一个文件可能含 key, 不在就换更旧的一层
+        break; 
+      }else if (sst->get_last_key() < key)
+        left = mid + 1; 
+      else
+        right = mid; 
     }
   }
+
+  spdlog::trace("LSMEngine::sst_get_({}, {}): key not exist", key, tranc_id);
+  return std::nullopt; 
 
 }
 
