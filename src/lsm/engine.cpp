@@ -32,66 +32,65 @@ LSMEngine::LSMEngine(std::string path) : data_dir(path) {
 
   // 2. 初始化 block_cache (容量和 K 值从 TomlConfig 读取)
   block_cache = std::make_shared<BlockCache>(
-    TomlConfig::getInstance().getLsmBlockCacheCapacity(),
-    TomlConfig::getInstance().getLsmBlockCacheK()
-  ); 
+      TomlConfig::getInstance().getLsmBlockCacheCapacity(),
+      TomlConfig::getInstance().getLsmBlockCacheK());
 
   // 3. 若目录不存在则创建
-  if (!std::filesystem::exists(path)){
+  if (!std::filesystem::exists(path)) {
     spdlog::warn("LSMEngine::LSMEngine(): directory {} not exist, create it",
-                 path); 
-    std::filesystem::create_directory(path); 
+                 path);
+    std::filesystem::create_directory(path);
   }
 
   // 4. vlog 常驻打开 (开销小; 即使没开 WiscKey 也无害, clear() 也假设它在)
   //    初始化 VLog: vlog_ = VLog::open(data_dir + "/vlog.data")
-  vlog_ = VLog::open(data_dir + "/vlog.data"); 
+  vlog_ = VLog::open(data_dir + "/vlog.data");
 
   // 5. 遍历目录加载所有已存在的 SST 文件 (文件名格式: sst_{id}.{level})
   //      - 文件名格式: sst_{id}.{level}
   //      - 调用 SST::open 并记录到 ssts 和 level_sst_ids
   //      - 维护 next_sst_id 和 cur_max_level
-  for (const auto& entry : std::filesystem::directory_iterator(path)) {
-    
+  for (const auto &entry : std::filesystem::directory_iterator(path)) {
+
     // 检查文件类型
     if (!entry.is_regular_file())
-      continue; 
+      continue;
 
     // 检查文件名字格式
-    std::string filename = entry.path().filename().string(); 
+    std::string filename = entry.path().filename().string();
     if (!filename.starts_with("sst_"))
-      continue; 
+      continue;
 
-    auto dot_pos = filename.find('.'); 
+    auto dot_pos = filename.find('.');
     if (dot_pos == std::string::npos || dot_pos == filename.size() - 1)
-      continue; 
+      continue;
 
     // len = dot_pos - 4 因为 4 = "sst_"
-    size_t sst_id = std::stoull(filename.substr(4, dot_pos - 4)); 
-    size_t lvl = std::stoull(filename.substr(dot_pos + 1)); 
+    size_t sst_id = std::stoull(filename.substr(4, dot_pos - 4));
+    size_t lvl = std::stoull(filename.substr(dot_pos + 1));
 
-    // 只打开不要创建，所以 open() 直接设置为 false 
-    auto sst = SST::open(sst_id, FileObj::open(entry.path().string(),false), block_cache, vlog_); 
+    // 只打开不要创建，所以 open() 直接设置为 false
+    auto sst = SST::open(sst_id, FileObj::open(entry.path().string(), false),
+                         block_cache, vlog_);
 
     // 写锁 (构造函数里其实还没有竞争者, 参考实现的防御写法, 保留)
-    std::unique_lock<std::shared_mutex> lock(ssts_mtx); 
-    ssts[sst_id] = sst; 
-    level_sst_ids[lvl].push_back(sst_id); 
+    std::unique_lock<std::shared_mutex> lock(ssts_mtx);
+    ssts[sst_id] = sst;
+    level_sst_ids[lvl].push_back(sst_id);
 
     // 记录目前最大的 sst_id
-    next_sst_id = (std::max)(sst_id, next_sst_id); 
-    cur_max_level = (std::max)(lvl, cur_max_level); 
-
+    next_sst_id = (std::max)(sst_id, next_sst_id);
+    cur_max_level = (std::max)(lvl, cur_max_level);
   }
 
   // 6. 现有的最大 sst_id 自增后才是下一个分配的 sst_id
   next_sst_id++;
 
   // 7. 各层 sst_id_list 排序; L0 需要 reverse (id 越大越新, 要优先查询)
-  for (auto&[level, sst_id_list] : level_sst_ids){
-    std::sort(sst_id_list.begin(), sst_id_list.end()); 
+  for (auto &[level, sst_id_list] : level_sst_ids) {
+    std::sort(sst_id_list.begin(), sst_id_list.end());
     if (level == 0)
-      std::reverse(sst_id_list.begin(), sst_id_list.end()); 
+      std::reverse(sst_id_list.begin(), sst_id_list.end());
   }
 }
 
@@ -100,19 +99,20 @@ LSMEngine::~LSMEngine() = default;
 // TODO: Lab 4.2 查询
 std::optional<std::pair<std::string, uint64_t>>
 LSMEngine::get(const std::string &key, uint64_t tranc_id) {
-  // 1. 先查 memtable.get(key, tranc_id), 命中则返回 (value 非空) 或 nullopt(value 为空=删除) 
-  auto mem_ret = memtable.get(key,tranc_id); 
-  if (mem_ret.is_valid()){
+  // 1. 先查 memtable.get(key, tranc_id), 命中则返回 (value 非空) 或
+  // nullopt(value 为空=删除)
+  auto mem_ret = memtable.get(key, tranc_id);
+  if (mem_ret.is_valid()) {
     if (mem_ret.get_value().empty())
-      return std::nullopt; 
-    return std::make_pair(mem_ret.get_value(), mem_ret.get_tranc_id()); 
+      return std::nullopt;
+    return std::make_pair(mem_ret.get_value(), mem_ret.get_tranc_id());
   }
 
   // 2. memtable 没有 -> 加读锁查 SST
   //    参考实现这里把 SST 查询逻辑原样复制了一遍, sst_get_ 沦为死代码;
   //    我们委托消重 (语义逐行核对过, 等价; sst_get_ 就是为此存在的)
   std::shared_lock<std::shared_mutex> lock(ssts_mtx);
-  return sst_get_(key, tranc_id); 
+  return sst_get_(key, tranc_id);
 }
 
 // TODO: Lab 4.2 批量查询
@@ -120,73 +120,75 @@ std::vector<
     std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
 LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
   // 1. 先从 memtable 批量查询: memtable.get_batch(keys, tranc_id)
-  auto results = memtable.get_batch(keys, tranc_id); 
+  auto results = memtable.get_batch(keys, tranc_id);
 
   // 2. 全部命中直接返回, 不碰 SST
-  bool need_search_sst = false; 
-  for (auto& [key,value] : results){
-    if (!value.has_value()){
-      need_search_sst = true; 
-      break; 
+  bool need_search_sst = false;
+  for (auto &[key, value] : results) {
+    if (!value.has_value()) {
+      need_search_sst = true;
+      break;
     }
   }
 
   if (!need_search_sst)
-    return results; 
-  
-  std::shared_lock<std::shared_mutex> rlock(ssts_mtx); 
+    return results;
+
+  std::shared_lock<std::shared_mutex> rlock(ssts_mtx);
 
   // 3. 进入 L0: 对每个未命中的 key, 从新到旧逐文件补
-  if (level_sst_ids.find(0) != level_sst_ids.end()){
-    for (auto &[key, value] : results){
-      if (value.has_value()) continue; 
+  if (level_sst_ids.find(0) != level_sst_ids.end()) {
+    for (auto &[key, value] : results) {
+      if (value.has_value())
+        continue;
 
-      for (auto & sst_id : level_sst_ids[0]){
+      for (auto &sst_id : level_sst_ids[0]) {
         // 从 engine 中加载 sst handle 用于之后的 key 查找
-        auto &sst = ssts[sst_id]; 
+        auto &sst = ssts[sst_id];
         auto sst_it = sst->get(key, tranc_id);
 
-        if (sst_it != sst->end()){
+        if (sst_it != sst->end()) {
           // else: 空值=墓碑 (! 见下方已知坑)
           if (!sst_it->second.empty())
-            value = std::make_pair(sst_it->second, sst_it.get_tranc_id()); 
+            value = std::make_pair(sst_it->second, sst_it.get_tranc_id());
           // 该 key 已裁决, 不再查更旧的 L0 文件
-          break; 
+          break;
         }
       }
     }
   }
 
   // 4. L1+: 对每个仍未命中 key, 每层二分定位候选文件补
-  for (size_t level = 1; level <= cur_max_level; ++level){
-    if (level_sst_ids.find(level) == level_sst_ids.end()) continue; 
+  for (size_t level = 1; level <= cur_max_level; ++level) {
+    if (level_sst_ids.find(level) == level_sst_ids.end())
+      continue;
 
-    const auto &id_list = level_sst_ids[level]; 
-    for(auto &[key, value] : results){
-      if (value.has_value()) continue; 
+    const auto &id_list = level_sst_ids[level];
+    for (auto &[key, value] : results) {
+      if (value.has_value())
+        continue;
 
-      size_t left = 0, right = id_list.size(); 
+      size_t left = 0, right = id_list.size();
       while (left < right) {
-        size_t mid = (left + right)/ 2; 
-        auto & sst = ssts[mid]; 
-        
+        size_t mid = (left + right) / 2;
+        auto &sst = ssts[mid];
+
         // sst 命中， 进入查找
-        if (sst->get_first_key() <= key && key <= sst->get_last_key()){
-          auto sst_it = sst->get(key, tranc_id); 
-          
+        if (sst->get_first_key() <= key && key <= sst->get_last_key()) {
+          auto sst_it = sst->get(key, tranc_id);
+
           // sst 中也命中，将 value 记录
           if (sst_it != sst->end() && !sst_it->second.empty())
             value = std::make_pair(sst_it->second, sst_it.get_tranc_id());
           break;
-        }else if (sst->get_last_key() < key) 
-          left = mid + 1; 
+        } else if (sst->get_last_key() < key)
+          left = mid + 1;
         else
-          right = mid; 
+          right = mid;
       }
     }
   }
-
-  return results; 
+  return results;
 }
 
 std::optional<std::pair<std::string, uint64_t>>
