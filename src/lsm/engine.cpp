@@ -1,4 +1,5 @@
 #include "lsm/engine.h"
+#include "block/block_cache.h"
 #include "config/config.h"
 #include "consts.h"
 #include "logger/logger.h"
@@ -37,6 +38,10 @@ LSMEngine::LSMEngine(std::string path) : data_dir(path) {
   init_spdlog_file();
 
   // 2. 初始化 block_cache (容量和 K 值从 TomlConfig 读取)
+  block_cache = std::make_shared<BlockCache>(
+    TomlConfig::getInstance().getLsmBlockCacheCapacity(),
+    TomlConfig::getInstance().getLsmBlockCacheK()
+  ); 
 
 
 }
