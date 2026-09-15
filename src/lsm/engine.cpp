@@ -71,23 +71,29 @@ LSMEngine::LSMEngine(std::string path) : data_dir(path) {
     size_t sst_id = std::stoull(filename.substr(4, dot_pos - 4)); 
     size_t lvl = std::stoull(filename.substr(dot_pos + 1)); 
 
-    auto sst = SST::open(sst_id, FileObj::open(entry.path().string()), block_cache, vlog_); 
+    // 只打开不要创建，所以 open() 直接设置为 false 
+    auto sst = SST::open(sst_id, FileObj::open(entry.path().string(),false), block_cache, vlog_); 
 
     // 写锁 (构造函数里其实还没有竞争者, 参考实现的防御写法, 保留)
     std::unique_lock<std::shared_mutex> lock(ssts_mtx); 
     ssts[sst_id] = sst; 
     level_sst_ids[lvl].push_back(sst_id); 
-    
+
     // 记录目前最大的 sst_id
     next_sst_id = (std::max)(sst_id, next_sst_id); 
     cur_max_level = (std::max)(lvl, cur_max_level); 
 
   }
 
-  
+  // 6. 现有的最大 sst_id 自增后才是下一个分配的 sst_id
+  next_sst_id++;
 
-
-
+  // 7. 各层 sst_id_list 排序; L0 需要 reverse (id 越大越新, 要优先查询)
+  for (auto&[level, sst_id_list] : level_sst_ids){
+    std::sort(sst_id_list.begin(), sst_id_list.end()); 
+    if (level == 0)
+      std::reverse(sst_id_list.begin(), sst_id_list.end()); 
+  }
 }
 
 LSMEngine::~LSMEngine() = default;
