@@ -115,12 +115,24 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id) {
   return sst_get_(key, tranc_id); 
 }
 
+// TODO: Lab 4.2 批量查询
 std::vector<
     std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
 LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
-  // TODO: Lab 4.2 批量查询
-  // ? 1. 先从 memtable 批量查询: memtable.get_batch(keys, tranc_id)
-  // ? 2. 若有未命中项, 加读锁后依次查 L0 各 SST 文件
+  // 1. 先从 memtable 批量查询: memtable.get_batch(keys, tranc_id)
+  auto results = memtable.get_batch(keys, tranc_id); 
+
+  // 2. 全部命中直接返回, 不碰 SST
+  bool need_search_sst = false; 
+  for (auto& [key,value] : results){
+    if (!value.has_value()){
+      need_search_sst = true; 
+      break; 
+    }
+  }
+
+  if (!need_search_sst)
+    return results; 
   // ? 3. 若仍有未命中, 对各高层 SST 做二分查找补全结果
   return {};
 }
