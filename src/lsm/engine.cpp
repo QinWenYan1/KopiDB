@@ -201,13 +201,30 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
   
     for (auto &sst_id : level_sst_ids[0]){
       // 取出 sst 和 sst_it 一个一个查找
+      // get_cur_tranc_id()：永远返回当前 entry 的真实写入 id
+      // get_tranc_id()： 有条件——keep_all_versions_=true 时返回 entry 真实 id
+      //                  false 时返回 max_tranc_id_，即构造时传入的查询 id
       auto& sst = ssts[sst_id];
       auto sst_it = sst->get(key, tranc_id); 
       if(sst_it != sst->end()){
         // 空值 = 墓碑, 已删除, 不再往旧层查
         if (sst_it->second.empty())
           return std::nullopt; 
+        return std::make_pair(sst_it->second, sst_it.get_tranc_id());
       }
+    }
+  }
+
+  // 2. L1+: 每层内 SST 不重叠且按 key 有序, 二分定位唯一候选文件
+  for (size_t lvl = 1; lvl <= cur_max_level; ++ lvl){
+    if (level_sst_ids.find(lvl) == level_sst_ids.end()) continue; 
+
+    const auto &id_list = level_sst_ids[lvl];
+    size_t left = 0, right = id_list.size(); 
+    
+    while ( left < right ){
+      size_t mid = (left + right)/2; 
+      auto &sst = ssts[id_list[mid]]; 
     }
   }
 
