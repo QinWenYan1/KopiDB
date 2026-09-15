@@ -43,6 +43,12 @@ LSMEngine::LSMEngine(std::string path) : data_dir(path) {
     TomlConfig::getInstance().getLsmBlockCacheK()
   ); 
 
+  //3. 若目录不存在则创建
+  if (!std::filesystem::exists(path)){
+    spdlog::warn("LSMEngine::LSMEngine(): directory {} not exist, create it",
+                 path); 
+  }
+
 
 }
 
@@ -78,7 +84,7 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
 // TODO: Lab 4.1 插入
 uint64_t LSMEngine::put(const std::string &key, const std::string &value,
                         uint64_t tranc_id) {
-  spdlog::trace("LSMEngine--put({}, {}, tranc_id={})", key, value, tranc_id);
+  spdlog::trace("LSMEngine::put({}, {}, tranc_id={})", key, value, tranc_id);
   memtable.put(key, value, tranc_id);
 
   // 先写后查阈值: 单条超大 value 也能进, memtable 允许短暂超限
@@ -96,7 +102,7 @@ uint64_t LSMEngine::put_batch(
     uint64_t tranc_id) {
   // ? 调用 memtable.put_batch(kvs, tranc_id)
   // ? 若超限则 flush() 并返回其结果
-  spdlog::trace("LSMEngine--put_batch(tranc_id={})", tranc_id);
+  spdlog::trace("LSMEngine::put_batch(tranc_id={})", tranc_id);
   memtable.put_batch(kvs, tranc_id);
 
   // 先写后查阈值: 单条超大 value 也能进, memtable 允许短暂超限
@@ -108,7 +114,7 @@ uint64_t LSMEngine::put_batch(
 
 // TODO: Lab 4.1 删除
 uint64_t LSMEngine::remove(const std::string &key, uint64_t tranc_id) {
-  spdlog::trace("LSMEngine--remove({}, tranc_id={})", key, tranc_id);
+  spdlog::trace("LSMEngine::remove({}, tranc_id={})", key, tranc_id);
   // LSM 的删除 = 插一个空值墓碑, 墓碑本体在 memtable.remove 里完成
   memtable.remove(key, tranc_id);
 
@@ -122,7 +128,7 @@ uint64_t LSMEngine::remove(const std::string &key, uint64_t tranc_id) {
 // TODO: Lab 4.1 批量删除
 uint64_t LSMEngine::remove_batch(const std::vector<std::string> &keys,
                                  uint64_t tranc_id) {
-  spdlog::trace("LSMEngine--remove_batch(tranc_id={})", tranc_id);
+  spdlog::trace("LSMEngine::remove_batch(tranc_id={})", tranc_id);
   memtable.remove_batch(keys, tranc_id);
 
   // 先写后查阈值: 单条超大 value 也能进, memtable 允许短暂超限
