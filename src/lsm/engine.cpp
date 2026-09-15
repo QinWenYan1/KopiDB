@@ -73,6 +73,15 @@ LSMEngine::LSMEngine(std::string path) : data_dir(path) {
 
     auto sst = SST::open(sst_id, FileObj::open(entry.path().string()), block_cache, vlog_); 
 
+    // 写锁 (构造函数里其实还没有竞争者, 参考实现的防御写法, 保留)
+    std::unique_lock<std::shared_mutex> lock(ssts_mtx); 
+    ssts[sst_id] = sst; 
+    level_sst_ids[lvl].push_back(sst_id); 
+    
+    // 记录目前最大的 sst_id
+    next_sst_id = (std::max)(sst_id, next_sst_id); 
+    cur_max_level = (std::max)(lvl, cur_max_level); 
+
   }
 
   
