@@ -24,10 +24,9 @@
 namespace tiny_lsm {
 
 // *********************** LSMEngine ***********************
+
+// TODO: Lab 4.2 引擎初始化
 LSMEngine::LSMEngine(std::string path) : data_dir(path) {
-  // TODO: Lab 4.2 引擎初始化
-  // ? 6. next_sst_id 自增
-  // ? 7. 对各层 sst_id_list 排序; L0 层需要 reverse (越大的 id 越新, 优先查询)
   // 1. 初始化日志: init_spdlog_file()
   init_spdlog_file();
 
