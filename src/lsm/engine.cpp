@@ -108,12 +108,11 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id) {
     return std::make_pair(mem_ret.get_value(), mem_ret.get_tranc_id()); 
   }
 
-  // 2. 加 ssts_mtx 读锁, 遍历 L0 的 sst_ids (越大越新), 通过 sst->get() 查询 
-
-  
-  // 3. 遍历 L1 及以上各层, 对每层做二分查找确定 key
-  // 所在的 SST 文件 ? 注意: value 为空字符串表示 key 已被删除, 此时返回 nullopt
-  
+  // 2. memtable 没有 -> 加读锁查 SST
+  //    参考实现这里把 SST 查询逻辑原样复制了一遍, sst_get_ 沦为死代码;
+  //    我们委托消重 (语义逐行核对过, 等价; sst_get_ 就是为此存在的)
+  std::shared_lock<std::shared_mutex> lock(ssts_mtx);
+  return sst_get_(key, tranc_id); 
 }
 
 std::vector<
