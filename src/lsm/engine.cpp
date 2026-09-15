@@ -149,7 +149,7 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
         if (sst_it != sst->end()){
           // else: 空值=墓碑 (! 见下方已知坑)
           if (!sst_it->second.empty())
-            value = std::make_pair(sst_it->second, sst_it.get_cur_tranc_id()); 
+            value = std::make_pair(sst_it->second, sst_it.get_tranc_id()); 
           // 该 key 已裁决, 不再查更旧的 L0 文件
           break; 
         }
@@ -157,7 +157,36 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
     }
   }
 
-  // 4. 
+  // 4. L1+: 对每个仍未命中 key, 每层二分定位候选文件补
+  for (size_t level = 1; level <= cur_max_level; ++level){
+    if (level_sst_ids.find(level) == level_sst_ids.end()) continue; 
+
+    const auto &id_list = level_sst_ids[level]; 
+    for(auto &[key, value] : results){
+      if (value.has_value()) continue; 
+
+      size_t left = 0, right = id_list.size(); 
+      while (left < right) {
+        size_t mid = (left + right)/ 2; 
+        auto & sst = ssts[mid]; 
+        
+        // sst 命中， 进入查找
+        if (sst->get_first_key() <= key && key <= sst->get_last_key()){
+          auto sst_it = sst->get(key, tranc_id); 
+          
+          // sst 中也命中，将 value 记录
+          if (sst_it != sst->end() && !sst_it->second.empty())
+            value = std::make_pair(sst_it->second, sst_it.get_tranc_id());
+          break;
+        }else if (sst->get_last_key() < key) 
+          left = mid + 1; 
+        else
+          right = mid; 
+      }
+    }
+  }
+
+  return results; 
 }
 
 std::optional<std::pair<std::string, uint64_t>>
