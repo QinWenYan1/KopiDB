@@ -97,14 +97,23 @@ LSMEngine::LSMEngine(std::string path) : data_dir(path) {
 
 LSMEngine::~LSMEngine() = default;
 
+// TODO: Lab 4.2 查询
 std::optional<std::pair<std::string, uint64_t>>
 LSMEngine::get(const std::string &key, uint64_t tranc_id) {
-  // TODO: Lab 4.2 查询
-  // ? 1. 先查 memtable.get(key, tranc_id), 命中则返回 (value 非空) 或 nullopt
-  // (value 为空=删除) ? 2. 加 ssts_mtx 读锁, 遍历 L0 的 sst_ids (越大越新),
-  // 通过 sst->get() 查询 ? 3. 遍历 L1 及以上各层, 对每层做二分查找确定 key
+  // 1. 先查 memtable.get(key, tranc_id), 命中则返回 (value 非空) 或 nullopt(value 为空=删除) 
+  auto mem_ret = memtable.get(key,tranc_id); 
+  if (mem_ret.is_valid()){
+    if (mem_ret.get_value().empty())
+      return std::nullopt; 
+    return std::make_pair(mem_ret.get_value(), mem_ret.get_tranc_id()); 
+  }
+
+  // 2. 加 ssts_mtx 读锁, 遍历 L0 的 sst_ids (越大越新), 通过 sst->get() 查询 
+
+  
+  // 3. 遍历 L1 及以上各层, 对每层做二分查找确定 key
   // 所在的 SST 文件 ? 注意: value 为空字符串表示 key 已被删除, 此时返回 nullopt
-  return std::nullopt;
+  
 }
 
 std::vector<
