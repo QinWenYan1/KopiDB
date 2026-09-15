@@ -224,7 +224,17 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
     
     while ( left < right ){
       size_t mid = (left + right)/2; 
-      auto &sst = ssts[id_list[mid]]; 
+      auto &sst = ssts[id_list[mid]];
+      
+      // 找到目标 sst 
+      if (sst->get_first_key() <= key && key <= sst->get_last_key()){
+        auto sst_it = sst->get(key, tranc_id); 
+        //检查是否为有效 sst, 而不是尾后 sst
+        if (sst_it != sst->end()){
+          // 被标记为墓碑了，直接返回空值
+          if (sst_it -> second.empty()) return std::nullopt;
+        }
+      }
     }
   }
 
