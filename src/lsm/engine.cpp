@@ -43,11 +43,22 @@ LSMEngine::LSMEngine(std::string path) : data_dir(path) {
     TomlConfig::getInstance().getLsmBlockCacheK()
   ); 
 
-  //3. 若目录不存在则创建
+  // 3. 若目录不存在则创建
   if (!std::filesystem::exists(path)){
     spdlog::warn("LSMEngine::LSMEngine(): directory {} not exist, create it",
                  path); 
   }
+
+  // 4. vlog 常驻打开 (开销小; 即使没开 WiscKey 也无害, clear() 也假设它在)
+  vlog_ = VLog::open(data_dir + "/vlog.data"); 
+
+  // 5. 遍历目录加载所有已存在的 SST 文件 (文件名格式: sst_{id}.{level})
+  for (const auto& entry : std::filesystem::directory_iterator(path)) {
+    if (!entry.is_regular_file())
+      continue; 
+    std::string filename = entry.path().filename().string(); 
+  }
+
 
 
 }
