@@ -67,6 +67,12 @@ LSMEngine::LSMEngine(std::string path) : data_dir(path) {
     if (dot_pos == std::string::npos || dot_pos == filename.size() - 1)
       continue; 
 
+    // len = dot_pos - 4 因为 4 = "sst_"
+    size_t sst_id = std::stoull(filename.substr(4, dot_pos - 4)); 
+    size_t lvl = std::stoull(filename.substr(dot_pos + 1)); 
+
+    auto sst = SST::open(sst_id, FileObj::open(entry.path().string()), block_cache, vlog_); 
+
   }
 
   
