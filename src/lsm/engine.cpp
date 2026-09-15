@@ -191,11 +191,26 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
   return results;
 }
 
+// TODO: Lab 4.2 sst 内部查询 (不查 memtable)
 std::optional<std::pair<std::string, uint64_t>>
 LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
-  // TODO: Lab 4.2 sst 内部查询 (不查 memtable)
-  // ? 逻辑与 get() 的 SST 部分相同, 先 L0 后 L1+
-  return std::nullopt;
+  // 不加锁: 约定调用方已持有 ssts_mtx (get 的读锁 / compact 的写锁)
+
+  // 1. L0: 各 SST key 范围重叠, 逐个查; 队列头部 id 最大 = 最新, 先查
+  if(level_sst_ids.find(0) != level_sst_ids.end()){
+  
+    for (auto &sst_id : level_sst_ids[0]){
+      // 取出 sst 和 sst_it 一个一个查找
+      auto& sst = ssts[sst_id];
+      auto sst_it = sst->get(key, tranc_id); 
+      if(sst_it != sst->end()){
+        // 空值 = 墓碑, 已删除, 不再往旧层查
+        if (sst_it->second.empty())
+          return std::nullopt; 
+      }
+    }
+  }
+
 }
 
 // TODO: Lab 4.1 插入
