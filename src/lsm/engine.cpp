@@ -26,12 +26,6 @@ namespace tiny_lsm {
 // *********************** LSMEngine ***********************
 LSMEngine::LSMEngine(std::string path) : data_dir(path) {
   // TODO: Lab 4.2 引擎初始化
-  // ? 3. 若目录不存在则创建
-  // ? 4. 初始化 VLog: vlog_ = VLog::open(data_dir + "/vlog.data")
-  // ? 5. 遍历目录加载所有已存在的 SST 文件:
-  // ?    - 文件名格式: sst_{id}.{level}
-  // ?    - 调用 SST::open 并记录到 ssts 和 level_sst_ids
-  // ?    - 维护 next_sst_id 和 cur_max_level
   // ? 6. next_sst_id 自增
   // ? 7. 对各层 sst_id_list 排序; L0 层需要 reverse (越大的 id 越新, 优先查询)
   // 1. 初始化日志: init_spdlog_file()
@@ -47,17 +41,35 @@ LSMEngine::LSMEngine(std::string path) : data_dir(path) {
   if (!std::filesystem::exists(path)){
     spdlog::warn("LSMEngine::LSMEngine(): directory {} not exist, create it",
                  path); 
+    std::filesystem::create_directory(path); 
   }
 
   // 4. vlog 常驻打开 (开销小; 即使没开 WiscKey 也无害, clear() 也假设它在)
+  //    初始化 VLog: vlog_ = VLog::open(data_dir + "/vlog.data")
   vlog_ = VLog::open(data_dir + "/vlog.data"); 
 
   // 5. 遍历目录加载所有已存在的 SST 文件 (文件名格式: sst_{id}.{level})
+  //      - 文件名格式: sst_{id}.{level}
+  //      - 调用 SST::open 并记录到 ssts 和 level_sst_ids
+  //      - 维护 next_sst_id 和 cur_max_level
   for (const auto& entry : std::filesystem::directory_iterator(path)) {
+    
+    // 检查文件类型
     if (!entry.is_regular_file())
       continue; 
+
+    // 检查文件名字格式
     std::string filename = entry.path().filename().string(); 
+    if (!filename.starts_with("sst_"))
+      continue; 
+
+    auto dot_pos = filename.find('.'); 
+    if (dot_pos == std::string::npos || dot_pos == filename.size() - 1)
+      continue; 
+
   }
+
+  
 
 
 
