@@ -133,8 +133,31 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
 
   if (!need_search_sst)
     return results; 
-  // ? 3. 若仍有未命中, 对各高层 SST 做二分查找补全结果
-  return {};
+  
+  std::shared_lock<std::shared_mutex> rlock(ssts_mtx); 
+
+  // 3. 进入 L0: 对每个未命中的 key, 从新到旧逐文件补
+  if (level_sst_ids.find(0) != level_sst_ids.end()){
+    for (auto &[key, value] : results){
+      if (value.has_value()) continue; 
+
+      for (auto & sst_id : level_sst_ids[0]){
+        // 从 engine 中加载 sst handle 用于之后的 key 查找
+        auto &sst = ssts[sst_id]; 
+        auto sst_it = sst->get(key, tranc_id);
+
+        if (sst_it != sst->end()){
+          // else: 空值=墓碑 (! 见下方已知坑)
+          if (!sst_it->second.empty())
+            value = std::make_pair(sst_it->second, sst_it.get_cur_tranc_id()); 
+          // 该 key 已裁决, 不再查更旧的 L0 文件
+          break; 
+        }
+      }
+    }
+  }
+
+  // 4. 
 }
 
 std::optional<std::pair<std::string, uint64_t>>
