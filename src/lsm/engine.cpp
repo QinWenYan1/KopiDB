@@ -25,8 +25,6 @@ namespace tiny_lsm {
 // *********************** LSMEngine ***********************
 LSMEngine::LSMEngine(std::string path) : data_dir(path) {
   // TODO: Lab 4.2 引擎初始化
-  // ? 1. 初始化日志: init_spdlog_file()
-  // ? 2. 初始化 block_cache (容量和 K 值从 TomlConfig 读取)
   // ? 3. 若目录不存在则创建
   // ? 4. 初始化 VLog: vlog_ = VLog::open(data_dir + "/vlog.data")
   // ? 5. 遍历目录加载所有已存在的 SST 文件:
@@ -35,7 +33,12 @@ LSMEngine::LSMEngine(std::string path) : data_dir(path) {
   // ?    - 维护 next_sst_id 和 cur_max_level
   // ? 6. next_sst_id 自增
   // ? 7. 对各层 sst_id_list 排序; L0 层需要 reverse (越大的 id 越新, 优先查询)
+  // 1. 初始化日志: init_spdlog_file()
   init_spdlog_file();
+
+  // 2. 初始化 block_cache (容量和 K 值从 TomlConfig 读取)
+
+
 }
 
 LSMEngine::~LSMEngine() = default;
@@ -114,7 +117,7 @@ uint64_t LSMEngine::remove(const std::string &key, uint64_t tranc_id) {
 // TODO: Lab 4.1 批量删除
 uint64_t LSMEngine::remove_batch(const std::vector<std::string> &keys,
                                  uint64_t tranc_id) {
-  spdlog::trace("LSMEngine--put_batch(tranc_id={})", tranc_id);
+  spdlog::trace("LSMEngine--remove_batch(tranc_id={})", tranc_id);
   memtable.remove_batch(keys, tranc_id);
 
   // 先写后查阈值: 单条超大 value 也能进, memtable 允许短暂超限
@@ -213,6 +216,8 @@ uint64_t LSMEngine::flush() {
 
   // 8. 返回本次刷入 SST 的最大 tranc_id
   //    返回新 SST 的 max_tranc_id
+  //    为什么返回 max？因为它的语义是水位线（watermark）：
+  //      回答"这次刷盘把数据 durable 到哪了"
   return new_sst->get_tranc_id_range().second;
 }
 
