@@ -12,33 +12,28 @@ ConcactIterator::ConcactIterator(std::vector<std::shared_ptr<SST>> ssts,
 }
 
 BaseIterator &ConcactIterator::operator++() {
-  ++cur_iter;
-
-  if (cur_iter.is_end() || !cur_iter.is_valid()) {
-    cur_idx++;
-    if (cur_idx < ssts.size()) {
-      cur_iter = ssts[cur_idx]->begin(max_tranc_id_, keep_all_versions_);
-    } else {
-      cur_iter = SstIterator(nullptr, max_tranc_id_);
-    }
-  }
+  // TODO: Lab 4.3 自增运算符重载
   return *this;
 }
 
 bool ConcactIterator::operator==(const BaseIterator &other) const {
-  if (other.get_type() != IteratorType::ConcactIterator) {
-    return false;
-  }
-  auto other2 = dynamic_cast<const ConcactIterator &>(other);
-  return other2.cur_iter == cur_iter;
+  // TODO: Lab 4.3 比较运算符重载
+  return false;
 }
 
 bool ConcactIterator::operator!=(const BaseIterator &other) const {
-  return !(*this == other);
+  // TODO: Lab 4.3 比较运算符重载
+  return false;
 }
 
 ConcactIterator::value_type ConcactIterator::operator*() const {
-  return *cur_iter;
+  // TODO: Lab 4.3 解引用运算符重载
+  return value_type();
+}
+
+ConcactIterator::pointer ConcactIterator::operator->() const {
+  // TODO: Lab 4.3 ->运算符重载
+  return nullptr;
 }
 
 IteratorType ConcactIterator::get_type() const {
@@ -58,10 +53,6 @@ bool ConcactIterator::is_end() const {
 
 bool ConcactIterator::is_valid() const {
   return !cur_iter.is_end() && cur_iter.is_valid();
-}
-
-ConcactIterator::pointer ConcactIterator::operator->() const {
-  return cur_iter.operator->();
 }
 
 std::string ConcactIterator::key() { return cur_iter.key(); }

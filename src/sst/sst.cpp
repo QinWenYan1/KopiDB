@@ -385,9 +385,6 @@ size_t SSTBuilder::estimated_size() const { return data.size(); }
 // 草稿定格 → BlockMeta(offset, first_key, last_key)
 // 压进 meta_entries, 一个 block 一张
 void SSTBuilder::finish_block() {
-  // ? 将当前 block 编码并追加到 data, 同时向 meta_entries 添加元数据
-  // ? 然后重置 block 为新的空 Block
-  // ? meta_entries 记录: (当前data起始偏移, first_key, last_key)
 
   // 1. 把当前 block 挪出来编码（默认带CRC32）
   auto old_block = std::move(block);
@@ -399,6 +396,8 @@ void SSTBuilder::finish_block() {
   meta_entries.emplace_back(data.size(), first_key, last_key);
 
   // 3. 编码字节追加进入到 data [存放该SST的多block位置]
+  // 预分配空间并添加数据
+  data.reserve(data.size() + encoded_block.size());
   data.insert(data.end(), encoded_block.begin(), encoded_block.end());
 
   // 4. 然后重建 block std::move 之后的对象是"有效但未指定"状态

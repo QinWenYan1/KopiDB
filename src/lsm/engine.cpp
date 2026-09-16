@@ -171,7 +171,7 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
       size_t left = 0, right = id_list.size();
       while (left < right) {
         size_t mid = (left + right) / 2;
-        auto &sst = ssts[mid];
+        auto &sst = ssts[id_list[mid]];
 
         // sst 命中， 进入查找
         if (sst->get_first_key() <= key && key <= sst->get_last_key()) {
