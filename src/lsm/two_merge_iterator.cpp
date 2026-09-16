@@ -9,8 +9,8 @@ TwoMergeIterator::TwoMergeIterator(std::shared_ptr<BaseIterator> it_a,
                                    std::shared_ptr<BaseIterator> it_b,
                                    uint64_t max_tranc_id,
                                    bool keep_all_versions)
-    : it_a(std::move(it_a)), it_b(std::move(it_b)),
-      max_tranc_id_(max_tranc_id), keep_all_versions_(keep_all_versions) {
+    : it_a(std::move(it_a)), it_b(std::move(it_b)), max_tranc_id_(max_tranc_id),
+      keep_all_versions_(keep_all_versions) {
   // 先跳过不可见的事务
   skip_by_tranc_id();
   skip_it_b();              // 跳过与 it_a 重复的 key
@@ -64,34 +64,33 @@ void TwoMergeIterator::skip_by_tranc_id() {
 BaseIterator &TwoMergeIterator::operator++() {
   // 1. 只推进当前选中的那一路
   if (choose_a)
-    ++(*it_a); 
-  else 
-    ++(*it_b); 
+    ++(*it_a);
+  else
+    ++(*it_b);
 
   // 2. 推进后重做"构造三件套": tranc 过滤 -> 同 key 去重 -> 重新抉择
-  skip_by_tranc_id(); 
-  skip_it_b();                // 跳过与 it_a 重复的 key
-  choose_a = choose_it_a();   // 重新决定使用哪个迭代器
-  return *this; 
-
+  skip_by_tranc_id();
+  skip_it_b();              // 跳过与 it_a 重复的 key
+  choose_a = choose_it_a(); // 重新决定使用哪个迭代器
+  return *this;
 }
 
 // TODO: Lab 4.4: 实现 == 重载
 bool TwoMergeIterator::operator==(const BaseIterator &other) const {
   if (other.get_type() != IteratorType::TwoMergeIterator)
-    return false; 
+    return false;
 
-  auto other2 = dynamic_cast<const TwoMergeIterator&>(other); 
+  auto other2 = dynamic_cast<const TwoMergeIterator &>(other);
   // end 态归一: 双 end 相等, 单 end 不等 (it != end() 循环靠这个收尾)
-  if(is_end() && other2.is_end())
-    return true; 
+  if (is_end() && other2.is_end())
+    return true;
 
   if (is_end() || other.is_end())
-    return false; 
+    return false;
 
   // 身份语义: 孩子是用 shared_ptr 借来的, 指针相同 = 同一路数据流
-  return it_a == other2.it_a && it_b == other2.it_b && choose_a == other2.choose_a; 
-
+  return it_a == other2.it_a && it_b == other2.it_b &&
+         choose_a == other2.choose_a;
 }
 
 bool TwoMergeIterator::operator!=(const BaseIterator &other) const {
