@@ -31,9 +31,28 @@ BaseIterator &ConcactIterator::operator++() {
   return *this; 
 }
 
+// TODO: Lab 4.3 比较运算符重载
 bool ConcactIterator::operator==(const BaseIterator &other) const {
-  // TODO: Lab 4.3 比较运算符重载
-  return false;
+  // 1. 类型不同永不相等 (基类引用可能装着 MemIterator/HeapIterator...)
+  if (other.get_type() != IteratorType::ConcactIterator)
+    return false;
+
+  // 2. get_type 已保证类型, dynamic_cast 引用版必然成功 (失败会抛 bad_cast)
+  auto other2 = dynamic_cast<const ConcactIterator &>(other);
+
+  // 3. 不同 SST 或不同块，直接不等
+  if (cur_iter != other2.cur_iter || cur_idx != other2.cur_idx)
+    return false;
+
+  // 4. 双空 = 两个 end 哨兵, 相等; 一空一非空, 不等
+  if (!cur_iter.is_valid() && !other2.cur_iter.is_valid())
+    return true;
+  if (!cur_iter.is_valid() || !other2.cur_iter.is_valid())
+    return false;
+
+  // 5. 同 SST 同块, 比块内位置 (委托 BlockIterator::operator==)
+  return *cur_iter == *other2.cur_iter;
+
 }
 
 bool ConcactIterator::operator!=(const BaseIterator &other) const {
