@@ -93,14 +93,17 @@ bool TwoMergeIterator::operator==(const BaseIterator &other) const {
          choose_a == other2.choose_a;
 }
 
+// TODO: Lab 4.4: 实现 != 重载
 bool TwoMergeIterator::operator!=(const BaseIterator &other) const {
-  // TODO: Lab 4.4: 实现 != 重载
-  return false;
+  return !operator==(other); 
 }
 
+// TODO: Lab 4.4: 实现 * 重载
 BaseIterator::value_type TwoMergeIterator::operator*() const {
-  // TODO: Lab 4.4: 实现 * 重载
-  return {};
+  if (choose_a)
+    return **it_a; 
+  else
+    return **it_b; 
 }
 
 IteratorType TwoMergeIterator::get_type() const {
