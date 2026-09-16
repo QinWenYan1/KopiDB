@@ -1,4 +1,5 @@
 #include "sst/concact_iterator.h"
+#include "sst/sst_iterator.h"
 
 namespace tiny_lsm {
 
@@ -11,9 +12,23 @@ ConcactIterator::ConcactIterator(std::vector<std::shared_ptr<SST>> ssts,
   }
 }
 
+// TODO: Lab 4.3 自增运算符重载
 BaseIterator &ConcactIterator::operator++() {
-  // TODO: Lab 4.3 自增运算符重载
-  return *this;
+  // 1. 先在当前表内推进一格 (块内/跨块由 SstIterator 自己管)
+  ++cur_iter; 
+
+  // 2. 当前表读完了 -> 换下一张表
+  if (cur_iter.is_end() || !cur_iter.is_valid()){
+    ++cur_idx; 
+    if (cur_idx < ssts.size()){
+      // 新表从各自起点开始 (begin 内部 seek_first, 自动跳过不可见版本)
+      cur_iter = ssts[cur_idx] -> begin(max_tranc_id_, keep_all_versions_); 
+    } else{
+      // 全部表读完 -> end 态: 空表迭代器 (m_block_it 为 nullptr)
+      cur_iter = SstIterator(nullptr, max_tranc_id_); 
+    }
+  }
+  return *this; 
 }
 
 bool ConcactIterator::operator==(const BaseIterator &other) const {
