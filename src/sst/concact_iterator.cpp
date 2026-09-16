@@ -47,9 +47,10 @@ bool ConcactIterator::operator==(const BaseIterator &other) const {
 
 }
 
+// TODO: Lab 4.3 比较运算符重载
 bool ConcactIterator::operator!=(const BaseIterator &other) const {
-  // TODO: Lab 4.3 比较运算符重载
-  return false;
+  // 直接委托 operator==
+  return !(operator==(other));
 }
 
 ConcactIterator::value_type ConcactIterator::operator*() const {
