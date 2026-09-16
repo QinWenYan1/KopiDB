@@ -53,14 +53,14 @@ bool ConcactIterator::operator!=(const BaseIterator &other) const {
   return !(operator==(other));
 }
 
+// TODO: Lab 4.3 解引用运算符重载
 ConcactIterator::value_type ConcactIterator::operator*() const {
-  // TODO: Lab 4.3 解引用运算符重载
-  return value_type();
+  return *cur_iter; 
 }
 
+// TODO: Lab 4.3 ->运算符重载
 ConcactIterator::pointer ConcactIterator::operator->() const {
-  // TODO: Lab 4.3 ->运算符重载
-  return nullptr;
+  return cur_iter.operator->(); 
 }
 
 IteratorType ConcactIterator::get_type() const {
