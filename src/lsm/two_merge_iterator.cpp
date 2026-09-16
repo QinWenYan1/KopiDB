@@ -1,4 +1,5 @@
 #include "lsm/two_merge_iterator.h"
+#include "iterator/iterator.h"
 
 namespace tiny_lsm {
 
@@ -75,9 +76,22 @@ BaseIterator &TwoMergeIterator::operator++() {
 
 }
 
+// TODO: Lab 4.4: 实现 == 重载
 bool TwoMergeIterator::operator==(const BaseIterator &other) const {
-  // TODO: Lab 4.4: 实现 == 重载
-  return false;
+  if (other.get_type() != IteratorType::TwoMergeIterator)
+    return false; 
+
+  auto other2 = dynamic_cast<const TwoMergeIterator&>(other); 
+  // end 态归一: 双 end 相等, 单 end 不等 (it != end() 循环靠这个收尾)
+  if(is_end() && other2.is_end())
+    return true; 
+
+  if (is_end() || other.is_end())
+    return false; 
+
+  // 身份语义: 孩子是用 shared_ptr 借来的, 指针相同 = 同一路数据流
+  return it_a == other2.it_a && it_b == other2.it_b && choose_a == other2.choose_a; 
+
 }
 
 bool TwoMergeIterator::operator!=(const BaseIterator &other) const {
