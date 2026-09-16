@@ -272,7 +272,7 @@ std::pair<uint64_t, uint64_t> SST::get_tranc_id_range() const {
 // SSTBuilder
 // **************************************************
 
-SSTBuilder::SSTBuilder(size_t block_size, bool has_bloom) : block(block_size) {
+SSTBuilder::SSTBuilder(size_t block_size, bool has_bloom) : block(block_size), block_size(block_size) {
   // 初始化第一个block
   if (has_bloom) {
     bloom_filter = std::make_shared<BloomFilter>(
@@ -288,7 +288,7 @@ SSTBuilder::SSTBuilder(size_t block_size, bool has_bloom) : block(block_size) {
 SSTBuilder::SSTBuilder(size_t block_size, bool has_bloom,
                        std::shared_ptr<VLog> vlog, size_t wisckey_threshold)
     : block(block_size), vlog_(std::move(vlog)),
-      wisckey_threshold_(wisckey_threshold), storage_mode_(1) {
+      wisckey_threshold_(wisckey_threshold), storage_mode_(1), block_size(block_size)  {
   // WiscKey 模式构造函数: vlog 用于大 value 分离存储
   if (has_bloom) {
     bloom_filter = std::make_shared<BloomFilter>(
@@ -387,6 +387,7 @@ size_t SSTBuilder::estimated_size() const { return data.size(); }
 void SSTBuilder::finish_block() {
 
   // 1. 把当前 block 挪出来编码（默认带CRC32）
+  //    这里使用右值引用构造函数来挪动 block 里面的 vector 给 old_block 使用完并销毁
   auto old_block = std::move(block);
   auto encoded_block = old_block.encode();
 
