@@ -40,18 +40,10 @@ bool ConcactIterator::operator==(const BaseIterator &other) const {
   // 2. get_type 已保证类型, dynamic_cast 引用版必然成功 (失败会抛 bad_cast)
   auto other2 = dynamic_cast<const ConcactIterator &>(other);
 
-  // 3. 不同 SST 或不同块，直接不等
-  if (cur_iter != other2.cur_iter || cur_idx != other2.cur_idx)
-    return false;
-
-  // 4. 双空 = 两个 end 哨兵, 相等; 一空一非空, 不等
-  if (!cur_iter.is_valid() && !other2.cur_iter.is_valid())
-    return true;
-  if (!cur_iter.is_valid() || !other2.cur_iter.is_valid())
-    return false;
-
-  // 5. 同 SST 同块, 比块内位置 (委托 BlockIterator::operator==)
-  return *cur_iter == *other2.cur_iter;
+  // 3. 只比当前位置 (cur_iter 位置语义), 不比 ssts 数组/cur_idx
+  //    两个 end 态: cur_iter 都是空表迭代器 -> SstIterator::== 双空相等
+  //    一句话：== 回答的是"指向同一条 entry 吗"，而"指向哪"的全部信息都在 cur_iter
+  return other2.cur_iter == cur_iter; 
 
 }
 
