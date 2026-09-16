@@ -12,7 +12,7 @@ ConcactIterator::ConcactIterator(std::vector<std::shared_ptr<SST>> ssts,
   }
 }
 
-// TODO: Lab 4.3 自增运算符重载
+// Lab 4.3 自增运算符重载
 BaseIterator &ConcactIterator::operator++() {
   // 1. 先在当前表内推进一格 (块内/跨块由 SstIterator 自己管)
   ++cur_iter; 
@@ -31,7 +31,7 @@ BaseIterator &ConcactIterator::operator++() {
   return *this; 
 }
 
-// TODO: Lab 4.3 比较运算符重载
+// Lab 4.3 比较运算符重载
 bool ConcactIterator::operator==(const BaseIterator &other) const {
   // 1. 类型不同永不相等 (基类引用可能装着 MemIterator/HeapIterator...)
   if (other.get_type() != IteratorType::ConcactIterator)
@@ -47,18 +47,18 @@ bool ConcactIterator::operator==(const BaseIterator &other) const {
 
 }
 
-// TODO: Lab 4.3 比较运算符重载
+// Lab 4.3 比较运算符重载
 bool ConcactIterator::operator!=(const BaseIterator &other) const {
   // 直接委托 operator==
   return !(operator==(other));
 }
 
-// TODO: Lab 4.3 解引用运算符重载
+// Lab 4.3 解引用运算符重载
 ConcactIterator::value_type ConcactIterator::operator*() const {
   return *cur_iter; 
 }
 
-// TODO: Lab 4.3 ->运算符重载
+// Lab 4.3 ->运算符重载
 ConcactIterator::pointer ConcactIterator::operator->() const {
   return cur_iter.operator->(); 
 }
