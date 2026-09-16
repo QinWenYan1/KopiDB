@@ -18,25 +18,8 @@ TwoMergeIterator::TwoMergeIterator(std::shared_ptr<BaseIterator> it_a,
 }
 
 bool TwoMergeIterator::choose_it_a() {
-  if (it_a->is_end()) {
-    return false;
-  }
-  if (it_b->is_end()) {
-    return true;
-  }
-  auto key_a = (**it_a).first;
-  auto key_b = (**it_b).first;
-  if (key_a != key_b) {
-    return key_a < key_b; // 比较 key
-  }
-  // Same key: in keep_all_versions mode emit the larger tranc_id first so
-  // that block entries remain in descending-tranc_id order, which is what
-  // Block::adjust_idx_by_tranc_id expects.
-  if (keep_all_versions_) {
-    return it_a->get_tranc_id() > it_b->get_tranc_id();
-  }
-  // Normal query mode: prefer it_a (newer, from memtable / higher level).
-  return true;
+  // TODO: Lab 4.4: 实现选择迭代器的逻辑
+  return false;
 }
 
 void TwoMergeIterator::skip_it_b() {
@@ -49,15 +32,7 @@ void TwoMergeIterator::skip_it_b() {
 }
 
 void TwoMergeIterator::skip_by_tranc_id() {
-  if (max_tranc_id_ == 0) {
-    return;
-  }
-  while (it_a->get_tranc_id() > max_tranc_id_) {
-    ++(*it_a);
-  }
-  while (it_b->get_tranc_id() > max_tranc_id_) {
-    ++(*it_b);
-  }
+  // TODO: Lab 4.4: 实现更新缓存键值对的辅助函数
 }
 
 // TODO: Lab 4.4: 实现 ++ 重载
@@ -148,9 +123,18 @@ bool TwoMergeIterator::is_valid() const {
   return it_a->is_valid() || it_b->is_valid();
 }
 
+// TODO: Lab 4.4: 实现 -> 重载
 TwoMergeIterator::pointer TwoMergeIterator::operator->() const {
-  // TODO: Lab 4.4: 实现 -> 重载
-  return nullptr;
+  // current 缓存提供稳定地址 (同 SstIterator 的 cached_value 动机)
+  // 为什么 operator* 不使用缓存而 operator-> 使用呢？
+  //    1. operator* 返回 value_type（按值）
+  //    2. operator-> 返回 pointer：被指的 pair 必须在函数返回后还活着
+  //    3. operator* 若走 current，得先 update_current() → make_shared 一次堆分配 → 再 *current 拷出来
+  //       没有必要
+
+  update_current();
+  return current.get(); 
+  
 }
 
 void TwoMergeIterator::update_current() const {
