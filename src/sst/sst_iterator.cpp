@@ -232,11 +232,10 @@ bool SstIterator::operator!=(const BaseIterator &other) const {
 SstIterator::value_type SstIterator::operator*() const {
 
   if (!is_valid())
-    throw std::runtime_error("SstIterator::operator*: Iterator is invalid");
+    throw std::runtime_error("SstIterator::operator*: cannot dereference this iterator");
 
   // WiscKey 模式: value 是 12 字节提货单 [offset:8][size:4]
   // resolve_value 拿单子去 vlog 取真值; 普通模式原样返回 (零成本直通)
-  // 由于 operator -> 直接实现好了，我们直接委托
   update_current();
   return *cached_value;
 }
@@ -257,7 +256,7 @@ bool SstIterator::is_valid() const {
 }
 SstIterator::pointer SstIterator::operator->() const {
   if (!is_valid())
-    throw std::runtime_error("SstIterator::operator->: Iterator is invalid");
+    throw std::runtime_error("SstIterator::operator->: cannot dereference this iterator");
 
   update_current();
   return &(*cached_value);
