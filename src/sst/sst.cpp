@@ -403,7 +403,7 @@ void SSTBuilder::finish_block() {
 
   // 4. 然后重建 block std::move 之后的对象是"有效但未指定"状态
   //    标准不保证它是空的——显式重建一个同容量新块, 不靠实现细节
-  //    我们这里采用 新建 Block 的方式避免歧义，代码更安全
+  //    我们这里采用 新建 Block 的方式避免歧义，代码更安全因为明确恢复新块的初始状态
   //    对于单纯的 move-from 方式 也没有性能差异
   block = Block(block_size);
 }
