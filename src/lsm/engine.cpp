@@ -502,8 +502,20 @@ LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
       std::string sst_path = get_sst_path(sst_id, target_level); 
       auto new_sst = new_sst_builder.build(sst_id, sst_path, block_cache);
       new_ssts.push_back(new_sst);
+
+      spdlog::debug("LSMEngine--Compaction: Generated new SST file with sst_id={} at "
+        "level{}",
+        sst_id, 
+        target_level);
+      
+      // 重置 builder
+      new_sst_builder = (wk > 0 && vlog_)
+      ? SSTBuilder(TomlConfig::getInstance().getLsmBlockSize(), true, vlog_, wk)
+      : SSTBuilder(TomlConfig::getInstance().getLsmBlockSize(), true); 
     }
   } 
+
+  
 
 
 }
