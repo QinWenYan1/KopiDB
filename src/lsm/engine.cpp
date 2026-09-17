@@ -490,8 +490,8 @@ LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
 
     // 版本切分禁令:  
     //  同 key 的不同版本不许被切到两个 SST
-    //  否则 L1+ 的相邻 SST key 区间重叠, find_block_idx 二分直接失效
-    //  注意判定发生在 ++iter 之后, 看的是"下一条"
+    //    否则 L1+ 相邻 SST 的 [first_key,last_key] 在边界 key 处重叠,
+    //    engine 点查每层只二分命中一个候选 SST -> 老快照读漏版本
     bool next_is_same_key = 
       iter.is_valid() && !iter.is_end() && (*iter).first == cur_key; 
 
