@@ -1,7 +1,6 @@
 #include "iterator/iterator.h"
 #include <memory>
 #include <stdexcept>
-#include <tuple>
 #include <vector>
 
 namespace tiny_lsm {

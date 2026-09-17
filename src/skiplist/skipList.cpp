@@ -1,5 +1,4 @@
 #include "skiplist/skiplist.h"
-#include "spdlog/fmt/bundled/format.h"
 #include <cstdint>
 #include <cstdio>
 #include <iostream>
