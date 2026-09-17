@@ -1,5 +1,6 @@
 #include "lsm/two_merge_iterator.h"
 #include "iterator/iterator.h"
+#include <stdexcept>
 
 namespace tiny_lsm {
 
@@ -17,7 +18,7 @@ TwoMergeIterator::TwoMergeIterator(std::shared_ptr<BaseIterator> it_a,
   choose_a = choose_it_a(); // 决定使用哪个迭代器
 }
 
-// TODO: Lab 4.4: 实现选择迭代器的逻辑
+// Lab 4.4:实现选择迭代器的逻辑
 bool TwoMergeIterator::choose_it_a() {
   // 一路耗尽, 无条件选另一路
   if (it_a->is_end())
@@ -49,7 +50,7 @@ void TwoMergeIterator::skip_it_b() {
   }
 }
 
-// TODO: Lab 4.4: 根据事务可见性进行滤除的辅助函数
+// Lab 4.4:根据事务可见性进行滤除的辅助函数
 void TwoMergeIterator::skip_by_tranc_id() {
   // max_tranc_id_ == 0: 无事务快照的普通读, 不过滤
   // (没有这句, keep_all_versions 模式下 tranc_id>0 的 entry 会被全跳光)
@@ -67,7 +68,7 @@ void TwoMergeIterator::skip_by_tranc_id() {
   }
 }
 
-// TODO: Lab 4.4: 实现 ++ 重载
+// Lab 4.4:实现 ++ 重载
 BaseIterator &TwoMergeIterator::operator++() {
   // 1. 只推进当前选中的那一路
   if (choose_a)
@@ -82,7 +83,7 @@ BaseIterator &TwoMergeIterator::operator++() {
   return *this;
 }
 
-// TODO: Lab 4.4: 实现 == 重载
+// Lab 4.4:实现 == 重载
 bool TwoMergeIterator::operator==(const BaseIterator &other) const {
   if (other.get_type() != IteratorType::TwoMergeIterator)
     return false;
@@ -100,13 +101,16 @@ bool TwoMergeIterator::operator==(const BaseIterator &other) const {
          choose_a == other2.choose_a;
 }
 
-// TODO: Lab 4.4: 实现 != 重载
+// Lab 4.4:实现 != 重载
 bool TwoMergeIterator::operator!=(const BaseIterator &other) const {
   return !operator==(other);
 }
 
-// TODO: Lab 4.4: 实现 * 重载
+// Lab 4.4:实现 * 重载
 BaseIterator::value_type TwoMergeIterator::operator*() const {
+  if (!is_valid())
+    throw std::runtime_error(
+        "TwoMergeIterator::operator*: cannot dereference this iterator");
   if (choose_a)
     return **it_a;
   else
@@ -155,7 +159,7 @@ bool TwoMergeIterator::is_valid() const {
   return it_a->is_valid() || it_b->is_valid();
 }
 
-// TODO: Lab 4.4: 实现 -> 重载
+// Lab 4.4:实现 -> 重载
 TwoMergeIterator::pointer TwoMergeIterator::operator->() const {
   // current 缓存提供稳定地址 (同 SstIterator 的 cached_value 动机)
   // 为什么 operator* 不使用缓存而 operator-> 使用呢？
@@ -165,12 +169,14 @@ TwoMergeIterator::pointer TwoMergeIterator::operator->() const {
   //    一次堆分配 → 再 *current 拷出来
   //       没有必要
 
+  if (!is_valid())
+    throw std::runtime_error(
+        "TwoMergeIterator::operator->: cannot dereference this iterator");
   update_current();
   return current.get();
 }
 
-void TwoMergeIterator::update_current() const {
-  if (choose_a) {
+void TwoMergeIterator::update_current() const {  if (choose_a) {
     current = std::make_shared<value_type>(**it_a);
   } else {
     current = std::make_shared<value_type>(**it_b);

@@ -1,5 +1,6 @@
 #include "sst/concact_iterator.h"
 #include "sst/sst_iterator.h"
+#include <stdexcept>
 
 namespace tiny_lsm {
 
@@ -55,11 +56,17 @@ bool ConcactIterator::operator!=(const BaseIterator &other) const {
 
 // Lab 4.3 解引用运算符重载
 ConcactIterator::value_type ConcactIterator::operator*() const {
+  if (!is_valid())
+    throw std::runtime_error(
+        "ConcactIterator::operator*: cannot dereference this iterator");
   return *cur_iter;
 }
 
 // Lab 4.3 ->运算符重载
 ConcactIterator::pointer ConcactIterator::operator->() const {
+  if (!is_valid())
+    throw std::runtime_error(
+        "ConcactIterator::operator->: cannot dereference this iterator");
   return cur_iter.operator->();
 }
 

@@ -1,5 +1,6 @@
 #include "iterator/iterator.h"
 #include <memory>
+#include <stdexcept>
 #include <tuple>
 #include <vector>
 
@@ -74,12 +75,18 @@ HeapIterator::HeapIterator(std::vector<SearchItem> item_vec,
 
 HeapIterator::pointer HeapIterator::operator->() const {
   // Lab2.2 实现 -> 重载
+  if (!is_valid())
+    throw std::runtime_error(
+        "HeapIterator::operator->: cannot dereference this iterator");
   return current.get();
 }
 
 HeapIterator::value_type HeapIterator::operator*() const {
   // Lab2.2 实现 * 重载
   // 解引用缓存; value_type = pair<string, string>
+  if (!is_valid())
+    throw std::runtime_error(
+        "HeapIterator::operator*: cannot dereference this iterator");
   return *current;
 }
 

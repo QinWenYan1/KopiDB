@@ -82,7 +82,7 @@ int SkipList::random_level() {
   // ? - 每次有50%的概率增加一层
   // ? - 确保层数分布为：第1层100%，第2层50%，第3层25%，以此类推
   // ? - 层数范围限制在[1, max_level]之间，避免浪费内存
-  // TODO: Lab1.1 任务：插入时随机为这一次操作确定其最高连接的链表层数
+  // Lab1.1 任务：插入时随机为这一次操作确定其最高连接的链表层数
   int level = 1;
   // 每一次 50% 概率加一层，最多到 max_level
   while (dis_01(gen) && level < max_level) {
@@ -95,7 +95,7 @@ int SkipList::random_level() {
 void SkipList::put(const std::string &key, const std::string &value,
                    uint64_t tranc_id) {
   spdlog::trace("SkipList--put({}, {}, {})", key, value, tranc_id);
-  // TODO: Lab1.1 任务：实现插入或更新键值对
+  // Lab1.1 任务：实现插入或更新键值对
   // ? Hint: 你需要保证不同`Level`的步长从底层到高层逐渐增加
   // ? 你可能需要使用到`random_level`函数以确定层数, 其注释中为你提供一种思路
   // ? tranc_id 为事务id, 直接将其传递到 SkipListNode 的构造函数中即可
@@ -297,7 +297,7 @@ SkipListIterator SkipList::begin_preffix(const std::string &preffix) {
 
 // 找到前缀的终结位置
 SkipListIterator SkipList::end_preffix(const std::string &prefix) {
-  // TODO: Lab1.3 任务：实现前缀查询的终结位置
+  // Lab1.3 任务：实现前缀查询的终结位置
   // ? 找到第一个 key 不以 prefix 开头的节点作为终结位置
   // 1. 巧劲：构造 prefix 的"后继字符串"（末字符 +1）
   //    性质：所有以 prefix 开头的 key 都 < 后继；

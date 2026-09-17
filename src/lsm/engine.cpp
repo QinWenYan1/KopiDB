@@ -25,7 +25,7 @@ namespace tiny_lsm {
 
 // *********************** LSMEngine ***********************
 
-// TODO: Lab 4.2 引擎初始化
+// Lab 4.2 引擎初始化
 LSMEngine::LSMEngine(std::string path) : data_dir(path) {
   // 1. 初始化日志: init_spdlog_file()
   init_spdlog_file();
@@ -96,7 +96,7 @@ LSMEngine::LSMEngine(std::string path) : data_dir(path) {
 
 LSMEngine::~LSMEngine() = default;
 
-// TODO: Lab 4.2 查询
+// Lab 4.2 查询
 std::optional<std::pair<std::string, uint64_t>>
 LSMEngine::get(const std::string &key, uint64_t tranc_id) {
   // 1. 先查 memtable.get(key, tranc_id), 命中则返回 (value 非空) 或
@@ -115,7 +115,7 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id) {
   return sst_get_(key, tranc_id);
 }
 
-// TODO: Lab 4.2 批量查询
+// Lab 4.2 批量查询
 std::vector<
     std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
 LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
@@ -191,7 +191,7 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
   return results;
 }
 
-// TODO: Lab 4.2 sst 内部查询 (不查 memtable)
+// Lab 4.2 sst 内部查询 (不查 memtable)
 std::optional<std::pair<std::string, uint64_t>>
 LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
   // 不加锁: 约定调用方已持有 ssts_mtx (get 的读锁 / compact 的写锁)
@@ -250,7 +250,7 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
 
 }
 
-// TODO: Lab 4.1 插入
+// Lab 4.1 插入
 uint64_t LSMEngine::put(const std::string &key, const std::string &value,
                         uint64_t tranc_id) {
   spdlog::trace("LSMEngine::put({}, {}, tranc_id={})", key, value, tranc_id);
@@ -265,7 +265,7 @@ uint64_t LSMEngine::put(const std::string &key, const std::string &value,
   return 0;
 }
 
-// TODO: Lab 4.1 批量插入
+// Lab 4.1 批量插入
 uint64_t LSMEngine::put_batch(
     const std::vector<std::pair<std::string, std::string>> &kvs,
     uint64_t tranc_id) {
@@ -281,7 +281,7 @@ uint64_t LSMEngine::put_batch(
   return 0;
 }
 
-// TODO: Lab 4.1 删除
+// Lab 4.1 删除
 uint64_t LSMEngine::remove(const std::string &key, uint64_t tranc_id) {
   spdlog::trace("LSMEngine::remove({}, tranc_id={})", key, tranc_id);
   // LSM 的删除 = 插一个空值墓碑, 墓碑本体在 memtable.remove 里完成
@@ -294,7 +294,7 @@ uint64_t LSMEngine::remove(const std::string &key, uint64_t tranc_id) {
   return 0;
 }
 
-// TODO: Lab 4.1 批量删除
+// Lab 4.1 批量删除
 uint64_t LSMEngine::remove_batch(const std::vector<std::string> &keys,
                                  uint64_t tranc_id) {
   spdlog::trace("LSMEngine::remove_batch(tranc_id={})", tranc_id);
