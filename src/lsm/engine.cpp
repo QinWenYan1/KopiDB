@@ -487,7 +487,16 @@ LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
     // (keep_all_versions 模式下 get_tranc_id() 返回 entry 的真实 tranc_id)
     new_sst_builder.add(cur_key, (*iter).second, iter.get_tranc_id());
     ++iter; 
+
+    // 版本切分禁令:  
+    //  同 key 的不同版本不许被切到两个 SST
+    //  否则 L1+ 的相邻 SST key 区间重叠, find_block_idx 二分直接失效
+    //  注意判定发生在 ++iter 之后, 看的是"下一条"
+    bool next_is_same_key = 
+      iter.is_valid() && !iter.is_end() && (*iter).first == cur_key; 
   } 
+
+
 }
 
 size_t LSMEngine::get_sst_size(size_t level) {
