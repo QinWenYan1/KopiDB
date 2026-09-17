@@ -20,22 +20,24 @@ TwoMergeIterator::TwoMergeIterator(std::shared_ptr<BaseIterator> it_a,
 // TODO: Lab 4.4: 实现选择迭代器的逻辑
 bool TwoMergeIterator::choose_it_a() {
   // 一路耗尽, 无条件选另一路
-  if (it_a->is_end()) return false; 
-  if (it_b->is_end()) return true;
-  auto key_a = (**it_a).first; 
-  auto key_b = (**it_b).first; 
+  if (it_a->is_end())
+    return false;
+  if (it_b->is_end())
+    return true;
+  auto key_a = (**it_a).first;
+  auto key_b = (**it_b).first;
 
   // key 不同选小者: 归并的基本法
-  if (key_a != key_b) return key_a < key_b; 
+  if (key_a != key_b)
+    return key_a < key_b;
 
   // key 相同: keep_all_versions 模式选 tranc 大者 (版本降序,
   // compaction 重建 block 依赖这个序)
-  if (keep_all_versions_) 
-    return it_a->get_tranc_id() > it_b->get_tranc_id(); 
+  if (keep_all_versions_)
+    return it_a->get_tranc_id() > it_b->get_tranc_id();
 
   // 普通模式: 同 key 选 a (a 是更新的一路, 旧版本让 skip_it_b 沉掉)
-  return true; 
-  
+  return true;
 }
 
 void TwoMergeIterator::skip_it_b() {
@@ -52,16 +54,16 @@ void TwoMergeIterator::skip_by_tranc_id() {
   // max_tranc_id_ == 0: 无事务快照的普通读, 不过滤
   // (没有这句, keep_all_versions 模式下 tranc_id>0 的 entry 会被全跳光)
   if (max_tranc_id_ == 0)
-    return; 
+    return;
 
   // 同一 key 的版本按 tranc 降序聚在前头 -> 不可见版本一定堵在队首,
   // while 连续跳, 直到撞上可见版本或到底
-  while (it_a->get_tranc_id() > max_tranc_id_){
-    ++(*it_a); 
+  while (it_a->get_tranc_id() > max_tranc_id_) {
+    ++(*it_a);
   }
 
-  while (it_b->get_tranc_id() > max_tranc_id_){
-    ++(*it_b); 
+  while (it_b->get_tranc_id() > max_tranc_id_) {
+    ++(*it_b);
   }
 }
 
@@ -100,15 +102,15 @@ bool TwoMergeIterator::operator==(const BaseIterator &other) const {
 
 // TODO: Lab 4.4: 实现 != 重载
 bool TwoMergeIterator::operator!=(const BaseIterator &other) const {
-  return !operator==(other); 
+  return !operator==(other);
 }
 
 // TODO: Lab 4.4: 实现 * 重载
 BaseIterator::value_type TwoMergeIterator::operator*() const {
   if (choose_a)
-    return **it_a; 
+    return **it_a;
   else
-    return **it_b; 
+    return **it_b;
 }
 
 IteratorType TwoMergeIterator::get_type() const {
@@ -159,12 +161,12 @@ TwoMergeIterator::pointer TwoMergeIterator::operator->() const {
   // 为什么 operator* 不使用缓存而 operator-> 使用呢？
   //    1. operator* 返回 value_type（按值）
   //    2. operator-> 返回 pointer：被指的 pair 必须在函数返回后还活着
-  //    3. operator* 若走 current，得先 update_current() → make_shared 一次堆分配 → 再 *current 拷出来
+  //    3. operator* 若走 current，得先 update_current() → make_shared
+  //    一次堆分配 → 再 *current 拷出来
   //       没有必要
 
   update_current();
-  return current.get(); 
-  
+  return current.get();
 }
 
 void TwoMergeIterator::update_current() const {
