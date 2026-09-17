@@ -462,16 +462,32 @@ LSMEngine::full_common_compact(std::vector<size_t> &lx_ids,
   return {};
 }
 
+// TODO: Lab 4.5 实现从迭代器构造新的 SST
 std::vector<std::shared_ptr<SST>>
 LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
                              size_t target_level) {
-  // TODO: Lab 4.5 实现从迭代器构造新的 SST
-  // ? 循环从迭代器取 key-value 写入 SSTBuilder
   // ? 当 estimated_size >= target_sst_size 时 (注意不能在相同 key
   // 的不同版本之间切分) ?   调用 builder.build() 生成 SST 并重置 builder ?
   // 迭代结束后若 builder 非空则再次 build ? 注意: WiscKey 模式下需使用带 vlog
   // 参数的 SSTBuilder 构造函数
-  return {};
+  
+  std::vector<std::shared_ptr<SST>> new_ssts; 
+
+  // 0. WiscKey 分支照抄 flush(): 阈值 > 0 且 vlog_ 存在才走 vlog 模式
+  size_t wk = TomlConfig::getInstance().getWisckeyValueThreshold(); 
+  auto new_sst_builder = 
+    (wk > 0 && vlog_)
+      ? SSTBuilder(TomlConfig::getInstance().getLsmBlockSize(), true, vlog_, wk)
+      : SSTBuilder(TomlConfig::getInstance().getLsmBlockSize(), true); 
+
+  // 1. 循环从迭代器取 key-value 写入 SSTBuilder
+  while (iter.is_valid() && !iter.is_end()) {
+    std::string cur_key = (*iter).first; 
+    // 三件套: key / value / 真实版本号
+    // (keep_all_versions 模式下 get_tranc_id() 返回 entry 的真实 tranc_id)
+    new_sst_builder.add(cur_key, (*iter).second, iter.get_tranc_id());
+    ++iter; 
+  } 
 }
 
 size_t LSMEngine::get_sst_size(size_t level) {
