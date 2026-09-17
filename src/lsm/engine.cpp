@@ -494,6 +494,15 @@ LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
     //  注意判定发生在 ++iter 之后, 看的是"下一条"
     bool next_is_same_key = 
       iter.is_valid() && !iter.is_end() && (*iter).first == cur_key; 
+
+    
+    // 2. 到阈值且不在版本中间 -> 落盘一个 SST, 重置 builder
+    if (!next_is_same_key && new_sst_builder.estimated_size() >= target_sst_size) {
+      size_t sst_id = next_sst_id++; 
+      std::string sst_path = get_sst_path(sst_id, target_level); 
+      auto new_sst = new_sst_builder.build(sst_id, sst_path, block_cache);
+      new_ssts.push_back(new_sst);
+    }
   } 
 
 
