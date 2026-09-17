@@ -31,8 +31,22 @@ void TwoMergeIterator::skip_it_b() {
   }
 }
 
+// TODO: Lab 4.4: 根据事务可见性进行滤除的辅助函数
 void TwoMergeIterator::skip_by_tranc_id() {
-  // TODO: Lab 4.4: 实现更新缓存键值对的辅助函数
+  // max_tranc_id_ == 0: 无事务快照的普通读, 不过滤
+  // (没有这句, keep_all_versions 模式下 tranc_id>0 的 entry 会被全跳光)
+  if (max_tranc_id_ == 0)
+    return; 
+
+  // 同一 key 的版本按 tranc 降序聚在前头 -> 不可见版本一定堵在队首,
+  // while 连续跳, 直到撞上可见版本或到底
+  while (it_a->get_tranc_id() > max_tranc_id_){
+    ++(*it_a); 
+  }
+
+  while (it_b->get_tranc_id() > max_tranc_id_){
+    ++(*it_b); 
+  }
 }
 
 // TODO: Lab 4.4: 实现 ++ 重载
