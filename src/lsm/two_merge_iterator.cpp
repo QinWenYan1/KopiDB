@@ -17,9 +17,25 @@ TwoMergeIterator::TwoMergeIterator(std::shared_ptr<BaseIterator> it_a,
   choose_a = choose_it_a(); // 决定使用哪个迭代器
 }
 
+// TODO: Lab 4.4: 实现选择迭代器的逻辑
 bool TwoMergeIterator::choose_it_a() {
-  // TODO: Lab 4.4: 实现选择迭代器的逻辑
-  return false;
+  // 一路耗尽, 无条件选另一路
+  if (it_a->is_end()) return false; 
+  if (it_b->is_end()) return true;
+  auto key_a = (**it_a).first; 
+  auto key_b = (**it_b).first; 
+
+  // key 不同选小者: 归并的基本法
+  if (key_a != key_b) return key_a < key_b; 
+
+  // key 相同: keep_all_versions 模式选 tranc 大者 (版本降序,
+  // compaction 重建 block 依赖这个序)
+  if (keep_all_versions_) 
+    return it_a->get_tranc_id() > it_b->get_tranc_id(); 
+
+  // 普通模式: 同 key 选 a (a 是更新的一路, 旧版本让 skip_it_b 沉掉)
+  return true; 
+  
 }
 
 void TwoMergeIterator::skip_it_b() {
