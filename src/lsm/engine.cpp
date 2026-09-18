@@ -446,14 +446,10 @@ void LSMEngine::full_compact(size_t src_level) {
 
 }
 
+// TODO: Lab 4.5 负责完成 l0 和 l1 的 full compact
 std::vector<std::shared_ptr<SST>>
 LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
                               std::vector<size_t> &l1_ids) {
-  // TODO: Lab 4.5 负责完成 l0 和 l1 的 full compact
-  // ? L0 各 SST 的 key 有重叠, 需要先通过 SstIterator::merge_sst_iterator 合并
-  // ? 再用 TwoMergeIterator 与 L1 的 ConcactIterator 合并
-  // ? 最后调用 gen_sst_from_iter 生成新的 SST 文件 (目标大小 = PerMemSizeLimit
-  // * SstLevelRatio)
   std::vector<SstIterator> l0_iters; 
   std::vector<std::shared_ptr<SST>> l1_ssts; 
 
@@ -467,6 +463,7 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
     l1_ssts.push_back(ssts[id]); 
 
   // 2. 把 L0 所有 SST 的全部 entry 抽干，灌进一个大顶堆，得到一个全局有序的迭代器
+  //    L0 各 SST 的 key 有重叠, 需要先通过 SstIterator::merge_sst_iterator 合并
   //    ConcactIterator 的前提是本层 SST 有序不重叠（首尾相接直接拼）, L0 不满足
   //    堆内 SearchItem 的排序规则是 key 升序 → tranc_id 降序 → 还分不出 
   //    skip_delete=false 保墓碑;
@@ -478,14 +475,16 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
   std::shared_ptr<HeapIterator> l0_begin_ptr = std::make_shared<HeapIterator>(l0_begin); 
 
   // 4. L1 有序不重叠 -> ConcactIterator 直接串联
+  //    再用 TwoMergeIterator 与 L1 的 ConcactIterator 合并
   std::shared_ptr<ConcactIterator> old_l1_begin_ptr = 
     std::make_shared<ConcactIterator>(l1_ssts, 0, true); 
 
-  
-  // 5. a 路 = L0 堆 (较新), b 路 = L1
+  // 5. a 路 = L0 堆 (较新), b 路 = L1 
   TwoMergeIterator l0_l1_begin(l0_begin_ptr, old_l1_begin_ptr, 0, true);
 
   // 6. 目标大小 = PerMemSizeLimit * ratio, 即 get_sst_size(1)
+  //    最后调用 gen_sst_from_iter 生成新的 SST 文件 
+  //    目标大小 = PerMemSizeLimit * SstLevelRatio
   return gen_sst_from_iter(l0_l1_begin, TomlConfig::getInstance().getLsmPerMemSizeLimit()*TomlConfig::getInstance().getLsmSstLevelRatio(), 1); 
 
 }
