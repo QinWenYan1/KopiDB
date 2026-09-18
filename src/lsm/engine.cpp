@@ -440,8 +440,6 @@ Level_Iterator LSMEngine::end() {
 void LSMEngine::full_compact(size_t src_level) {
   // 锁纪律: 本函数不加锁, 调用方 (flush) 已持有 ssts_mtx 写锁
 
-  // ? 5. 更新 cur_max_level
-
   // 1. 递归判断下一级 level 是否需要 compact
   //    level_sst_ids[src_level+1].size() >= ratio
   if (level_sst_ids[src_level + 1].size() >= TomlConfig::getInstance().getLsmSstLevelRatio())
@@ -459,7 +457,7 @@ void LSMEngine::full_compact(size_t src_level) {
   std::vector<size_t> lx_ids(old_level_id_x.begin(), old_level_id_x.end()); 
   std::vector<size_t> ly_ids(old_level_id_y.begin(), old_level_id_y.end()); 
 
-  // 3. 根据 src_level 是否为 0 分别调用 full_l0_l1_compact 或 full_common_compact 
+  // 3. 根据 src_level 是否为 0 分别调用 full_l0_l1_compact 或 full_common_compact
   std::vector<std::shared_ptr<SST>> new_ssts; 
   if (src_level == 0)
     new_ssts = full_l0_l1_compact(lx_ids, ly_ids); 
@@ -491,6 +489,9 @@ void LSMEngine::full_compact(size_t src_level) {
     ssts[new_sst->get_sst_id()] = new_sst; 
   }
 
+  // Q: 为什么"按 id 排"就等价"按 key 排"?
+  // A: full_common_compact 和 full_l0_l1_compact 中的 gen_sst_from_iter 按 key 升序产出 SST（合并迭代器全局有序）
+  //    其中 gen_sst_from_iter 中 next_sst_id++ 全局单调递增 → 后生成的 SST id 一定更大
   std::sort(level_sst_ids[src_level + 1].begin(),
             level_sst_ids[src_level + 1].end()
   ); 
@@ -498,7 +499,9 @@ void LSMEngine::full_compact(size_t src_level) {
   spdlog::debug("LSMEngine--Compaction: Finished compaction. New SSTs added "
                 "at level{}",
                 src_level + 1);
-                
+
+  // 5. 更新最大层级
+  cur_max_level = (std::max)(cur_max_level, src_level+1); 
 }
 
 // TODO: Lab 4.5 负责完成 l0 和 l1 的 full compact
