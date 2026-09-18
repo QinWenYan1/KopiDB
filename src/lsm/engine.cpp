@@ -453,8 +453,6 @@ void LSMEngine::full_compact(size_t src_level) {
                 "to level{}",
                 src_level, src_level + 1); 
 
-  // 2. 根据 src_level 是否为 0 分别调用 full_l0_l1_compact 或 full_common_compact 
-  
   // 2. 拷出源层/目标层的 sst_id (deque -> vector)
   //    拷贝是因为: 子函数签名要 vector&; 且第 4 步要清空 deque,
   //    手里的旧 id 列表必须独立存活
@@ -463,6 +461,12 @@ void LSMEngine::full_compact(size_t src_level) {
   std::vector<size_t> lx_ids(old_level_id_x.begin(), old_level_id_x.end()); 
   std::vector<size_t> ly_ids(old_level_id_y.begin(), old_level_id_y.end()); 
 
+  // 3. 根据 src_level 是否为 0 分别调用 full_l0_l1_compact 或 full_common_compact 
+  std::vector<std::shared_ptr<SST>> new_ssts; 
+  if (src_level == 0)
+    new_ssts = full_l0_l1_compact(lx_ids, ly_ids); 
+  else
+    new_ssts = full_common_compact(lx_ids, ly_ids, src_level+1); 
 }
 
 // TODO: Lab 4.5 负责完成 l0 和 l1 的 full compact
