@@ -440,8 +440,7 @@ Level_Iterator LSMEngine::end() {
 void LSMEngine::full_compact(size_t src_level) {
   // 锁纪律: 本函数不加锁, 调用方 (flush) 已持有 ssts_mtx 写锁
 
-  //? 4. 将新的 SST 加入
-  // level_sst_ids[src_level+1] 并排序 ? 5. 更新 cur_max_level
+  // ? 5. 更新 cur_max_level
 
   // 1. 递归判断下一级 level 是否需要 compact
   //    level_sst_ids[src_level+1].size() >= ratio
@@ -481,9 +480,25 @@ void LSMEngine::full_compact(size_t src_level) {
   }
 
   level_sst_ids[src_level].clear();
-  level_sst_ids[src_level+1].clear();  
-   
+  level_sst_ids[src_level+1].clear();
+  
+  // 5. 将新的 SST 加入 level_sst_ids[src_level+1] 并排序
+  //    登记新 SST 并按 id 排序
+  //    为什么按 id 排 = 按 key 排: next_sst_id 单调递增, 且 gen_sst_from_iter
+  //    按 key 升序生成 -> id 序就是 key 序 (参考原话: "此处没必要reverse了")
+  for (auto &new_sst : new_ssts){
+    level_sst_ids[src_level+1].push_back(new_sst->get_sst_id());
+    ssts[new_sst->get_sst_id()] = new_sst; 
+  }
 
+  std::sort(level_sst_ids[src_level + 1].begin(),
+            level_sst_ids[src_level + 1].end()
+  ); 
+   
+  spdlog::debug("LSMEngine--Compaction: Finished compaction. New SSTs added "
+                "at level{}",
+                src_level + 1);
+                
 }
 
 // TODO: Lab 4.5 负责完成 l0 和 l1 的 full compact
