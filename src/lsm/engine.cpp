@@ -2,6 +2,7 @@
 #include "block/block_cache.h"
 #include "config/config.h"
 #include "consts.h"
+#include "iterator/iterator.h"
 #include "logger/logger.h"
 #include "lsm/level_iterator.h"
 #include "spdlog/spdlog.h"
@@ -463,6 +464,17 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
 
   for (auto id : l1_ids) 
     l1_ssts.push_back(ssts[id]); 
+
+  // 2. L0 各 SST 的 key 重叠 -> merge_sst_iterator 灌堆归并
+  //    堆内 -sst_id 决胜 (新 SST 赢); skip_delete=false 保墓碑;
+  //    value 已 resolve_value 解过 WiscKey 引用
+  auto [l0_begin, l0_end] = SstIterator::merge_sst_iterator(l0_iters, 0, true);
+
+  // 3. TwoMergeIterator 只收 shared_ptr<BaseIterator>,
+  //    而 merge_sst_iterator 给的是值 -> 堆上拷贝一份
+  std::shared_ptr<HeapIterator> l0_begin_ptr = std::make_shared<HeapIterator>(); 
+  *l0_begin_ptr = l0_begin; 
+
 
   
                   
