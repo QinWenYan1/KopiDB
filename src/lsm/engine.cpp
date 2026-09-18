@@ -433,13 +433,15 @@ Level_Iterator LSMEngine::end() {
   throw std::runtime_error("Not implemented");
 }
 
+// TODO: Lab 4.5 负责完成整个 full compact
 void LSMEngine::full_compact(size_t src_level) {
-  // TODO: Lab 4.5 负责完成整个 full compact
   // ? 1. 递归判断下一级 level 是否需要 compact
   // (level_sst_ids[src_level+1].size() >= ratio) ? 2. 根据 src_level 是否为 0
   // 分别调用 full_l0_l1_compact 或 full_common_compact ? 3. 删除旧 SST 文件并从
   // ssts/level_sst_ids 中移除记录 ? 4. 将新的 SST 加入
   // level_sst_ids[src_level+1] 并排序 ? 5. 更新 cur_max_level
+
+
 }
 
 std::vector<std::shared_ptr<SST>>
@@ -450,7 +452,20 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
   // ? 再用 TwoMergeIterator 与 L1 的 ConcactIterator 合并
   // ? 最后调用 gen_sst_from_iter 生成新的 SST 文件 (目标大小 = PerMemSizeLimit
   // * SstLevelRatio)
-  return {};
+  std::vector<SstIterator> l0_iters; 
+  std::vector<std::shared_ptr<SST>> l1_ssts; 
+
+  // 1. L0 每张表各开一个全版本迭代器
+  for (auto id : l0_ids){
+    auto sst_it = ssts[id]->begin(0, true);
+    l0_iters.push_back(sst_it); 
+  }
+
+  for (auto id : l1_ids) 
+    l1_ssts.push_back(ssts[id]); 
+
+  
+                  
 }
 
 std::vector<std::shared_ptr<SST>>
