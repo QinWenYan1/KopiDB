@@ -440,8 +440,7 @@ Level_Iterator LSMEngine::end() {
 void LSMEngine::full_compact(size_t src_level) {
   // 锁纪律: 本函数不加锁, 调用方 (flush) 已持有 ssts_mtx 写锁
 
-  // 2. 根据 src_level 是否为 0
-  // 分别调用 full_l0_l1_compact 或 full_common_compact ? 3. 删除旧 SST 文件并从
+  // 3. 删除旧 SST 文件并从
   // ssts/level_sst_ids 中移除记录 ? 4. 将新的 SST 加入
   // level_sst_ids[src_level+1] 并排序 ? 5. 更新 cur_max_level
 
@@ -453,6 +452,17 @@ void LSMEngine::full_compact(size_t src_level) {
   spdlog::debug("LSMEngine--Compaction: Starting full compaction from level{} "
                 "to level{}",
                 src_level, src_level + 1); 
+
+  // 2. 根据 src_level 是否为 0 分别调用 full_l0_l1_compact 或 full_common_compact 
+  
+  // 2. 拷出源层/目标层的 sst_id (deque -> vector)
+  //    拷贝是因为: 子函数签名要 vector&; 且第 4 步要清空 deque,
+  //    手里的旧 id 列表必须独立存活
+  auto old_level_id_x = level_sst_ids[src_level]; 
+  auto old_level_id_y = level_sst_ids[src_level+1];
+  std::vector<size_t> lx_ids(old_level_id_x.begin(), old_level_id_x.end()); 
+  std::vector<size_t> ly_ids(old_level_id_y.begin(), old_level_id_y.end()); 
+
 }
 
 // TODO: Lab 4.5 负责完成 l0 和 l1 的 full compact
