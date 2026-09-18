@@ -485,9 +485,9 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
   // 5. a 路 = L0 堆 (较新), b 路 = L1
   TwoMergeIterator l0_l1_begin(l0_begin_ptr, old_l1_begin_ptr, 0, true);
 
+  // 6. 目标大小 = PerMemSizeLimit * ratio, 即 get_sst_size(1)
+  return gen_sst_from_iter(l0_l1_begin, TomlConfig::getInstance().getLsmPerMemSizeLimit()*TomlConfig::getInstance().getLsmSstLevelRatio(), 1); 
 
-  
-                  
 }
 
 std::vector<std::shared_ptr<SST>>
