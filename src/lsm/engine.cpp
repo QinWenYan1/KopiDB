@@ -440,8 +440,7 @@ Level_Iterator LSMEngine::end() {
 void LSMEngine::full_compact(size_t src_level) {
   // 锁纪律: 本函数不加锁, 调用方 (flush) 已持有 ssts_mtx 写锁
 
-  // 3. 删除旧 SST 文件并从
-  // ssts/level_sst_ids 中移除记录 ? 4. 将新的 SST 加入
+  //? 4. 将新的 SST 加入
   // level_sst_ids[src_level+1] 并排序 ? 5. 更新 cur_max_level
 
   // 1. 递归判断下一级 level 是否需要 compact
@@ -467,6 +466,24 @@ void LSMEngine::full_compact(size_t src_level) {
     new_ssts = full_l0_l1_compact(lx_ids, ly_ids); 
   else
     new_ssts = full_common_compact(lx_ids, ly_ids, src_level+1); 
+
+  // 4. 删除旧 SST 文件并从 ssts/level_sst_ids 中移除记录
+  //    删旧: 磁盘文件 + ssts 映射 + 两层 deque
+  //    时机: compact 函数已返回 (合并迭代器全部析构), 此时删文件安全
+  for (auto &old_sst_id : old_level_id_x){
+    ssts[old_sst_id]->del_sst(); 
+    ssts.erase(old_sst_id); 
+  }
+
+  for (auto &old_sst_id:old_level_id_y){
+    ssts[old_sst_id]->del_sst(); 
+    ssts.erase(old_sst_id); 
+  }
+
+  level_sst_ids[src_level].clear();
+  level_sst_ids[src_level+1].clear();  
+   
+
 }
 
 // TODO: Lab 4.5 负责完成 l0 和 l1 的 full compact
