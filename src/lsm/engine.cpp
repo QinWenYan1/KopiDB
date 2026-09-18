@@ -199,57 +199,58 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
   // 不加锁: 约定调用方已持有 ssts_mtx (get 的读锁 / compact 的写锁)
 
   // 1. L0: 各 SST key 范围重叠, 逐个查; 队列头部 id 最大 = 最新, 先查
-  if(level_sst_ids.find(0) != level_sst_ids.end()){
-  
-    for (auto &sst_id : level_sst_ids[0]){
+  if (level_sst_ids.find(0) != level_sst_ids.end()) {
+
+    for (auto &sst_id : level_sst_ids[0]) {
       // 取出 sst 和 sst_it 一个一个查找
       // get_cur_tranc_id()：永远返回当前 entry 的真实写入 id
       // get_tranc_id()： 有条件——keep_all_versions_=true 时返回 entry 真实 id
       //                  false 时返回 max_tranc_id_，即构造时传入的查询 id
-      auto& sst = ssts[sst_id];
-      auto sst_it = sst->get(key, tranc_id); 
-      if(sst_it != sst->end()){
+      auto &sst = ssts[sst_id];
+      auto sst_it = sst->get(key, tranc_id);
+      if (sst_it != sst->end()) {
         // 空值 = 墓碑, 已删除, 不再往旧层查
         if (sst_it->second.empty())
-          return std::nullopt; 
+          return std::nullopt;
         return std::make_pair(sst_it->second, sst_it.get_tranc_id());
       }
     }
   }
 
   // 2. L1+: 每层内 SST 不重叠且按 key 有序, 二分定位唯一候选文件
-  for (size_t lvl = 1; lvl <= cur_max_level; ++ lvl){
-    if (level_sst_ids.find(lvl) == level_sst_ids.end()) continue; 
+  for (size_t lvl = 1; lvl <= cur_max_level; ++lvl) {
+    if (level_sst_ids.find(lvl) == level_sst_ids.end())
+      continue;
 
     const auto &id_list = level_sst_ids[lvl];
-    size_t left = 0, right = id_list.size(); 
-    
-    while ( left < right ){
-      size_t mid = (left + right)/2; 
+    size_t left = 0, right = id_list.size();
+
+    while (left < right) {
+      size_t mid = (left + right) / 2;
       auto &sst = ssts[id_list[mid]];
-      
-      // 找到目标 sst 
-      if (sst->get_first_key() <= key && key <= sst->get_last_key()){
-        auto sst_it = sst->get(key, tranc_id); 
-        //检查是否为有效 sst, 而不是尾后 sst
-        if (sst_it != sst->end()){
+
+      // 找到目标 sst
+      if (sst->get_first_key() <= key && key <= sst->get_last_key()) {
+        auto sst_it = sst->get(key, tranc_id);
+        // 检查是否为有效 sst, 而不是尾后 sst
+        if (sst_it != sst->end()) {
           // 被标记为墓碑了，直接返回空值
-          if (sst_it -> second.empty()) return std::nullopt;
+          if (sst_it->second.empty())
+            return std::nullopt;
           // 不是空，那么就是有效值，组装后返回
-          return std::make_pair(sst_it->second, sst_it.get_tranc_id()); 
+          return std::make_pair(sst_it->second, sst_it.get_tranc_id());
         }
         // 本层只有这一个文件可能含 key, 不在就换更旧的一层
-        break; 
-      }else if (sst->get_last_key() < key)
-        left = mid + 1; 
+        break;
+      } else if (sst->get_last_key() < key)
+        left = mid + 1;
       else
-        right = mid; 
+        right = mid;
     }
   }
 
   spdlog::trace("LSMEngine::sst_get_({}, {}): key not exist", key, tranc_id);
-  return std::nullopt; 
-
+  return std::nullopt;
 }
 
 // Lab 4.1 插入
@@ -442,52 +443,55 @@ void LSMEngine::full_compact(size_t src_level) {
   // ssts/level_sst_ids 中移除记录 ? 4. 将新的 SST 加入
   // level_sst_ids[src_level+1] 并排序 ? 5. 更新 cur_max_level
 
-  // 1. 递归判断下一级 level 是否需要 compact 
-  //    level_sst_ids[src_level+1].size() >= ratio 
-
+  // 1. 递归判断下一级 level 是否需要 compact
+  //    level_sst_ids[src_level+1].size() >= ratio
 }
 
 // TODO: Lab 4.5 负责完成 l0 和 l1 的 full compact
 std::vector<std::shared_ptr<SST>>
 LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
                               std::vector<size_t> &l1_ids) {
-  std::vector<SstIterator> l0_iters; 
-  std::vector<std::shared_ptr<SST>> l1_ssts; 
+  std::vector<SstIterator> l0_iters;
+  std::vector<std::shared_ptr<SST>> l1_ssts;
 
   // 1. L0 每张表各开一个全版本迭代器
-  for (auto id : l0_ids){
+  for (auto id : l0_ids) {
     auto sst_it = ssts[id]->begin(0, true);
-    l0_iters.push_back(sst_it); 
+    l0_iters.push_back(sst_it);
   }
 
-  for (auto id : l1_ids) 
-    l1_ssts.push_back(ssts[id]); 
+  for (auto id : l1_ids)
+    l1_ssts.push_back(ssts[id]);
 
-  // 2. 把 L0 所有 SST 的全部 entry 抽干，灌进一个大顶堆，得到一个全局有序的迭代器
+  // 2. 把 L0 所有 SST 的全部 entry
+  // 抽干，灌进一个大顶堆，得到一个全局有序的迭代器
   //    L0 各 SST 的 key 有重叠, 需要先通过 SstIterator::merge_sst_iterator 合并
   //    ConcactIterator 的前提是本层 SST 有序不重叠（首尾相接直接拼）, L0 不满足
-  //    堆内 SearchItem 的排序规则是 key 升序 → tranc_id 降序 → 还分不出 
+  //    堆内 SearchItem 的排序规则是 key 升序 → tranc_id 降序 → 还分不出
   //    skip_delete=false 保墓碑;
   //    value 已 resolve_value 解过 WiscKey 引用
   auto [l0_begin, l0_end] = SstIterator::merge_sst_iterator(l0_iters, 0, true);
 
   // 3. TwoMergeIterator 只收 shared_ptr<BaseIterator>,
   //    而 merge_sst_iterator 给的是值 -> 堆上拷贝一份
-  std::shared_ptr<HeapIterator> l0_begin_ptr = std::make_shared<HeapIterator>(l0_begin); 
+  std::shared_ptr<HeapIterator> l0_begin_ptr =
+      std::make_shared<HeapIterator>(l0_begin);
 
   // 4. L1 有序不重叠 -> ConcactIterator 直接串联
   //    再用 TwoMergeIterator 与 L1 的 ConcactIterator 合并
-  std::shared_ptr<ConcactIterator> old_l1_begin_ptr = 
-    std::make_shared<ConcactIterator>(l1_ssts, 0, true); 
+  std::shared_ptr<ConcactIterator> old_l1_begin_ptr =
+      std::make_shared<ConcactIterator>(l1_ssts, 0, true);
 
-  // 5. a 路 = L0 堆 (较新), b 路 = L1 
+  // 5. a 路 = L0 堆 (较新), b 路 = L1
   TwoMergeIterator l0_l1_begin(l0_begin_ptr, old_l1_begin_ptr, 0, true);
 
   // 6. 目标大小 = PerMemSizeLimit * ratio, 即 get_sst_size(1)
-  //    最后调用 gen_sst_from_iter 生成新的 SST 文件 
+  //    最后调用 gen_sst_from_iter 生成新的 SST 文件
   //    目标大小 = PerMemSizeLimit * SstLevelRatio
-  return gen_sst_from_iter(l0_l1_begin, TomlConfig::getInstance().getLsmPerMemSizeLimit()*TomlConfig::getInstance().getLsmSstLevelRatio(), 1); 
-
+  return gen_sst_from_iter(l0_l1_begin,
+                           TomlConfig::getInstance().getLsmPerMemSizeLimit() *
+                               TomlConfig::getInstance().getLsmSstLevelRatio(),
+                           1);
 }
 
 // TODO: Lab 4.5 负责完成其他相邻 level 的 full compact
@@ -496,98 +500,102 @@ LSMEngine::full_common_compact(std::vector<size_t> &lx_ids,
                                std::vector<size_t> &ly_ids, size_t level_y) {
 
   // 1. id -> SST handle
-  std::vector<std::shared_ptr<SST>> lx_ssts; 
-  std::vector<std::shared_ptr<SST>> ly_ssts; 
+  std::vector<std::shared_ptr<SST>> lx_ssts;
+  std::vector<std::shared_ptr<SST>> ly_ssts;
 
   for (auto id : lx_ids)
-    lx_ssts.push_back(ssts[id]); 
+    lx_ssts.push_back(ssts[id]);
   for (auto id : ly_ids)
     ly_ssts.push_back(ssts[id]);
 
   // 2. 两层内部都有序不重叠 -> 各用一个 ConcactIterator 串联整层
   //    tranc_id=0: compact 不做可见性过滤; keep_all_versions=true: 全版本保留
-  std::shared_ptr<ConcactIterator> old_lx_begin_ptr = 
-                                std::make_shared<ConcactIterator>(lx_ssts, 0, true); 
-  std::shared_ptr<ConcactIterator> old_ly_begin_ptr = 
-                                std::make_shared<ConcactIterator>(ly_ssts, 0, true); 
-  
+  std::shared_ptr<ConcactIterator> old_lx_begin_ptr =
+      std::make_shared<ConcactIterator>(lx_ssts, 0, true);
+  std::shared_ptr<ConcactIterator> old_ly_begin_ptr =
+      std::make_shared<ConcactIterator>(ly_ssts, 0, true);
+
   // 3. a 路 = lx (较新层, 同 key 时赢), b 路 = ly
   //    通过 TwoMergeIterator 合并后调用 gen_sst_from_iter
-  TwoMergeIterator lx_ly_begin(old_lx_begin_ptr, old_ly_begin_ptr, 0, true); 
-                              
-  // 4. 目标层单 SST 容量 = get_sst_size(level_y) = PerMemSizeLimit * ratio^level_y
-  return gen_sst_from_iter(lx_ly_begin, LSMEngine::get_sst_size(level_y), level_y); 
+  TwoMergeIterator lx_ly_begin(old_lx_begin_ptr, old_ly_begin_ptr, 0, true);
+
+  // 4. 目标层单 SST 容量 = get_sst_size(level_y) = PerMemSizeLimit *
+  // ratio^level_y
+  return gen_sst_from_iter(lx_ly_begin, LSMEngine::get_sst_size(level_y),
+                           level_y);
 }
 
 // TODO: Lab 4.5 实现从迭代器构造新的 SST
 std::vector<std::shared_ptr<SST>>
 LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
                              size_t target_level) {
-  // ? 当 estimated_size >= target_sst_size 时 (注意不能在相同 key
-  // 的不同版本之间切分) ?   调用 builder.build() 生成 SST 并重置 builder ?
-  // 迭代结束后若 builder 非空则再次 build ? 注意: WiscKey 模式下需使用带 vlog
   // 参数的 SSTBuilder 构造函数
-  
-  std::vector<std::shared_ptr<SST>> new_ssts; 
+
+  std::vector<std::shared_ptr<SST>> new_ssts;
 
   // 0. WiscKey 分支照抄 flush(): 阈值 > 0 且 vlog_ 存在才走 vlog 模式
-  size_t wk = TomlConfig::getInstance().getWisckeyValueThreshold(); 
-  auto new_sst_builder = 
-    (wk > 0 && vlog_)
-      ? SSTBuilder(TomlConfig::getInstance().getLsmBlockSize(), true, vlog_, wk)
-      : SSTBuilder(TomlConfig::getInstance().getLsmBlockSize(), true); 
+  //    注意: WiscKey 模式下需使用带 vlog
+  size_t wk = TomlConfig::getInstance().getWisckeyValueThreshold();
+  auto new_sst_builder =
+      (wk > 0 && vlog_)
+          ? SSTBuilder(TomlConfig::getInstance().getLsmBlockSize(), true, vlog_,
+                       wk)
+          : SSTBuilder(TomlConfig::getInstance().getLsmBlockSize(), true);
 
   // 1. 循环从迭代器取 key-value 写入 SSTBuilder
   while (iter.is_valid() && !iter.is_end()) {
-    std::string cur_key = (*iter).first; 
+    std::string cur_key = (*iter).first;
     // 三件套: key / value / 真实版本号
     // (keep_all_versions 模式下 get_tranc_id() 返回 entry 的真实 tranc_id)
     new_sst_builder.add(cur_key, (*iter).second, iter.get_tranc_id());
-    ++iter; 
+    ++iter;
 
-    // 版本切分禁令:  
+    // 版本切分禁令:
     //  同 key 的不同版本不许被切到两个 SST
     //    否则 L1+ 相邻 SST 的 [first_key,last_key] 在边界 key 处重叠,
     //    engine 点查每层只二分命中一个候选 SST -> 老快照读漏版本
-    bool next_is_same_key = 
-      iter.is_valid() && !iter.is_end() && (*iter).first == cur_key; 
+    bool next_is_same_key =
+        iter.is_valid() && !iter.is_end() && (*iter).first == cur_key;
 
-    
     // 2. 到阈值且不在版本中间 -> 落盘一个 SST, 重置 builder
-    if (!next_is_same_key && new_sst_builder.estimated_size() >= target_sst_size) {
-      size_t sst_id = next_sst_id++; 
-      std::string sst_path = get_sst_path(sst_id, target_level); 
+    //    当 estimated_size >= target_sst_size 时 (注意不能在相同 key 的不同版本之间切分) 
+    if (!next_is_same_key &&
+        new_sst_builder.estimated_size() >= target_sst_size) {
+      size_t sst_id = next_sst_id++;
+      std::string sst_path = get_sst_path(sst_id, target_level);
       auto new_sst = new_sst_builder.build(sst_id, sst_path, block_cache);
       new_ssts.push_back(new_sst);
 
-      spdlog::debug("LSMEngine--Compaction: Generated new SST file with sst_id={} at "
-        "level{}",
-        sst_id, 
-        target_level);
-      
-      // 重置 builder
-      new_sst_builder = (wk > 0 && vlog_)
-      ? SSTBuilder(TomlConfig::getInstance().getLsmBlockSize(), true, vlog_, wk)
-      : SSTBuilder(TomlConfig::getInstance().getLsmBlockSize(), true); 
+      spdlog::debug(
+          "LSMEngine--Compaction: Generated new SST file with sst_id={} at "
+          "level{}",
+          sst_id, target_level);
+
+      // 调用 builder.build() 生成 SST 之后并重置 builder 
+      // 迭代结束后若 builder 非空则再次 build 
+      new_sst_builder =
+          (wk > 0 && vlog_)
+              ? SSTBuilder(TomlConfig::getInstance().getLsmBlockSize(), true,
+                           vlog_, wk)
+              : SSTBuilder(TomlConfig::getInstance().getLsmBlockSize(), true);
     }
-  } 
+  }
 
   // 3. 收尾: builder 里还有没落盘的数据 -> 再 build 一个
   //    real_size() = 已完成的 block + 进行中的 block, 比 estimated_size 更全
   if (new_sst_builder.real_size() > 0) {
-    size_t sst_id = next_sst_id ++; 
-    std::string sst_path = get_sst_path(sst_id, target_level); 
-      auto new_sst = new_sst_builder.build(sst_id, sst_path, block_cache);
-      new_ssts.push_back(new_sst);
+    size_t sst_id = next_sst_id++;
+    std::string sst_path = get_sst_path(sst_id, target_level);
+    auto new_sst = new_sst_builder.build(sst_id, sst_path, block_cache);
+    new_ssts.push_back(new_sst);
 
-      spdlog::debug("LSMEngine--Compaction: Generated new SST file with sst_id={} at "
+    spdlog::debug(
+        "LSMEngine--Compaction: Generated new SST file with sst_id={} at "
         "level{}",
-        sst_id, 
-        target_level);
+        sst_id, target_level);
   }
 
-  return new_ssts; 
-
+  return new_ssts;
 }
 
 size_t LSMEngine::get_sst_size(size_t level) {
