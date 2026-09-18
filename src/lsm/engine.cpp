@@ -465,15 +465,20 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
   for (auto id : l1_ids) 
     l1_ssts.push_back(ssts[id]); 
 
-  // 2. L0 各 SST 的 key 重叠 -> merge_sst_iterator 灌堆归并
-  //    堆内 -sst_id 决胜 (新 SST 赢); skip_delete=false 保墓碑;
+  // 2. 把 L0 所有 SST 的全部 entry 抽干，灌进一个大顶堆，得到一个全局有序的迭代器
+  //    ConcactIterator 的前提是本层 SST 有序不重叠（首尾相接直接拼）, L0 不满足
+  //    堆内 SearchItem 的排序规则是 key 升序 → tranc_id 降序 → 还分不出 
+  //    skip_delete=false 保墓碑;
   //    value 已 resolve_value 解过 WiscKey 引用
   auto [l0_begin, l0_end] = SstIterator::merge_sst_iterator(l0_iters, 0, true);
 
   // 3. TwoMergeIterator 只收 shared_ptr<BaseIterator>,
   //    而 merge_sst_iterator 给的是值 -> 堆上拷贝一份
-  std::shared_ptr<HeapIterator> l0_begin_ptr = std::make_shared<HeapIterator>(); 
-  *l0_begin_ptr = l0_begin; 
+  std::shared_ptr<HeapIterator> l0_begin_ptr = std::make_shared<HeapIterator>(l0_begin); 
+
+  // 4. L1 有序不重叠 -> ConcactIterator 直接串联
+  std::shared_ptr<ConcactIterator> old_l1_begin_ptr = 
+    std::make_shared<ConcactIterator>(l1_ssts, 0, true); 
 
 
   
