@@ -437,12 +437,13 @@ Level_Iterator LSMEngine::end() {
 
 // TODO: Lab 4.5 负责完成整个 full compact
 void LSMEngine::full_compact(size_t src_level) {
-  // ? 1. 递归判断下一级 level 是否需要 compact
-  // (level_sst_ids[src_level+1].size() >= ratio) ? 2. 根据 src_level 是否为 0
+  // 2. 根据 src_level 是否为 0
   // 分别调用 full_l0_l1_compact 或 full_common_compact ? 3. 删除旧 SST 文件并从
   // ssts/level_sst_ids 中移除记录 ? 4. 将新的 SST 加入
   // level_sst_ids[src_level+1] 并排序 ? 5. 更新 cur_max_level
 
+  // 1. 递归判断下一级 level 是否需要 compact 
+  //    level_sst_ids[src_level+1].size() >= ratio 
 
 }
 
@@ -489,13 +490,22 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
 
 }
 
+// TODO: Lab 4.5 负责完成其他相邻 level 的 full compact
 std::vector<std::shared_ptr<SST>>
 LSMEngine::full_common_compact(std::vector<size_t> &lx_ids,
                                std::vector<size_t> &ly_ids, size_t level_y) {
-  // TODO: Lab 4.5 负责完成其他相邻 level 的 full compact
-  // ? Lx 和 Ly 都是有序不重叠的 SST, 直接用 ConcactIterator 遍历
   // ? 通过 TwoMergeIterator 合并后调用 gen_sst_from_iter
-  return {};
+
+  // Lx 和 Ly 都是有序不重叠的 SST, 直接用 ConcactIterator 遍历
+
+  // 1. id -> SST handle
+  std::vector<std::shared_ptr<SST>> lx_ssts; 
+  std::vector<std::shared_ptr<SST>> ly_ssts; 
+
+  for (auto id : lx_ids)
+    lx_ssts.push_back(ssts[id]); 
+  for (auto id : ly_ids)
+    ly_ssts.push_back(ssts[id]);
 }
 
 // TODO: Lab 4.5 实现从迭代器构造新的 SST
