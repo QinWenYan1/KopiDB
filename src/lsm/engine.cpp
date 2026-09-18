@@ -506,6 +506,17 @@ LSMEngine::full_common_compact(std::vector<size_t> &lx_ids,
     lx_ssts.push_back(ssts[id]); 
   for (auto id : ly_ids)
     ly_ssts.push_back(ssts[id]);
+
+  // 2. 两层内部都有序不重叠 -> 各用一个 ConcactIterator 串联整层
+  //    tranc_id=0: compact 不做可见性过滤; keep_all_versions=true: 全版本保留
+  std::shared_ptr<ConcactIterator> old_lx_begin_ptr = 
+                                std::make_shared<ConcactIterator>(lx_ssts, 0, true); 
+  std::shared_ptr<ConcactIterator> old_ly_begin_ptr = 
+                                std::make_shared<ConcactIterator>(ly_ssts, 0, true); 
+  
+  // 3. a 路 = lx (较新层, 同 key 时赢), b 路 = ly
+  TwoMergeIterator lx_ly_begin(old_lx_begin_ptr, old_ly_begin_ptr, 0, true); 
+  
 }
 
 // TODO: Lab 4.5 实现从迭代器构造新的 SST
