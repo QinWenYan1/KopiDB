@@ -494,9 +494,6 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
 std::vector<std::shared_ptr<SST>>
 LSMEngine::full_common_compact(std::vector<size_t> &lx_ids,
                                std::vector<size_t> &ly_ids, size_t level_y) {
-  // ? 通过 TwoMergeIterator 合并后调用 gen_sst_from_iter
-
-  // Lx 和 Ly 都是有序不重叠的 SST, 直接用 ConcactIterator 遍历
 
   // 1. id -> SST handle
   std::vector<std::shared_ptr<SST>> lx_ssts; 
@@ -515,8 +512,11 @@ LSMEngine::full_common_compact(std::vector<size_t> &lx_ids,
                                 std::make_shared<ConcactIterator>(ly_ssts, 0, true); 
   
   // 3. a 路 = lx (较新层, 同 key 时赢), b 路 = ly
+  //    通过 TwoMergeIterator 合并后调用 gen_sst_from_iter
   TwoMergeIterator lx_ly_begin(old_lx_begin_ptr, old_ly_begin_ptr, 0, true); 
-  
+                              
+  // 4. 目标层单 SST 容量 = get_sst_size(level_y) = PerMemSizeLimit * ratio^level_y
+  return gen_sst_from_iter(lx_ly_begin, LSMEngine::get_sst_size(level_y), level_y); 
 }
 
 // TODO: Lab 4.5 实现从迭代器构造新的 SST
