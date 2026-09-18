@@ -436,8 +436,10 @@ Level_Iterator LSMEngine::end() {
   throw std::runtime_error("Not implemented");
 }
 
-// TODO: Lab 4.5 负责完成整个 full compact
+// Lab 4.5 整个 full compact: 将 src_level 的 sst 全体压缩到 src_level + 1
 void LSMEngine::full_compact(size_t src_level) {
+  // 锁纪律: 本函数不加锁, 调用方 (flush) 已持有 ssts_mtx 写锁
+
   // 2. 根据 src_level 是否为 0
   // 分别调用 full_l0_l1_compact 或 full_common_compact ? 3. 删除旧 SST 文件并从
   // ssts/level_sst_ids 中移除记录 ? 4. 将新的 SST 加入
@@ -445,6 +447,12 @@ void LSMEngine::full_compact(size_t src_level) {
 
   // 1. 递归判断下一级 level 是否需要 compact
   //    level_sst_ids[src_level+1].size() >= ratio
+  if (level_sst_ids[src_level + 1].size() >= TomlConfig::getInstance().getLsmSstLevelRatio())
+    full_compact(src_level + 1); 
+
+  spdlog::debug("LSMEngine--Compaction: Starting full compaction from level{} "
+                "to level{}",
+                src_level, src_level + 1); 
 }
 
 // TODO: Lab 4.5 负责完成 l0 和 l1 的 full compact
