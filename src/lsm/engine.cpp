@@ -515,8 +515,21 @@ LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
     }
   } 
 
-  
+  // 3. 收尾: builder 里还有没落盘的数据 -> 再 build 一个
+  //    real_size() = 已完成的 block + 进行中的 block, 比 estimated_size 更全
+  if (new_sst_builder.real_size() > 0) {
+    size_t sst_id = next_sst_id ++; 
+    std::string sst_path = get_sst_path(sst_id, target_level); 
+      auto new_sst = new_sst_builder.build(sst_id, sst_path, block_cache);
+      new_ssts.push_back(new_sst);
 
+      spdlog::debug("LSMEngine--Compaction: Generated new SST file with sst_id={} at "
+        "level{}",
+        sst_id, 
+        target_level);
+  }
+
+  return new_ssts; 
 
 }
 
