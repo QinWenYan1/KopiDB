@@ -5,6 +5,7 @@
 #include "iterator/iterator.h"
 #include "logger/logger.h"
 #include "lsm/level_iterator.h"
+#include "lsm/two_merge_iterator.h"
 #include "spdlog/spdlog.h"
 #include "sst/concact_iterator.h"
 #include "sst/sst.h"
@@ -479,6 +480,10 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
   // 4. L1 有序不重叠 -> ConcactIterator 直接串联
   std::shared_ptr<ConcactIterator> old_l1_begin_ptr = 
     std::make_shared<ConcactIterator>(l1_ssts, 0, true); 
+
+  
+  // 5. a 路 = L0 堆 (较新), b 路 = L1
+  TwoMergeIterator l0_l1_begin(l0_begin_ptr, old_l1_begin_ptr, 0, true);
 
 
   
