@@ -1,4 +1,5 @@
 #include "lsm/level_iterator.h"
+#include "iterator/iterator.h"
 #include "lsm/engine.h"
 #include "sst/concact_iterator.h"
 #include "sst/sst.h"
@@ -26,6 +27,11 @@ Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
   // 它在 iter_vec 里的下标是 0: 下标越靠前代表数据越新,
   // 后面同一个 key 出现在多路来源时, 下标小的赢
   // (memtable 的数据最新, 理应排最前)。
+  auto mem_iter = engine_->memtable.begin(max_tranc_id);
+  // 按值拷进堆上对象 (shared_ptr 只能管理堆对象)
+  std::shared_ptr<HeapIterator> mem_iter_ptr = std::make_shared<HeapIterator>(mem_iter);
+  iter_vec.push_back(mem_iter_ptr); 
+
 
 }
 
