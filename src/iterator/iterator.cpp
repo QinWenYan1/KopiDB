@@ -77,6 +77,7 @@ HeapIterator::pointer HeapIterator::operator->() const {
   if (!is_valid())
     throw std::runtime_error(
         "HeapIterator::operator->: cannot dereference this iterator");
+  update_current(); 
   return current.get();
 }
 
@@ -86,7 +87,10 @@ HeapIterator::value_type HeapIterator::operator*() const {
   if (!is_valid())
     throw std::runtime_error(
         "HeapIterator::operator*: cannot dereference this iterator");
-  return *current;
+  
+  // Q: 这里为什么不使用 update_current; *current; 
+  // A: 使用 update_current 的话多一次 make_shared 堆分配，再把同一个 pair 从停车位拷出来
+  return std::make_pair(items.top().key_, items.top().value_);
 }
 
 BaseIterator &HeapIterator::operator++() {
