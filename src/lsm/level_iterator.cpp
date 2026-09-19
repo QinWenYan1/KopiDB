@@ -70,6 +70,30 @@ Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
     iter_vec.push_back(std::make_shared<ConcactIterator>(ssts, max_tranc_id_)); 
   }
 
+  // ===== 收尾: 把迭代器停到第一个"活着的" key 上 =====
+  // 刚组装好时, 全局最小 key 已经可以算出来, 但有个坑:
+  //   它的最新版本可能是"墓碑" (value 是空串, 表示这个 key 已被删除)。
+  //   墓碑不该被查询方看到, 所以循环处理:
+  //   算出当前最小 key -> 是墓碑就把这个 key 在所有来源里的副本全部越过
+  //   -> 再算下一个, 直到撞上活 key, 或者所有来源都耗尽 (= end 状态)。
+  while (!is_end()) {
+
+    // 哪一路来源的头部 key 最小
+    auto [min_idx, _] = get_min_key_idx(); 
+    cur_idx_ = min_idx; 
+    // 把这条 key-value 读进缓存 cached_value
+    update_current(); 
+
+    // 空 value = 墓碑
+    if (cached_value->second.empty()){
+      // 所有来源的同 key 副本一起越过
+      skip_key(cached_value->first); 
+      continue; 
+    }
+    // 找到活 key, 构造完成
+    break; 
+    
+  }
 
 }
 
