@@ -101,7 +101,8 @@ BaseIterator &HeapIterator::operator++() {
   // 1. 当前 key 消费完毕：弹出堆顶 + 连同 key 旧版本（去重）
   std::string key = items.top().key_;
   items.pop();
-  while (!items.empty() && items.top().key_ == key)
+
+  while (!keep_all_versions_ && !items.empty() && items.top().key_ == key)
     // 下面还压着同 key 的旧版本，一并跳过
     items.pop();
 
