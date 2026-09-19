@@ -165,11 +165,6 @@ void SkipList::put(const std::string &key, const std::string &value,
 SkipListIterator SkipList::get(const std::string &key, uint64_t tranc_id) {
   spdlog::trace("SkipList--get({}) called", key);
 
-  // 实现查找键值对
-  // ? 从最高层开始向下查找, 最终在底层确认 key 是否存在
-  // ? 若 tranc_id == 0, 直接比较 key 返回; 否则需满足事务可见性 (tranc_id_ <=
-  // tranc_id)
-
   // 1. 找：下楼梯，只比 key（落在"该 key 的最新版本"跟前）
   auto current = head;
   for (int lvl = current_level - 1; lvl >= 0; --lvl) {
