@@ -169,7 +169,6 @@ SkipListIterator SkipList::get(const std::string &key, uint64_t tranc_id) {
   // ? 从最高层开始向下查找, 最终在底层确认 key 是否存在
   // ? 若 tranc_id == 0, 直接比较 key 返回; 否则需满足事务可见性 (tranc_id_ <=
   // tranc_id)
-  // 完成查找后还需要额外实现SkipListIterator中的TODO部分(Lab1.2)
 
   // 1. 找：下楼梯，只比 key（落在"该 key 的最新版本"跟前）
   auto current = head;

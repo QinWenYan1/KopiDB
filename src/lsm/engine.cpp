@@ -504,7 +504,7 @@ void LSMEngine::full_compact(size_t src_level) {
   cur_max_level = (std::max)(cur_max_level, src_level+1); 
 }
 
-// TODO: Lab 4.5 负责完成 l0 和 l1 的 full compact
+// 负责完成 l0 和 l1 的 full compact
 std::vector<std::shared_ptr<SST>>
 LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
                               std::vector<size_t> &l1_ids) {
@@ -551,7 +551,7 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
                            1);
 }
 
-// TODO: Lab 4.5 负责完成其他相邻 level 的 full compact
+// Lab 4.5 负责完成其他相邻 level 的 full compact
 std::vector<std::shared_ptr<SST>>
 LSMEngine::full_common_compact(std::vector<size_t> &lx_ids,
                                std::vector<size_t> &ly_ids, size_t level_y) {
@@ -582,7 +582,7 @@ LSMEngine::full_common_compact(std::vector<size_t> &lx_ids,
                            level_y);
 }
 
-// TODO: Lab 4.5 实现从迭代器构造新的 SST
+// Lab 4.5 实现从迭代器构造新的 SST
 std::vector<std::shared_ptr<SST>>
 LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
                              size_t target_level) {
