@@ -53,7 +53,7 @@ Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
       //   堆里同一个 key 撞车时, idx 小的先弹出来。
       //   sst_id 越大文件越新, 加负号后反而越小 -> 新文件的条目先出来。
       //   效果: 同一个 key 在两张 L0 表里都有时, 更新的那张赢。
-      item_vec.emplace_back(iter.key(), iter.value(), -sst_id, 0, iter.get_tranc_id()); 
+      item_vec.emplace_back(iter.key(), iter.value(), -sst_id, 0, iter.get_cur_tranc_id()); 
     }
   }
   std::shared_ptr<HeapIterator> l0_iter_ptr = 
