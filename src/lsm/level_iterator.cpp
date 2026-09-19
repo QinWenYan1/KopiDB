@@ -43,12 +43,8 @@ Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
     auto sst = engine_->ssts[sst_id]; 
     for (auto iter = sst->begin(max_tranc_id_); 
         iter.is_valid() && !iter.is_end(); ++iter){
-      // 事务模式: 这个版本比读者的快照还新, 不该被看到, 跳过
-      // (补充: 这行是"双保险", 真正的版本过滤在 BlockIterator 里已做过;
-      //  本地 get_tranc_id() 此时返回的是快照 id 本身, 本行实际不触发,
-      //  去留已挂账, Lab 5 之后再定夺)
-      if (max_tranc_id_ != 0 && iter.get_cur_tranc_id() > max_tranc_id_) continue; 
-
+      // 事务模式: 真正的版本过滤在 BlockIterator 里已做过，我们不用再手动做
+    
       // SearchItem 第 3 个参数 idx 填 -sst_id, 是个负号小技巧:
       //   堆里同一个 key 撞车时, idx 小的先弹出来。
       //   sst_id 越大文件越新, 加负号后反而越小 -> 新文件的条目先出来。
@@ -59,6 +55,20 @@ Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
   std::shared_ptr<HeapIterator> l0_iter_ptr = 
     std::make_shared<HeapIterator>(item_vec, max_tranc_id); 
   iter_vec.push_back(l0_iter_ptr);
+
+  // ===== 第 3 路来源: L1 及更深层, 每层一个 ConcactIterator =====
+  // L1+ 经过 compact 整理: 同层各 SST 的 key 范围有序且不重叠,
+  // 所以每层只要一个 ConcactIterator 把各张表首尾相接串起来, 不用堆。
+  // 有几层就装几个 —— 这也是教程"Compact 之后才有 Level"的代码体现:
+  // compact 之前 level_sst_ids 里只有第 0 层, 这个循环一次都不会执行。
+  for (auto &[level, sst_id_list] : engine_->level_sst_ids) {
+    if (level == 0) continue; 
+
+    std::vector<std::shared_ptr<SST>> ssts; 
+    for (auto sst_id : sst_id_list)
+      ssts.push_back(engine_->ssts[sst_id]); 
+    iter_vec.push_back(std::make_shared<ConcactIterator>(ssts, max_tranc_id_)); 
+  }
 
 
 }
