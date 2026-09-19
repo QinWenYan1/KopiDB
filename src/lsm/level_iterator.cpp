@@ -27,10 +27,38 @@ Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
   // 它在 iter_vec 里的下标是 0: 下标越靠前代表数据越新,
   // 后面同一个 key 出现在多路来源时, 下标小的赢
   // (memtable 的数据最新, 理应排最前)。
-  auto mem_iter = engine_->memtable.begin(max_tranc_id);
+  auto mem_iter = engine_->memtable.begin(max_tranc_id_);
   // 按值拷进堆上对象 (shared_ptr 只能管理堆对象)
   std::shared_ptr<HeapIterator> mem_iter_ptr = std::make_shared<HeapIterator>(mem_iter);
   iter_vec.push_back(mem_iter_ptr); 
+
+  // ===== 第 2 路来源: L0 整层, 全部条目灌进一个堆 =====
+  // 为什么 L0 不能像 L1+ 那样用 ConcactIterator 直接拼接?
+  //   拼接的前提是"同层各 SST 的 key 范围互不重叠"。
+  //   L0 不满足: 每次 flush 直接产一张新表, 表与表的 key 范围随意重叠。
+  // 所以换办法: 把 L0 每张表的所有条目全读出来塞进堆里,
+  //   堆每次自动弹出当前最小的 key, 相当于替我们做好了全局排序。
+  std::vector<SearchItem> item_vec; 
+  for (auto &sst_id : engine_->level_sst_ids[0]) {
+    auto sst = engine_->ssts[sst_id]; 
+    for (auto iter = sst->begin(max_tranc_id_); 
+        iter.is_valid() && !iter.is_end(); ++iter){
+      // 事务模式: 这个版本比读者的快照还新, 不该被看到, 跳过
+      // (补充: 这行是"双保险", 真正的版本过滤在 BlockIterator 里已做过;
+      //  本地 get_tranc_id() 此时返回的是快照 id 本身, 本行实际不触发,
+      //  去留已挂账, Lab 5 之后再定夺)
+      if (max_tranc_id_ != 0 && iter.get_cur_tranc_id() > max_tranc_id_) continue; 
+
+      // SearchItem 第 3 个参数 idx 填 -sst_id, 是个负号小技巧:
+      //   堆里同一个 key 撞车时, idx 小的先弹出来。
+      //   sst_id 越大文件越新, 加负号后反而越小 -> 新文件的条目先出来。
+      //   效果: 同一个 key 在两张 L0 表里都有时, 更新的那张赢。
+      item_vec.emplace_back(iter.key(), iter.value(), -sst_id, 0, iter.get_tranc_id()); 
+    }
+  }
+  std::shared_ptr<HeapIterator> l0_iter_ptr = 
+    std::make_shared<HeapIterator>(item_vec, max_tranc_id); 
+  iter_vec.push_back(l0_iter_ptr);
 
 
 }
