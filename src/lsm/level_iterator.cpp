@@ -5,6 +5,7 @@
 #include "sst/sst.h"
 #include <memory>
 #include <shared_mutex>
+#include <stdexcept>
 #include <string>
 
 // Lab 4.6 Level_Iterator 初始化
@@ -206,14 +207,25 @@ bool Level_Iterator::operator==(const BaseIterator &other) const {
 
 }
 
+// Lab 4.6 * 重载
 BaseIterator::value_type Level_Iterator::operator*() const {
-  // TODO: Lab 4.6 * 重载
-  return {};
+  // end 没有当前元素，不能解引用。
+  if (!is_valid())
+    throw std::runtime_error(
+    "Level_Iterator::operator*: cannot dereference end iterator");
+  
+  // cur_idx_ 已由构造函数或 ++ 选好，指向当前应输出的数据来源。
+  //
+  // 第一个 *：解引用 shared_ptr，得到 BaseIterator 对象；
+  // 第二个 *：调用该对象的 operator*，取得 key-value。
+  //
+  // 返回类型是 value_type，按值返回，不需要为它准备长期存活的缓存。
+  return **iter_vec[cur_idx_]; 
 }
 
+// Lab 4.6 -> 重载
 BaseIterator::pointer Level_Iterator::operator->() const {
-  // TODO: Lab 4.6 -> 重载
-  return nullptr;
+  
 }
 
 IteratorType Level_Iterator::get_type() const {
