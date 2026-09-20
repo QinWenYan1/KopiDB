@@ -114,8 +114,18 @@ std::pair<size_t, std::string> Level_Iterator::get_min_key_idx() const {
       // 更小的 key 出现了, 更新冠军
       // 注意是严格小于: 同 key 时不换冠军, "先到先留" ->
       // iter_vec 下标小的 (更新的来源) 天然赢
+
+      min_key = key; 
+      min_idx = i; 
+    }else if (key == min_key && max_tranc_id_ != 0 && iter_vec[i]->get_tranc_id() > iter_vec[min_idx]->get_tranc_id()) {
+      // 同 key 两路都有: 版本号大的 (更新的) 赢
+      // (实际上各来源此时 get_tranc_id() 都返回快照 id, 很难触发;
+      // 真正的决胜靠上面那句"先到先留")
+
+      min_idx =i; 
     }
   }
+  return {min_idx, min_key}; 
 }
 
 void Level_Iterator::skip_key(const std::string &key) {
