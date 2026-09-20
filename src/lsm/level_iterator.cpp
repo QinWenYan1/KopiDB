@@ -92,14 +92,30 @@ Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
     }
     // 找到活 key, 构造完成
     break; 
-    
+
   }
 
 }
 
+// TODO: Lab 4.6 获取当前 key 最小的迭代器在 iter_vec 中的索引和具体的 key
+// 返回: (那一路在 iter_vec 里的下标, 最小 key 本身)
+// 这是归并的核心动作: 每一步都从所有来源的头部里挑最小的吐出去
 std::pair<size_t, std::string> Level_Iterator::get_min_key_idx() const {
-  // TODO: Lab 4.6 获取当前 key 最小的迭代器在 iter_vec 中的索引和具体的 key
-  return {};
+  size_t min_idx = 0; 
+
+  // 空串当"还没找到"的哨兵 (正常 key 不会为空)
+  std::string min_key; 
+  for (size_t i = 0; i < iter_vec.size(); ++i){
+    // 这路来源已耗尽, 不参与比较
+    if (!iter_vec[i]->is_valid()) continue; 
+
+    auto key = (**iter_vec[i]).first; 
+    if (min_key.empty() || key < min_key ){
+      // 更小的 key 出现了, 更新冠军
+      // 注意是严格小于: 同 key 时不换冠军, "先到先留" ->
+      // iter_vec 下标小的 (更新的来源) 天然赢
+    }
+  }
 }
 
 void Level_Iterator::skip_key(const std::string &key) {
