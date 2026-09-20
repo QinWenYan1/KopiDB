@@ -134,15 +134,22 @@ std::pair<size_t, std::string> Level_Iterator::get_min_key_idx() const {
 // 否则同一个 key 会被扫描方看到好几次
 void Level_Iterator::skip_key(const std::string &key) {
   for (auto &iter : iter_vec) {
-    
+
     // 每路来源各自往前走, 直到头部不再是这个 key
     while (iter->is_valid() && (**iter).first == key) ++(*iter); 
   }
 }
 
+// Lab 4.6 把当前位置的 key-value 读进缓存 cached_value
+// 为什么要缓存: operator-> 要返回一个指针, 被指的对象必须在函数
+// 返回后还活着, 所以需要一个成员变量当"停车位"
 void Level_Iterator::update_current() const {
-  // TODO: Lab 4.6 更新当前值 cached_value
-  // ? 实现 -> 时你也许会用到 cached_value
+  // cur_idx_ 指向的那一路已经耗尽, 还被要求读值 = 用法错误, 抛异常
+  if (!iter_vec[cur_idx_]->is_valid())
+    throw std::runtime_error(
+        "Level_Iterator::update_current: cannot dereference this iterator");
+  // 解引用孩子, 按值拷进停车位
+  cached_value = **iter_vec[cur_idx_]; 
 }
 
 BaseIterator &Level_Iterator::operator++() {
