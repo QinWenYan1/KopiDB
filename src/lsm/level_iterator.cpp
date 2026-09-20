@@ -152,9 +152,17 @@ void Level_Iterator::update_current() const {
   cached_value = **iter_vec[cur_idx_]; 
 }
 
+// Lab 4.6 ++ 重载
 BaseIterator &Level_Iterator::operator++() {
-  // TODO: Lab 4.6 ++ 重载
-  return *this;
+  // 1. 当前 key 已经吐过了: 把它在所有来源里的副本全部越过
+  skip_key(cached_value->first); 
+
+  // 2. 重新选最小 —— 和构造函数收尾是同一个循环:
+  //    选最小 -> 读缓存 -> 是墓碑就整个 key 越过 -> 再选下一个
+  while (!is_end()){
+    auto [min_idx, _] = get_min_key_idx(); 
+    
+  }
 }
 
 bool Level_Iterator::operator==(const BaseIterator &other) const {
