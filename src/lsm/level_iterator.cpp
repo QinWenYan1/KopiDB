@@ -178,14 +178,25 @@ BaseIterator &Level_Iterator::operator++() {
   return *this;
 }
 
+// TODO: Lab 4.6 == 重载
 bool Level_Iterator::operator==(const BaseIterator &other) const {
-  // TODO: Lab 4.6 == 重载
-  return false;
+  // 类型不同永不相等 (基类引用里可能装着别的迭代器)
+  if (other.get_type() != IteratorType::LevelIterator)
+    return false; 
+  auto &other2 = dynamic_cast<const Level_Iterator &>(other);
+
+  // end 态归一: 双方都耗尽才算相等
+  if (!is_valid() || !other2.is_valid()) {
+    return !is_valid() && !other2.is_valid(); 
+  }
+
+  // 都有效: 比当前位置的 key-value 是否一样
+  return cached_value->first == other2.cached_value
 }
 
+// Lab 4.6 != 重载
 bool Level_Iterator::operator!=(const BaseIterator &other) const {
-  // TODO: Lab 4.6 != 重载
-  return false;
+  return !(operator==(other)); 
 }
 
 BaseIterator::value_type Level_Iterator::operator*() const {
