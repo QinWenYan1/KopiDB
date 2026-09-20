@@ -7,7 +7,7 @@
 #include <shared_mutex>
 #include <string>
 
-// TODO: Lab 4.6 Level_Iterator 初始化
+// Lab 4.6 Level_Iterator 初始化
 namespace tiny_lsm {
 Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
                                uint64_t max_tranc_id)
@@ -97,7 +97,7 @@ Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
 
 }
 
-// TODO: Lab 4.6 获取当前 key 最小的迭代器在 iter_vec 中的索引和具体的 key
+// Lab 4.6 获取当前 key 最小的迭代器在 iter_vec 中的索引和具体的 key
 // 返回: (那一路在 iter_vec 里的下标, 最小 key 本身)
 // 这是归并的核心动作: 每一步都从所有来源的头部里挑最小的吐出去
 std::pair<size_t, std::string> Level_Iterator::get_min_key_idx() const {
@@ -128,8 +128,16 @@ std::pair<size_t, std::string> Level_Iterator::get_min_key_idx() const {
   return {min_idx, min_key}; 
 }
 
+// Lab 4.6 跳过 key 相同的部分 (跨来源去重)
+// 同一个 key 可能 memtable 有一份、L0 有一份、L2 也有一份,
+// 我们已经把最新的那份吐出去了, 其余副本必须全部越过,
+// 否则同一个 key 会被扫描方看到好几次
 void Level_Iterator::skip_key(const std::string &key) {
-  // TODO: Lab 4.6 跳过 key 相同的部分(即被当前激活的迭代器覆盖的写入记录)
+  for (auto &iter : iter_vec) {
+    
+    // 每路来源各自往前走, 直到头部不再是这个 key
+    while (iter->is_valid() && (**iter).first == key) ++(*iter); 
+  }
 }
 
 void Level_Iterator::update_current() const {
