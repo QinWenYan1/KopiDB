@@ -161,8 +161,16 @@ BaseIterator &Level_Iterator::operator++() {
   //    选最小 -> 读缓存 -> 是墓碑就整个 key 越过 -> 再选下一个
   while (!is_end()){
     auto [min_idx, _] = get_min_key_idx(); 
-    
+    cur_idx_ = min_idx; 
+    update_current(); 
+    // 空 value = 墓碑, 不能给查询方看到
+    if (cached_value->second.empty()){
+      skip_key(cached_value->first); 
+      continue; 
+    }
+    break; 
   }
+  return *this; 
 }
 
 bool Level_Iterator::operator==(const BaseIterator &other) const {
