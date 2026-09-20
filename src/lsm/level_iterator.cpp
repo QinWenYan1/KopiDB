@@ -225,7 +225,21 @@ BaseIterator::value_type Level_Iterator::operator*() const {
 
 // Lab 4.6 -> 重载
 BaseIterator::pointer Level_Iterator::operator->() const {
+  // end 没有当前元素，不能解引用。
+  if (!is_valid())
+    throw std::runtime_error(
+    "Level_Iterator::operator->: cannot dereference end iterator");
   
+  // -> 必须返回指针，因此不能返回临时 key-value 的地址。
+  // 将当前记录保存到成员 cached_value 中，让对象在函数返回后仍然存在。
+  update_current(); 
+
+  // cached_value 是 optional<pair<string, string>>：
+  // value() 取得内部 pair 的引用，取地址后就是需要返回的 pointer
+  //
+  // cached_value 声明为 mutable，所以这里即使是 const 成员函数，
+  // 仍然可以更新缓存并取得内部对象的非 const 指针。
+  return &(cached_value.value()); 
 }
 
 IteratorType Level_Iterator::get_type() const {
