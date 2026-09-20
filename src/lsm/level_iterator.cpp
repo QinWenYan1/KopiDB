@@ -178,25 +178,32 @@ BaseIterator &Level_Iterator::operator++() {
   return *this;
 }
 
-// TODO: Lab 4.6 == 重载
+// Lab 4.6 == 重载
 bool Level_Iterator::operator==(const BaseIterator &other) const {
-  // 类型不同永不相等 (基类引用里可能装着别的迭代器)
+  // 1. 类型不同永不相等 (基类引用里可能装着别的迭代器)
   if (other.get_type() != IteratorType::LevelIterator)
     return false; 
-  auto &other2 = dynamic_cast<const Level_Iterator &>(other);
+  auto &rhs = dynamic_cast<const Level_Iterator &>(other);
 
-  // end 态归一: 双方都耗尽才算相等
-  if (!is_valid() || !other2.is_valid()) {
-    return !is_valid() && !other2.is_valid(); 
-  }
+  // 2. 先处理 end：
+  //    两边都耗尽 -> 相等；
+  //    只有一边耗尽 -> 不相等。
+  //    默认构造的 end 没有子迭代器，必须在读取当前位置之前处理。
+  const bool lhs_end = is_end();
+  const bool rhs_end = rhs.is_end();
+  if (lhs_end || rhs_end)
+    return lhs_end && rhs_end;
 
-  // 都有效: 比当前位置的 key-value 是否一样
-  return cached_value->first == other2.cached_value
-}
+  // 3. 两边都有效：
+  //    约定属于同一个引擎、同一个快照，且当前 key-value 相同，
+  //    才表示相同的逻辑遍历位置。
+  //
+  //    不能只比较 cur_idx_：
+  //    它表示“选中了哪一路”，并不表示“走到了哪个 key”。
+  return  engine_ == rhs.engine_ && 
+          max_tranc_id_ == rhs.max_tranc_id_ &&
+          operator*() == rhs.operator*(); 
 
-// Lab 4.6 != 重载
-bool Level_Iterator::operator!=(const BaseIterator &other) const {
-  return !(operator==(other)); 
 }
 
 BaseIterator::value_type Level_Iterator::operator*() const {
