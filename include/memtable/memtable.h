@@ -64,7 +64,7 @@ public:
   size_t get_cur_size();
   size_t get_frozen_size();
   size_t get_total_size();
-  HeapIterator begin(uint64_t tranc_id);
+  HeapIterator begin(uint64_t tranc_id, bool skip_delete = true);
   HeapIterator iters_preffix(const std::string &preffix, uint64_t tranc_id);
 
   std::optional<std::pair<HeapIterator, HeapIterator>>

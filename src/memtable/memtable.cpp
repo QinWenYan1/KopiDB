@@ -322,7 +322,7 @@ size_t MemTable::get_total_size() {
 }
 
 // 需要进一步判断这里的 HeapIterator 能否跳过删除元素
-HeapIterator MemTable::begin(uint64_t tranc_id) {
+HeapIterator MemTable::begin(uint64_t tranc_id, bool skip_delete) {
   // Lab2.2 MemTable 的迭代器
   // ? 加 cur_mtx 和 frozen_mtx 读锁, 遍历所有表收集 SearchItem
   // ? 每个 item 包含 key, value, table_idx, 0, tranc_id
@@ -360,7 +360,7 @@ HeapIterator MemTable::begin(uint64_t tranc_id) {
     }
   }
 
-  return HeapIterator(items, tranc_id); // skip_delete 默认为true
+  return HeapIterator(items, tranc_id, skip_delete); // skip_delete 默认为true
 }
 
 HeapIterator MemTable::end() {
