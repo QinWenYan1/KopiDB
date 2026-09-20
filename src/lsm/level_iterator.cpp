@@ -207,6 +207,11 @@ bool Level_Iterator::operator==(const BaseIterator &other) const {
 
 }
 
+// Lab 4.6 != 重载
+bool Level_Iterator::operator!=(const BaseIterator &other) const {
+  return !(operator==(other)); 
+}
+
 // Lab 4.6 * 重载
 BaseIterator::value_type Level_Iterator::operator*() const {
   // end 没有当前元素，不能解引用。
