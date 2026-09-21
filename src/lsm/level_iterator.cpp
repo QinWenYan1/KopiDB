@@ -7,6 +7,7 @@
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 // Lab 4.6 Level_Iterator 初始化
 namespace tiny_lsm {
@@ -40,24 +41,26 @@ Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
   //   L0 不满足: 每次 flush 直接产一张新表, 表与表的 key 范围随意重叠。
   // 所以换办法: 把 L0 每张表的所有条目全读出来塞进堆里,
   //   堆每次自动弹出当前最小的 key, 相当于替我们做好了全局排序。
-  std::vector<SearchItem> item_vec;
-  for (auto &sst_id : engine_->level_sst_ids[0]) {
-    auto sst = engine_->ssts[sst_id];
-    for (auto iter = sst->begin(max_tranc_id_);
-         iter.is_valid() && !iter.is_end(); ++iter) {
-      // 事务模式: 真正的版本过滤在 BlockIterator 里已做过，我们不用再手动做
+  std::vector<SstIterator> l0_iters;
 
-      // SearchItem 第 3 个参数 idx 填 -sst_id, 是个负号小技巧:
-      //   堆里同一个 key 撞车时, idx 小的先弹出来。
-      //   sst_id 越大文件越新, 加负号后反而越小 -> 新文件的条目先出来。
-      //   效果: 同一个 key 在两张 L0 表里都有时, 更新的那张赢。
-      item_vec.emplace_back(iter.key(), iter.value(), -sst_id, 0,
-                            iter.get_cur_tranc_id());
-    }
+  // 构造期间持有的是读锁，用 find 查询，避免 operator[] 插入空层。
+  auto l0 = engine_->level_sst_ids.find(0); 
+  if (l0 != engine_->level_sst_ids.end()){
+    for (size_t sst_id : l0->second){
+      const auto &sst = engine_->ssts.at(sst_id); 
+      // 按当前快照读取，保留可见的删除标记。
+      l0_iters.push_back(sst->begin(max_tranc_id_));
+    } 
   }
-  std::shared_ptr<HeapIterator> l0_iter_ptr =
-      std::make_shared<HeapIterator>(item_vec, max_tranc_id);
-  iter_vec.push_back(l0_iter_ptr);
+
+  // merge_sst_iterator 内部已经设置 skip_delete=false，
+  // 因此合并结果会保留墓碑，交给 Level_Iterator 处理。
+  //
+  // 这里第三个参数 false 是 keep_all_versions：
+  // 同 key 只需要最新可见版本，不需要输出全部历史版本
+  auto [l0_begin, l0_end] = SstIterator::merge_sst_iterator(std::move(l0_iters), max_tranc_id_, false); 
+  iter_vec.push_back(std::make_shared<HeapIterator>(std::move(l0_begin))); 
+
 
   // ===== 第 3 路来源: L1 及更深层, 每层一个 ConcactIterator =====
   // L1+ 经过 compact 整理: 同层各 SST 的 key 范围有序且不重叠,
