@@ -104,9 +104,8 @@ void SstIterator::seek_first() {
   // entry——它落点可能已经不在第一个 key 上了。 然而，seek 是必须锁定一个 key
   // 一个是 key 空间查询，一个是位置空间查询，维度不同，无法委托
 
-  // ==============step 1=============
-  // seek_first 也可能在迭代过程中再次调用，
-  // 因此先清除旧位置和旧的 key-value 缓存。
+  // 1. seek_first 也可能在迭代过程中再次调用，
+  //    因此先清除旧位置和旧的 key-value 缓存。
   cached_value.reset(); 
   m_block_it = nullptr; 
   m_block_idx = 0;
@@ -117,11 +116,10 @@ void SstIterator::seek_first() {
     return;
 
   // 与 m_block_idx 的 int64_t 类型保持一致。
-  const auto block_count = static_cast<uint64_t>(m_sst->num_blocks()); 
+  const auto block_count = static_cast<int64_t>(m_sst->num_blocks()); 
 
-  //==============step 2==============
-  // seek_first = 钉到第 1 个 可见 block 的可见的第 1 条 entry
-  // 找到第一个可见的块的可见开头，一个 block 有可能都不可见，那就要读下一个快
+  // 2. seek_first = 钉到第 1 个 可见 block 的可见的第 1 条 entry
+  //    找到第一个可见的块的可见开头，一个 block 有可能都不可见，那就要读下一个快
   for (; m_block_idx < block_count; ++m_block_idx){
     auto block = m_sst->read_block(m_block_idx); 
 
@@ -136,9 +134,8 @@ void SstIterator::seek_first() {
     // 当前块没有可见记录，继续检查下一个块。
   }
 
-  //===========step 3=================
-  // 所有块都检查完了，仍没有可见记录。
-  // 此时 m_block_idx == block_count，清空指针表示 SST 耗尽。
+  // 3. 所有块都检查完了，仍没有可见记录。
+  //    此时 m_block_idx == block_count，清空指针表示 SST 耗尽。
   m_block_it = nullptr;
 }
 
