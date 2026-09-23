@@ -108,7 +108,7 @@ void SstIterator::seek_first() {
   // seek_first 也可能在迭代过程中再次调用，
   // 因此先清除旧位置和旧的 key-value 缓存。
   cached_value.reset(); 
-  m_block_it.reset(); 
+  m_block_it = nullptr; 
   m_block_idx = 0;
   const auto block_count = static_cast<uint64_t>(m_sst->num_blocks()); 
 
@@ -116,27 +116,30 @@ void SstIterator::seek_first() {
   // 迭代器的状态 = (m_sst, m_block_idx, m_block_it) 三元组
   // seek_first = 钉到第 0 个 block 的第 0 条 entry
   if (!m_sst || block_count == 0) {
-    m_block_it = nullptr;
+    m_block_it.reset();
     return;
   }
 
-  //===========================step 2==============================
+  //==============step 2==============
   // 找到第一个可见的块的可见开头，一个 block 有可能都不可见，那就要读下一个快
   for (; m_block_idx < block_count; ++m_block_idx){
     auto block = m_sst->read_block(m_block_idx); 
 
     // 从当前块的第一条记录开始
     // BlockIterator 构造时会自动跳过不可见版本
+    // BlockIterator 的下标构造: 定位到 idx，构造内部自动 skip_by_tranc_id
     m_block_it = std::make_shared<BlockIterator>(block, 0, max_tranc_id_, keep_all_versions_); 
 
     // 过滤后仍有记录，就找到了整张 SST 的第一条可见记录
     if (!m_block_it->is_end()) return; 
-    
+
+    // 当前块没有可见记录，继续检查下一个块。
   }
-  auto block = m_sst->read_block(m_block_idx);
-  // BlockIterator 的下标构造: 定位到 idx = 0，构造内部自动 skip_by_tranc_id
-  m_block_it = std::make_shared<BlockIterator>(block, 0, max_tranc_id_,
-                                               keep_all_versions_);
+
+  //===========step 3=================
+  // 所有块都检查完了，仍没有可见记录。
+  // 此时 m_block_idx == block_count，清空指针表示 SST 耗尽。
+  m_block_it = nullptr;
 }
 
 // Lab 3.6 将迭代器定位到指定key的位置
