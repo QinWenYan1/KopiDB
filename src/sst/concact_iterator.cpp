@@ -55,13 +55,16 @@ BaseIterator &ConcactIterator::operator++() {
     if (cur_idx >= ssts.size()) {
       cur_iter = SstIterator(nullptr, max_tranc_id_, keep_all_versions_); 
       return *this; 
-      // 新表从各自起点开始 (begin 内部 seek_first, 自动跳过不可见版本)
-      cur_iter = ssts[cur_idx]->begin(max_tranc_id_, keep_all_versions_);
-    } else {
-      // 全部表读完 -> end 态: 空表迭代器 (m_block_it 为 nullptr)
-      cur_iter = SstIterator(nullptr, max_tranc_id_);
-    }
+    } 
+
+    // 新 SST 从第一条可见记录开始。
+    // 这里不能再额外 ++，否则会跳过它的第一条可见记录。
+    cur_iter = ssts[cur_idx]->begin(max_tranc_id_, keep_all_versions_);
+
+    // 新 SST 仍不可见：继续循环。
+    // 新 SST 有可见记录：退出循环，停在该记录上。
   }
+  
   return *this;
 }
 
