@@ -36,13 +36,25 @@ ConcactIterator::ConcactIterator(std::vector<std::shared_ptr<SST>> ssts,
 
 // Lab 4.3 自增运算符重载
 BaseIterator &ConcactIterator::operator++() {
+  // 已经结束时保持原状，避免继续增加 cur_idx。
+  if (is_end()) return *this; 
+
   // 1. 先在当前表内推进一格 (块内/跨块由 SstIterator 自己管)
+  //    SST 内部的跨块和可见性过滤由 SstIterator 负责
   ++cur_iter;
 
   // 2. 当前表读完了 -> 换下一张表
-  if (cur_iter.is_end() || !cur_iter.is_valid()) {
+  //    当前 SST 耗尽后，连续寻找后面的可见 SST
+  //    使用 while，因为新进入的 SST 也可能完全不可见
+  while (!cur_iter.is_valid()) {
     ++cur_idx;
-    if (cur_idx < ssts.size()) {
+
+    // 所有 SST 都检查完了，统一进入结束状态
+    // 必须先检查边界，再访问 ssts[cur_idx]
+    // 超出边界，直接返回 end() iterator
+    if (cur_idx >= ssts.size()) {
+      cur_iter = SstIterator(nullptr, max_tranc_id_, keep_all_versions_); 
+      return *this; 
       // 新表从各自起点开始 (begin 内部 seek_first, 自动跳过不可见版本)
       cur_iter = ssts[cur_idx]->begin(max_tranc_id_, keep_all_versions_);
     } else {
