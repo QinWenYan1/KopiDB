@@ -134,13 +134,18 @@ uint64_t TwoMergeIterator::get_tranc_id() const {
 }
 
 uint64_t TwoMergeIterator::get_cur_tranc_id() const {
-  // choose_a 已由构造函数或 ++ 更新。
-  // 与 operator* 选择同一路，保证版本属于当前输出的记录。
-  if (choose_a && it_a && !it_a->is_end()) {
-      return it_a->get_tranc_id();
-    }
-  return it_b->get_tranc_id();
-} 
+  // 与 operator* 使用同一路，不在 getter 中重新选择来源。
+  const auto &selected = choose_a ? it_a : it_b;
+
+  // 先检查指针，再检查它是否指向有效记录。
+  // || 会短路，selected 为空时不会调用 is_valid()。
+  if (!selected || !selected->is_valid()) {
+    throw std::runtime_error(
+        "TwoMergeIterator::get_cur_tranc_id: invalid iterator");
+  }
+
+  return selected->get_cur_tranc_id();
+}
 
 bool TwoMergeIterator::is_end() const {
   if (it_a == nullptr && it_b == nullptr) {

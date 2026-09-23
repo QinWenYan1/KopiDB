@@ -123,12 +123,11 @@ std::pair<size_t, std::string> Level_Iterator::get_min_key_idx() const {
 
       min_key = key;
       min_idx = i;
-    } else if (key == min_key && max_tranc_id_ != 0 &&
-               iter_vec[i]->get_tranc_id() >
-                   iter_vec[min_idx]->get_tranc_id()) {
+    } else if (key == min_key &&
+               iter_vec[i]->get_cur_tranc_id() >
+                   iter_vec[min_idx]->get_cur_tranc_id()) {
       // 同 key 两路都有: 版本号大的 (更新的) 赢
-      // (实际上各来源此时 get_tranc_id() 都返回快照 id, 很难触发;
-      // 真正的决胜靠上面那句"先到先留")
+      // max_tranc_id_ == 0 表示“不限制哪些版本可见”，但同一个 key 有多个版本时，仍然要选择最新的那个。
 
       min_idx = i;
     }
@@ -256,7 +255,17 @@ IteratorType Level_Iterator::get_type() const {
 
 uint64_t Level_Iterator::get_tranc_id() const { return max_tranc_id_; }
 
-uint64_t Level_Iterator::get_cur_tranc_id() const { return iter_vec[cur_idx_]->get_cur_tranc_id(); }
+uint64_t Level_Iterator::get_cur_tranc_id() const {
+  // 默认构造或全部来源耗尽时，不存在当前记录。
+  // 必须在访问 iter_vec[cur_idx_] 之前检查。
+  if (!is_valid()) {
+    throw std::runtime_error(
+        "Level_Iterator::get_cur_tranc_id: invalid iterator");
+  }
+
+  // 构造函数和 ++ 负责让 cur_idx_ 指向当前选中的来源。
+  return iter_vec[cur_idx_]->get_cur_tranc_id();
+}
 
 bool Level_Iterator::is_end() const {
   for (auto &iter : iter_vec) {

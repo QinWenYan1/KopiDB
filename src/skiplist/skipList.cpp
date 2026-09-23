@@ -63,7 +63,16 @@ bool SkipListIterator::is_end() const { return current == nullptr; }
 std::string SkipListIterator::get_key() const { return current->key_; }
 std::string SkipListIterator::get_value() const { return current->value_; }
 uint64_t SkipListIterator::get_tranc_id() const { return current->tranc_id_; }
-uint64_t SkipListIterator::get_cur_tranc_id() const { return current->tranc_id_; }
+uint64_t SkipListIterator::get_cur_tranc_id() const {
+  // is_valid() 已经检查 current 非空，
+  // 同时排除当前实现中不作为普通记录的空 key 节点。
+  if (!is_valid()) {
+    throw std::runtime_error(
+        "SkipListIterator::get_cur_tranc_id: invalid iterator");
+  }
+
+  return current->tranc_id_;
+}
 
 // ************************ SkipList ************************
 // 构造函数
