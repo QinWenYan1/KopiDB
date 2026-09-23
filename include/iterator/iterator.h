@@ -4,6 +4,7 @@
 #include <memory>
 #include <queue>
 #include <string>
+#include <sys/types.h>
 #include <utility>
 
 namespace tiny_lsm {
@@ -32,6 +33,7 @@ public:
   virtual uint64_t get_tranc_id() const = 0;
   virtual bool is_end() const = 0;
   virtual bool is_valid() const = 0;
+  virtual uint64_t get_cur_tranc_id() const = 0; 
 };
 
 class SstIterator;
@@ -70,6 +72,7 @@ public:
 
   virtual IteratorType get_type() const override;
   virtual uint64_t get_tranc_id() const override;
+  virtual uint64_t get_cur_tranc_id() const override; 
   virtual bool is_end() const override;
   virtual bool is_valid() const override;
 

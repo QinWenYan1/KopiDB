@@ -81,6 +81,10 @@ uint64_t ConcactIterator::get_tranc_id() const {
   return max_tranc_id_;
 }
 
+uint64_t ConcactIterator::get_cur_tranc_id() const {
+  return cur_iter.get_cur_tranc_id();
+}
+
 bool ConcactIterator::is_end() const {
   return cur_iter.is_end() || !cur_iter.is_valid();
 }

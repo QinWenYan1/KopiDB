@@ -42,8 +42,7 @@ bool SkipListIterator::operator!=(const BaseIterator &other) const {
 
 SkipListIterator::value_type SkipListIterator::operator*() const {
   // 实现SkipListIterator的*操作符
-  // ? 若 current 为空需抛出异常
-  // ? 若 current 为空需抛出异常
+  // 若 current 为空需抛出异常
   if (!current) {
     throw std::runtime_error(
         "dereferencing invalid SkipListIterator: Node empty");
@@ -53,7 +52,6 @@ SkipListIterator::value_type SkipListIterator::operator*() const {
 
 IteratorType SkipListIterator::get_type() const {
   // 实现SkipListIterator的get_type
-  // ? 主要是为了熟悉基类的定义和继承关系, 返回 IteratorType::SkipListIterator
   return IteratorType::SkipListIterator;
 }
 
@@ -65,6 +63,7 @@ bool SkipListIterator::is_end() const { return current == nullptr; }
 std::string SkipListIterator::get_key() const { return current->key_; }
 std::string SkipListIterator::get_value() const { return current->value_; }
 uint64_t SkipListIterator::get_tranc_id() const { return current->tranc_id_; }
+uint64_t SkipListIterator::get_cur_tranc_id() const { return current->tranc_id_; }
 
 // ************************ SkipList ************************
 // 构造函数
@@ -75,13 +74,13 @@ SkipList::SkipList(int max_lvl) : max_level(max_lvl), current_level(1) {
   gen = std::mt19937(std::random_device()());
 }
 
+// Lab1.1 任务：插入时随机为这一次操作确定其最高连接的链表层数
 int SkipList::random_level() {
 
-  // ? 通过"抛硬币"的方式随机生成层数：
-  // ? - 每次有50%的概率增加一层
-  // ? - 确保层数分布为：第1层100%，第2层50%，第3层25%，以此类推
-  // ? - 层数范围限制在[1, max_level]之间，避免浪费内存
-  // Lab1.1 任务：插入时随机为这一次操作确定其最高连接的链表层数
+  // 通过"抛硬币"的方式随机生成层数：
+  //  - 每次有50%的概率增加一层
+  //  - 确保层数分布为：第1层100%，第2层50%，第3层25%，以此类推
+  //  - 层数范围限制在[1, max_level]之间，避免浪费内存
   int level = 1;
   // 每一次 50% 概率加一层，最多到 max_level
   while (dis_01(gen) && level < max_level) {
@@ -90,11 +89,10 @@ int SkipList::random_level() {
   return level;
 }
 
-// 插入或更新键值对
+// Lab1.1 任务：实现插入或更新键值对
 void SkipList::put(const std::string &key, const std::string &value,
                    uint64_t tranc_id) {
   spdlog::trace("SkipList--put({}, {}, {})", key, value, tranc_id);
-  // Lab1.1 任务：实现插入或更新键值对
   // ? Hint: 你需要保证不同`Level`的步长从底层到高层逐渐增加
   // ? 你可能需要使用到`random_level`函数以确定层数, 其注释中为你提供一种思路
   // ? tranc_id 为事务id, 直接将其传递到 SkipListNode 的构造函数中即可
@@ -196,8 +194,8 @@ SkipListIterator SkipList::get(const std::string &key, uint64_t tranc_id) {
 // 这里只是为了实现完整的 SkipList 不会真正被上层调用
 void SkipList::remove(const std::string &key) {
   // 实现删除键值对
-  // ? 从最高层开始查找目标节点并更新各层指针
-  // ? 注意同时维护 backward_ 指针和 size_bytes
+  // 从最高层开始查找目标节点并更新各层指针
+  // 注意同时维护 backward_ 指针和 size_bytes
   // 1. 找：同款下楼梯，但只按 key 比较（删除针对 key 本身，不挑版本）
   std::vector<std::shared_ptr<SkipListNode>> update(max_level, nullptr);
   auto current = head;
@@ -272,7 +270,7 @@ SkipListIterator SkipList::end() {
 // 返回第一个前缀匹配或者大于前缀的迭代器
 SkipListIterator SkipList::begin_preffix(const std::string &preffix) {
   // Lab1.3 任务：实现前缀查询的起始位置
-  // ? 从最高层开始查找, 找到第一个 key >= preffix 的节点
+  // 从最高层开始查找, 找到第一个 key >= preffix 的节点
   // 1. 下楼梯：和 get 同款，每层走到"下一个节点 key >= preffix"之前停下
   //    循环不变式：current 始终是当前层最后一个小于 preffix 的节点
   //              也就是说，如果没有大于 preffix 的节点也不会是 nullptr
@@ -291,7 +289,7 @@ SkipListIterator SkipList::begin_preffix(const std::string &preffix) {
 // 找到前缀的终结位置
 SkipListIterator SkipList::end_preffix(const std::string &prefix) {
   // Lab1.3 任务：实现前缀查询的终结位置
-  // ? 找到第一个 key 不以 prefix 开头的节点作为终结位置
+  // 找到第一个 key 不以 prefix 开头的节点作为终结位置
   // 1. 巧劲：构造 prefix 的"后继字符串"（末字符 +1）
   //    性质：所有以 prefix 开头的 key 都 < 后继；
   // end_preffix("a") → 后继 "b" → 第一个 ≥"b" 是 banana ✓
@@ -315,23 +313,23 @@ SkipListIterator SkipList::end_preffix(const std::string &prefix) {
   return begin_preffix(successor);
 }
 
-// ? 这里单调谓词的含义是, 整个数据库只会有一段连续区间满足此谓词
-// ? 例如之前特化的前缀查询，以及后续可能的范围查询，都可以转化为谓词查询
-// ? 返回第一个满足谓词的位置和最后一个满足谓词的迭代器
-// ? 如果不存在, 返回 nullopt
-// ? 谓词作用于key, 且保证满足谓词的结果只在一段连续的区间内, 例如前缀匹配的谓词
-// ? predicate返回值:
-// ?   0: 满足谓词
-// ?   >0: 不满足谓词, 需要向右移动
-// ?   <0: 不满足谓词, 需要向左移动
+// Lab1.3 任务：实现谓词查询
+// 这里单调谓词的含义是, 整个数据库只会有一段连续区间满足此谓词
+// 例如之前特化的前缀查询，以及后续可能的范围查询，都可以转化为谓词查询
+// 返回第一个满足谓词的位置和最后一个满足谓词的迭代器
+// 如果不存在, 返回 nullopt
+// 谓词作用于key, 且保证满足谓词的结果只在一段连续的区间内, 例如前缀匹配的谓词
+// predicate返回值:
+//    0: 满足谓词
+//    >0: 不满足谓词, 需要向右移动
+//    <0: 不满足谓词, 需要向左移动
 // Skiplist 中的谓词查询不会进行事务id的判断, 需要上层自己进行判断
 std::optional<std::pair<SkipListIterator, SkipListIterator>>
 SkipList::iters_monotony_predicate(
     std::function<int(const std::string &)> predicate) {
-  // Lab1.3 任务：实现谓词查询
-  // ? 分两步: 1. 利用多层跳表快速找到谓词满足区间内的一个节点
-  // ?         2. 分别向前/向后扩展, 利用 backward_ 和 forward_ 确定区间边界
-  // ? 注意: 向前查找时需要利用 backward_ 指针从当前节点的最高层开始回溯
+  //  分两步: 1. 利用多层跳表快速找到谓词满足区间内的一个节点
+  //          2. 分别向前/向后扩展, 利用 backward_ 和 forward_ 确定区间边界
+  //  注意: 向前查找时需要利用 backward_ 指针从当前节点的最高层开始回溯
   // 1. 多层下降定位区间内任意一个节点 node1：
   //    谓词即指南针 >0 往右走 / ==0 命中 / <0 下楼细化
   std::shared_ptr<SkipListNode> node = nullptr;
@@ -373,7 +371,7 @@ SkipList::iters_monotony_predicate(
                         SkipListIterator(right->forward_[0]));
 }
 
-// ? 打印跳表, 你可以在出错时调用此函数进行调试
+//  打印跳表, 你可以在出错时调用此函数进行调试
 void SkipList::print_skiplist() {
   for (int level = 0; level < current_level; level++) {
     std::cout << "Level " << level << ": ";

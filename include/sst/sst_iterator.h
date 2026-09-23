@@ -66,7 +66,7 @@ public:
   virtual bool is_valid() const override;
 
   pointer operator->() const;
-  uint64_t get_cur_tranc_id() const;
+  uint64_t get_cur_tranc_id() const override;
 
   static std::pair<HeapIterator, HeapIterator>
   merge_sst_iterator(std::vector<SstIterator> iter_vec, uint64_t tranc_id,

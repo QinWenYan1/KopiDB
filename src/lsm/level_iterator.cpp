@@ -256,6 +256,8 @@ IteratorType Level_Iterator::get_type() const {
 
 uint64_t Level_Iterator::get_tranc_id() const { return max_tranc_id_; }
 
+uint64_t Level_Iterator::get_cur_tranc_id() const { return iter_vec[cur_idx_]->get_cur_tranc_id(); }
+
 bool Level_Iterator::is_end() const {
   for (auto &iter : iter_vec) {
     if ((*iter).is_valid()) {

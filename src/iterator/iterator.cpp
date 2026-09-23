@@ -2,6 +2,7 @@
 #include <memory>
 #include <stdexcept>
 #include <vector>
+#include <stdexcept>
 
 namespace tiny_lsm {
 
@@ -192,10 +193,23 @@ IteratorType HeapIterator::get_type() const {
   return IteratorType::HeapIterator;
 }
 
+// 只有当 keep_all_versions 打开时 才会返回 iterator 的当前tranc_id
+// 否则都是返回当前 最大的 max_tranc_id_ 上限
 uint64_t HeapIterator::get_tranc_id() const {
   if (keep_all_versions_ && !items.empty()) {
     return items.top().tranc_id_;
   }
   return max_tranc_id_;
+}
+
+// 区别于 get_tranc_id, 
+// get_cur_tranc_id 只返回当前 iterator 指向的 key-value 的 tranc_id 
+uint64_t HeapIterator::get_cur_tranc_id() const {
+
+  if (items.empty())
+    throw std::runtime_error("HeapIterator::get_cur_tranc_id: iterator is empty");
+
+  return items.top().tranc_id_; 
+
 }
 } // namespace tiny_lsm

@@ -133,6 +133,15 @@ uint64_t TwoMergeIterator::get_tranc_id() const {
   return max_tranc_id_;
 }
 
+uint64_t TwoMergeIterator::get_cur_tranc_id() const {
+  // choose_a 已由构造函数或 ++ 更新。
+  // 与 operator* 选择同一路，保证版本属于当前输出的记录。
+  if (choose_a && it_a && !it_a->is_end()) {
+      return it_a->get_tranc_id();
+    }
+  return it_b->get_tranc_id();
+} 
+
 bool TwoMergeIterator::is_end() const {
   if (it_a == nullptr && it_b == nullptr) {
     return true;
