@@ -7,9 +7,9 @@ namespace tiny_lsm {
 // 迭代器刚创建时，就应该指向第一条可见记录，而不一定是第一张 SST
 ConcactIterator::ConcactIterator(std::vector<std::shared_ptr<SST>> ssts,
                                  uint64_t tranc_id, bool keep_all_versions)
-    : ssts(ssts), 
-      cur_iter(nullptr, tranc_id, keep_all_versions), 
+    : cur_iter(nullptr, tranc_id, keep_all_versions), 
       cur_idx(0),
+      ssts(ssts),
       max_tranc_id_(tranc_id), 
       keep_all_versions_(keep_all_versions) {
   // 从第一张 SST 开始寻找
@@ -64,7 +64,7 @@ BaseIterator &ConcactIterator::operator++() {
     // 新 SST 仍不可见：继续循环。
     // 新 SST 有可见记录：退出循环，停在该记录上。
   }
-  
+
   return *this;
 }
 
