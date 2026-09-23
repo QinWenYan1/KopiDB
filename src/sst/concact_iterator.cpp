@@ -17,7 +17,21 @@ ConcactIterator::ConcactIterator(std::vector<std::shared_ptr<SST>> ssts,
   for (; cur_idx < this->ssts.size(); ++cur_idx) {
     // SST::begin() 内部调用已经修好的 seek_first()，
     // 会寻找这张 SST 中的第一条可见记录。
+    cur_iter = this->ssts[cur_idx]->begin(max_tranc_id_, keep_all_versions_); 
+
+    // 找到可见记录，构造完成。
+    // 可见墓碑也属于有效记录，继续保留给上层处理。
+    if (cur_iter.is_valid())
+      return; 
+
+    // 整张 SST 都没有可见记录，继续尝试下一张。
   }
+
+  // 输入为空，或者全部 SST 都没有可见记录。
+  // cur_idx == ssts.size()，统一使用空 SST 迭代器表示结束。
+  cur_iter = SstIterator(nullptr, max_tranc_id_, keep_all_versions_); 
+
+
 }
 
 // Lab 4.3 自增运算符重载
