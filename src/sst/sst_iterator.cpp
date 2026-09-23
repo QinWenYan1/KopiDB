@@ -106,30 +106,33 @@ void SstIterator::seek_first() {
 
   // 1. seek_first 也可能在迭代过程中再次调用，
   //    因此先清除旧位置和旧的 key-value 缓存。
-  cached_value.reset(); 
-  m_block_it = nullptr; 
+  cached_value.reset();
+  m_block_it = nullptr;
   m_block_idx = 0;
 
   // 没有关联 SST，保持 end 状态。
   // 必须先判空，再通过 m_sst 访问成员
-  if (!m_sst) 
+  if (!m_sst)
     return;
 
   // 与 m_block_idx 的 int64_t 类型保持一致。
-  const auto block_count = static_cast<int64_t>(m_sst->num_blocks()); 
+  const auto block_count = static_cast<int64_t>(m_sst->num_blocks());
 
   // 2. seek_first = 钉到第 1 个 可见 block 的可见的第 1 条 entry
-  //    找到第一个可见的块的可见开头，一个 block 有可能都不可见，那就要读下一个快
-  for (; m_block_idx < block_count; ++m_block_idx){
-    auto block = m_sst->read_block(m_block_idx); 
+  //    找到第一个可见的块的可见开头，一个 block
+  //    有可能都不可见，那就要读下一个快
+  for (; m_block_idx < block_count; ++m_block_idx) {
+    auto block = m_sst->read_block(m_block_idx);
 
     // 从当前块的第一条记录开始
     // BlockIterator 构造时会自动跳过不可见版本
     // BlockIterator 的下标构造: 定位到 idx，构造内部自动 skip_by_tranc_id
-    m_block_it = std::make_shared<BlockIterator>(block, 0, max_tranc_id_, keep_all_versions_); 
+    m_block_it = std::make_shared<BlockIterator>(block, 0, max_tranc_id_,
+                                                 keep_all_versions_);
 
     // 过滤后仍有记录，就找到了整张 SST 的第一条可见记录
-    if (!m_block_it->is_end()) return; 
+    if (!m_block_it->is_end())
+      return;
 
     // 当前块没有可见记录，继续检查下一个块。
   }
@@ -194,7 +197,7 @@ std::string SstIterator::value() {
 BaseIterator &SstIterator::operator++() {
   // 1. 已经是 SST 的 end 状态，保持原状。
   //    这是沿用当前实现的防御性行为。
-  if (!m_block_it) 
+  if (!m_block_it)
     return *this;
 
   // 2. 接下来会改变位置，旧的 key-value 缓存不能继续使用。
@@ -211,18 +214,18 @@ BaseIterator &SstIterator::operator++() {
 
     // 边界检查，是否到了本 SST 的最后一个 block
     if (m_block_idx >= static_cast<int64_t>(m_sst->num_blocks())) {
-      m_block_it.reset(); 
-      return *this; 
+      m_block_it.reset();
+      return *this;
     }
 
     auto next_block = m_sst->read_block(m_block_idx);
 
-    // 从新块的第一条记录开始，构造时自动过滤不可见版本 (下标构造, 自动 skip_by_tranc_id)
-    // 沿用原实现，复用已有的 BlockIterator 对象
-    // 复用同一个 shared_ptr，把新迭代器放入到原对象内部
+    // 从新块的第一条记录开始，构造时自动过滤不可见版本 (下标构造, 自动
+    // skip_by_tranc_id) 沿用原实现，复用已有的 BlockIterator 对象 复用同一个
+    // shared_ptr，把新迭代器放入到原对象内部
     (*m_block_it) =
-          BlockIterator(next_block, 0, max_tranc_id_, keep_all_versions_);
-    
+        BlockIterator(next_block, 0, max_tranc_id_, keep_all_versions_);
+
     // 如果新块过滤后也耗尽，while 会继续寻找下一块；
     // 如果找到了可见记录，while 自然退出。
   }
