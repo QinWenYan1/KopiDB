@@ -4,12 +4,19 @@
 
 namespace tiny_lsm {
 
+// 迭代器刚创建时，就应该指向第一条可见记录，而不一定是第一张 SST
 ConcactIterator::ConcactIterator(std::vector<std::shared_ptr<SST>> ssts,
                                  uint64_t tranc_id, bool keep_all_versions)
-    : ssts(ssts), cur_iter(nullptr, tranc_id), cur_idx(0),
-      max_tranc_id_(tranc_id), keep_all_versions_(keep_all_versions) {
-  if (!this->ssts.empty()) {
-    cur_iter = ssts[0]->begin(max_tranc_id_, keep_all_versions_);
+    : ssts(ssts), 
+      cur_iter(nullptr, tranc_id, keep_all_versions), 
+      cur_idx(0),
+      max_tranc_id_(tranc_id), 
+      keep_all_versions_(keep_all_versions) {
+  // 从第一张 SST 开始寻找
+  // 第一张 SST 可能没有可见记录，不能只尝试 ssts[0]
+  for (; cur_idx < this->ssts.size(); ++cur_idx) {
+    // SST::begin() 内部调用已经修好的 seek_first()，
+    // 会寻找这张 SST 中的第一条可见记录。
   }
 }
 
