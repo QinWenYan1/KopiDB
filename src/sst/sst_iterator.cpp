@@ -192,10 +192,16 @@ std::string SstIterator::value() {
 
 // Lab 3.6 实现迭代器自增
 BaseIterator &SstIterator::operator++() {
-  if (!m_block_it) // end 态防御：已经到头再 ++ 原地不动了
+  // 1. 已经是 SST 的 end 状态，保持原状。
+  //    这是沿用当前实现的防御性行为。
+  if (!m_block_it) 
     return *this;
 
-  // 块内前进：版本去重复和tranc过滤都在BlockIterator::++ 里
+  // 2. 接下来会改变位置，旧的 key-value 缓存不能继续使用。
+  //    提前清理，后面即使直接返回 end，也不会留下旧缓存。
+  cached_value.reset();
+
+  // 3. 块内前进：版本去重复和tranc过滤都在BlockIterator::++ 里
   ++(*m_block_it);
 
   // 当前块阅读完 -> 跨块
