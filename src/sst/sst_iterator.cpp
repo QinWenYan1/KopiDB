@@ -328,9 +328,9 @@ SstIterator::merge_sst_iterator(std::vector<SstIterator> iter_vec,
       it_begin.items.emplace(
           iter.key(),
           iter.m_sst->resolve_value(iter.m_block_it->operator*().second),
-          -iter.m_sst->get_sst_id(), 0,
-          iter.get_cur_tranc_id()); // ! 此处的level暂时没有作用,
-                                    // 都作用于同一层的比较
+          iter.m_sst->get_sst_id(), 
+          0,
+          iter.get_cur_tranc_id()); 
       ++iter;
     }
   }

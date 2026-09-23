@@ -7,6 +7,9 @@
 namespace tiny_lsm {
 
 // *************************** SearchItem ***************************
+// key 小的优先
+// → key 相同，版本大的优先
+// → 版本也相同，idx_ 大的优先
 bool operator<(const SearchItem &a, const SearchItem &b) {
   // Lab2.2 实现比较规则
   // 1. 实现方法为 key 升序比较

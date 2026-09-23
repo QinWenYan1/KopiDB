@@ -6,6 +6,7 @@
 #include <string>
 #include <sys/types.h>
 #include <utility>
+#include <cstddef>
 
 namespace tiny_lsm {
 
@@ -42,13 +43,22 @@ struct SearchItem {
   std::string key_;
   std::string value_;
   uint64_t tranc_id_;
-  int idx_;
+  // idx 为什么使用 size_t
+  // 当 SST ID 比较小时，例如 10、20，存入 int 完全没有问题。
+  // 但如果长期生成 SST，ID 超过这个范围，
+  // 转换成 int 后就可能变成负数，
+  // 导致“ID 越大越优先”的顺序再次出错
+  // 来源优先级：同 key、同版本时，数值越大越优先
+  size_t idx_;
   int level_; // 来自sst的level
 
   SearchItem() = default;
-  SearchItem(std::string k, std::string v, int i, int l, uint64_t tranc_id)
-      : key_(std::move(k)), value_(std::move(v)), idx_(i), level_(l),
-        tranc_id_(tranc_id) {}
+  SearchItem(std::string k, std::string v, size_t i, int l, uint64_t tranc_id)
+      : key_(std::move(k)), 
+        value_(std::move(v)), 
+        tranc_id_(tranc_id),
+        idx_(i), 
+        level_(l) {}
 };
 
 bool operator<(const SearchItem &a, const SearchItem &b);
