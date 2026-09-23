@@ -174,7 +174,7 @@ BaseIterator &SstIterator::operator++() {
   if (!m_block_it) // end 态防御：已经到头再 ++ 原地不动了
     return *this;
 
-  // 块内前进：版本去重复和trnac过滤都在BlockIterator::++ 里
+  // 块内前进：版本去重复和tranc过滤都在BlockIterator::++ 里
   ++(*m_block_it);
 
   // 当前块阅读完 -> 跨块
