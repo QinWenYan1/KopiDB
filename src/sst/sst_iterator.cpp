@@ -110,17 +110,17 @@ void SstIterator::seek_first() {
   cached_value.reset(); 
   m_block_it = nullptr; 
   m_block_idx = 0;
-  const auto block_count = static_cast<uint64_t>(m_sst->num_blocks()); 
 
   // 没有关联 SST，保持 end 状态。
-  // 迭代器的状态 = (m_sst, m_block_idx, m_block_it) 三元组
-  // seek_first = 钉到第 0 个 block 的第 0 条 entry
-  if (!m_sst || block_count == 0) {
-    m_block_it.reset();
+  // 必须先判空，再通过 m_sst 访问成员
+  if (!m_sst) 
     return;
-  }
+
+  // 与 m_block_idx 的 int64_t 类型保持一致。
+  const auto block_count = static_cast<uint64_t>(m_sst->num_blocks()); 
 
   //==============step 2==============
+  // seek_first = 钉到第 1 个 可见 block 的可见的第 1 条 entry
   // 找到第一个可见的块的可见开头，一个 block 有可能都不可见，那就要读下一个快
   for (; m_block_idx < block_count; ++m_block_idx){
     auto block = m_sst->read_block(m_block_idx); 
