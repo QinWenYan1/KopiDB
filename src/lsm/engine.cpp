@@ -138,8 +138,16 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
     }
   }
 
-  if (!need_search_sst)
+  if (!need_search_sst){
+    // MemTable 的批量结果也会保留墓碑。
+    // 这条路径不再查询 SST，因此可以直接转换。
+    for (auto &[key, value] : results){
+      if (value.has_value() && value->first.empty())
+        value.reset(); 
+    }
     return results;
+  }
+    
 
   std::shared_lock<std::shared_mutex> rlock(ssts_mtx);
 
@@ -155,10 +163,9 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
         auto sst_it = sst->get(key, tranc_id);
 
         if (sst_it != sst->end()) {
-          // else: 空值=墓碑 (! 见下方已知坑)
-          if (!sst_it->second.empty())
+          // 墓碑也记录为 {"", 版本号}
+          // 此时 has_value() 为 true，后续层就会跳过这个 key
             value = std::make_pair(sst_it->second, sst_it.get_cur_tranc_id());
-          // 该 key 已裁决, 不再查更旧的 L0 文件
           break;
         }
       }
@@ -173,7 +180,7 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
     const auto &id_list = level_sst_ids[level];
     for (auto &[key, value] : results) {
       if (value.has_value())
-        continue;
+        continue; // 现在普通记录和墓碑都会跳过
 
       size_t left = 0, right = id_list.size();
       while (left < right) {
@@ -184,8 +191,8 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
         if (sst->get_first_key() <= key && key <= sst->get_last_key()) {
           auto sst_it = sst->get(key, tranc_id);
 
-          // sst 中也命中，将 value 记录
-          if (sst_it != sst->end() && !sst_it->second.empty())
+          // 命中就记录，包括墓碑，阻止后续更深层补入旧值。
+          if (sst_it != sst->end())
             value = std::make_pair(sst_it->second, sst_it.get_cur_tranc_id());
           break;
         } else if (sst->get_last_key() < key)
@@ -195,7 +202,13 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
       }
     }
   }
-  return results;
+  
+  // 查询已经结束，可以将墓碑转换为对外的“不存在”
+  // 墓碑就是有 ID 但是没有string，我们直接过滤掉
+  for(auto &[key, value] : results){
+    if (value.has_value() && value->first.empty()) value.reset(); 
+  }
+  return results; 
 }
 
 // Lab 4.2 sst 内部查询 (不查 memtable)
