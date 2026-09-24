@@ -436,7 +436,7 @@ LSMEngine::lsm_iters_monotony_predicate(
   return std::nullopt;
 }
 
-// Lab 4.7 
+// Lab 4.7: 返回 Level_Iterator(shared_from_this(), tranc_id)
 Level_Iterator LSMEngine::begin(uint64_t tranc_id) {
   // shared_from_this() 获取当前引擎的共享指针，
   // 让迭代器持有引擎，保证遍历期间引擎仍然存在。
@@ -449,10 +449,14 @@ Level_Iterator LSMEngine::begin(uint64_t tranc_id) {
   return Level_Iterator(shared_from_this(), tranc_id);
 }
 
+// Lab 4.7: 返回空的 Level_Iterator{}
 Level_Iterator LSMEngine::end() {
-  // TODO: Lab 4.7
-  // ? 返回空的 Level_Iterator{}
-  throw std::runtime_error("Not implemented");
+  // 默认构造的迭代器没有子迭代器，iter_vec 为空，
+  // 因此 is_end() 返回 true，用它表示遍历结束。
+  //
+  // 这里只创建结束标记，不需要读取数据或持有引擎。
+
+  return Level_Iterator{}; 
 }
 
 // Lab 4.5 整个 full compact: 将 src_level 的 sst 全体压缩到 src_level + 1
