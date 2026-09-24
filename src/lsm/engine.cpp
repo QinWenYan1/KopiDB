@@ -117,9 +117,9 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id) {
   // 对普通查询而言，墓碑表示 key 已删除x
   // 先确认 optional 有值，再访问其中的记录
   if (sst_ret.has_value() && sst_ret->first.empty())
-    return std::nullopt; 
+    return std::nullopt;
 
-  return sst_ret; 
+  return sst_ret;
 }
 
 // Lab 4.2 批量查询
@@ -138,16 +138,15 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
     }
   }
 
-  if (!need_search_sst){
+  if (!need_search_sst) {
     // MemTable 的批量结果也会保留墓碑。
     // 这条路径不再查询 SST，因此可以直接转换。
-    for (auto &[key, value] : results){
+    for (auto &[key, value] : results) {
       if (value.has_value() && value->first.empty())
-        value.reset(); 
+        value.reset();
     }
     return results;
   }
-    
 
   std::shared_lock<std::shared_mutex> rlock(ssts_mtx);
 
@@ -165,7 +164,7 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
         if (sst_it != sst->end()) {
           // 墓碑也记录为 {"", 版本号}
           // 此时 has_value() 为 true，后续层就会跳过这个 key
-            value = std::make_pair(sst_it->second, sst_it.get_cur_tranc_id());
+          value = std::make_pair(sst_it->second, sst_it.get_cur_tranc_id());
           break;
         }
       }
@@ -202,13 +201,14 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
       }
     }
   }
-  
+
   // 查询已经结束，可以将墓碑转换为对外的“不存在”
   // 墓碑就是有 ID 但是没有string，我们直接过滤掉
-  for(auto &[key, value] : results){
-    if (value.has_value() && value->first.empty()) value.reset(); 
+  for (auto &[key, value] : results) {
+    if (value.has_value() && value->first.empty())
+      value.reset();
   }
-  return results; 
+  return results;
 }
 
 // Lab 4.2 sst 内部查询 (不查 memtable)
@@ -456,7 +456,7 @@ Level_Iterator LSMEngine::end() {
   //
   // 这里只创建结束标记，不需要读取数据或持有引擎。
 
-  return Level_Iterator{}; 
+  return Level_Iterator{};
 }
 
 // Lab 4.5 整个 full compact: 将 src_level 的 sst 全体压缩到 src_level + 1
@@ -465,66 +465,69 @@ void LSMEngine::full_compact(size_t src_level) {
 
   // 1. 递归判断下一级 level 是否需要 compact
   //    level_sst_ids[src_level+1].size() >= ratio
-  if (level_sst_ids[src_level + 1].size() >= TomlConfig::getInstance().getLsmSstLevelRatio())
-    full_compact(src_level + 1); 
+  if (level_sst_ids[src_level + 1].size() >=
+      TomlConfig::getInstance().getLsmSstLevelRatio())
+    full_compact(src_level + 1);
 
   spdlog::debug("LSMEngine--Compaction: Starting full compaction from level{} "
                 "to level{}",
-                src_level, src_level + 1); 
+                src_level, src_level + 1);
 
   // 2. 拷出源层/目标层的 sst_id (deque -> vector)
   //    拷贝是因为: 子函数签名要 vector&; 且第 4 步要清空 deque,
   //    手里的旧 id 列表必须独立存活
-  auto old_level_id_x = level_sst_ids[src_level]; 
-  auto old_level_id_y = level_sst_ids[src_level+1];
-  std::vector<size_t> lx_ids(old_level_id_x.begin(), old_level_id_x.end()); 
-  std::vector<size_t> ly_ids(old_level_id_y.begin(), old_level_id_y.end()); 
+  auto old_level_id_x = level_sst_ids[src_level];
+  auto old_level_id_y = level_sst_ids[src_level + 1];
+  std::vector<size_t> lx_ids(old_level_id_x.begin(), old_level_id_x.end());
+  std::vector<size_t> ly_ids(old_level_id_y.begin(), old_level_id_y.end());
 
-  // 3. 根据 src_level 是否为 0 分别调用 full_l0_l1_compact 或 full_common_compact
-  std::vector<std::shared_ptr<SST>> new_ssts; 
+  // 3. 根据 src_level 是否为 0 分别调用 full_l0_l1_compact 或
+  // full_common_compact
+  std::vector<std::shared_ptr<SST>> new_ssts;
   if (src_level == 0)
-    new_ssts = full_l0_l1_compact(lx_ids, ly_ids); 
+    new_ssts = full_l0_l1_compact(lx_ids, ly_ids);
   else
-    new_ssts = full_common_compact(lx_ids, ly_ids, src_level+1); 
+    new_ssts = full_common_compact(lx_ids, ly_ids, src_level + 1);
 
   // 4. 删除旧 SST 文件并从 ssts/level_sst_ids 中移除记录
   //    删旧: 磁盘文件 + ssts 映射 + 两层 deque
   //    时机: compact 函数已返回 (合并迭代器全部析构), 此时删文件安全
-  for (auto &old_sst_id : old_level_id_x){
-    ssts[old_sst_id]->del_sst(); 
-    ssts.erase(old_sst_id); 
+  for (auto &old_sst_id : old_level_id_x) {
+    ssts[old_sst_id]->del_sst();
+    ssts.erase(old_sst_id);
   }
 
-  for (auto &old_sst_id:old_level_id_y){
-    ssts[old_sst_id]->del_sst(); 
-    ssts.erase(old_sst_id); 
+  for (auto &old_sst_id : old_level_id_y) {
+    ssts[old_sst_id]->del_sst();
+    ssts.erase(old_sst_id);
   }
 
   level_sst_ids[src_level].clear();
-  level_sst_ids[src_level+1].clear();
-  
+  level_sst_ids[src_level + 1].clear();
+
   // 5. 将新的 SST 加入 level_sst_ids[src_level+1] 并排序
   //    登记新 SST 并按 id 排序
   //    为什么按 id 排 = 按 key 排: next_sst_id 单调递增, 且 gen_sst_from_iter
   //    按 key 升序生成 -> id 序就是 key 序 (参考原话: "此处没必要reverse了")
-  for (auto &new_sst : new_ssts){
-    level_sst_ids[src_level+1].push_back(new_sst->get_sst_id());
-    ssts[new_sst->get_sst_id()] = new_sst; 
+  for (auto &new_sst : new_ssts) {
+    level_sst_ids[src_level + 1].push_back(new_sst->get_sst_id());
+    ssts[new_sst->get_sst_id()] = new_sst;
   }
 
   // Q: 为什么"按 id 排"就等价"按 key 排"?
-  // A: full_common_compact 和 full_l0_l1_compact 中的 gen_sst_from_iter 按 key 升序产出 SST（合并迭代器全局有序）
-  //    其中 gen_sst_from_iter 中 next_sst_id++ 全局单调递增 → 后生成的 SST id 一定更大
+  // A: full_common_compact 和 full_l0_l1_compact 中的 gen_sst_from_iter 按 key
+  // 升序产出 SST（合并迭代器全局有序）
+  //    其中 gen_sst_from_iter 中 next_sst_id++ 全局单调递增 → 后生成的 SST id
+  //    一定更大
   std::sort(level_sst_ids[src_level + 1].begin(),
-            level_sst_ids[src_level + 1].end()
-  ); 
-   
+            level_sst_ids[src_level + 1].end());
+
   spdlog::debug("LSMEngine--Compaction: Finished compaction. New SSTs added "
                 "at level{}",
                 src_level + 1);
 
   // 5. 更新最大层级
-  cur_max_level = (std::max)(cur_max_level, src_level+1); 
+  cur_max_level = (std::max)(cur_max_level, src_level + 1);
 }
 
 // 负责完成 l0 和 l1 的 full compact
@@ -638,7 +641,8 @@ LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
         iter.is_valid() && !iter.is_end() && (*iter).first == cur_key;
 
     // 2. 到阈值且不在版本中间 -> 落盘一个 SST, 重置 builder
-    //    当 estimated_size >= target_sst_size 时 (注意不能在相同 key 的不同版本之间切分) 
+    //    当 estimated_size >= target_sst_size 时 (注意不能在相同 key
+    //    的不同版本之间切分)
     if (!next_is_same_key &&
         new_sst_builder.estimated_size() >= target_sst_size) {
       size_t sst_id = next_sst_id++;
@@ -651,8 +655,8 @@ LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
           "level{}",
           sst_id, target_level);
 
-      // 调用 builder.build() 生成 SST 之后并重置 builder 
-      // 迭代结束后若 builder 非空则再次 build 
+      // 调用 builder.build() 生成 SST 之后并重置 builder
+      // 迭代结束后若 builder 非空则再次 build
       new_sst_builder =
           (wk > 0 && vlog_)
               ? SSTBuilder(TomlConfig::getInstance().getLsmBlockSize(), true,
