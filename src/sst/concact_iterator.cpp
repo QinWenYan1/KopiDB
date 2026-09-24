@@ -7,37 +7,33 @@ namespace tiny_lsm {
 // 迭代器刚创建时，就应该指向第一条可见记录，而不一定是第一张 SST
 ConcactIterator::ConcactIterator(std::vector<std::shared_ptr<SST>> ssts,
                                  uint64_t tranc_id, bool keep_all_versions)
-    : cur_iter(nullptr, tranc_id, keep_all_versions), 
-      cur_idx(0),
-      ssts(ssts),
-      max_tranc_id_(tranc_id), 
-      keep_all_versions_(keep_all_versions) {
+    : cur_iter(nullptr, tranc_id, keep_all_versions), cur_idx(0), ssts(ssts),
+      max_tranc_id_(tranc_id), keep_all_versions_(keep_all_versions) {
   // 从第一张 SST 开始寻找
   // 第一张 SST 可能没有可见记录，不能只尝试 ssts[0]
   for (; cur_idx < this->ssts.size(); ++cur_idx) {
     // SST::begin() 内部调用已经修好的 seek_first()，
     // 会寻找这张 SST 中的第一条可见记录。
-    cur_iter = this->ssts[cur_idx]->begin(max_tranc_id_, keep_all_versions_); 
+    cur_iter = this->ssts[cur_idx]->begin(max_tranc_id_, keep_all_versions_);
 
     // 找到可见记录，构造完成。
     // 可见墓碑也属于有效记录，继续保留给上层处理。
     if (cur_iter.is_valid())
-      return; 
+      return;
 
     // 整张 SST 都没有可见记录，继续尝试下一张。
   }
 
   // 输入为空，或者全部 SST 都没有可见记录。
   // cur_idx == ssts.size()，统一使用空 SST 迭代器表示结束。
-  cur_iter = SstIterator(nullptr, max_tranc_id_, keep_all_versions_); 
-
-
+  cur_iter = SstIterator(nullptr, max_tranc_id_, keep_all_versions_);
 }
 
 // Lab 4.3 自增运算符重载
 BaseIterator &ConcactIterator::operator++() {
   // 已经结束时保持原状，避免继续增加 cur_idx。
-  if (is_end()) return *this; 
+  if (is_end())
+    return *this;
 
   // 1. 先在当前表内推进一格 (块内/跨块由 SstIterator 自己管)
   //    SST 内部的跨块和可见性过滤由 SstIterator 负责
@@ -53,9 +49,9 @@ BaseIterator &ConcactIterator::operator++() {
     // 必须先检查边界，再访问 ssts[cur_idx]
     // 超出边界，直接返回 end() iterator
     if (cur_idx >= ssts.size()) {
-      cur_iter = SstIterator(nullptr, max_tranc_id_, keep_all_versions_); 
-      return *this; 
-    } 
+      cur_iter = SstIterator(nullptr, max_tranc_id_, keep_all_versions_);
+      return *this;
+    }
 
     // 新 SST 从第一条可见记录开始。
     // 这里不能再额外 ++，否则会跳过它的第一条可见记录。
