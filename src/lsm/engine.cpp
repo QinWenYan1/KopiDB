@@ -152,7 +152,7 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
         if (sst_it != sst->end()) {
           // else: 空值=墓碑 (! 见下方已知坑)
           if (!sst_it->second.empty())
-            value = std::make_pair(sst_it->second, sst_it.get_tranc_id());
+            value = std::make_pair(sst_it->second, sst_it.get_cur_tranc_id());
           // 该 key 已裁决, 不再查更旧的 L0 文件
           break;
         }
@@ -181,7 +181,7 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
 
           // sst 中也命中，将 value 记录
           if (sst_it != sst->end() && !sst_it->second.empty())
-            value = std::make_pair(sst_it->second, sst_it.get_tranc_id());
+            value = std::make_pair(sst_it->second, sst_it.get_cur_tranc_id());
           break;
         } else if (sst->get_last_key() < key)
           left = mid + 1;
@@ -212,7 +212,7 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
         // 空值 = 墓碑, 已删除, 不再往旧层查
         if (sst_it->second.empty())
           return std::nullopt;
-        return std::make_pair(sst_it->second, sst_it.get_tranc_id());
+        return std::make_pair(sst_it->second, sst_it.get_cur_tranc_id());
       }
     }
   }
@@ -238,7 +238,7 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
           if (sst_it->second.empty())
             return std::nullopt;
           // 不是空，那么就是有效值，组装后返回
-          return std::make_pair(sst_it->second, sst_it.get_tranc_id());
+          return std::make_pair(sst_it->second, sst_it.get_cur_tranc_id());
         }
         // 本层只有这一个文件可能含 key, 不在就换更旧的一层
         break;
