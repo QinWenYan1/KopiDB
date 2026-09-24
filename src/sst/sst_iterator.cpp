@@ -328,9 +328,7 @@ SstIterator::merge_sst_iterator(std::vector<SstIterator> iter_vec,
       it_begin.items.emplace(
           iter.key(),
           iter.m_sst->resolve_value(iter.m_block_it->operator*().second),
-          iter.m_sst->get_sst_id(), 
-          0,
-          iter.get_cur_tranc_id()); 
+          iter.m_sst->get_sst_id(), 0, iter.get_cur_tranc_id());
       ++iter;
     }
   }
