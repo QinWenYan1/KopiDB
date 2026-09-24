@@ -1,7 +1,6 @@
 #include "lsm/engine.h"
 #include "block/block_cache.h"
 #include "config/config.h"
-#include "consts.h"
 #include "iterator/iterator.h"
 #include "logger/logger.h"
 #include "lsm/level_iterator.h"
@@ -11,7 +10,6 @@
 #include "sst/sst.h"
 #include "sst/sst_iterator.h"
 #include <algorithm>
-#include <cassert>
 #include <cstddef>
 #include <filesystem>
 #include <iostream>
@@ -114,7 +112,14 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id) {
   //    参考实现这里把 SST 查询逻辑原样复制了一遍, sst_get_ 沦为死代码;
   //    我们委托消重 (语义逐行核对过, 等价; sst_get_ 就是为此存在的)
   std::shared_lock<std::shared_mutex> lock(ssts_mtx);
-  return sst_get_(key, tranc_id);
+  auto sst_ret = sst_get_(key, tranc_id);
+
+  // 对普通查询而言，墓碑表示 key 已删除x
+  // 先确认 optional 有值，再访问其中的记录
+  if (sst_ret.has_value() && sst_ret->first.empty())
+    return std::nullopt; 
+
+  return sst_ret; 
 }
 
 // Lab 4.2 批量查询
@@ -231,10 +236,7 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
         auto sst_it = sst->get(key, tranc_id);
         // 检查是否为有效 sst, 而不是尾后 sst
         if (sst_it != sst->end()) {
-          // 被标记为墓碑了，直接返回空值
-          if (sst_it->second.empty())
-            return std::nullopt;
-          // 不是空，那么就是有效值，组装后返回
+          // 普通记录和墓碑都返回，保留真实版本号。
           return std::make_pair(sst_it->second, sst_it.get_cur_tranc_id());
         }
         // 本层只有这一个文件可能含 key, 不在就换更旧的一层
