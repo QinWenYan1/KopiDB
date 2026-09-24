@@ -204,14 +204,11 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
     for (auto &sst_id : level_sst_ids[0]) {
       // 取出 sst 和 sst_it 一个一个查找
       // get_cur_tranc_id()：永远返回当前 entry 的真实写入 id
-      // get_tranc_id()： 有条件——keep_all_versions_=true 时返回 entry 真实 id
-      //                  false 时返回 max_tranc_id_，即构造时传入的查询 id
       auto &sst = ssts[sst_id];
       auto sst_it = sst->get(key, tranc_id);
       if (sst_it != sst->end()) {
-        // 空值 = 墓碑, 已删除, 不再往旧层查
-        if (sst_it->second.empty())
-          return std::nullopt;
+        // 保留墓碑及其版本号，供事务提交时检查冲突。
+        // 找到墓碑也立即返回，不能继续查更旧的值。
         return std::make_pair(sst_it->second, sst_it.get_cur_tranc_id());
       }
     }
