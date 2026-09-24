@@ -44,13 +44,13 @@ Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
   std::vector<SstIterator> l0_iters;
 
   // 构造期间持有的是读锁，用 find 查询，避免 operator[] 插入空层。
-  auto l0 = engine_->level_sst_ids.find(0); 
-  if (l0 != engine_->level_sst_ids.end()){
-    for (size_t sst_id : l0->second){
-      const auto &sst = engine_->ssts.at(sst_id); 
+  auto l0 = engine_->level_sst_ids.find(0);
+  if (l0 != engine_->level_sst_ids.end()) {
+    for (size_t sst_id : l0->second) {
+      const auto &sst = engine_->ssts.at(sst_id);
       // 按当前快照读取，保留可见的删除标记。
       l0_iters.push_back(sst->begin(max_tranc_id_));
-    } 
+    }
   }
 
   // merge_sst_iterator 内部已经设置 skip_delete=false，
@@ -58,9 +58,9 @@ Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
   //
   // 这里第三个参数 false 是 keep_all_versions：
   // 同 key 只需要最新可见版本，不需要输出全部历史版本
-  auto [l0_begin, l0_end] = SstIterator::merge_sst_iterator(std::move(l0_iters), max_tranc_id_, false); 
-  iter_vec.push_back(std::make_shared<HeapIterator>(std::move(l0_begin))); 
-
+  auto [l0_begin, l0_end] = SstIterator::merge_sst_iterator(
+      std::move(l0_iters), max_tranc_id_, false);
+  iter_vec.push_back(std::make_shared<HeapIterator>(std::move(l0_begin)));
 
   // ===== 第 3 路来源: L1 及更深层, 每层一个 ConcactIterator =====
   // L1+ 经过 compact 整理: 同层各 SST 的 key 范围有序且不重叠,
@@ -123,11 +123,11 @@ std::pair<size_t, std::string> Level_Iterator::get_min_key_idx() const {
 
       min_key = key;
       min_idx = i;
-    } else if (key == min_key &&
-               iter_vec[i]->get_cur_tranc_id() >
-                   iter_vec[min_idx]->get_cur_tranc_id()) {
+    } else if (key == min_key && iter_vec[i]->get_cur_tranc_id() >
+                                     iter_vec[min_idx]->get_cur_tranc_id()) {
       // 同 key 两路都有: 版本号大的 (更新的) 赢
-      // max_tranc_id_ == 0 表示“不限制哪些版本可见”，但同一个 key 有多个版本时，仍然要选择最新的那个。
+      // max_tranc_id_ == 0 表示“不限制哪些版本可见”，但同一个 key
+      // 有多个版本时，仍然要选择最新的那个。
 
       min_idx = i;
     }
@@ -155,7 +155,7 @@ void Level_Iterator::update_current() const {
   // cur_idx_ 指向的那一路已经耗尽, 还被要求读值 = 用法错误, 抛异常
   if (!iter_vec[cur_idx_]->is_valid())
     throw std::runtime_error(
-        "Level_Iterator::update_current: cannot dereference this iterator");
+        "Level_Iterator::update_current: cannot dereference this invalid iterator");
   // 解引用孩子, 按值拷进停车位
   cached_value = **iter_vec[cur_idx_];
 }
@@ -185,7 +185,7 @@ BaseIterator &Level_Iterator::operator++() {
 bool Level_Iterator::operator==(const BaseIterator &other) const {
   // 1. 类型不同永不相等 (基类引用里可能装着别的迭代器)
   if (other.get_type() != IteratorType::LevelIterator)
-    return false; 
+    return false;
   auto &rhs = dynamic_cast<const Level_Iterator &>(other);
 
   // 2. 先处理 end：
@@ -203,15 +203,13 @@ bool Level_Iterator::operator==(const BaseIterator &other) const {
   //
   //    不能只比较 cur_idx_：
   //    它表示“选中了哪一路”，并不表示“走到了哪个 key”。
-  return  engine_ == rhs.engine_ && 
-          max_tranc_id_ == rhs.max_tranc_id_ &&
-          operator*() == rhs.operator*(); 
-
+  return engine_ == rhs.engine_ &&
+         max_tranc_id_ == rhs.max_tranc_id_ && operator*() == rhs.operator*();
 }
 
 // Lab 4.6 != 重载
 bool Level_Iterator::operator!=(const BaseIterator &other) const {
-  return !(operator==(other)); 
+  return !(operator==(other));
 }
 
 // Lab 4.6 * 重载
@@ -219,15 +217,15 @@ BaseIterator::value_type Level_Iterator::operator*() const {
   // end 没有当前元素，不能解引用。
   if (!is_valid())
     throw std::runtime_error(
-    "Level_Iterator::operator*: cannot dereference end iterator");
-  
+        "Level_Iterator::operator*: cannot dereference this invalid iterator");
+
   // cur_idx_ 已由构造函数或 ++ 选好，指向当前应输出的数据来源。
   //
   // 第一个 *：解引用 shared_ptr，得到 BaseIterator 对象；
   // 第二个 *：调用该对象的 operator*，取得 key-value。
   //
   // 返回类型是 value_type，按值返回，不需要为它准备长期存活的缓存。
-  return **iter_vec[cur_idx_]; 
+  return **iter_vec[cur_idx_];
 }
 
 // Lab 4.6 -> 重载
@@ -235,18 +233,17 @@ BaseIterator::pointer Level_Iterator::operator->() const {
   // end 没有当前元素，不能解引用。
   if (!is_valid())
     throw std::runtime_error(
-    "Level_Iterator::operator->: cannot dereference end iterator");
-  
+        "Level_Iterator::operator->: cannot dereference this invalid iterator");
+
   // -> 必须返回指针，因此不能返回临时 key-value 的地址。
   // 将当前记录保存到成员 cached_value 中，让对象在函数返回后仍然存在。
-  update_current(); 
 
   // cached_value 是 optional<pair<string, string>>：
   // value() 取得内部 pair 的引用，取地址后就是需要返回的 pointer
   //
   // cached_value 声明为 mutable，所以这里即使是 const 成员函数，
   // 仍然可以更新缓存并取得内部对象的非 const 指针。
-  return &(*cached_value); 
+  return &(*cached_value);
 }
 
 IteratorType Level_Iterator::get_type() const {
