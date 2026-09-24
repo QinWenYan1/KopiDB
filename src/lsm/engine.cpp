@@ -436,10 +436,17 @@ LSMEngine::lsm_iters_monotony_predicate(
   return std::nullopt;
 }
 
+// Lab 4.7 
 Level_Iterator LSMEngine::begin(uint64_t tranc_id) {
-  // TODO: Lab 4.7
-  // ? 返回 Level_Iterator(shared_from_this(), tranc_id)
-  throw std::runtime_error("Not implemented");
+  // shared_from_this() 获取当前引擎的共享指针，
+  // 让迭代器持有引擎，保证遍历期间引擎仍然存在。
+  //
+  // tranc_id 是读取的版本上限；0 表示不限制版本。
+  //
+  // Level_Iterator 的构造函数已经负责：
+  // 合并 MemTable 和各层 SST，选择最新可见版本，
+  // 跳过墓碑，并定位到第一个有效 key；没有结果则处于结束状态。
+  return Level_Iterator(shared_from_this(), tranc_id);
 }
 
 Level_Iterator LSMEngine::end() {
