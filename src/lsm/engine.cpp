@@ -454,18 +454,46 @@ LSMEngine::lsm_iters_monotony_predicate(
       const int pos = predicate(key); 
 
       // 单调谓词: 正数在范围左侧，0 命中，负数在范围右侧
+      // 单调谓词规定:
+      //    0：满足条件
+      //    >0：需要向右找
+      //    <0：需要向左找
       if (pos < 0) break; 
       if (pos > 0) continue; 
 
       items.emplace_back(
-        std::move(key), std::move(value), priority, 0,
+        std::move(key), 
+        std::move(value), 
+        priority, 0,
         mem_it.get_cur_tranc_id()
       ); 
     }
 
+
     // 2. 遍历所有 SST, 对每个 SST 调用 sst_iters_monotony_predicate
     //     将所有结果合并到 item_vec (注意过滤事务可见性和相同 key 只保留最新版本)
-    
+    //     level_sst_ids 按层号递增；L0 文件按新到旧排列
+    for (const auto &[level, ids] : level_sst_ids){
+      for(size_t id : ids){
+        --priority; 
+        auto range = sst_iters_monotony_predicate(ssts.at(id), tranc_id, predicate); 
+        if (!range.has_value()) continue; 
+
+        auto [it, stop] = std::move(*range); 
+        for (; it != stop && !it.is_end(); ++it){
+          // 可见性过滤可能让区间起点落在某个块的末尾
+          // 此时不能解引用，让循环的 ++ 推进到后续块
+          if (!it.is_valid()) continue; 
+          
+          auto [key, value] = *it; 
+          const int pos = predicate(key); 
+
+        }
+      }
+    }
+
+
+
 
 
   }
