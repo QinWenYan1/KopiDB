@@ -527,6 +527,16 @@ LSMEngine::lsm_iters_monotony_predicate(
   //
   //    skip_delete=true：最新可见版本若为墓碑，整组 key 都跳过
   //    keep_all_versions=false：每个 key 只输出最新可见版本
+  auto results = std::make_shared<HeapIterator>(
+    std::move(items), tranc_id, true, false
+  );
+
+  // 候选记录可能全部被墓碑或可见性规则过滤
+  // 因此要检查最终迭代器，不能只检查 items 是否为空
+  if (!results->is_valid())
+    return std::nullopt; 
+
+  
 
 }
 
