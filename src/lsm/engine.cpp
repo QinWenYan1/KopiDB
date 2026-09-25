@@ -424,16 +424,35 @@ std::string LSMEngine::get_sst_path(size_t sst_id, size_t target_level) {
   return ss.str();
 }
 
+  // Lab 4.7 谓词查询
 std::optional<std::pair<TwoMergeIterator, TwoMergeIterator>>
 LSMEngine::lsm_iters_monotony_predicate(
     uint64_t tranc_id, std::function<int(const std::string &)> predicate) {
-  // TODO: Lab 4.7 谓词查询
   // ? 1. 从 memtable 查询: memtable.iters_monotony_predicate(tranc_id,
   // predicate) ? 2. 遍历所有 SST, 对每个 SST 调用 sst_iters_monotony_predicate
   // ?    将所有结果合并到 item_vec (注意过滤事务可见性和相同 key
   // 只保留最新版本) ? 3. 构造 TwoMergeIterator 合并 memtable 结果和 sst 结果
   // ? 4. 若均为空返回 nullopt
-  return std::nullopt;
+
+  // 收集所有来源的候选记录
+  // 此时必须保留墓碑，等跨来源比较完成后才能过滤
+  std::vector<SearchItem> items; 
+
+  {
+    // 收集期间保护 SST 列表和文件，避免 flush/compact 改动它们
+    // 收集完成后，items 自己持有 key/value，可以释放锁
+    std::shared_lock<std::shared_mutex> lock(ssts_mtx);
+
+    // 只有 key 和版本号都相同时，才比较来源优先级:
+    //  1.  MemTable 最高
+    //  2. 随后按层从浅到深分配递减的优先级
+    size_t priority = ssts.size(); 
+
+    // 1. 收集 MemTable 中满足谓词的记录
+    // false 是 skip_delete=false：保留删除标记
+     
+  }
+
 }
 
 // Lab 4.7: 返回 Level_Iterator(shared_from_this(), tranc_id)
@@ -455,7 +474,7 @@ Level_Iterator LSMEngine::end() {
   // 因此 is_end() 返回 true，用它表示遍历结束。
   //
   // 这里只创建结束标记，不需要读取数据或持有引擎。
-
+  // Level_Iterator() 是函数声明， 需要使用{}
   return Level_Iterator{};
 }
 
