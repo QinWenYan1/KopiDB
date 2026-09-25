@@ -428,10 +428,7 @@ std::string LSMEngine::get_sst_path(size_t sst_id, size_t target_level) {
 std::optional<std::pair<TwoMergeIterator, TwoMergeIterator>>
 LSMEngine::lsm_iters_monotony_predicate(
     uint64_t tranc_id, std::function<int(const std::string &)> predicate) {
-  // ? 1. 从 memtable 查询: memtable.iters_monotony_predicate(tranc_id,
-  // predicate) ? 2. 遍历所有 SST, 对每个 SST 调用 sst_iters_monotony_predicate
-  // ?    将所有结果合并到 item_vec (注意过滤事务可见性和相同 key
-  // 只保留最新版本) ? 3. 构造 TwoMergeIterator 合并 memtable 结果和 sst 结果
+  // ? 3. 构造 TwoMergeIterator 合并 memtable 结果和 sst 结果
   // ? 4. 若均为空返回 nullopt
 
   // 收集所有来源的候选记录
@@ -449,8 +446,28 @@ LSMEngine::lsm_iters_monotony_predicate(
     size_t priority = ssts.size(); 
 
     // 1. 收集 MemTable 中满足谓词的记录
+    //    从 memtable 查询: memtable.iters_monotony_predicate(tranc_id, predicate)
     // false 是 skip_delete=false：保留删除标记
-     
+    auto mem_it = memtable.begin(tranc_id, false); 
+    for (; mem_it.is_valid(); ++mem_it){
+      auto [key, value] = *mem_it; 
+      const int pos = predicate(key); 
+
+      // 单调谓词: 正数在范围左侧，0 命中，负数在范围右侧
+      if (pos < 0) break; 
+      if (pos > 0) continue; 
+
+      items.emplace_back(
+        std::move(key), std::move(value), priority, 0,
+        mem_it.get_cur_tranc_id()
+      ); 
+    }
+
+    // 2. 遍历所有 SST, 对每个 SST 调用 sst_iters_monotony_predicate
+    //     将所有结果合并到 item_vec (注意过滤事务可见性和相同 key 只保留最新版本)
+    
+
+
   }
 
 }
