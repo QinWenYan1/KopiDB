@@ -5,7 +5,7 @@
 [![Build](https://img.shields.io/badge/build-Xmake-green.svg)](https://xmake.io)
 [![RocksDB DeepWiki](https://img.shields.io/badge/RocksDB-DeepWiki-purple.svg)](https://deepwiki.com/facebook/rocksdb)
 
-一个类 RocksDB 的教学级 LSM-tree KV 存储引擎，跟随 [tiny-lsm 教程](https://vanilla-beauty.github.io/tiny-lsm/book/introduction.html) 逐模块手写实现。
+一个类 RocksDB 的教学级 LSM-tree KV 存储引擎。
 
 ## 📖 什么是 LSM-tree？
 
