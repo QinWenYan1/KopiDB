@@ -479,24 +479,54 @@ LSMEngine::lsm_iters_monotony_predicate(
         auto range = sst_iters_monotony_predicate(ssts.at(id), tranc_id, predicate); 
         if (!range.has_value()) continue; 
 
-        auto [it, stop] = std::move(*range); 
-        for (; it != stop && !it.is_end(); ++it){
-          // 可见性过滤可能让区间起点落在某个块的末尾
-          // 此时不能解引用，让循环的 ++ 推进到后续块
+        auto [it, range_end] = std::move(*range); 
+        for (; it != range_end && !it.is_end(); ++it){
+          //  可见性过滤可能让区间起点落在某个块的末尾
+          //  此时不能解引用，让循环的 ++ 推进到后续块
+          //  为什么？
+          //  你当前的范围查询在 sst_iterator.cpp 会把这个块迭代器直接装入 SST 迭代器
+          //  因此可能出现：
+          //  it.is_valid() == false  // 当前没有可读取的记录
+          //  it.is_end()   == false  // 仍持有块迭代器，尚未归一化为 SST 结束状态
+          //  所以先 continue，避免执行 *it，
+          //  for 循环的 continue 仍然会执行末尾的 ++it，
+          //  由 SST 迭代器推进到下一个可见的 Block 
           if (!it.is_valid()) continue; 
           
+          //  重新执行谓词
+          //  是在保护查询范围边界；跨块推进也可能跨过块尾形式的 range_end，
+          //  不只与不可见记录有关
+          //  假设查询范围是 [key20, key60]，读取版本上限是 5：
+          //  Block 0：key20@2   ← 可见，在范围内
+          //  Block 1：key50@9   ← 不可见，在范围内
+          //  Block 2：key70@2   ← 可见，但已超出范围
+          //  这时范围函数可能把 range_end 设置在 Block 1 的尾后位置
+          //  但从 key20@2 执行一次 ++it 时: 
+          //  就出现问题: 迭代器直接跨过了 stop 所代表的位置，因此 it != stop 仍然成立
+          //  重新执行谓词就能发现，解决问题
           auto [key, value] = *it; 
           const int pos = predicate(key); 
 
+          // ++ 可能因不可见记录而跨过区间边界，再确认一次
+          if (pos < 0) break; 
+          if (pos > 0) continue; 
+          
+          // 不在收集阶段按 key 去重，也不删除墓碑
+          // 使用真实版本号，让全局堆决定同 key 的胜者
+          items.emplace_back(
+            std::move(key), std::move(value), priority, 
+            static_cast<int>(level), it.get_cur_tranc_id()
+          ); 
         }
       }
     }
-
-
-
-
-
   }
+
+  // 3. 所有来源进入同一个堆，统一处理：
+  //    key 升序 → 版本降序 → 同版本按来源优先级
+  //
+  //    skip_delete=true：最新可见版本若为墓碑，整组 key 都跳过
+  //    keep_all_versions=false：每个 key 只输出最新可见版本
 
 }
 
