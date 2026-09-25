@@ -13,52 +13,12 @@ BlockCache::BlockCache(size_t capacity, size_t k)
 BlockCache::~BlockCache() = default;
 
 std::shared_ptr<Block> BlockCache::get(int sst_id, int block_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  ++total_requests_; // 增加总请求数
-  auto key = std::make_pair(sst_id, block_id);
-  auto it = cache_map_.find(key);
-  if (it == cache_map_.end()) {
-    return nullptr; // 缓存未命中
-  }
-
-  ++hit_requests_; // 增加命中请求数
-  // 更新访问次数
-  update_access_count(it->second);
-
-  return it->second->cache_block;
+  // TODO: Lab 4.8 查询一个 Block
+  return nullptr;
 }
 
 void BlockCache::put(int sst_id, int block_id, std::shared_ptr<Block> block) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  auto key = std::make_pair(sst_id, block_id);
-  auto it = cache_map_.find(key);
-
-  if (it != cache_map_.end()) {
-    // 更新已有缓存项
-    // ! 照理说 Block 类的数据是不可变的，这里的更新分支应该不会存在,
-    // 只是debug用
-    it->second->cache_block = block;
-    update_access_count(it->second);
-  } else {
-    // 插入新缓存项
-    if (cache_map_.size() >= capacity_) {
-      // 移除最久未使用的缓存项
-      if (!cache_list_less_k.empty()) {
-        // 优先从 cache_list_less_k 中移除
-        cache_map_.erase(std::make_pair(cache_list_less_k.back().sst_id,
-                                        cache_list_less_k.back().block_id));
-        cache_list_less_k.pop_back();
-      } else {
-        cache_map_.erase(std::make_pair(cache_list_greater_k.back().sst_id,
-                                        cache_list_greater_k.back().block_id));
-        cache_list_greater_k.pop_back();
-      }
-    }
-
-    CacheItem item = {sst_id, block_id, block, 1};
-    cache_list_less_k.push_front(item);
-    cache_map_[key] = cache_list_less_k.begin();
-  }
+  // TODO: Lab 4.8 插入一个 Block
 }
 
 double BlockCache::hit_rate() const {
