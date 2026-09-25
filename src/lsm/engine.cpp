@@ -536,7 +536,17 @@ LSMEngine::lsm_iters_monotony_predicate(
   if (!results->is_valid())
     return std::nullopt; 
 
-  
+
+  // 4. 接口要求返回 TwoMergeIterator
+  //    全局归并已由上面的 HeapIterator 完成，
+  //    这里用“结果流 + 空流”适配返回类型
+  return std::make_pair(
+  TwoMergeIterator(
+      results,
+      std::make_shared<HeapIterator>(), 
+      tranc_id), 
+  TwoMergeIterator{}
+  ); 
 
 }
 
