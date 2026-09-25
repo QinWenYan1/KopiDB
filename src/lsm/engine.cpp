@@ -568,8 +568,7 @@ Level_Iterator LSMEngine::end() {
   // 默认构造的迭代器没有子迭代器，iter_vec 为空，
   // 因此 is_end() 返回 true，用它表示遍历结束。
   //
-  // 这里只创建结束标记，不需要读取数据或持有引擎。
-  // Level_Iterator() 是函数声明， 需要使用{}
+  // 这里只创建结束标记，不需要读取数据或持有引擎
   return Level_Iterator{};
 }
 
