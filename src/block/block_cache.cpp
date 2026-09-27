@@ -50,6 +50,8 @@ void BlockCache::put(int sst_id, int block_id, std::shared_ptr<Block> block_ptr)
   }
 
   // 2. 新块：如果缓存已满，先淘汰一个旧节点
+  //    cache_map_.size()：当前缓存了多少个 Block
+  //    capacity_：最多允许缓存多少个 Block
   if (cache_map_.size() >= capacity_){
     // 优先淘汰访问次数不足 K 的节点
     // 如果它们不存在，再从达到 K 次的链表中淘汰
@@ -66,6 +68,17 @@ void BlockCache::put(int sst_id, int block_id, std::shared_ptr<Block> block_ptr)
     list.pop_back();       
   }
 
+  // 3. 首次插入算一次访问，与参考实现保持一致
+  //    K == 1：已经达到阈值，进入 greater_k
+  //    K > 1 ：尚未达到阈值，进入 less_k
+  auto &target_list = (k_ == 1)
+                              ? cache_list_greater_k
+                              : cache_list_less_k; 
+  target_list.push_back(
+    CacheItem{sst_id, block_id, std::move(block_ptr), 1}
+  );
+
+  
 
 }
 
