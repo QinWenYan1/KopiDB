@@ -74,12 +74,12 @@ void BlockCache::put(int sst_id, int block_id, std::shared_ptr<Block> block_ptr)
   auto &target_list = (k_ == 1)
                               ? cache_list_greater_k
                               : cache_list_less_k; 
-  target_list.push_back(
+  target_list.push_front(
     CacheItem{sst_id, block_id, std::move(block_ptr), 1}
   );
 
-  
-
+  // 4. 保存节点位置，以后可直接通过哈希表定位，无须遍历链表。
+  cache_map_.emplace(key, target_list.begin()); 
 }
 
 double BlockCache::hit_rate() const {
