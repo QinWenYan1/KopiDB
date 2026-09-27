@@ -16,8 +16,20 @@ BlockCache::~BlockCache() = default;
 
 // TODO: Lab 4.8 查询一个 Block
 std::shared_ptr<Block> BlockCache::get(int sst_id, int block_id) {
+  // get 虽然用于读取 Block，但会修改计数和链表位置，
+  // 所以也必须加锁，并与 put 使用同一把锁
+  std::lock_guard<std::mutex> lock(mutex_); 
 
-  return nullptr;
+  // 每次查询都计入总请求数，包括未命中的查询。
+  ++total_requests_;
+
+  const auto key = std::make_pair(sst_id, block_id); 
+  auto found = cache_map_.find(key);
+
+  // 没缓存是正常情况，不抛异常
+  // 返回 nullptr，让 SST::read_block() 继续从磁盘读取
+  if (found == cache_map_.end())
+    return nullptr;
 }
 
 // TODO: Lab 4.8 插入一个 Block
