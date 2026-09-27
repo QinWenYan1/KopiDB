@@ -6,6 +6,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <unordered_map>
+#include <utility>
 
 namespace tiny_lsm {
 BlockCache::BlockCache(size_t capacity, size_t k)
@@ -55,7 +56,14 @@ void BlockCache::put(int sst_id, int block_id, std::shared_ptr<Block> block_ptr)
     auto &list = cache_list_less_k.empty()
                           ? cache_list_greater_k 
                           : cache_list_less_k;
-                          
+
+    // 两个链表均把最近使用的节点放在头部
+    // 因此被选中链表的尾部就是淘汰对象
+    const auto &target = list.back();
+
+    // 先利用节点中的 ID 删除哈希索引，再销毁链表节点
+    cache_map_.erase(std::make_pair(target.sst_id, target.block_id));
+    list.pop_back();       
   }
 
 
