@@ -4,6 +4,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <unordered_map>
 
 namespace tiny_lsm {
@@ -12,13 +13,29 @@ BlockCache::BlockCache(size_t capacity, size_t k)
 
 BlockCache::~BlockCache() = default;
 
+// TODO: Lab 4.8 查询一个 Block
 std::shared_ptr<Block> BlockCache::get(int sst_id, int block_id) {
-  // TODO: Lab 4.8 查询一个 Block
+  
   return nullptr;
 }
 
+// TODO: Lab 4.8 插入一个 Block
 void BlockCache::put(int sst_id, int block_id, std::shared_ptr<Block> block) {
-  // TODO: Lab 4.8 插入一个 Block
+  // K 必须至少为 1
+  if(k_ < 0)
+    throw std::runtime_error("BlockCache: k must be at least 1");  
+
+  // 空指针属于无效输入，明确通知调用方。
+  if (!block)
+    throw std::invalid_argument("BlockCache::put: block must not be null"); 
+
+  // 容量为 0 表示不缓存；空指针也不占用缓存位置。
+  if (capacity_ == 0)
+    return; 
+
+  const auto key = std::make_pair(sst_id, block_id); 
+  auto found = cache_map_.find(key); 
+
 }
 
 double BlockCache::hit_rate() const {
