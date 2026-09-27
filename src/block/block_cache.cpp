@@ -42,9 +42,20 @@ void BlockCache::put(int sst_id, int block_id, std::shared_ptr<Block> block_ptr)
   //      重复回填是可能发生的，例如两个线程都曾查询未命中
   //      此分支不增加节点数量，因此不需要淘汰
   if (found != cache_map_.end()){
-    found->second->cache_block = std::move(block_ptr); 
+    // 同一个 SST Block 的内容不变，保留已有缓存对象。
+    // 本次重复回填仍算一次使用，更新访问次数和链表位置。
     update_access_count(found->second); 
     return; 
+  }
+
+  // 2. 新块：如果缓存已满，先淘汰一个旧节点
+  if (cache_map_.size() >= capacity_){
+    // 优先淘汰访问次数不足 K 的节点
+    // 如果它们不存在，再从达到 K 次的链表中淘汰
+    auto &list = cache_list_less_k.empty()
+                          ? cache_list_greater_k 
+                          : cache_list_less_k;
+                          
   }
 
 
