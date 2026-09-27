@@ -13,7 +13,7 @@ BlockCache::BlockCache(size_t capacity, size_t k)
 
 BlockCache::~BlockCache() = default;
 
-// TODO: Lab 4.8 查询一个 Block
+// Lab 4.8 查询一个 Block
 std::shared_ptr<Block> BlockCache::get(int sst_id, int block_id) {
   // get 虽然用于读取 Block，但会修改计数和链表位置，
   // 所以也必须加锁，并与 put 使用同一把锁
@@ -43,7 +43,7 @@ std::shared_ptr<Block> BlockCache::get(int sst_id, int block_id) {
   return found->second->cache_block;
 }
 
-// TODO: Lab 4.8 插入一个 Block
+// Lab 4.8 插入一个 Block
 void BlockCache::put(int sst_id, int block_id,
                      std::shared_ptr<Block> block_ptr) {
   // 哈希索引和链表必须同步更新，整个操作持有同一把锁
@@ -111,7 +111,7 @@ double BlockCache::hit_rate() const {
              : static_cast<double>(hit_requests_) / total_requests_;
 }
 
-// TODO: Lab 4.8 更新统计信息
+// Lab 4.8 更新统计信息
 void BlockCache::update_access_count(std::list<CacheItem>::iterator it) {
   // 调用方 get()/put() 已持有 mutex_，这里不能重复加锁
   // it 来自 cache_map_ 中已经找到的条目，指向有效节点
