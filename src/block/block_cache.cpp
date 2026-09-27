@@ -1,6 +1,5 @@
 #include "block/block_cache.h"
 #include "block/block.h"
-#include <chrono>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -117,20 +116,26 @@ void BlockCache::update_access_count(std::list<CacheItem>::iterator it) {
   // 调用方 get()/put() 已持有 mutex_，这里不能重复加锁
   // it 来自 cache_map_ 中已经找到的条目，指向有效节点
 
-  if (it->access_count < k_)
+  if (it->access_count < k_){
     // 尚未达到 K 次：节点目前位于冷链表 less_k
     ++it->access_count;
 
-  if (it->access_count == k_)
-    // 把 it 指向的那个节点，从原位置 list_less_k 中的 it指向的节点摘下来，
-    // 放到链表 list_greater_k 最前面
-    cache_list_greater_k.splice(cache_list_greater_k.begin(), cache_list_less_k,
-                                it);
-  else
-    // 已经位于热链表：只需要移动到热链表头部。
-    // 次数封顶于 K，因为淘汰策略只关心是否达到 K
-    // 无须继续累加，也避免了计数长期增长后溢出
-    cache_list_greater_k.splice(cache_list_greater_k.begin(),
-                                cache_list_greater_k, it);
+    if (it->access_count == k_)
+      // 刚刚达到 K 次：从冷链表晋升到热链表头部。
+      // 把 it 指向的那个节点，从原位置 list_less_k 中的 it指向的节点摘下来，
+      // 放到链表 list_greater_k 最前面
+      cache_list_greater_k.splice(cache_list_greater_k.begin(), cache_list_less_k,
+                                  it);
+    else 
+      // 仍然不足 K 次：移动到冷链表头部
+      cache_list_less_k.splice(cache_list_less_k.begin(), cache_list_less_k,
+                                  it);
+  } else {
+      // 已经位于热链表：只需要移动到热链表头部
+      // 次数封顶于 K，因为淘汰策略只关心是否达到 K
+      // 无须继续累加，也避免了计数长期增长后溢出
+      cache_list_greater_k.splice(cache_list_greater_k.begin(),
+                                  cache_list_greater_k, it);
+  }
 }
 } // namespace tiny_lsm
