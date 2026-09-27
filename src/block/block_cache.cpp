@@ -23,8 +23,12 @@ std::shared_ptr<Block> BlockCache::get(int sst_id, int block_id) {
 // TODO: Lab 4.8 插入一个 Block
 void BlockCache::put(int sst_id, int block_id,
                      std::shared_ptr<Block> block_ptr) {
+  // 哈希索引和链表必须同步更新，整个操作持有同一把锁
+  std::lock_guard<std::mutex> lock(mutex_); 
+
   // K 必须至少为 1
-  if (k_ < 0)
+  // k_ 是无符号的 size_t，k_ < 0 永远不成立
+  if (k_ == 0)
     throw std::runtime_error("BlockCache: k must be at least 1");
 
   // 空指针属于无效输入，明确通知调用方。
