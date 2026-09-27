@@ -18,12 +18,12 @@ BlockCache::~BlockCache() = default;
 std::shared_ptr<Block> BlockCache::get(int sst_id, int block_id) {
   // get 虽然用于读取 Block，但会修改计数和链表位置，
   // 所以也必须加锁，并与 put 使用同一把锁
-  std::lock_guard<std::mutex> lock(mutex_); 
+  std::lock_guard<std::mutex> lock(mutex_);
 
   // 每次查询都计入总请求数，包括未命中的查询。
   ++total_requests_;
 
-  const auto key = std::make_pair(sst_id, block_id); 
+  const auto key = std::make_pair(sst_id, block_id);
   auto found = cache_map_.find(key);
 
   // 没缓存是正常情况，不抛异常
@@ -47,7 +47,7 @@ std::shared_ptr<Block> BlockCache::get(int sst_id, int block_id) {
 void BlockCache::put(int sst_id, int block_id,
                      std::shared_ptr<Block> block_ptr) {
   // 哈希索引和链表必须同步更新，整个操作持有同一把锁
-  std::lock_guard<std::mutex> lock(mutex_); 
+  std::lock_guard<std::mutex> lock(mutex_);
 
   // K 必须至少为 1
   // k_ 是无符号的 size_t，k_ < 0 永远不成立
