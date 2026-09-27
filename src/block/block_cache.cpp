@@ -30,6 +30,17 @@ std::shared_ptr<Block> BlockCache::get(int sst_id, int block_id) {
   // 返回 nullptr，让 SST::read_block() 继续从磁盘读取
   if (found == cache_map_.end())
     return nullptr;
+
+  // 命中：记录命中次数
+  ++hit_requests_;
+
+  // 更新该块的访问次数，并调整它所在的链表和位置。
+  // 调用时已经持有 mutex_，辅助函数内部不要重复加锁。
+  update_access_count(found->second);
+
+  // 复制 shared_ptr，让调用方与缓存共同持有 Block
+  // 不使用 std::move，否则会把缓存节点中的指针移走
+  return found->second->cache_block;
 }
 
 // TODO: Lab 4.8 插入一个 Block
