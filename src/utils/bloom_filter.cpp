@@ -70,13 +70,13 @@ BloomFilter::BloomFilter(size_t expected_elements, double false_positive_rate)
 void BloomFilter::add(const std::string &key) {
   // 一个 key 需要计算 num_hashes_ 个哈希位置
   // i 从 0 开始，表示当前计算第几个位置
-  for(size_t i = 0; i < num_hashes_; ++i){
+  for (size_t i = 0; i < num_hashes_; ++i) {
     // hash() 内部已经取模，返回合法的位数组下标
-    const size_t bit_idx = hash(key, i); 
+    const size_t bit_idx = hash(key, i);
 
     // 将对应位设为 1，其余位置保持原样
     // 即使这一位已经是 1，再次赋值也没有问题
-    bits_[bit_idx] = true; 
+    bits_[bit_idx] = true;
   }
 }
 
