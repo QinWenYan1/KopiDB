@@ -214,6 +214,22 @@ BloomFilter BloomFilter::decode(const std::vector<uint8_t> &data) {
 
   const size_t num_bytes = bf.num_bits_ / 2 + (bf.num_bits_ % 8 != 0);
 
+  // 4. 在分配位数组之前，检查剩余数据长度是否正确
+  // SST::open() 传入的是完整的 Bloom 数据段，所以长度应当恰好匹配
+  if (data.size() - off != num_bytes)
+    throw std::runtime_error("BloomFilter::decode: invalid bitmap length in bloom filter");
+  
+  // 5. 创建位数组，逐位恢复
+  bf.bits_.assign(bf.num_bits_, false);
+  
+  for (size_t i = 0; i < bf.num_bits_; ++i){
+    const uint8_t byte = data[off + i/8];
+
+    // 把目标位右移到最低位，再用 & 1 提取它
+    bf.bits_[i] = ((byte >> (i%8)) & 1u) != 0;
+  }
+
+  return bf; 
 }
 
 } // namespace tiny_lsm
