@@ -203,7 +203,16 @@ BloomFilter BloomFilter::decode(const std::vector<uint8_t> &data) {
   std::memcpy(&bf.num_hashes_, data.data() + off, sizeof(bf.num_hashes_)); 
   off += sizeof(bf.num_hashes_);
 
-  
+  // 3. 检查恢复出的基本参数
+  // 位数不能为 0，否则 hash() 中取模会出错
+  // 哈希数量不能为 0，否则查询循环不执行，会直接返回 true
+  if(bf.expected_elements_ == 0 
+    || !(0 < bf.false_positive_rate_ && bf.false_positive_rate_ < 1.0)
+    || bf.num_bits_ == 0
+    || bf.num_hashes_ == 0)
+    throw std::runtime_error("BloomFilter::decode: invalid metadata in bloom filter info");
+
+  const size_t num_bytes = bf.num_bits_ / 2 + (bf.num_bits_ % 8 != 0);
 
 }
 
