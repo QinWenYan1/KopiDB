@@ -99,7 +99,7 @@ size_t BloomFilter::hash2(const std::string &key) const {
 //  idx = 0 → (3 + 0 × 4) % 10 = 3
 //  idx = 1 → (3 + 1 × 4) % 10 = 7
 //  idx = 2 → (3 + 2 × 4) % 10 = 1
-size_t BloomFilter::hash(const std::string &key, size_t idx) const { 
+size_t BloomFilter::hash(const std::string &key, size_t idx) const {
   // 同一个 key 对应两个基础哈希值
   const size_t h1 = hash1(key);
   const size_t h2 = hash2(key);
@@ -110,7 +110,7 @@ size_t BloomFilter::hash(const std::string &key, size_t idx) const {
   //
   // 对位数组长度取模，保证最终下标在 [0, num_bits_) 内
   // 前提是过滤器已经正确初始化，num_bits_ > 0
-  return (h1 + idx * h2) % num_bits_; 
+  return (h1 + idx * h2) % num_bits_;
 }
 
 // 编码布隆过滤器为 std::vector<uint8_t>
