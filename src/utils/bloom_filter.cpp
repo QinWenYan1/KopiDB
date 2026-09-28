@@ -91,7 +91,27 @@ size_t BloomFilter::hash2(const std::string &key) const {
   return hasher(key + "salt");
 }
 
-size_t BloomFilter::hash(const std::string &key, size_t idx) const { return 0; }
+// Lab 4.9: 计算哈希值
+//  根据 key 和哈希序号 idx，算出位数组中的一个下标
+//  注意：不同 idx 算出的位置也可能重复，公式不保证下标互不相同
+//  插入和查询使用相同的计算方式即可
+//  h1 = 3，h2 = 4，位数组长度 = 10
+//  idx = 0 → (3 + 0 × 4) % 10 = 3
+//  idx = 1 → (3 + 1 × 4) % 10 = 7
+//  idx = 2 → (3 + 2 × 4) % 10 = 1
+size_t BloomFilter::hash(const std::string &key, size_t idx) const { 
+  // 同一个 key 对应两个基础哈希值
+  const size_t h1 = hash1(key);
+  const size_t h2 = hash2(key);
+
+  // idx 表示第几个哈希位置，从 0 开始
+  // 通过 h1 + idx * h2 组合出不同序号对应的哈希值
+  // 不需要手动编写 num_hashes_ 个哈希函数
+  //
+  // 对位数组长度取模，保证最终下标在 [0, num_bits_) 内
+  // 前提是过滤器已经正确初始化，num_bits_ > 0
+  return (h1 + idx * h2) % num_bits_; 
+}
 
 // 编码布隆过滤器为 std::vector<uint8_t>
 std::vector<uint8_t> BloomFilter::encode() { return {}; }
