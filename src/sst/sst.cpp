@@ -265,8 +265,10 @@ SstIterator SST::end() {
   //    此时 m_block_it 已初始化为 nullptr
   SstIterator ret(nullptr, 0);
 
-  // 构造已跑了一遍 seek_first (白读 block 0), 随即被覆盖
-  // 参考实现接受这点浪费 (block 0 反正会进缓存; 且没有默认构造可用)
+  // 2. 关联当前 SST。
+  //    SST 是 SstIterator 的 friend，可以访问其私有成员。
+  //    这里只给成员赋值，不会重新执行构造函数或触发读取。
+  ret.m_sst = shared_from_this(); 
   ret.set_block_idx(meta_entries.size());
   ret.set_block_it(nullptr);
   return ret;
