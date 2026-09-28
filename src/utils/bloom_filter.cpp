@@ -18,8 +18,8 @@ BloomFilter::BloomFilter(size_t expected_elements, double false_positive_rate)
   : expected_elements_(expected_elements)
   , false_positive_rate_(false_positive_rate) {
 
-  // 1. 检查参数。
-  // 元素数量必须大于 0，后续计算需要用它作为除数
+  // 1. 检查参数:
+  //    元素数量必须大于 0，后续计算需要用它作为除数
   if (expected_elements_ == 0)
     throw std::invalid_argument("BloomFilter: expected_elements must be greater than 0"); 
 
@@ -28,8 +28,8 @@ BloomFilter::BloomFilter(size_t expected_elements, double false_positive_rate)
     throw std::invalid_argument("BloomFilter: false_positive_rate must be between 0 and 1"); 
 
   // 2. 根据公式计算需要的位数：
-  // m = -n * ln(p) / (ln(2) * ln(2))
-  // n 是预计元素数量，p 是目标误判率
+  //    m = -n * ln(p) / (ln(2) * ln(2))
+  //    n 是预计元素数量，p 是目标误判率
   const double ln2 = std::log(2); 
   const double m = 
     -static_cast<double>(expected_elements_) *
@@ -44,6 +44,10 @@ BloomFilter::BloomFilter(size_t expected_elements, double false_positive_rate)
     throw std::length_error("BloomFilter: requested bit array is too large"); 
   
   num_bits_ = static_cast<size_t>(round_bits); 
+
+  // 3. 根据公式计算哈希位置的数量：
+  //    k = (m / n) * ln(2)
+  //    沿用参考实现的向上取整方式
 
 }
 
