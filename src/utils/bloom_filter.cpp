@@ -5,6 +5,7 @@
 #include <functional>
 #include <cmath>
 #include <string>
+#include <stdexcept>
 
 namespace tiny_lsm {
 
@@ -14,8 +15,18 @@ BloomFilter::BloomFilter() {};
 // expected_elements: 预期插入的元素数量
 // false_positive_rate: 允许的假阳性率
 BloomFilter::BloomFilter(size_t expected_elements, double false_positive_rate)
-    : expected_elements_(expected_elements),
-      false_positive_rate_(false_positive_rate) {
+  : expected_elements_(expected_elements)
+  , false_positive_rate_(false_positive_rate) {
+
+  // 1. 检查参数。
+  // 元素数量必须大于 0，后续计算需要用它作为除数
+  if (expected_elements_ == 0)
+    throw std::invalid_argument("BloomFilter: expected_elements must be greater than 0"); 
+
+  // 误判率必须在 (0, 1) 内；这种写法也能排除 NaN
+  if (!(0.0 < (false_positive_rate_) && false_positive_rate_ < 1.0))
+    throw std::invalid_argument("BloomFilter: false_positive_rate must be between 0 and 1"); 
+    
 
 }
 
