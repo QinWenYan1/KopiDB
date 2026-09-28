@@ -14,6 +14,7 @@ BloomFilter::BloomFilter() {};
 // 构造函数，初始化布隆过滤器
 // expected_elements: 预期插入的元素数量
 // false_positive_rate: 允许的假阳性率
+// 如：BloomFilter bf(1000, 0.01);
 BloomFilter::BloomFilter(size_t expected_elements, double false_positive_rate)
   : expected_elements_(expected_elements)
   , false_positive_rate_(false_positive_rate) {
@@ -39,6 +40,8 @@ BloomFilter::BloomFilter(size_t expected_elements, double false_positive_rate)
   const double round_bits = std::ceil(m); 
 
   // 转成 size_t 前保守检查容量上界，避免越界转换
+  // size() 和 max_size() 不是一回事
+  // max_size = 容器理论上最多能容纳的元素数量，通常很大
   if (!std::isfinite(round_bits) || 
       round_bits >= static_cast<double>(bits_.max_size())) 
     throw std::length_error("BloomFilter: requested bit array is too large"); 
@@ -50,7 +53,11 @@ BloomFilter::BloomFilter(size_t expected_elements, double false_positive_rate)
   //    沿用参考实现的向上取整方式
   num_hashes_ = static_cast<size_t>(std::ceil(m / static_cast<double>(expected_elements_) * ln2)); 
 
-  
+  // 4. 创建位数组：
+  //    尚未插入任何 key，所以所有位都为 0
+  //    =：通常是拿另一个完整的 vector / initializer_list 赋值
+  //    assign()：更灵活，可以从迭代器区间赋值，或者“重复 N 个值”
+  bits_.assign(num_bits_, false);
 
 }
 
