@@ -190,6 +190,21 @@ BloomFilter BloomFilter::decode(const std::vector<uint8_t> &data) {
   BloomFilter bf; 
   size_t off = 0;  
 
+  // 2. 读取顺序必须与 encode() 完全相同
+  std::memcpy(&bf.expected_elements_, data.data() + off, sizeof(bf.expected_elements_)); 
+  off += sizeof(bf.expected_elements_);
+
+  std::memcpy(&bf.false_positive_rate_, data.data() + off, sizeof(bf.false_positive_rate_)); 
+  off += sizeof(bf.false_positive_rate_);
+
+  std::memcpy(&bf.num_bits_, data.data() + off, sizeof(bf.num_bits_)); 
+  off += sizeof(bf.num_bits_);
+
+  std::memcpy(&bf.num_hashes_, data.data() + off, sizeof(bf.num_hashes_)); 
+  off += sizeof(bf.num_hashes_);
+
+  
+
 }
 
 } // namespace tiny_lsm
