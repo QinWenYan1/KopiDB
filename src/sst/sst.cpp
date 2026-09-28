@@ -253,9 +253,17 @@ SstIterator SST::begin(uint64_t tranc_id, bool keep_all_versions) {
 SstIterator SST::end() {
   // 构造一个 SstIterator 并将 m_block_idx 设为 meta_entries.size(),
   // m_block_it 设为 nullptr
+  // end() 只需要表示“遍历结束”，不应读取任何数据块。
+  //
+  // 原实现直接传入 shared_from_this()，构造函数会调用 seek_first()，
+  // 先读取首块，再把迭代器改成结束状态
+  // 这会导致 Bloom 已判断 key 不存在时，返回 end() 仍可能触发磁盘 IO
 
-  // SST 是 SstIterator 的 friend, 直接捏私有成员
-  SstIterator ret(shared_from_this(), 0);
+  // 1. 暂时不关联 SST
+  //    SST 是 SstIterator 的 friend, 直接捏私有成员
+  //    构造函数检查到 m_sst 为空，就不会调用 seek_first()
+  //    此时 m_block_it 已初始化为 nullptr
+  SstIterator ret(nullptr, 0);
 
   // 构造已跑了一遍 seek_first (白读 block 0), 随即被覆盖
   // 参考实现接受这点浪费 (block 0 反正会进缓存; 且没有默认构造可用)

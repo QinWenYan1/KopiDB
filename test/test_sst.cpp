@@ -160,6 +160,29 @@ TEST_F(SSTTest, ReopenSST) {
   }
 }
 
+TEST_F(SSTTest, EndDoesNotReadBlocks) {
+  SSTBuilder builder(1024, true);
+  builder.add("a", "value-a", 0);
+  builder.add("z", "value-z", 0);
+  auto cache = std::make_shared<BlockCache>(2, 2);
+  auto sst = builder.build(1, "test_data/end.sst", cache);
+
+  // build 不读取数据块，缓存初始为空。
+  // 创建结束迭代器也不应读取首块并把它放进缓存。
+  auto end = sst->end();
+  EXPECT_TRUE(end.is_end());
+  EXPECT_FALSE(end.is_valid());
+  EXPECT_EQ(cache->get(1, 0), nullptr);
+
+  // 结束迭代器仍须关联当前 SST，并与正常遍历耗尽后的状态相等。
+  auto it = sst->begin(0);
+  ASSERT_TRUE(it.is_valid());
+  ++it;
+  ASSERT_TRUE(it.is_valid());
+  ++it;
+  EXPECT_TRUE(it == end);
+}
+
 // 测试大文件
 TEST_F(SSTTest, LargeSST) {
   SSTBuilder builder(4096, true); // 4KB blocks
