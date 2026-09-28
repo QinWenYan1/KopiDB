@@ -268,7 +268,7 @@ SstIterator SST::end() {
   // 2. 关联当前 SST。
   //    SST 是 SstIterator 的 friend，可以访问其私有成员。
   //    这里只给成员赋值，不会重新执行构造函数或触发读取。
-  ret.m_sst = shared_from_this(); 
+  ret.m_sst = shared_from_this();
   ret.set_block_idx(meta_entries.size());
   ret.set_block_it(nullptr);
   return ret;
@@ -282,7 +282,8 @@ std::pair<uint64_t, uint64_t> SST::get_tranc_id_range() const {
 // SSTBuilder
 // **************************************************
 
-SSTBuilder::SSTBuilder(size_t block_size, bool has_bloom) : block(block_size), block_size(block_size) {
+SSTBuilder::SSTBuilder(size_t block_size, bool has_bloom)
+    : block(block_size), block_size(block_size) {
   // 初始化第一个block
   if (has_bloom) {
     bloom_filter = std::make_shared<BloomFilter>(
@@ -298,7 +299,8 @@ SSTBuilder::SSTBuilder(size_t block_size, bool has_bloom) : block(block_size), b
 SSTBuilder::SSTBuilder(size_t block_size, bool has_bloom,
                        std::shared_ptr<VLog> vlog, size_t wisckey_threshold)
     : block(block_size), vlog_(std::move(vlog)),
-      wisckey_threshold_(wisckey_threshold), storage_mode_(1), block_size(block_size)  {
+      wisckey_threshold_(wisckey_threshold), storage_mode_(1),
+      block_size(block_size) {
   // WiscKey 模式构造函数: vlog 用于大 value 分离存储
   if (has_bloom) {
     bloom_filter = std::make_shared<BloomFilter>(
@@ -397,7 +399,8 @@ size_t SSTBuilder::estimated_size() const { return data.size(); }
 void SSTBuilder::finish_block() {
 
   // 1. 把当前 block 挪出来编码（默认带CRC32）
-  //    这里使用右值引用构造函数来挪动 block 里面的 vector 给 old_block 使用完并销毁
+  //    这里使用右值引用构造函数来挪动 block 里面的 vector 给 old_block
+  //    使用完并销毁
   auto old_block = std::move(block);
   auto encoded_block = old_block.encode();
 
@@ -413,8 +416,9 @@ void SSTBuilder::finish_block() {
 
   // 4. 然后重建 block std::move 之后的对象是"有效但未指定"状态
   //    标准不保证它是空的——显式重建一个同容量新块, 不靠实现细节
-  //    我们这里采用 新建 Block 的方式避免歧义，代码更安全因为明确恢复新块的初始状态
-  //    对于单纯的 move-from 方式 也没有性能差异
+  //    我们这里采用 新建 Block
+  //    的方式避免歧义，代码更安全因为明确恢复新块的初始状态 对于单纯的
+  //    move-from 方式 也没有性能差异
   block = Block(block_size);
 }
 
