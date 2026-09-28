@@ -62,8 +62,22 @@ BloomFilter::BloomFilter(size_t expected_elements, double false_positive_rate)
   bits_.assign(num_bits_, false);
 }
 
+// Lab 4.9: 添加一个记录到布隆过滤器中
+//          add(key) :
+//          → bits_[3] = true
+//          → bits_[7] = true
+//          → bits_[1] = true
 void BloomFilter::add(const std::string &key) {
-  // 对每个哈希函数计算哈希值，并将对应位置的位设置为true
+  // 一个 key 需要计算 num_hashes_ 个哈希位置
+  // i 从 0 开始，表示当前计算第几个位置
+  for(size_t i = 0; i < num_hashes_; ++i){
+    // hash() 内部已经取模，返回合法的位数组下标
+    const size_t bit_idx = hash(key, i); 
+
+    // 将对应位设为 1，其余位置保持原样
+    // 即使这一位已经是 1，再次赋值也没有问题
+    bits_[bit_idx] = true; 
+  }
 }
 
 //  如果key可能存在于布隆过滤器中，返回true；否则返回false
@@ -99,6 +113,7 @@ size_t BloomFilter::hash2(const std::string &key) const {
 //  idx = 0 → (3 + 0 × 4) % 10 = 3
 //  idx = 1 → (3 + 1 × 4) % 10 = 7
 //  idx = 2 → (3 + 2 × 4) % 10 = 1
+//  num_hashes_ 决定调用几次 hash，idx 决定这一次计算第几个位置
 size_t BloomFilter::hash(const std::string &key, size_t idx) const {
   // 同一个 key 对应两个基础哈希值
   const size_t h1 = hash1(key);
