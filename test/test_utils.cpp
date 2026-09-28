@@ -273,6 +273,42 @@ TEST(BloomFilterTest, ComprehensiveTest) {
 // 输出假阳性率
 }
 
+TEST(BloomFilterTest, EncodeDecodePreservesQueries) {
+  // 这组参数产生的位数不是 8 的倍数，同时覆盖末尾不足一个字节的情况。
+  BloomFilter original(1000, 0.01);
+  for (int i = 0; i < 1000; ++i) {
+    original.add("key" + std::to_string(i));
+  }
+
+  const auto encoded = original.encode();
+  auto restored = BloomFilter::decode(encoded);
+
+  // 恢复后不能漏掉已经插入的 key。
+  for (int i = 0; i < 1000; ++i) {
+    EXPECT_TRUE(restored.possibly_contains("key" + std::to_string(i)));
+  }
+
+  // 未插入的 key 允许误判，但编解码前后的判断必须一致。
+  for (int i = 1000; i < 2000; ++i) {
+    const auto key = "key" + std::to_string(i);
+    EXPECT_EQ(restored.possibly_contains(key), original.possibly_contains(key));
+  }
+  EXPECT_EQ(restored.encode(), encoded);
+}
+
+TEST(BloomFilterTest, EncodeDecodeEmptyFilter) {
+  // 已经初始化、尚未插入 key 的过滤器也应能持久化和恢复。
+  BloomFilter original(1, 0.01);
+  const auto encoded = original.encode();
+  auto restored = BloomFilter::decode(encoded);
+  EXPECT_FALSE(restored.possibly_contains("missing"));
+  EXPECT_EQ(restored.encode(), encoded);
+
+  // 解码出的过滤器仍应支持正常插入。
+  restored.add("key");
+  EXPECT_TRUE(restored.possibly_contains("key"));
+}
+
 int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
   init_spdlog_file();

@@ -212,7 +212,7 @@ BloomFilter BloomFilter::decode(const std::vector<uint8_t> &data) {
     || bf.num_hashes_ == 0)
     throw std::runtime_error("BloomFilter::decode: invalid metadata in bloom filter info");
 
-  const size_t num_bytes = bf.num_bits_ / 2 + (bf.num_bits_ % 8 != 0);
+  const size_t num_bytes = bf.num_bits_ / 8 + (bf.num_bits_ % 8 != 0);
 
   // 4. 在分配位数组之前，检查剩余数据长度是否正确
   // SST::open() 传入的是完整的 Bloom 数据段，所以长度应当恰好匹配

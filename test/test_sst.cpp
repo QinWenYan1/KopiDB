@@ -149,6 +149,15 @@ TEST_F(SSTTest, ReopenSST) {
   EXPECT_EQ(sst->get_first_key(), reopened_sst->get_first_key());
   EXPECT_EQ(sst->get_last_key(), reopened_sst->get_last_key());
   EXPECT_EQ(sst->num_blocks(), reopened_sst->num_blocks());
+
+  // 重新打开后通过点查询读数据，验证恢复出的 Bloom 不会漏掉已有 key。
+  for (int i = 0; i < 10; ++i) {
+    const auto key = "key" + std::to_string(i);
+    auto it = reopened_sst->get(key, 0);
+    ASSERT_TRUE(it.is_valid()) << key;
+    EXPECT_EQ(it->first, key);
+    EXPECT_EQ(it->second, "value" + std::to_string(i));
+  }
 }
 
 // 测试大文件
