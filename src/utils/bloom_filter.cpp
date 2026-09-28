@@ -129,8 +129,30 @@ size_t BloomFilter::hash(const std::string &key, size_t idx) const {
 }
 
 // 编码布隆过滤器为 std::vector<uint8_t>
-std::vector<uint8_t> BloomFilter::encode() { return {}; }
+// [预计元素数量][误判率][位数][哈希数量][打包后的位数组]
+std::vector<uint8_t> BloomFilter::encode() { 
+  // 默认构造的对象还没有位数组，不能直接编码
+  // 先检查 vector，避免读取尚未初始化的数值成员
+  if(bits_.empty())
+    throw std::logic_error("BloomFilter::encode: filter is not initialized"); 
+
+  // [预计元素数量][误判率][位数][哈希数量]
+  // 头部包含三个 size_t 和一个 double
+  const size_t header_size = 3 * sizeof(size_t) + sizeof(double); 
+
+  // [打包后的位数组]
+  // 每 8 位占一个字节，不足 8 位也需要一个字节
+  // 这样计算也避免了 (num_bits_ + 7) 可能发生的加法溢出
+  const size_t num_bytes = num_bits_ / 8 + (num_bits_ % 8 != 0);
+
+
+  // 一次分配全部空间，初始字节全部为 0
+  std::vector<uint8_t> data(header_size+num_bytes, 0); 
+  size_t off = 0; 
+}
 
 // 从 std::vector<uint8_t> 解码布隆过滤器
-BloomFilter BloomFilter::decode(const std::vector<uint8_t> &data) { return {}; }
+BloomFilter BloomFilter::decode(const std::vector<uint8_t> &data) { 
+
+}
 } // namespace tiny_lsm
