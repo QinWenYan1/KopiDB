@@ -48,6 +48,9 @@ BloomFilter::BloomFilter(size_t expected_elements, double false_positive_rate)
   // 3. 根据公式计算哈希位置的数量：
   //    k = (m / n) * ln(2)
   //    沿用参考实现的向上取整方式
+  num_hashes_ = static_cast<size_t>(std::ceil(m / static_cast<double>(expected_elements_) * ln2)); 
+
+  
 
 }
 
