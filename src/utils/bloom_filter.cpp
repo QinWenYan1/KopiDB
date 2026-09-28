@@ -26,7 +26,24 @@ BloomFilter::BloomFilter(size_t expected_elements, double false_positive_rate)
   // 误判率必须在 (0, 1) 内；这种写法也能排除 NaN
   if (!(0.0 < (false_positive_rate_) && false_positive_rate_ < 1.0))
     throw std::invalid_argument("BloomFilter: false_positive_rate must be between 0 and 1"); 
-    
+
+  // 2. 根据公式计算需要的位数：
+  // m = -n * ln(p) / (ln(2) * ln(2))
+  // n 是预计元素数量，p 是目标误判率
+  const double ln2 = std::log(2); 
+  const double m = 
+    -static_cast<double>(expected_elements_) *
+    std::log(false_positive_rate_) / (ln2*ln2); 
+
+  // 位数必须是整数，向上取整，避免分配得比公式要求的少
+  const double round_bits = std::ceil(m); 
+
+  // 转成 size_t 前保守检查容量上界，避免越界转换
+  if (!std::isfinite(round_bits) || 
+      round_bits >= static_cast<double>(bits_.max_size())) 
+    throw std::length_error("BloomFilter: requested bit array is too large"); 
+  
+  num_bits_ = static_cast<size_t>(round_bits); 
 
 }
 
