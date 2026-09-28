@@ -149,6 +149,23 @@ std::vector<uint8_t> BloomFilter::encode() {
   // 一次分配全部空间，初始字节全部为 0
   std::vector<uint8_t> data(header_size+num_bytes, 0); 
   size_t off = 0; 
+
+  // 1. 按固定顺序写入四个元数据字段
+  //    每写入一个字段，offset 就前进该字段占用的字节数  
+  std::memcpy(data.data() + off, &expected_elements_, sizeof(size_t));
+  off += sizeof(expected_elements_); 
+
+  std::memcpy(data.data() + off, &false_positive_rate_, sizeof(double));
+  off += sizeof(false_positive_rate_);
+
+  std::memcpy(data.data() + off, &num_bits_, sizeof(size_t));
+  off += sizeof(num_bits_);
+
+  std::memcpy(data.data() + off, &num_hashes_, sizeof(size_t));
+  off += sizeof(num_hashes_);
+
+
+
 }
 
 // 从 std::vector<uint8_t> 解码布隆过滤器
