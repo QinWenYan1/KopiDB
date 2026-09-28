@@ -130,30 +130,29 @@ size_t BloomFilter::hash(const std::string &key, size_t idx) const {
 
 // 编码布隆过滤器为 std::vector<uint8_t>
 // [预计元素数量][误判率][位数][哈希数量][打包后的位数组]
-std::vector<uint8_t> BloomFilter::encode() { 
+std::vector<uint8_t> BloomFilter::encode() {
   // 默认构造的对象还没有位数组，不能直接编码
   // 先检查 vector，避免读取尚未初始化的数值成员
-  if(bits_.empty())
-    throw std::logic_error("BloomFilter::encode: filter is not initialized"); 
+  if (bits_.empty())
+    throw std::logic_error("BloomFilter::encode: filter is not initialized");
 
   // [预计元素数量][误判率][位数][哈希数量]
   // 头部包含三个 size_t 和一个 double
-  const size_t header_size = 3 * sizeof(size_t) + sizeof(double); 
+  const size_t header_size = 3 * sizeof(size_t) + sizeof(double);
 
   // [打包后的位数组]
   // 每 8 位占一个字节，不足 8 位也需要一个字节
   // 这样计算也避免了 (num_bits_ + 7) 可能发生的加法溢出
   const size_t num_bytes = num_bits_ / 8 + (num_bits_ % 8 != 0);
 
-
   // 一次分配全部空间，初始字节全部为 0
-  std::vector<uint8_t> data(header_size+num_bytes, 0); 
-  size_t off = 0; 
+  std::vector<uint8_t> data(header_size + num_bytes, 0);
+  size_t off = 0;
 
   // 1. 按固定顺序写入四个元数据字段
-  //    每写入一个字段，offset 就前进该字段占用的字节数  
+  //    每写入一个字段，offset 就前进该字段占用的字节数
   std::memcpy(data.data() + off, &expected_elements_, sizeof(size_t));
-  off += sizeof(expected_elements_); 
+  off += sizeof(expected_elements_);
 
   std::memcpy(data.data() + off, &false_positive_rate_, sizeof(double));
   off += sizeof(false_positive_rate_);
@@ -171,16 +170,14 @@ std::vector<uint8_t> BloomFilter::encode() {
   //    i % 8：确定这一位在字节内的位置，范围是 0～7
   //    <<：向左移动指定的位数，右边补 0
   //    1u << (i % 8) 的作用是：生成一个只有目标位是 1、其他位都是 0 的数
-  for(size_t i = 0; i < num_bits_; ++i){
-    if(bits_[i])
-      data[off + i/8] |= static_cast<uint8_t>(1u << (i % 8));
+  for (size_t i = 0; i < num_bits_; ++i) {
+    if (bits_[i])
+      data[off + i / 8] |= static_cast<uint8_t>(1u << (i % 8));
   }
-  
-  return data; 
+
+  return data;
 }
 
 // 从 std::vector<uint8_t> 解码布隆过滤器
-BloomFilter BloomFilter::decode(const std::vector<uint8_t> &data) { 
-
-}
+BloomFilter BloomFilter::decode(const std::vector<uint8_t> &data) {}
 } // namespace tiny_lsm
