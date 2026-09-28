@@ -179,5 +179,17 @@ std::vector<uint8_t> BloomFilter::encode() {
 }
 
 // 从 std::vector<uint8_t> 解码布隆过滤器
-BloomFilter BloomFilter::decode(const std::vector<uint8_t> &data) {}
+BloomFilter BloomFilter::decode(const std::vector<uint8_t> &data) {
+  const size_t header_size = 3 * sizeof(size_t) + sizeof(double); 
+
+  // 1. 先确认头部完整，再进行 memcpy，避免越界读取
+  if (data.size() < header_size)
+    throw std::runtime_error("BloomFilter::decode: truncated header size is too small"); 
+
+  // 默认构造后，先把四个数值成员全部从头部恢复。
+  BloomFilter bf; 
+  size_t off = 0;  
+
+}
+
 } // namespace tiny_lsm
