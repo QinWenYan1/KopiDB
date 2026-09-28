@@ -164,8 +164,19 @@ std::vector<uint8_t> BloomFilter::encode() {
   std::memcpy(data.data() + off, &num_hashes_, sizeof(size_t));
   off += sizeof(num_hashes_);
 
-
-
+  // 2. 打包位数组。此时 offset 指向位数组数据的起点
+  //    i / 8：这一位属于第几个字节
+  //    i % 8：这一位位于该字节内的哪个位置，从最低位开始
+  //    1u：无符号整数 1
+  //    i % 8：确定这一位在字节内的位置，范围是 0～7
+  //    <<：向左移动指定的位数，右边补 0
+  //    1u << (i % 8) 的作用是：生成一个只有目标位是 1、其他位都是 0 的数
+  for(size_t i = 0; i < num_bits_; ++i){
+    if(bits_[i])
+      data[off + i/8] |= static_cast<uint8_t>(1u << (i % 8));
+  }
+  
+  return data; 
 }
 
 // 从 std::vector<uint8_t> 解码布隆过滤器
