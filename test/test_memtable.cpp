@@ -11,7 +11,12 @@
 
 using namespace ::tiny_lsm;
 
-// 测试基本的插入和查询操作
+// 阅读约定：K@9 表示 key 为 K、tranc_id 为 9 的记录；读取上限 0 表示不限制版本。
+// MemTable 的点查询保留墓碑供上层识别；默认范围遍历会隐藏被最新可见墓碑删除的 key。
+
+// 目的：验证 MemTable 能正确封装底层跳表的写入、同版本更新和查询。
+// 场景：以版本 0 写入 key1，更新它的值，并查询另一个不存在的 key。
+// 预期：两次读取 key1 分别得到原值、新值，不存在的 key 返回无效迭代器。
 TEST(MemTableTest, BasicOperations) {
   MemTable memtable;
 
@@ -27,7 +32,9 @@ TEST(MemTableTest, BasicOperations) {
   EXPECT_FALSE(memtable.get("nonexistent", 0).is_valid());
 }
 
-// 测试删除操作
+// 目的：验证 MemTable 的 remove 通过墓碑表达删除，而非物理摘除跳表节点。
+// 场景：删除一个已写入的 key，再删除一个从未写入的 key，均使用版本 0。
+// 预期：两次点查询都能取得空 value，表示对应位置保存了墓碑。
 TEST(MemTableTest, RemoveOperations) {
   MemTable memtable;
 
@@ -41,7 +48,9 @@ TEST(MemTableTest, RemoveOperations) {
   EXPECT_TRUE(memtable.get("nonexistent", 0).get_value().empty());
 }
 
-// 测试冻结表操作
+// 目的：验证一次冻结后，查询仍能同时访问冻结表和新的活跃表。
+// 场景：写入 key1、key2 后冻结，再向新活跃表写入 key3。
+// 预期：三个 key 均能查到各自的值，切换活跃表不会丢失旧表数据。
 TEST(MemTableTest, FrozenTableOperations) {
   MemTable memtable;
 
@@ -61,7 +70,9 @@ TEST(MemTableTest, FrozenTableOperations) {
   EXPECT_EQ(memtable.get("key3", 0).get_value(), "value3");
 }
 
-// 测试大量数据操作
+// 目的：验证 MemTable 在较多记录下仍能正确传递写入和点查询操作。
+// 场景：写入 1000 个不同 key，随后逐个查询并与对应 value 比较。
+// 预期：每个 key 都返回正确值；本用例不要求一定触发自动冻结，也不测性能。
 TEST(MemTableTest, LargeScaleOperations) {
   MemTable memtable;
   const int num_entries = 1000;
@@ -81,7 +92,9 @@ TEST(MemTableTest, LargeScaleOperations) {
   }
 }
 
-// 测试内存大小跟踪
+// 目的：验证活跃表冻结时，其统计大小会转移到冻结表统计中。
+// 场景：检查空表总大小，写入一条记录，记住冻结前总大小，再执行冻结。
+// 预期：空表大小为 0，写入后活跃表大小大于 0，冻结表大小等于冻结前总大小。
 TEST(MemTableTest, MemorySizeTracking) {
   MemTable memtable;
 
@@ -98,7 +111,9 @@ TEST(MemTableTest, MemorySizeTracking) {
   EXPECT_EQ(memtable.get_frozen_size(), size_before_freeze);
 }
 
-// 测试多次冻结表操作
+// 目的：验证查询会访问多个冻结表，不会只检查队头或活跃表。
+// 场景：key1、key2 分别写入并冻结，key3 留在当前活跃表。
+// 预期：三个 key 分布在三张表中，仍然都能正确读取。
 TEST(MemTableTest, MultipleFrozenTables) {
   MemTable memtable;
 
@@ -119,7 +134,10 @@ TEST(MemTableTest, MultipleFrozenTables) {
   EXPECT_EQ(memtable.get("key3", 0).get_value(), "value3");
 }
 
-// 测试迭代器在复杂操作序列下的行为
+// 目的：验证跨表归并遍历能处理覆盖、删除和删除后重写，并按 key 排序。
+// 场景：三批版本 0 的写入穿插两次冻结，包含多次更新 key2、删除后重写 key1、删除 key3。
+// 预期：各阶段结果正确；最终只有 key1、key2、key4、key5，使用最新表中的值。
+//       遍历隐藏 key3，而点查询仍返回 key3 的墓碑，供上层判断删除状态。
 TEST(MemTableTest, IteratorComplexOperations) {
   MemTable memtable;
 
@@ -193,6 +211,10 @@ TEST(MemTableTest, IteratorComplexOperations) {
   EXPECT_TRUE(res.get_value().empty());
 }
 
+// 目的：对 MemTable 的并发读写、遍历及冻结进行基本运行和统计检查。
+// 场景：2 个写线程、4 个读线程各执行 1000 次操作，另一个线程执行 5 次冻结。
+// 预期：线程完成，最终总大小大于 0，记录数不超过写入操作数，冻结时大小关系合理。
+// 覆盖边界：未逐条断言并发读取的值，也未验证完整的事务隔离或所有数据竞争场景。
 TEST(MemTableTest, ConcurrentOperations) {
   MemTable memtable;
   const int num_readers = 4;       // 读线程数
@@ -363,6 +385,10 @@ TEST(MemTableTest, ConcurrentOperations) {
   EXPECT_LE(final_size, num_writers * num_operations); // 大小不应超过最大可能值
 }
 
+// 目的：验证前缀查询能合并多张表，应用更新和墓碑，并排除其他前缀。
+// 场景：三批数据经过两次冻结，更新 abc，删除 ab、abcd，查询前缀 ab。
+// 预期：按序得到 abc、abcde、abcdef、abcdefg、abcdefgh，abc 使用更新后的值。
+// 覆盖边界：当前断言逐项检查返回内容，没有单独断言结果总数。
 TEST(MemTableTest, PreffixIter) {
   MemTable memtable;
 
@@ -407,6 +433,9 @@ TEST(MemTableTest, PreffixIter) {
   }
 }
 
+// 目的：验证 MemTable 能把单调谓词查询结果转换为可遍历的 HeapIterator 区间。
+// 场景：插入多组 key，分别用谓词查询 pre 前缀及 [l, n) 区间。
+// 预期：前者返回 prefix1～prefix3；后者依次返回 longerkey、medium、midpoint、midway 后结束。
 TEST(MemTableTest, ItersPredicate_Base) {
   MemTable memtable;
   memtable.put("prefix1", "value1", 0);
@@ -466,6 +495,9 @@ TEST(MemTableTest, ItersPredicate_Base) {
   EXPECT_TRUE(range_begin_iter.is_end());
 }
 
+// 目的：验证大量记录中的窄区间查询能够处理墓碑，并正确结束迭代。
+// 场景：写入 key0000～key9999，逻辑删除 key1015，查询 [key1010, key1020)。
+// 预期：起点为 key1010，前进五次到 key1016，继续推进后到 end，不返回删除的 key。
 TEST(MemTableTest, ItersPredicate_Large) {
   MemTable memtable;
   int num = 10000;
@@ -510,7 +542,9 @@ TEST(MemTableTest, ItersPredicate_Large) {
   EXPECT_TRUE(range_begin_iter.is_end());
 }
 
-// 活跃表和冻结表中的版本都必须服从读取上限；点查询保留墓碑供上层处理。
+// 目的：验证单条和批量点查询跨表传递读取上限，同时保留墓碑及真实版本号。
+// 场景：两张冻结表分别存 K@5、K@9，活跃表存 K@12 墓碑；用多个读取上限查询。
+// 预期：上限 8 读版本 5，11 读版本 9，12 或 0 读墓碑；上限 4 及缺失 key 查不到。
 TEST(MemTableTest, MvccReadBoundsAcrossFrozenTables) {
   MemTable memtable;
   memtable.put("K", "old", 5);
@@ -544,7 +578,9 @@ TEST(MemTableTest, MvccReadBoundsAcrossFrozenTables) {
   }
 }
 
-// 范围查询须先跳过不可见版本，再选最新可见版本，最后应用墓碑。
+// 目的：验证范围查询先筛选可见版本，再去重并处理墓碑，避免旧值错误地重新出现。
+// 场景：冻结表中有 K@5、K@9，活跃表中有 K@12 墓碑，分别进行全量、前缀和谓词遍历。
+// 预期：上限 5/8 只返回 K@5，9/11 只返回 K@9；上限 4、12、0 的范围结果为空。
 TEST(MemTableTest, MvccRangesFilterVersionsBeforeDeduplication) {
   MemTable memtable;
   memtable.put("K", "old", 5);
@@ -584,7 +620,9 @@ TEST(MemTableTest, MvccRangesFilterVersionsBeforeDeduplication) {
   }
 }
 
-// 冻结时间较新的表不一定保存更大的版本号；点查询和遍历应选择同一版本。
+// 目的：验证跨冻结表选值依据真实版本号，单条查询、批量查询与遍历保持一致。
+// 场景：先写 K@9 并冻结，再写 K@5 并冻结，使队头表反而保存较小版本，活跃表为空。
+// 预期：上限 0/9/10 均选 K@9，上限 8 选 K@5，上限 4 查不到；不能命中队头就返回。
 TEST(MemTableTest, MvccFrozenTablesChooseHighestVisibleVersion) {
   MemTable memtable;
   memtable.put("K", "v9", 9);
@@ -615,7 +653,9 @@ TEST(MemTableTest, MvccFrozenTablesChooseHighestVisibleVersion) {
   EXPECT_TRUE(memtable.get("K", 4).is_end());
 }
 
-// 版本更大的墓碑即使位于较早冻结的表，也必须挡住较小版本的旧值。
+// 目的：验证较早冻结的高版本墓碑仍能阻止较小版本旧值被当作最新值返回。
+// 场景：先写 K@9 墓碑并冻结，再写 K@5 旧值并冻结，随后查询最新值及上限 8。
+// 预期：最新点查询返回版本 9 的墓碑，默认遍历为空；上限 8 仍能读取版本 5 的旧值。
 TEST(MemTableTest, MvccFrozenTombstoneWinsOverOlderValue) {
   MemTable memtable;
   memtable.remove("K", 9);
@@ -635,7 +675,9 @@ TEST(MemTableTest, MvccFrozenTombstoneWinsOverOlderValue) {
   EXPECT_EQ(snapshot.get_value(), "old");
 }
 
-// 版本号相同时保留较新表中的值，尤其不能破坏 id = 0 的普通更新行为。
+// 目的：验证版本号相同时的跨表取舍，保护版本 0 的普通覆盖写语义。
+// 场景：先写 K=old 并冻结，再用相同版本写 K=new 并冻结；分别测试版本 0、7。
+// 预期：不限制版本的点查询返回较新冻结表中的 new，且记录版本号保持不变。
 TEST(MemTableTest, MvccEqualVersionsPreferNewerFrozenTable) {
   for (uint64_t version : {0, 7}) {
     SCOPED_TRACE(version);

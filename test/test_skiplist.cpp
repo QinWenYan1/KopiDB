@@ -20,7 +20,12 @@
 
 using namespace ::tiny_lsm;
 
-// 测试基本插入、查找和删除
+// 阅读约定：K@9 表示 key 为 K、tranc_id 为 9 的记录；读取上限 0 表示不限制版本。
+// SkipList 的 remove 是物理摘除节点；MVCC 的逻辑删除通过写入空 value（墓碑）表示。
+
+// 目的：验证单个 key 的插入、同版本更新和物理删除能连续工作。
+// 场景：以版本 0 写入 key1，再覆盖它的值，最后调用 remove。
+// 预期：两次查询分别得到原值、新值；删除后查询返回无效迭代器。
 TEST(SkipListTest, BasicOperations) {
   SkipList skipList;
 
@@ -37,7 +42,9 @@ TEST(SkipListTest, BasicOperations) {
   EXPECT_FALSE(skipList.get("key1", 0).is_valid());
 }
 
-// 测试迭代器
+// 目的：验证 begin/end、解引用和 ++ 能遍历完整的有序结果。
+// 场景：插入 key1、key2、key3，从 begin 连续前进到 end 并收集记录。
+// 预期：恰好得到三个节点，key 的顺序为 key1、key2、key3。
 TEST(SkipListTest, Iterator) {
   SkipList skipList;
   skipList.put("key1", "value1", 0);
@@ -56,7 +63,9 @@ TEST(SkipListTest, Iterator) {
   EXPECT_EQ(std::get<0>(result[2]), "key3");
 }
 
-// 测试大量数据插入和查找
+// 目的：验证节点较多时，插入位置和查询寻路仍然正确。
+// 场景：写入 10000 个不同 key，再按 key 逐条读取。
+// 预期：每个 key 都返回对应 value；这是功能测试，不测吞吐或延迟。
 TEST(SkipListTest, LargeScaleInsertAndGet) {
   SkipList skipList;
   const int num_elements = 10000;
@@ -76,7 +85,9 @@ TEST(SkipListTest, LargeScaleInsertAndGet) {
   }
 }
 
-// 测试大量数据删除
+// 目的：验证连续物理删除大量节点后，查询不会沿旧链接找到残留记录。
+// 场景：插入 10000 个不同 key，然后逐个 remove，再逐个查询。
+// 预期：所有已删除 key 的查询结果都无效。
 TEST(SkipListTest, LargeScaleRemove) {
   SkipList skipList;
   const int num_elements = 10000;
@@ -109,7 +120,9 @@ TEST(SkipListTest, LargeScaleRemove) {
   }
 }
 
-// 测试重复插入
+// 目的：验证同一个 key、同一个版本号重复写入时，查询使用最后写入的值。
+// 场景：连续三次以版本 0 写入 key1，值依次为 value1、value2、value3。
+// 预期：最终查询返回 value3；节点数量另由同版本 MVCC 更新用例检查。
 TEST(SkipListTest, DuplicateInsert) {
   SkipList skipList;
 
@@ -122,7 +135,9 @@ TEST(SkipListTest, DuplicateInsert) {
   EXPECT_EQ((skipList.get("key1", 0).get_value()), "value3");
 }
 
-// 测试空跳表
+// 目的：验证空表的查询和删除边界，避免访问不存在的节点。
+// 场景：对刚创建的空跳表查询、删除一个不存在的 key。
+// 预期：查询返回无效迭代器，删除操作正常返回。
 TEST(SkipListTest, EmptySkipList) {
   SkipList skipList;
 
@@ -131,7 +146,9 @@ TEST(SkipListTest, EmptySkipList) {
   skipList.remove("nonexistent_key"); // 删除不存在的key
 }
 
-// 测试随机插入和删除
+// 目的：验证插入和物理删除反复交替时，目标 key 的存在状态仍然正确。
+// 场景：在 1000 个候选 key 中随机选择并操作 10000 次，用集合记录存在状态。
+// 预期：每次插入后查到刚写入的值，每次删除后查不到该 key。
 TEST(SkipListTest, RandomInsertAndRemove) {
   SkipList skipList;
   std::unordered_set<std::string> keys;
@@ -160,7 +177,9 @@ TEST(SkipListTest, RandomInsertAndRemove) {
   }
 }
 
-// 测试内存大小跟踪
+// 目的：验证 size_bytes 按 key 字节数 + value 字节数 + 版本号字节数记账。
+// 场景：插入两个节点，物理删除其中一个，最后 clear。
+// 预期：统计值分别等于两个节点之和、剩余节点大小、0；不含指针等额外开销。
 TEST(SkipListTest, MemorySizeTracking) {
   SkipList skipList;
 
@@ -183,6 +202,10 @@ TEST(SkipListTest, MemorySizeTracking) {
   EXPECT_EQ(skipList.get_size(), 0);
 }
 
+// 目的：验证前缀范围的起点、右侧开区间边界以及无匹配时的行为。
+// 场景：插入 apple、banana、cherry 等 key，查询 ap、a、cherry 和不存在的前缀。
+// 预期：起点指向对应首条记录；a 的终点为 banana，cherry 的终点为 end。
+//       不存在的前缀其起点与终点相等，表示空范围。
 TEST(SkipListTest, IteratorPreffix) {
   SkipList skipList;
 
@@ -230,6 +253,9 @@ TEST(SkipListTest, IteratorPreffix) {
             skipList.end_preffix("not exist"));
 }
 
+// 目的：验证单调谓词既能表达前缀匹配，也能表达左闭右开的 key 区间。
+// 场景：分别查询 pre 前缀和 [l, n)，检查起点、终点及区间内的迭代顺序。
+// 预期：前者按序返回 prefix1～prefix3；后者从 longerkey 到 midway，终点为 other。
 TEST(SkipListTest, ItersPredicate_Base) {
 
   SkipList skipList;
@@ -280,7 +306,7 @@ TEST(SkipListTest, ItersPredicate_Base) {
   ASSERT_TRUE(range_result.has_value());
   auto [range_begin_iter, range_end_iter] = range_result.value();
   EXPECT_EQ(range_end_iter.get_key(),
-            "other"); // end_iter 是开区间，所以指向 "prefix1"
+            "other"); // other 是区间右侧第一个节点，不属于 [l, n)。
   EXPECT_EQ(range_begin_iter.get_key(), "longerkey");
   ++range_begin_iter;
   EXPECT_EQ(range_begin_iter.get_key(), "medium");
@@ -290,6 +316,9 @@ TEST(SkipListTest, ItersPredicate_Base) {
   EXPECT_EQ(range_begin_iter.get_key(), "midway");
 }
 
+// 目的：验证大量节点中的窄区间定位，以及物理删除后迭代是否跨过缺口。
+// 场景：插入 key0000～key9999，删除 key1015，查询 [key1010, key1020)。
+// 预期：起终点分别为 key1010、key1020；从起点前进五次到 key1016。
 TEST(SkipListTest, ItersPredicate_Large) {
   SkipList skipList;
   int num = 10000;
@@ -330,7 +359,9 @@ TEST(SkipListTest, ItersPredicate_Large) {
   EXPECT_EQ(range_begin_iter.get_key(), "key1016");
 }
 
-// 测试包含事务 id 的插入和查找
+// 目的：验证最基本的 MVCC 行为：不同版本共存，查询受读取上限约束。
+// 场景：同一个 key 写入版本 1、2，分别用读取上限 0、1、2 查询。
+// 预期：上限 0 和 2 返回版本 2 的值，上限 1 仍能读取版本 1 的旧值。
 TEST(SkipListTest, TransactionId) {
   SkipList skipList;
   skipList.put("key1", "value1", 1);
@@ -361,7 +392,9 @@ void expect_skiplist_record(SkipList &list, const std::string &key,
 }
 } // namespace
 
-// 写入顺序不能决定新旧；精确命中或落在版本间隙时都要选最大可见版本。
+// 目的：验证版本选择按版本号大小判断，不依赖插入先后顺序。
+// 场景：按 K@9、K@5、K@7 的顺序写入，查询精确版本、版本间隙和范围外上限。
+// 预期：上限 8 返回 K@7，上限 0 返回 K@9，上限 4 返回空；其他上限同理。
 TEST(SkipListTest, MvccOutOfOrderVersionsAndReadBounds) {
   SkipList list;
   list.put("K", "v9", 9);
@@ -377,7 +410,9 @@ TEST(SkipListTest, MvccOutOfOrderVersionsAndReadBounds) {
   EXPECT_TRUE(list.get("K", 4).is_end());
 }
 
-// K 的版本全部不可见时，即使后面的 L 可见，也不能把 L 当成查询结果。
+// 目的：验证不可见与不存在的 key 都返回空，查找不能越过目标 key 后误返回邻居。
+// 场景：K 仅有版本 9、7，相邻 A、L 的版本为 1；用上限 6 查 K，并查多个缺失 key。
+// 预期：K 和缺失 key 均查不到，而 L 仍能正常读到；同时覆盖空表查询。
 TEST(SkipListTest, MvccInvisibleAndMissingKeysDoNotCrossKey) {
   SkipList list;
   EXPECT_TRUE(list.get("K", 5).is_end());
@@ -397,8 +432,9 @@ TEST(SkipListTest, MvccInvisibleAndMissingKeysDoNotCrossKey) {
   expect_skiplist_record(list, "L", 6, "right", 1);
 }
 
-// 读取上限 0 表示不限制版本；记录自身的版本 0 仍然是一个普通旧版本。
-// 同时覆盖 uint64_t 最大值，防止比较或定位时通过 id + 1 引入溢出。
+// 目的：区分读取上限 0 与记录版本 0，并验证 uint64_t 最大版本号附近的边界。
+// 场景：写入版本 0、MAX、MAX-1，再更新版本 0；用 0、MAX、MAX-1、MAX-2、1 查询。
+// 预期：读取上限 0 选 MAX，小上限选版本 0；中间边界选择正确，最终仍只有三个版本。
 TEST(SkipListTest, MvccZeroAndMaxTransactionIds) {
   SkipList list;
   const uint64_t max_id = std::numeric_limits<uint64_t>::max();
@@ -415,7 +451,9 @@ TEST(SkipListTest, MvccZeroAndMaxTransactionIds) {
   EXPECT_EQ(list.flush().size(), 3u);
 }
 
-// 更新中间版本只能改变该节点；扩容、缩短、改墓碑时都要正确维护大小。
+// 目的：验证同版本原位更新只影响目标记录，且正确调整大小统计。
+// 场景：保存 K@2、K@5、K@9，反复把 K@5 改为长值、短值、墓碑和恢复后的值。
+// 预期：K@2、K@9 不变，始终只有三个节点，flush 内容及 size_bytes 与新值一致。
 TEST(SkipListTest, MvccSameVersionUpdatePreservesHistoryAndSize) {
   SkipList list;
   list.put("K", "old", 2);
@@ -438,7 +476,10 @@ TEST(SkipListTest, MvccSameVersionUpdatePreservesHistoryAndSize) {
   }
 }
 
-// SkipList 必须保留并返回墓碑，让上层识别删除；旧快照仍能读取旧值。
+// 目的：验证墓碑也是一个版本，删除与重新写入都不会破坏历史读取。
+// 场景：先写 K@9 墓碑，再补写 K@5 旧值，最后写 K@12 新值。
+// 预期：上限 5～8 读旧值、9～11 读墓碑、12 读新值；上限 0 始终选最大版本。
+//       墓碑在 SkipList 中是有效记录，不能跳过它返回更旧的值。
 TEST(SkipListTest, MvccTombstoneAndReinsertPreserveSnapshots) {
   SkipList list;
   list.put("K", "", 9);
@@ -456,7 +497,9 @@ TEST(SkipListTest, MvccTombstoneAndReinsertPreserveSnapshots) {
   expect_skiplist_record(list, "K", 0, "reborn", 12);
 }
 
-// 底层遍历与 flush 均须保留全部版本和墓碑，且按 key 升序、版本降序排列。
+// 目的：验证底层遍历和 flush 提供完整有序记录，不提前去重或丢弃墓碑。
+// 场景：交错写入 a、b、c 的五条记录，其中 a、b 有多个版本，b 的最新版本为墓碑。
+// 预期：迭代和两次 flush 均得到相同的五条记录，按 key 升序、同 key 版本降序排列。
 TEST(SkipListTest, MvccIteratorAndFlushPreserveAllVersions) {
   SkipList list;
   list.put("b", "b3", 3);
@@ -479,7 +522,9 @@ TEST(SkipListTest, MvccIteratorAndFlushPreserveAllVersions) {
   EXPECT_EQ(list.flush(), expected); // 导出本身不应清空或修改跳表。
 }
 
-// 前缀范围首尾的同 key 多版本不能被截断，墓碑也不能提前过滤。
+// 目的：验证前缀区间完整包含首尾 key 的全部版本，并排除区间外的 key。
+// 场景：app、apple 各保存两个版本，其中包含墓碑；左右还有 ant、apq，查询 app 前缀。
+// 预期：依次返回 app@8、app@2、apple@9 墓碑、apple@3，右侧开区间边界指向 apq。
 TEST(SkipListTest, MvccPrefixRangePreservesAllVersions) {
   SkipList list;
   list.put("ant", "outside-left", 1);
@@ -504,7 +549,9 @@ TEST(SkipListTest, MvccPrefixRangePreservesAllVersions) {
   EXPECT_EQ(actual, expected);
 }
 
-// 谓词区间 [b, d) 应包含 b、c 的全部版本，并停在 d 的第一个版本之前。
+// 目的：验证谓词查询在多版本场景下既不截断区间内版本，也不包含右边界记录。
+// 场景：b 有三个版本、c 有两个版本，a、d 位于区间外；查询 [b, d)。
+// 预期：返回 b、c 的全部五条记录（含墓碑），终点指向 d 的最大版本 d@7。
 TEST(SkipListTest, MvccPredicateRangePreservesAllVersions) {
   SkipList list;
   list.put("a", "outside-left", 1);
@@ -540,7 +587,9 @@ TEST(SkipListTest, MvccPredicateRangePreservesAllVersions) {
   EXPECT_EQ(actual, expected);
 }
 
-// 清空后旧版本、墓碑与大小统计全部消失，复用跳表也不能找回旧数据。
+// 目的：验证 clear 清除全部历史记录，并允许同一个跳表对象重新使用。
+// 场景：写入 K 的旧值和墓碑以及 L，clear 后重新写入 K@7。
+// 预期：清空后遍历、flush 和查询为空且大小为 0；复用后只能查到 K@7，旧数据不残留。
 TEST(SkipListTest, MvccClearThenReuseDropsOldVersions) {
   SkipList list;
   list.put("K", "old", 5);
@@ -560,7 +609,9 @@ TEST(SkipListTest, MvccClearThenReuseDropsOldVersions) {
   EXPECT_EQ(list.get_size(), 1 + std::string("fresh").size() + sizeof(uint64_t));
 }
 
-// 用固定种子打乱多个 key 的版本写入顺序，逐一验证所有读取上限。
+// 目的：用较多 key 和版本组合验证可见性规则，补充少量手写样例的覆盖。
+// 场景：8 个 key 各有 24 个版本（版本号 3、6、9……，部分为墓碑），固定种子打乱写入。
+// 预期：对每个 key 检查上限 0～74，共 600 次查询，均返回最大可见版本或正确的空结果。
 TEST(SkipListTest, MvccShuffledVersionsMatchExpectedSnapshots) {
   SkipList list;
   constexpr int key_count = 8;
@@ -597,8 +648,10 @@ TEST(SkipListTest, MvccShuffledVersionsMatchExpectedSnapshots) {
   }
 }
 
-// 物理 remove 每次只摘除该 key 的最大版本；其余版本、相邻 key 和链表都要保留。
-// 这是跳表接口的行为，数据库的逻辑删除仍然使用 put(key, "", id)。
+// 目的：验证物理 remove 每次只摘除最大版本，并维护剩余节点的链接和大小统计。
+// 场景：K 有版本 9（墓碑）、7、5，左右有 A、L；连续删除 K，最后再重复删除一次。
+// 预期：K 依次剩下 7/5、5、空；谓词查询不再返回已删节点，A、L 和最终大小保持正确。
+//       这是跳表物理删除的约定，数据库逻辑删除仍然通过 put(key, "", id) 完成。
 TEST(SkipListTest, MvccPhysicalRemovePreservesRemainingVersions) {
   SkipList list;
   list.put("A", "left", 1);
@@ -646,9 +699,10 @@ TEST(SkipListTest, MvccPhysicalRemovePreservesRemainingVersions) {
   EXPECT_EQ(list.flush(), remaining);
 }
 
-// ! 现在的实现, 并发的锁由 SkipList 的上层 MemTable 实现, 因此不需要测试
-// SkipList 的并发性
-// // 测试跳表的并发性能
+// 目的：旧版用例尝试检查并发读、写和遍历能否完成，以及最终节点数是否合理。
+// 场景：4 个读线程和 2 个写线程各执行 1000 次操作，结束后遍历统计节点数。
+// 预期：原用例要求最终节点数大于 0 且不超过写入操作数，不逐条核对并发读取结果。
+// 状态：已停用。当前 SkipList 不自行加锁，并发保护由上层 MemTable 负责；不计入运行用例。
 // TEST(SkipListTest, ConcurrentOperations) {
 //   SkipList skipList;
 //   const int num_readers = 4;       // 读线程数

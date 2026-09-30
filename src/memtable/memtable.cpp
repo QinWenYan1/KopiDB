@@ -90,11 +90,11 @@ SkipListIterator MemTable::cur_get_(const std::string &key, uint64_t tranc_id) {
   return current_table->get(key, tranc_id);
 }
 
+// Lab2.1 从冻结跳表中查询
 SkipListIterator MemTable::frozen_get_(const std::string &key,
                                        uint64_t tranc_id) {
-  // Lab2.1 从冻结跳表中查询
-  // ? 遍历 frozen_tables (注意顺序：越靠前越新), 找到即返回
-  // ? tranc_id 直接传递到 get() 即可
+  // 遍历 frozen_tables (注意顺序：越靠前越新), 找到即返回
+  // tranc_id 直接传递到 get() 即可
   // 冻结队列头新尾旧, 从头扫, 首个命中即最新版本
   spdlog::trace("MemTable--frozen_get_({}, {})", key, tranc_id);
   for (const auto &e : frozen_tables) {
