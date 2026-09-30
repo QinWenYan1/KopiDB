@@ -279,7 +279,6 @@ SkipListIterator SkipList::end() {
 // 找到前缀的起始位置
 // 返回第一个前缀匹配或者大于前缀的迭代器
 SkipListIterator SkipList::begin_preffix(const std::string &preffix) {
-  // Lab1.3 任务：实现前缀查询的起始位置
   // 从最高层开始查找, 找到第一个 key >= preffix 的节点
   // 1. 下楼梯：和 get 同款，每层走到"下一个节点 key >= preffix"之前停下
   //    循环不变式：current 始终是当前层最后一个小于 preffix 的节点
@@ -298,7 +297,6 @@ SkipListIterator SkipList::begin_preffix(const std::string &preffix) {
 
 // 找到前缀的终结位置
 SkipListIterator SkipList::end_preffix(const std::string &prefix) {
-  // Lab1.3 任务：实现前缀查询的终结位置
   // 找到第一个 key 不以 prefix 开头的节点作为终结位置
   // 1. 巧劲：构造 prefix 的"后继字符串"（末字符 +1）
   //    性质：所有以 prefix 开头的 key 都 < 后继；
