@@ -597,6 +597,55 @@ TEST(SkipListTest, MvccShuffledVersionsMatchExpectedSnapshots) {
   }
 }
 
+// 物理 remove 每次只摘除该 key 的最大版本；其余版本、相邻 key 和链表都要保留。
+// 这是跳表接口的行为，数据库的逻辑删除仍然使用 put(key, "", id)。
+TEST(SkipListTest, MvccPhysicalRemovePreservesRemainingVersions) {
+  SkipList list;
+  list.put("A", "left", 1);
+  list.put("K", "old", 5);
+  list.put("K", "", 9);
+  list.put("K", "middle", 7);
+  list.put("L", "right", 1);
+
+  list.remove("K");
+  expect_skiplist_record(list, "K", 0, "middle", 7);
+  expect_skiplist_record(list, "K", 6, "old", 5);
+  const std::vector<SkipListRecord> after_first = {
+      {"A", "left", 1}, {"K", "middle", 7},
+      {"K", "old", 5}, {"L", "right", 1}};
+  EXPECT_EQ(list.flush(), after_first);
+
+  // 谓词查询会使用 backward_，也应看不到已摘除的墓碑节点。
+  auto range = list.iters_monotony_predicate([](const std::string &key) {
+    return key < "K" ? 1 : (key > "K" ? -1 : 0);
+  });
+  ASSERT_TRUE(range.has_value());
+  const std::vector<uint64_t> expected_versions = {7, 5};
+  std::vector<uint64_t> versions;
+  for (auto it = range->first; it != range->second; ++it) {
+    ASSERT_LT(versions.size(), expected_versions.size());
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(it.get_key(), "K");
+    versions.push_back(it.get_cur_tranc_id());
+  }
+  EXPECT_EQ(versions, expected_versions);
+
+  list.remove("K");
+  expect_skiplist_record(list, "K", 0, "old", 5);
+  list.remove("K");
+  EXPECT_TRUE(list.get("K", 0).is_end());
+  const std::vector<SkipListRecord> remaining = {
+      {"A", "left", 1}, {"L", "right", 1}};
+  EXPECT_EQ(list.flush(), remaining);
+  EXPECT_EQ(list.get_size(), 2 * (1 + sizeof(uint64_t)) +
+                                 std::string("left").size() +
+                                 std::string("right").size());
+  const auto size_before = list.get_size();
+  list.remove("K"); // 已无任何版本，重复删除不应改变大小。
+  EXPECT_EQ(list.get_size(), size_before);
+  EXPECT_EQ(list.flush(), remaining);
+}
+
 // ! 现在的实现, 并发的锁由 SkipList 的上层 MemTable 实现, 因此不需要测试
 // SkipList 的并发性
 // // 测试跳表的并发性能

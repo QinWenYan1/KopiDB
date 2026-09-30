@@ -511,6 +511,147 @@ TEST(MemTableTest, ItersPredicate_Large) {
   EXPECT_TRUE(range_begin_iter.is_end());
 }
 
+// 活跃表和冻结表中的版本都必须服从读取上限；点查询保留墓碑供上层处理。
+TEST(MemTableTest, MvccReadBoundsAcrossFrozenTables) {
+  MemTable memtable;
+  memtable.put("K", "old", 5);
+  memtable.frozen_cur_table();
+  memtable.put("K", "new", 9);
+  memtable.frozen_cur_table();
+  memtable.remove("K", 12);
+
+  struct ReadCase {
+    uint64_t read_id;
+    std::string value;
+    uint64_t version;
+  };
+  const std::vector<ReadCase> cases = {
+      {5, "old", 5}, {8, "old", 5}, {9, "new", 9},
+      {11, "new", 9}, {12, "", 12}, {0, "", 12}};
+  EXPECT_TRUE(memtable.get("K", 4).is_end());
+  for (const auto &entry : cases) {
+    SCOPED_TRACE(entry.read_id);
+    auto it = memtable.get("K", entry.read_id);
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(it.get_value(), entry.value);
+    EXPECT_EQ(it.get_cur_tranc_id(), entry.version);
+
+    const auto batch = memtable.get_batch({"K", "missing"}, entry.read_id);
+    ASSERT_EQ(batch.size(), 2u);
+    ASSERT_TRUE(batch[0].second.has_value());
+    EXPECT_EQ(batch[0].second->first, entry.value);
+    EXPECT_EQ(batch[0].second->second, entry.version);
+    EXPECT_FALSE(batch[1].second.has_value());
+  }
+}
+
+// 范围查询须先跳过不可见版本，再选最新可见版本，最后应用墓碑。
+TEST(MemTableTest, MvccRangesFilterVersionsBeforeDeduplication) {
+  MemTable memtable;
+  memtable.put("K", "old", 5);
+  memtable.frozen_cur_table();
+  memtable.put("K", "new", 9);
+  memtable.frozen_cur_table();
+  memtable.remove("K", 12);
+
+  for (uint64_t read_id : {0, 4, 5, 8, 9, 11, 12}) {
+    SCOPED_TRACE(read_id);
+    const bool has_value = read_id >= 5 && read_id < 12;
+    auto check = [&](HeapIterator it) {
+      if (!has_value) {
+        EXPECT_TRUE(it.is_end());
+        return;
+      }
+      ASSERT_TRUE(it.is_valid());
+      EXPECT_EQ(it->first, "K");
+      EXPECT_EQ(it->second, read_id < 9 ? "old" : "new");
+      EXPECT_EQ(it.get_cur_tranc_id(), read_id < 9 ? 5u : 9u);
+      ++it;
+      EXPECT_TRUE(it.is_end()); // 同 key 的其他版本不能再次返回。
+    };
+    check(memtable.begin(read_id));
+    check(memtable.iters_preffix("K", read_id));
+    auto range = memtable.iters_monotony_predicate(
+        read_id, [](const std::string &key) {
+          return key < "K" ? 1 : (key > "K" ? -1 : 0);
+        });
+    if (has_value) {
+      ASSERT_TRUE(range.has_value());
+    }
+    if (range.has_value()) {
+      check(range->first);
+      EXPECT_TRUE(range->second.is_end());
+    }
+  }
+}
+
+// 冻结时间较新的表不一定保存更大的版本号；点查询和遍历应选择同一版本。
+TEST(MemTableTest, MvccFrozenTablesChooseHighestVisibleVersion) {
+  MemTable memtable;
+  memtable.put("K", "v9", 9);
+  memtable.frozen_cur_table();
+  memtable.put("K", "v5", 5);
+  memtable.frozen_cur_table(); // 活跃表为空，查询必须经过 frozen_get_。
+
+  for (uint64_t read_id : {0, 8, 9, 10}) {
+    SCOPED_TRACE(read_id);
+    const uint64_t expected_id = read_id == 8 ? 5 : 9;
+    const std::string expected_value = read_id == 8 ? "v5" : "v9";
+    auto point = memtable.get("K", read_id);
+    ASSERT_TRUE(point.is_valid());
+    EXPECT_EQ(point.get_cur_tranc_id(), expected_id);
+    EXPECT_EQ(point.get_value(), expected_value);
+
+    auto scan = memtable.begin(read_id);
+    ASSERT_TRUE(scan.is_valid());
+    EXPECT_EQ(scan.get_cur_tranc_id(), expected_id);
+    EXPECT_EQ(scan->second, expected_value);
+
+    const auto batch = memtable.get_batch({"K"}, read_id);
+    ASSERT_EQ(batch.size(), 1u);
+    ASSERT_TRUE(batch[0].second.has_value());
+    EXPECT_EQ(batch[0].second->first, expected_value);
+    EXPECT_EQ(batch[0].second->second, expected_id);
+  }
+  EXPECT_TRUE(memtable.get("K", 4).is_end());
+}
+
+// 版本更大的墓碑即使位于较早冻结的表，也必须挡住较小版本的旧值。
+TEST(MemTableTest, MvccFrozenTombstoneWinsOverOlderValue) {
+  MemTable memtable;
+  memtable.remove("K", 9);
+  memtable.frozen_cur_table();
+  memtable.put("K", "old", 5);
+  memtable.frozen_cur_table();
+
+  auto latest = memtable.get("K", 0);
+  ASSERT_TRUE(latest.is_valid());
+  EXPECT_EQ(latest.get_cur_tranc_id(), 9u);
+  EXPECT_TRUE(latest.get_value().empty());
+  EXPECT_TRUE(memtable.begin(0).is_end());
+
+  auto snapshot = memtable.get("K", 8);
+  ASSERT_TRUE(snapshot.is_valid());
+  EXPECT_EQ(snapshot.get_cur_tranc_id(), 5u);
+  EXPECT_EQ(snapshot.get_value(), "old");
+}
+
+// 版本号相同时保留较新表中的值，尤其不能破坏 id = 0 的普通更新行为。
+TEST(MemTableTest, MvccEqualVersionsPreferNewerFrozenTable) {
+  for (uint64_t version : {0, 7}) {
+    SCOPED_TRACE(version);
+    MemTable memtable;
+    memtable.put("K", "old", version);
+    memtable.frozen_cur_table();
+    memtable.put("K", "new", version);
+    memtable.frozen_cur_table();
+    auto it = memtable.get("K", 0);
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(it.get_value(), "new");
+    EXPECT_EQ(it.get_cur_tranc_id(), version);
+  }
+}
+
 int main(int argc, char **argv) {
   testing::InitGoogleTest(&argc, argv);
   init_spdlog_file();
