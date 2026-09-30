@@ -102,24 +102,23 @@ int SkipList::random_level() {
 void SkipList::put(const std::string &key, const std::string &value,
                    uint64_t tranc_id) {
   spdlog::trace("SkipList--put({}, {}, {})", key, value, tranc_id);
-  // ? Hint: 你需要保证不同`Level`的步长从底层到高层逐渐增加
-  // ? 你可能需要使用到`random_level`函数以确定层数, 其注释中为你提供一种思路
-  // ? tranc_id 为事务id, 直接将其传递到 SkipListNode 的构造函数中即可
-  // ? 若key存在且tranc_id相同, 仅更新value; 否则插入新节点
-  // ? 注意维护 size_bytes
 
   // 1. 先创建 node 等待插入（必须在堆上，由 shared_ptr 管理生命周期）
+  //    你需要保证不同`Level`的步长从底层到高层逐渐增加
+  //    你可能需要使用到`random_level`函数以确定层数, 其注释中为你提供一种思路
+  //    tranc_id 为事务id, 直接将其传递到 SkipListNode 的构造函数中即可
   auto new_node_ptr =
       std::make_shared<SkipListNode>(key, value, random_level(), tranc_id);
   int node_lvl =
       static_cast<int>(new_node_ptr->forward_.size()); // 新节点的身高
 
-  // 2. 找： 自顶向下，记录每层"最后一个小于新节点"的前驱
-  //        1. update[lvl]数组表示 第 lvl 层上，最后一个小于目标 key
-  //        的节点（也就是前驱）
-  //        2. 为什么要按 max_level 开？因为新节点最高可能到 max_level
-  //        3. 层，每层都要有一个前驱来接它
+  // 2. 找：自顶向下，记录每层"最后一个小于新节点"的前驱
+  //       1. update[lvl]数组表示 第 lvl 层上，最后一个小于目标 key
+  //       的节点（也就是前驱）
+  //       2. 为什么要按 max_level 开？因为新节点最高可能到 max_level
+  //       3. 层，每层都要有一个前驱来接它
   std::vector<std::shared_ptr<SkipListNode>> update(max_level, nullptr);
+
   // 从当前实际使用的最高层开始（层号从 0 数，所以减 1）
   // 一层一层降到第 0 层（最底层的完整链表
   auto current = head;
@@ -135,6 +134,7 @@ void SkipList::put(const std::string &key, const std::string &value,
   }
 
   // 3. 判：第 0 层候选节点 key 与 tranc_id 都相等 → 仅更新 value
+  //    若key存在且tranc_id相同, 仅更新value; 否则插入新节点
   auto candidate = current->forward_[0];
   if (candidate && candidate->key_ == key && candidate->tranc_id_ == tranc_id) {
     // 更新新老 value 的差值即可
@@ -147,6 +147,7 @@ void SkipList::put(const std::string &key, const std::string &value,
   for (int lvl = current_level; lvl < node_lvl; ++lvl) {
     update[lvl] = head;
   }
+
   // 更新现在的表高度
   if (node_lvl > current_level)
     current_level = node_lvl;

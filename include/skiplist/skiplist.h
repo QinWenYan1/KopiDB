@@ -47,6 +47,7 @@ struct SkipListNode {
     }
     return key_ < other.key_;
   }
+  
   bool operator>(const SkipListNode &other) const {
     if (key_ == other.key_) {
       // key 相等时，trans_id 更大的优先级更高
