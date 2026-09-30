@@ -1,4 +1,3 @@
-#include "consts.h"
 #include "iterator/iterator.h"
 #include "logger/logger.h"
 #include "memtable/memtable.h"
