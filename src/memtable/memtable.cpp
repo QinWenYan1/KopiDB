@@ -138,13 +138,27 @@ SkipListIterator MemTable::get(const std::string &key, uint64_t tranc_id) {
 // Lab2.1 查询, 无锁版本
 SkipListIterator MemTable::get_(const std::string &key, uint64_t tranc_id) {
   spdlog::trace("MemTable--get_({}, {})", key, tranc_id);
-  // 直接调用 cur_get_ 和 frozen_get_
-  auto it = cur_get_(key, tranc_id);
-  if (it.is_valid())
-    return it; // 命中就返回
 
-  // 没命中，来frozen tables 寻找
-  return frozen_get_(key, tranc_id);
+  // 无锁版本：调用方必须已经持有 cur_mtx 和 frozen_mtx。
+  //
+  // 两个查询都会先按照 tranc_id 过滤可见性：
+  //  best   ：活跃表中的最大可见版本
+  //  frozen ：所有冻结表中的最大可见版本
+  auto best = cur_get_(key, tranc_id);
+  auto frozen = frozen_get_(key, tranc_id); 
+
+  // 冻结表存在候选，并且：
+  //  1. 活跃表没有候选；或者
+  //  2. 冻结表候选的真实版本号更大
+  //
+  //  || 会短路：best 无效时，不会调用它的 get_cur_tranc_id()
+  if (frozen.is_valid() 
+  && (!best.is_valid() || frozen.get_cur_tranc_id() > best.get_cur_tranc_id()))
+    best = frozen; 
+
+  // 相同版本：保留活跃表中的记录，所以这里使用 >，不用 >=
+  // 墓碑：也参与版本比较，不能因为 value 为空就丢掉
+  return best; 
 }
 
 std::vector<
@@ -382,13 +396,13 @@ HeapIterator MemTable::end() {
   return HeapIterator{};
 }
 
+// Lab2.3 MemTable 的前缀迭代器
 // 它就是 begin() 的区间版——锁、idx 约定、tranc 过滤、收集进堆全套复用
 // 唯一变化是每张表从全量 [begin, end) 换成前缀区间 [begin_preffix, end_preffix)
 HeapIterator MemTable::iters_preffix(const std::string &preffix,
                                      uint64_t tranc_id) {
-  // Lab2.3 MemTable 的前缀迭代器
-  // ? 加读锁, 对所有表调用 begin_preffix/end_preffix 遍历前缀范围
-  // ? 过滤事务可见性, 同 key 只保留最新版本
+  // 加读锁, 对所有表调用 begin_preffix/end_preffix 遍历前缀范围
+  // 过滤事务可见性, 同 key 只保留最新版本
   std::vector<SearchItem> items;
   // 加curr 和 frozen 读锁
   std::shared_lock<std::shared_mutex> cur_lock(cur_mtx);

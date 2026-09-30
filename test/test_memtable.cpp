@@ -1,6 +1,9 @@
 #include "iterator/iterator.h"
 #include "logger/logger.h"
 #include "memtable/memtable.h"
+#include "sst/sst.h"
+#include "sst/sst_iterator.h"
+#include <filesystem>
 #include <gtest/gtest.h>
 #include <iomanip>
 #include <string>
@@ -691,6 +694,284 @@ TEST(MemTableTest, MvccEqualVersionsPreferNewerFrozenTable) {
     EXPECT_EQ(it.get_value(), "new");
     EXPECT_EQ(it.get_cur_tranc_id(), version);
   }
+}
+
+// 目的：验证活跃表和冻结表共同竞争最大可见版本，不能在活跃表命中后立即返回。
+// 场景：冻结表存 K@9，活跃表存 K@5，使用多个读取上限查询。
+// 预期：上限 0/9/10 选版本 9，上限 8 选版本 5，上限 4 返回空。
+TEST(MemTableTest, MvccActiveAndFrozenChooseHighestVisibleVersion) {
+  MemTable table;
+  table.put("K", "new", 9);
+  table.frozen_cur_table();
+  table.put("K", "old", 5);
+  for (uint64_t read_id : {0, 8, 9, 10}) {
+    SCOPED_TRACE(read_id);
+    auto it = table.get("K", read_id);
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(it.get_cur_tranc_id(), read_id == 8 ? 5u : 9u);
+    EXPECT_EQ(it.get_value(), read_id == 8 ? "old" : "new");
+  }
+  EXPECT_TRUE(table.get("K", 4).is_end());
+}
+
+// 目的：验证墓碑与普通值跨活跃表、冻结表比较时，都以版本号决定胜者。
+// 场景：冻结表存版本 9，活跃表存版本 5；分别让高版本、低版本成为墓碑。
+// 预期：最新查询始终返回版本 9；上限 8 返回版本 5，点查和批量查询一致。
+TEST(MemTableTest, MvccActiveAndFrozenTombstonesCompareVersions) {
+  for (bool newer_is_tombstone : {false, true}) {
+    SCOPED_TRACE(newer_is_tombstone);
+    MemTable table;
+    const std::string newer = newer_is_tombstone ? "" : "new";
+    const std::string older = newer_is_tombstone ? "old" : "";
+    table.put("K", newer, 9);
+    table.frozen_cur_table();
+    table.put("K", older, 5);
+    for (uint64_t read_id : {0, 8}) {
+      SCOPED_TRACE(read_id);
+      const auto &expected = read_id == 0 ? newer : older;
+      const uint64_t version = read_id == 0 ? 9 : 5;
+      auto it = table.get("K", read_id);
+      ASSERT_TRUE(it.is_valid());
+      EXPECT_EQ(it.get_value(), expected);
+      EXPECT_EQ(it.get_cur_tranc_id(), version);
+      const auto batch = table.get_batch({"K"}, read_id);
+      ASSERT_EQ(batch.size(), 1u);
+      ASSERT_TRUE(batch[0].second.has_value());
+      EXPECT_EQ(batch[0].second->first, expected);
+      EXPECT_EQ(batch[0].second->second, version);
+    }
+  }
+}
+
+// 目的：验证版本相同时，活跃表优先于冻结表，兼容版本 0 的覆盖更新。
+// 场景：先写 old 并冻结，再以相同版本写 new，分别测试版本 0、7。
+// 预期：单条和批量查询都返回活跃表中的 new。
+TEST(MemTableTest, MvccEqualVersionsPreferActiveTable) {
+  for (uint64_t version : {0, 7}) {
+    SCOPED_TRACE(version);
+    MemTable table;
+    table.put("K", "old", version);
+    table.frozen_cur_table();
+    table.put("K", "new", version);
+    auto it = table.get("K", 0);
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(it.get_value(), "new");
+    EXPECT_EQ(it.get_cur_tranc_id(), version);
+    const auto batch = table.get_batch({"K"}, 0);
+    ASSERT_EQ(batch.size(), 1u);
+    ASSERT_TRUE(batch[0].second.has_value());
+    EXPECT_EQ(batch[0].second->first, "new");
+  }
+}
+
+// 目的：验证批量查询复用相同的版本规则，并保留输入顺序、重复 key 和缺失项。
+// 场景：冻结表有 K@9 和 T@9 墓碑，活跃表有 K@5、T@5；混合查询重复和缺失 key。
+// 预期：每个位置对应输入 key，K 返回版本 9，T 返回墓碑，missing 返回 nullopt。
+TEST(MemTableTest, MvccBatchPreservesOrderDuplicatesAndMissingKeys) {
+  MemTable table;
+  table.put("K", "new", 9);
+  table.remove("T", 9);
+  table.frozen_cur_table();
+  table.put("K", "old", 5);
+  table.put("T", "old", 5);
+  const std::vector<std::string> keys = {"T", "missing", "K", "K"};
+  const auto batch = table.get_batch(keys, 0);
+  ASSERT_EQ(batch.size(), keys.size());
+  for (size_t i = 0; i < keys.size(); ++i) {
+    EXPECT_EQ(batch[i].first, keys[i]);
+    if (keys[i] == "missing") {
+      EXPECT_FALSE(batch[i].second.has_value());
+      continue;
+    }
+    ASSERT_TRUE(batch[i].second.has_value());
+    EXPECT_EQ(batch[i].second->second, 9u);
+    EXPECT_EQ(batch[i].second->first, keys[i] == "T" ? "" : "new");
+  }
+  EXPECT_TRUE(table.get_batch({}, 0).empty());
+}
+
+// 目的：验证 clear 同时清理数据和统计，随后复用对象不会继承旧冻结表大小。
+// 场景：建立两张冻结表和一张活跃表，clear 后再写入一条新记录。
+// 预期：清空后所有大小为 0、查询为空；新记录的总大小与活跃表大小相等。
+TEST(MemTableTest, ClearResetsAllSizesAndSupportsReuse) {
+  MemTable table;
+  table.put("a", "old", 1);
+  table.frozen_cur_table();
+  table.put("b", "old", 2);
+  table.frozen_cur_table();
+  table.put("c", "old", 3);
+  table.clear();
+  EXPECT_EQ(table.get_cur_size(), 0u);
+  EXPECT_EQ(table.get_frozen_size(), 0u);
+  EXPECT_EQ(table.get_total_size(), 0u);
+  EXPECT_TRUE(table.begin(0).is_end());
+  EXPECT_TRUE(table.get("a", 0).is_end());
+  table.put("new", "value", 7);
+  EXPECT_EQ(table.get_total_size(), table.get_cur_size());
+}
+
+// 目的：验证公开点查询返回独立的查询结果，释放读锁后不再依赖可变节点的 value。
+// 场景：保存一次 get 的返回值，再同版本更新该 key，最后 clear。
+// 预期：先前返回值仍保存 old，新查询返回 new；清空后先前结果仍可读取。
+TEST(MemTableTest, PointReadResultOwnsItsValue) {
+  MemTable table;
+  table.put("K", "old", 0);
+  auto old_result = table.get("K", 0);
+  ASSERT_TRUE(old_result.is_valid());
+  table.put("K", "new", 0);
+  EXPECT_EQ(old_result.get_value(), "old");
+  auto new_result = table.get("K", 0);
+  ASSERT_TRUE(new_result.is_valid());
+  EXPECT_EQ(new_result.get_value(), "new");
+  table.clear();
+  EXPECT_EQ(old_result.get_value(), "old");
+  EXPECT_EQ(new_result.get_value(), "new");
+}
+
+// 目的：验证谓词命中的 key 全部被最新可见墓碑删除时，返回真正的无结果状态。
+// 场景：K@5 位于冻结表，K@9 墓碑位于活跃表；查询只匹配 K 的谓词。
+// 预期：上限 0 返回 nullopt，上限 8 仍返回 K@5。
+TEST(MemTableTest, PredicateAllDeletedReturnsNoRange) {
+  MemTable table;
+  table.put("K", "old", 5);
+  table.frozen_cur_table();
+  table.remove("K", 9);
+  const auto predicate = [](const std::string &key) {
+    return key < "K" ? 1 : (key > "K" ? -1 : 0);
+  };
+  EXPECT_FALSE(table.iters_monotony_predicate(0, predicate).has_value());
+  auto old_range = table.iters_monotony_predicate(8, predicate);
+  ASSERT_TRUE(old_range.has_value());
+  ASSERT_TRUE(old_range->first.is_valid());
+  EXPECT_EQ(old_range->first->second, "old");
+}
+
+// 目的：验证用于跨层归并的遍历保留普通 key 的墓碑，但不暴露内部事务完成标记。
+// 场景：冻结表、活跃表都有空 key/空 value 标记，普通 K 则有旧值和新墓碑。
+// 预期：begin(0, false) 仅返回 K@9 墓碑；空 key 标记不成为用户记录。
+TEST(MemTableTest, BeginPreservesTombstonesButSkipsTransactionMarkers) {
+  MemTable table;
+  table.put("K", "old", 5);
+  table.put("", "", 5);
+  table.frozen_cur_table();
+  table.remove("K", 9);
+  table.put("", "", 9);
+  auto it = table.begin(0, false);
+  ASSERT_TRUE(it.is_valid());
+  EXPECT_EQ(it->first, "K");
+  EXPECT_TRUE(it->second.empty());
+  EXPECT_EQ(it.get_cur_tranc_id(), 9u);
+  ++it;
+  EXPECT_TRUE(it.is_end());
+}
+
+class MemTableFlushTest : public ::testing::Test {
+protected:
+  std::filesystem::path directory;
+  std::shared_ptr<BlockCache> cache;
+
+  void SetUp() override {
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    directory = std::filesystem::temp_directory_path() /
+                ("kopidb-memtable-flush-" + std::to_string(nonce));
+    ASSERT_TRUE(std::filesystem::create_directory(directory));
+    cache = std::make_shared<BlockCache>(16, 2);
+  }
+
+  void TearDown() override {
+    std::filesystem::remove_all(directory);
+  }
+};
+
+// 目的：验证 SST 创建失败不会丢失冻结表，也不会提前报告事务已经刷盘。
+// 场景：冻结 K@5 和事务完成标记 @5，向不存在的目录刷盘；随后换新 builder 重试。
+// 预期：第一次抛异常后数据、统计和输出 ID 不变；重试成功后才移除内存表并报告 ID。
+TEST_F(MemTableFlushTest, FailedFlushPreservesDataAndTransactionMarkers) {
+  MemTable table;
+  table.put("K", "value", 5);
+  table.put("", "", 5);
+  table.frozen_cur_table();
+  const size_t original_size = table.get_total_size();
+  std::vector<uint64_t> flushed_ids = {99};
+  auto bad_path = (directory / "missing" / "fail.sst").string();
+  SSTBuilder failed_builder(256, false);
+  EXPECT_THROW(table.flush_last(failed_builder, bad_path, 1, flushed_ids, cache),
+               std::runtime_error);
+  EXPECT_EQ(table.get_total_size(), original_size);
+  EXPECT_EQ(table.get_frozen_size(), original_size);
+  EXPECT_EQ(flushed_ids, std::vector<uint64_t>({99}));
+  auto retained = table.get("K", 0);
+  ASSERT_TRUE(retained.is_valid());
+  EXPECT_EQ(retained.get_value(), "value");
+
+  SSTBuilder retry_builder(256, false); // 失败的 builder 已被使用，重试时重新创建。
+  auto good_path = (directory / "retry.sst").string();
+  auto sst = table.flush_last(retry_builder, good_path, 1, flushed_ids, cache);
+  ASSERT_NE(sst, nullptr);
+  EXPECT_EQ(table.get_total_size(), 0u);
+  EXPECT_EQ(flushed_ids, std::vector<uint64_t>({99, 5}));
+  auto persisted = sst->get("K", 0);
+  ASSERT_TRUE(persisted.is_valid());
+  EXPECT_EQ(persisted->second, "value");
+}
+
+// 目的：验证只刷出最早冻结的表，完整保留旧版本和墓碑，并正确扣减统计。
+// 场景：最早表存 K@5、K@9 墓碑，之后还有另一张冻结表与一张活跃表。
+// 预期：SST 可按上限读取旧值或墓碑；后两张表仍在内存，大小仅减少最早表的部分。
+TEST_F(MemTableFlushTest, FlushOldestPreservesVersionsAndOtherTables) {
+  MemTable table;
+  table.put("K", "old", 5);
+  table.remove("K", 9);
+  const size_t oldest_size = table.get_cur_size();
+  table.frozen_cur_table();
+  table.put("later", "frozen", 12);
+  table.frozen_cur_table();
+  table.put("active", "current", 15);
+  const size_t original_size = table.get_total_size();
+  const size_t frozen_size = table.get_frozen_size();
+  SSTBuilder builder(256, false);
+  std::vector<uint64_t> flushed_ids;
+  auto path = (directory / "oldest.sst").string();
+  auto sst = table.flush_last(builder, path, 1, flushed_ids, cache);
+  ASSERT_NE(sst, nullptr);
+  EXPECT_EQ(table.get_total_size(), original_size - oldest_size);
+  EXPECT_EQ(table.get_frozen_size(), frozen_size - oldest_size);
+  EXPECT_TRUE(table.get("K", 0).is_end());
+  EXPECT_TRUE(table.get("later", 0).is_valid());
+  EXPECT_TRUE(table.get("active", 0).is_valid());
+  auto old = sst->get("K", 8);
+  ASSERT_TRUE(old.is_valid());
+  EXPECT_EQ(old->second, "old");
+  auto deleted = sst->get("K", 0);
+  ASSERT_TRUE(deleted.is_valid());
+  EXPECT_TRUE(deleted->second.empty());
+  EXPECT_EQ(deleted.get_cur_tranc_id(), 9u);
+  EXPECT_TRUE(flushed_ids.empty());
+}
+
+// 目的：验证空表冻结与刷盘安全返回，无冻结表时仍能刷出活跃表。
+// 场景：空表先手动冻结并刷盘，再写入活跃表后再次刷盘。
+// 预期：第一次不生成 SST，第二次生成 SST，最终内存大小为 0。
+TEST_F(MemTableFlushTest, EmptyFreezeAndActiveOnlyFlush) {
+  MemTable table;
+  table.frozen_cur_table();
+  std::vector<uint64_t> flushed_ids = {99};
+  auto path = (directory / "active.sst").string();
+  SSTBuilder empty_builder(256, false);
+  std::shared_ptr<SST> empty_sst;
+  ASSERT_NO_THROW(empty_sst = table.flush_last(empty_builder, path, 1,
+                                              flushed_ids, cache));
+  EXPECT_EQ(empty_sst, nullptr);
+  EXPECT_FALSE(std::filesystem::exists(path));
+  EXPECT_EQ(flushed_ids, std::vector<uint64_t>({99}));
+  table.put("K", "value", 3);
+  SSTBuilder builder(256, false);
+  auto sst = table.flush_last(builder, path, 1, flushed_ids, cache);
+  ASSERT_NE(sst, nullptr);
+  EXPECT_EQ(table.get_total_size(), 0u);
+  auto it = sst->get("K", 0);
+  ASSERT_TRUE(it.is_valid());
+  EXPECT_EQ(it->second, "value");
 }
 
 int main(int argc, char **argv) {
