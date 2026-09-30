@@ -93,16 +93,29 @@ SkipListIterator MemTable::cur_get_(const std::string &key, uint64_t tranc_id) {
 // Lab2.1 从冻结跳表中查询
 SkipListIterator MemTable::frozen_get_(const std::string &key,
                                        uint64_t tranc_id) {
-  // 遍历 frozen_tables (注意顺序：越靠前越新), 找到即返回
-  // tranc_id 直接传递到 get() 即可
-  // 冻结队列头新尾旧, 从头扫, 首个命中即最新版本
-  spdlog::trace("MemTable--frozen_get_({}, {})", key, tranc_id);
-  for (const auto &e : frozen_tables) {
-    auto iter = e->get(key, tranc_id);
-    if (iter.is_valid())
-      return iter;
+
+  // 记录目前找到的最大可见版本；初始为空
+  SkipListIterator best{}; 
+
+  // 本函数不加锁，由调用方保护冻结表
+  for (const auto &table : frozen_tables){
+    // SkipList::get 已完成本表内的可见性筛选：
+    // tranc_id == 0 时不限制版本，否则只返回 <= tranc_id 的版本
+    auto candidate = table->get(key,tranc_id); 
+    if(!candidate.is_valid()) continue; 
+
+    // 在不同冻结表的候选记录中，选择真实版本号最大的记录。
+    // 先判空，再读取 best 的版本号，避免访问空迭代器。
+    if(!best.is_valid() || 
+      candidate.get_cur_tranc_id() > best.get_cur_tranc_id())
+      best = candidate; 
+
+    // 版本相同时不替换：冻结表从新到旧遍历，保留先找到的记录
+    // 墓碑也参与比较，不能因 value 为空就忽略
   }
-  return SkipListIterator{};
+
+  // 全部未命中时，best 仍为空迭代器
+  return best; 
 }
 
 SkipListIterator MemTable::get(const std::string &key, uint64_t tranc_id) {
