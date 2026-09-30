@@ -135,10 +135,10 @@ SkipListIterator MemTable::get(const std::string &key, uint64_t tranc_id) {
   }
 }
 
+// Lab2.1 查询, 无锁版本
 SkipListIterator MemTable::get_(const std::string &key, uint64_t tranc_id) {
-  // Lab2.1 查询, 无锁版本
   spdlog::trace("MemTable--get_({}, {})", key, tranc_id);
-  // ? 直接调用 cur_get_ 和 frozen_get_
+  // 直接调用 cur_get_ 和 frozen_get_
   auto it = cur_get_(key, tranc_id);
   if (it.is_valid())
     return it; // 命中就返回
