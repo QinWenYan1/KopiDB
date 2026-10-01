@@ -164,11 +164,20 @@ SkipListIterator MemTable::get_(const std::string &key, uint64_t tranc_id) {
   return best; 
 }
 
+
+// 返回结果中的每一项对应一个输入 key：
+//   first：被查询的 key
+//   second：optional，表示是否找到可见记录
+//     有值时，内部 pair 保存 {value, 记录的真实版本号}
+//     无值时，表示没有找到符合读取上限的记录
 std::vector<
     std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
 MemTable::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
   spdlog::trace("MemTable--get_batch with {} keys", keys.size());
 
+
+  // 每个输入 key 都会产生一个结果，因此提前预留空间。
+  // reserve 只预留容量，不会创建元素；此时 results.size() 仍然是 0
   std::vector<
       std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
       results;
