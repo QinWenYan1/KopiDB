@@ -118,21 +118,24 @@ SkipListIterator MemTable::frozen_get_(const std::string &key,
   return best; 
 }
 
+// Lab2.1 查询, 建议复用 cur_get_ 和 frozen_get_
 SkipListIterator MemTable::get(const std::string &key, uint64_t tranc_id) {
-  // Lab2.1 查询, 建议复用 cur_get_ 和 frozen_get_
-  // ? 先加 cur_mtx 读锁查活跃表, 未命中则释放锁后加 frozen_mtx 读锁查冻结表
   spdlog::trace("MemTable--get({}, {})", key, tranc_id);
-  { // 先来 current table 寻找
-    std::shared_lock<std::shared_mutex> get_lock(cur_mtx);
-    auto it = cur_get_(key, tranc_id);
-    if (it.is_valid())
-      return it; // 命中就返回
-  }              // 每命中，释放cur_mtx
 
-  { // 没命中，来frozen tables 寻找
-    std::shared_lock<std::shared_mutex> get_lock(frozen_mtx);
-    return frozen_get_(key, tranc_id);
-  }
+  // 统一顺序：先活跃表，再冻结表
+  // 同时持锁，避免查询过程中发生冻结或移除
+  std::shared_lock<std::shared_mutex> cur_lock(cur_mtx);
+  std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
+  auto it = get_(key, tranc_id);
+  if (!it.is_valid())
+    return {}; 
+  
+  // get_ 在活跃表与所有冻结表中选择最大可见版本。
+  // 返回指向原节点的迭代器，保留在命中 SkipList 内继续 ++ 的能力。
+  //
+  // 两把锁只保护本次查找，函数返回后释放。
+  // 返回后的读取、遍历如何与并发修改协调，需要由调用方另行保证。
+  return it;
 }
 
 // Lab2.1 查询, 无锁版本

@@ -810,22 +810,33 @@ TEST(MemTableTest, ClearResetsAllSizesAndSupportsReuse) {
   EXPECT_EQ(table.get_total_size(), table.get_cur_size());
 }
 
-// 目的：验证公开点查询返回独立的查询结果，释放读锁后不再依赖可变节点的 value。
-// 场景：保存一次 get 的返回值，再同版本更新该 key，最后 clear。
-// 预期：先前返回值仍保存 old，新查询返回 new；清空后先前结果仍可读取。
-TEST(MemTableTest, PointReadResultOwnsItsValue) {
-  MemTable table;
-  table.put("K", "old", 0);
-  auto old_result = table.get("K", 0);
-  ASSERT_TRUE(old_result.is_valid());
-  table.put("K", "new", 0);
-  EXPECT_EQ(old_result.get_value(), "old");
-  auto new_result = table.get("K", 0);
-  ASSERT_TRUE(new_result.is_valid());
-  EXPECT_EQ(new_result.get_value(), "new");
-  table.clear();
-  EXPECT_EQ(old_result.get_value(), "old");
-  EXPECT_EQ(new_result.get_value(), "new");
+// 目的：验证 get 保留返回迭代器在命中 SkipList 内继续前进的能力。
+// 场景：分别从活跃表、冻结表查询中间的 b，再执行 ++；遍历期间没有写入。
+// 预期：后继是同一张表的 c，再前进到末尾；这不是跨表归并或并发安全测试。
+TEST(MemTableTest, PointReadIteratorCanAdvanceWithinSourceTable) {
+  for (bool frozen_source : {false, true}) {
+    SCOPED_TRACE(frozen_source);
+    MemTable table;
+    table.put("a", "value-a", 1);
+    table.put("b", "value-b", 2);
+    table.put("c", "value-c", 3);
+    if (frozen_source) {
+      table.frozen_cur_table();
+      table.put("bb", "other-table", 4);
+    }
+
+    auto it = table.get("b", 0);
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(it.get_key(), "b");
+    EXPECT_EQ(it.get_value(), "value-b");
+    ++it;
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(it.get_key(), "c");
+    EXPECT_EQ(it.get_value(), "value-c");
+    EXPECT_EQ(it.get_cur_tranc_id(), 3u);
+    ++it;
+    EXPECT_TRUE(it.is_end());
+  }
 }
 
 // 目的：验证谓词命中的 key 全部被最新可见墓碑删除时，返回真正的无结果状态。
