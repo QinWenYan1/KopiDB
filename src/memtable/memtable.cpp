@@ -382,7 +382,9 @@ size_t MemTable::get_frozen_size() {
 // 因此：同时获取两把读锁，直接读取 current_table->get_size()
 // 和 frozen_bytes。SkipList::get_size() 本身不会再次获取 MemTable 的锁
 size_t MemTable::get_total_size() {
-
+    std::shared_lock<std::shared_mutex> cur_lock(cur_mtx);
+  std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
+  return current_table->get_size() + frozen_bytes;
 }
 
 // 需要进一步判断这里的 HeapIterator 能否跳过删除元素
