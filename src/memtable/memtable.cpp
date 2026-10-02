@@ -284,7 +284,11 @@ void MemTable::clear() {
   frozen_bytes = 0;
 }
 
-// 将最老的 memtable 写入 SST, 并返回控制类
+// 将最老的 memtable 写入 SST
+// 现版本函数有 3 个问题：
+//  1. 只锁冻结表，却可能修改活跃表
+//  2. SST 尚未构建成功，就先移除了内存表；构建失败后，数据无法再从 MemTable 查询
+//  3. 提前追加已刷盘事务 ID，失败时会留下错误的输出结果
 std::shared_ptr<SST>
 MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
                      std::vector<uint64_t> &flushed_tranc_ids,
@@ -292,8 +296,10 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
   spdlog::debug("MemTable--flush_last(): Starting to flush memtable to SST{}",
                 sst_id);
 
-  // 由于 flush 后需要移除最老的 memtable, 因此需要加写锁
-  std::unique_lock<std::shared_mutex> lock(frozen_mtx);
+  // 1. 没有冻结表时，需要冻结活跃表，因此两把写锁都要获取
+  //    顺序与其他 MemTable 操作一致：先活跃表，再冻结表
+  std::unique_lock<std::shared_mutex> cur_lock(cur_mtx);
+  std::unique_lock<std::shared_mutex> frozen_lock(frozen_mtx);
 
   uint64_t max_tranc_id = 0;
   uint64_t min_tranc_id = UINT64_MAX;
@@ -303,7 +309,6 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
     if (current_table->get_size() == 0) {
       spdlog::debug(
           "MemTable--flush_last(): Current table is empty, returning null");
-
       return nullptr;
     }
     // 将当前表加入到frozen_tables头部
