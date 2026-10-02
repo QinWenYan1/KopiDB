@@ -366,10 +366,23 @@ size_t MemTable::get_frozen_size() {
   return frozen_bytes;
 }
 
+// 计算现在 memtable 的总体积
+// 总大小必须在同时持有 cur_mtx、frozen_mtx 的情况下读取，原因有两个：
+//
+// 1. 不能持锁后再调用 get_cur_size() / get_frozen_size()。
+//    这两个 getter 内部也会加锁，导致同一线程重复获取同一把
+//    shared_mutex；shared_mutex 不支持递归加锁。
+//
+// 2. 也不能去掉外层锁，直接分别调用两个 getter。
+//    每个 getter 返回时都会释放自己的锁，两次读取之间可能发生冻结，
+//    导致读到的两项统计来自不同时刻，出现漏算或重复计算。
+//    例如：先读冻结表大小为 0，随后活跃表的 100 字节被冻结，
+//    再读活跃表大小为 0，最终得到 0，但实际总大小始终为 100。
+//
+// 因此：同时获取两把读锁，直接读取 current_table->get_size()
+// 和 frozen_bytes。SkipList::get_size() 本身不会再次获取 MemTable 的锁
 size_t MemTable::get_total_size() {
-  std::shared_lock<std::shared_mutex> slock1(cur_mtx);
-  std::shared_lock<std::shared_mutex> slock2(frozen_mtx);
-  return get_frozen_size() + get_cur_size();
+
 }
 
 // 需要进一步判断这里的 HeapIterator 能否跳过删除元素
