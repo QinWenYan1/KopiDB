@@ -336,15 +336,35 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
   return sst;
 }
 
+//  Lab2.1 冻结活跃表（无锁版本 + 新版）
+// 将 current_table 移入 frozen_tables 头部, 并更新 frozen_bytes
+// 创建新的空 SkipList 作为 current_table
+//  老版本有两个问题没有解决：
+//  1.  空表也会入队，后续刷盘可能尝试构建空 SST。
+//  2.  新活跃表创建得太晚：如果最后的 make_shared 抛异常，旧表已经进入冻结队列
+//      但 current_table 仍指向它。同一张表就同时成了“活跃表”和“冻结表”
 void MemTable::frozen_cur_table_() {
-  // Lab2.1 冻结活跃表（无锁版本）
-  // ? 将 current_table 移入 frozen_tables 头部, 并更新 frozen_bytes
-  // ? 创建新的空 SkipList 作为 current_table
-  // 无锁版本：直接冻结活跃表
-  // 注意链表最前面是最新的
-  frozen_tables.push_front(current_table);
-  frozen_bytes += current_table->get_size();
-  current_table = std::make_shared<SkipList>();
+  // 无锁版本：调用方必须已经持有 cur_mtx 和 frozen_mtx 的写锁
+  // 这些锁保护下面的大小读取、冻结队列修改和活跃表切换
+  const auto &table_size = current_table->get_size();
+
+  // 空表没有数据需要冻结，直接返回，避免队列中出现空表
+  if (table_size == 0) return;
+
+  // 先创建下一张活跃表。
+  // 如果创建失败，此时还没修改任何成员，原来的状态保持不变
+  auto next_table = std::make_shared<SkipList>(); 
+  
+  // 把当前表加入冻结队列头部：越新冻结的表越靠前
+  // 这里保存的是 shared_ptr，不会复制整张 SkipList
+  frozen_tables.push_front(current_table); 
+
+  // 这张表现在属于冻结表集合，将它的大小计入冻结表总量
+  frozen_bytes += table_size; 
+
+  // 切换到准备好的空表，后续写入进入新表
+  // 旧表由 frozen_tables 持有，数据仍然保留
+  current_table = std::move(next_table); 
 }
 
 void MemTable::frozen_cur_table() {
