@@ -267,10 +267,22 @@ void MemTable::remove_batch(const std::vector<std::string> &keys,
 void MemTable::clear() {
   spdlog::info("MemTable--clear(): Clearing all tables");
 
-  std::unique_lock<std::shared_mutex> lock1(cur_mtx);
-  std::unique_lock<std::shared_mutex> lock2(frozen_mtx);
-  frozen_tables.clear();
-  current_table->clear();
+  // 清空会修改活跃表和冻结表，因此需要两把写锁
+  // 加锁顺序保持一致：先活跃表，再冻结表
+  std::unique_lock<std::shared_mutex> cur_lock(cur_mtx);
+  std::unique_lock<std::shared_mutex> frozen_lock(frozen_mtx);
+
+  // SkipList::clear() 会重置跳表，并将其内部 size_bytes 清零
+  // 因此活跃表的数据和大小统计会一起清空
+  current_table->clear(); 
+
+  // 清空冻结表容器
+  // 这个操作不会自动更新 MemTable 自己维护的 frozen_bytes
+  frozen_tables.clear(); 
+
+  // 冻结表已经全部移除，对应的大小统计必须同步归零
+  // 否则之后查询总大小、判断是否需要刷盘时仍会算上旧数据
+  frozen_bytes = 0; 
 }
 
 // 将最老的 memtable 写入 SST, 并返回控制类
