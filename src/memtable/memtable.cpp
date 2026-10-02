@@ -95,27 +95,28 @@ SkipListIterator MemTable::frozen_get_(const std::string &key,
                                        uint64_t tranc_id) {
 
   // 记录目前找到的最大可见版本；初始为空
-  SkipListIterator best{}; 
+  SkipListIterator best{};
 
   // 本函数不加锁，由调用方保护冻结表
-  for (const auto &table : frozen_tables){
+  for (const auto &table : frozen_tables) {
     // SkipList::get 已完成本表内的可见性筛选：
     // tranc_id == 0 时不限制版本，否则只返回 <= tranc_id 的版本
-    auto candidate = table->get(key,tranc_id); 
-    if(!candidate.is_valid()) continue; 
+    auto candidate = table->get(key, tranc_id);
+    if (!candidate.is_valid())
+      continue;
 
     // 在不同冻结表的候选记录中，选择真实版本号最大的记录。
     // 先判空，再读取 best 的版本号，避免访问空迭代器。
-    if(!best.is_valid() || 
-      candidate.get_cur_tranc_id() > best.get_cur_tranc_id())
-      best = candidate; 
+    if (!best.is_valid() ||
+        candidate.get_cur_tranc_id() > best.get_cur_tranc_id())
+      best = candidate;
 
     // 版本相同时不替换：冻结表从新到旧遍历，保留先找到的记录
     // 墓碑也参与比较，不能因 value 为空就忽略
   }
 
   // 全部未命中时，best 仍为空迭代器
-  return best; 
+  return best;
 }
 
 // Lab2.1 查询, 建议复用 cur_get_ 和 frozen_get_
@@ -128,8 +129,8 @@ SkipListIterator MemTable::get(const std::string &key, uint64_t tranc_id) {
   std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
   auto it = get_(key, tranc_id);
   if (!it.is_valid())
-    return {}; 
-  
+    return {};
+
   // get_ 在活跃表与所有冻结表中选择最大可见版本。
   // 返回指向原节点的迭代器，保留在命中 SkipList 内继续 ++ 的能力。
   //
@@ -148,22 +149,21 @@ SkipListIterator MemTable::get_(const std::string &key, uint64_t tranc_id) {
   //  best   ：活跃表中的最大可见版本
   //  frozen ：所有冻结表中的最大可见版本
   auto best = cur_get_(key, tranc_id);
-  auto frozen = frozen_get_(key, tranc_id); 
+  auto frozen = frozen_get_(key, tranc_id);
 
   // 冻结表存在候选，并且：
   //  1. 活跃表没有候选；或者
   //  2. 冻结表候选的真实版本号更大
   //
   //  || 会短路：best 无效时，不会调用它的 get_cur_tranc_id()
-  if (frozen.is_valid() 
-  && (!best.is_valid() || frozen.get_cur_tranc_id() > best.get_cur_tranc_id()))
-    best = frozen; 
+  if (frozen.is_valid() &&
+      (!best.is_valid() || frozen.get_cur_tranc_id() > best.get_cur_tranc_id()))
+    best = frozen;
 
   // 相同版本：保留活跃表中的记录，所以这里使用 >，不用 >=
   // 墓碑：也参与版本比较，不能因为 value 为空就丢掉
-  return best; 
+  return best;
 }
-
 
 // 返回结果中的每一项对应一个输入 key：
 //   first：被查询的 key
@@ -175,14 +175,12 @@ std::vector<
 MemTable::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
   spdlog::trace("MemTable--get_batch with {} keys", keys.size());
 
-
   // 每个输入 key 都会产生一个结果，因此提前预留空间。
   // reserve 只预留容量，不会创建元素；此时 results.size() 仍然是 0
   std::vector<
       std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
       results;
   results.reserve(keys.size());
-
 
   // 2. 按统一顺序获取读锁：先活跃表，再冻结表
   //
@@ -191,8 +189,8 @@ MemTable::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
   // 读锁允许其他读者进入，但会阻止需要相应写锁的修改操作。、
   std::shared_lock<std::shared_mutex> cur_lock(cur_mtx);
   std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
-  
-  for(const auto &key : keys) {
+
+  for (const auto &key : keys) {
     // 3. 复用 get_，统一单条查询与批量查询的版本选择规则
     //
     // get_ 会先按 tranc_id 筛选可见版本，再跨表选择最大版本：
@@ -204,17 +202,18 @@ MemTable::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
     //
     // 这里已经持有两把锁，必须调用不自行加锁的 get_
     // 如果调用公开 get()，就会重复获取相同的 shared_mutex
-    // 
+    //
     // 为什么不先查cur表，锁一张表，然后要查下一张表了，再锁另外一张？
     // 不能直接认为分开加锁就一定更好，关键在于：两段查询之间，表可能发生变化
     auto it = get_(key, tranc_id);
-    if (it.is_valid()){
-      results.emplace_back(key, std::make_pair(it.get_value(), it.get_cur_tranc_id())); 
-    }else {
+    if (it.is_valid()) {
+      results.emplace_back(
+          key, std::make_pair(it.get_value(), it.get_cur_tranc_id()));
+    } else {
       // 没有可见记录：可能 key 不存在，也可能所有版本都超过读取上限
       //
       // 保留这个 key 对应的位置，用 nullopt 表示未命中
-      results.emplace_back(key, std::nullopt); 
+      results.emplace_back(key, std::nullopt);
     }
   }
 
@@ -223,7 +222,7 @@ MemTable::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
   //
   // results 保存的是复制后的值，不依赖原节点
   // 函数返回并释放读锁后，这些结果仍可独立读取
-  return results; 
+  return results;
 }
 
 void MemTable::remove_(const std::string &key, uint64_t tranc_id) {
@@ -274,15 +273,15 @@ void MemTable::clear() {
 
   // SkipList::clear() 会重置跳表，并将其内部 size_bytes 清零
   // 因此活跃表的数据和大小统计会一起清空
-  current_table->clear(); 
+  current_table->clear();
 
   // 清空冻结表容器
   // 这个操作不会自动更新 MemTable 自己维护的 frozen_bytes
-  frozen_tables.clear(); 
+  frozen_tables.clear();
 
   // 冻结表已经全部移除，对应的大小统计必须同步归零
   // 否则之后查询总大小、判断是否需要刷盘时仍会算上旧数据
-  frozen_bytes = 0; 
+  frozen_bytes = 0;
 }
 
 // 将最老的 memtable 写入 SST, 并返回控制类
@@ -382,7 +381,7 @@ size_t MemTable::get_frozen_size() {
 // 因此：同时获取两把读锁，直接读取 current_table->get_size()
 // 和 frozen_bytes。SkipList::get_size() 本身不会再次获取 MemTable 的锁
 size_t MemTable::get_total_size() {
-    std::shared_lock<std::shared_mutex> cur_lock(cur_mtx);
+  std::shared_lock<std::shared_mutex> cur_lock(cur_mtx);
   std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
   return current_table->get_size() + frozen_bytes;
 }
