@@ -183,47 +183,47 @@ MemTable::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
       results;
   results.reserve(keys.size());
 
-  // 1. 先获取活跃表的锁
-  std::shared_lock<std::shared_mutex> slock1(cur_mtx);
-  for (size_t idx = 0; idx < keys.size(); idx++) {
-    auto key = keys[idx];
-    auto cur_res = cur_get_(key, tranc_id);
-    if (cur_res.is_valid()) {
-      // 值存在且不为空
-      results.emplace_back(
-          key, std::make_pair(cur_res.get_value(), cur_res.get_tranc_id()));
-    } else {
-      // 如果活跃表中未找到，先占位
-      results.emplace_back(key, std::nullopt);
+
+  // 2. 按统一顺序获取读锁：先活跃表，再冻结表
+  //
+  // 两把锁覆盖整个批次，保护查找以及后续 key/value 的复制
+  // 避免查完活跃表、再查冻结表的间隙发生冻结或移除
+  // 读锁允许其他读者进入，但会阻止需要相应写锁的修改操作。、
+  std::shared_lock<std::shared_mutex> cur_lock(cur_mtx);
+  std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
+  
+  for(const auto &key : keys) {
+    // 3. 复用 get_，统一单条查询与批量查询的版本选择规则
+    //
+    // get_ 会先按 tranc_id 筛选可见版本，再跨表选择最大版本：
+    //   tranc_id == 0：不限制版本上限
+    //   tranc_id != 0：只允许版本号 <= tranc_id 的记录
+    //
+    // 不能在活跃表命中后直接返回：
+    // 例如活跃表是 K@5，冻结表是 K@9，最新查询应该选 K@9
+    //
+    // 这里已经持有两把锁，必须调用不自行加锁的 get_
+    // 如果调用公开 get()，就会重复获取相同的 shared_mutex
+    // 
+    // 为什么不先查cur表，锁一张表，然后要查下一张表了，再锁另外一张？
+    // 不能直接认为分开加锁就一定更好，关键在于：两段查询之间，表可能发生变化
+    auto it = get_(key, tranc_id);
+    if (it.is_valid()){
+      results.emplace_back(key, std::make_pair(it.get_value(), it.get_cur_tranc_id())); 
+    }else {
+      // 没有可见记录：可能 key 不存在，也可能所有版本都超过读取上限
+      //
+      // 保留这个 key 对应的位置，用 nullopt 表示未命中
+      results.emplace_back(key, std::nullopt); 
     }
   }
 
-  // 2. 如果某些键在活跃表中未找到，还需要查找冻结表
-  if (!std::any_of(results.begin(), results.end(), [](const auto &result) {
-        return !result.second.has_value();
-      })) {
-    return results;
-  }
-
-  slock1.unlock(); // 释放活跃表的锁
-  std::shared_lock<std::shared_mutex> slock2(frozen_mtx); // 获取冻结表的锁
-  for (size_t idx = 0; idx < keys.size(); idx++) {
-    if (results[idx].second.has_value()) {
-      continue; // 如果在活跃表中已经找到，则跳过
-    }
-    auto key = keys[idx];
-    auto frozen_result = frozen_get_(key, tranc_id);
-    if (frozen_result.is_valid()) {
-      // 值存在且不为空
-      results[idx] =
-          std::make_pair(key, std::make_pair(frozen_result.get_value(),
-                                             frozen_result.get_tranc_id()));
-    } else {
-      results[idx] = std::make_pair(key, std::nullopt);
-    }
-  }
-
-  return results;
+  // 按输入顺序逐项追加，因此结果顺序与输入一致
+  // 例如输入 {"A", "B", "A"}，会返回三个结果，不会合并重复的 A
+  //
+  // results 保存的是复制后的值，不依赖原节点
+  // 函数返回并释放读锁后，这些结果仍可独立读取
+  return results; 
 }
 
 void MemTable::remove_(const std::string &key, uint64_t tranc_id) {
