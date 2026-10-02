@@ -349,22 +349,23 @@ void MemTable::frozen_cur_table_() {
   const auto &table_size = current_table->get_size();
 
   // 空表没有数据需要冻结，直接返回，避免队列中出现空表
-  if (table_size == 0) return;
+  if (table_size == 0)
+    return;
 
   // 先创建下一张活跃表。
   // 如果创建失败，此时还没修改任何成员，原来的状态保持不变
-  auto next_table = std::make_shared<SkipList>(); 
-  
+  auto next_table = std::make_shared<SkipList>();
+
   // 把当前表加入冻结队列头部：越新冻结的表越靠前
   // 这里保存的是 shared_ptr，不会复制整张 SkipList
-  frozen_tables.push_front(current_table); 
+  frozen_tables.push_front(current_table);
 
   // 这张表现在属于冻结表集合，将它的大小计入冻结表总量
-  frozen_bytes += table_size; 
+  frozen_bytes += table_size;
 
   // 切换到准备好的空表，后续写入进入新表
   // 旧表由 frozen_tables 持有，数据仍然保留
-  current_table = std::move(next_table); 
+  current_table = std::move(next_table);
 }
 
 void MemTable::frozen_cur_table() {
