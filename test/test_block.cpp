@@ -4,7 +4,9 @@
 #include "logger/logger.h"
 #include <gtest/gtest.h>
 #include <iomanip>
+#include <limits>
 #include <memory>
+#include <tuple>
 #include <vector>
 
 using namespace ::tiny_lsm;
@@ -411,6 +413,154 @@ TEST_F(BlockTest, TrancPredicateTest) {
   std::vector<std::string> expected = {"value2", "value3", "value4", "value55",
                                        "value6"};
   EXPECT_EQ(results, expected);
+}
+
+// 目的：点查询选择不超过读上限的最新版本。
+// 场景：k 的多个版本夹在相邻 key 之间；k 全部不可见时不能误返回邻居。
+TEST_F(BlockTest, MvccPointReadSelectsNewestVisibleVersion) {
+  auto block = std::make_shared<Block>(4096);
+  ASSERT_TRUE(block->add_entry("a", "a1", 1, false));
+  ASSERT_TRUE(block->add_entry("k", "k12", 12, false));
+  ASSERT_TRUE(block->add_entry("k", "k9", 9, false));
+  ASSERT_TRUE(block->add_entry("k", "k5", 5, false));
+  ASSERT_TRUE(block->add_entry("z", "z1", 1, false));
+
+  const std::vector<std::pair<uint64_t, uint64_t>> cases = {
+      {0, 12}, {5, 5}, {8, 5}, {9, 9}, {11, 9}, {12, 12}, {20, 12}};
+  for (const auto &[read_id, expected_id] : cases) {
+    SCOPED_TRACE(read_id);
+    auto value = block->get_value_binary("k", read_id);
+    ASSERT_TRUE(value.has_value());
+    EXPECT_EQ(*value, "k" + std::to_string(expected_id));
+    BlockIterator it(block, "k", read_id);
+    ASSERT_NE(it, block->end());
+    EXPECT_EQ(it->first, "k");
+    EXPECT_EQ(it.get_cur_tranc_id(), expected_id);
+  }
+
+  EXPECT_FALSE(block->get_value_binary("k", 4).has_value());
+  EXPECT_EQ(BlockIterator(block, "k", 4), block->end());
+  EXPECT_FALSE(block->get_value_binary("missing", 0).has_value());
+  // 最后一个 key 不可见时，查找必须安全结束。
+  auto tail = std::make_shared<Block>(4096);
+  ASSERT_TRUE(tail->add_entry("k", "new", 9, false));
+  EXPECT_FALSE(tail->get_value_binary("k", 8).has_value());
+}
+
+// 目的：删除也是一个版本，不能跳过墓碑而读到被删除的旧值。
+// 场景：k@5 写入、k@9 删除、k@12 再次写入；Block 要保留墓碑给上层合并。
+TEST_F(BlockTest, MvccTombstoneDoesNotFallBackToOlderValue) {
+  auto block = std::make_shared<Block>(4096);
+  ASSERT_TRUE(block->add_entry("k", "new", 12, false));
+  ASSERT_TRUE(block->add_entry("k", "", 9, false));
+  ASSERT_TRUE(block->add_entry("k", "old", 5, false));
+
+  const std::vector<std::tuple<uint64_t, uint64_t, std::string>> cases = {
+      {0, 12, "new"}, {12, 12, "new"}, {11, 9, ""},
+      {9, 9, ""}, {8, 5, "old"}, {5, 5, "old"}};
+  for (const auto &[read_id, expected_id, expected_value] : cases) {
+    SCOPED_TRACE(read_id);
+    auto value = block->get_value_binary("k", read_id);
+    ASSERT_TRUE(value.has_value());
+    EXPECT_EQ(*value, expected_value);
+    auto it = block->begin(read_id);
+    ASSERT_NE(it, block->end());
+    EXPECT_EQ(it->second, expected_value);
+    EXPECT_EQ(it.get_cur_tranc_id(), expected_id);
+    EXPECT_EQ(++it, block->end());
+  }
+  EXPECT_FALSE(block->get_value_binary("k", 4).has_value());
+}
+
+// 目的：编解码完整保留 64 位版本号，包括最高位和版本 0。
+// 场景：同 key 有 UINT64_MAX、超过 32 位的版本、版本 0，落盘往返后仍正确查询。
+TEST_F(BlockTest, MvccEncodingPreservesFullWidthTransactionIds) {
+  const uint64_t max_id = std::numeric_limits<uint64_t>::max();
+  const uint64_t middle_id = (uint64_t{1} << 40) + 9;
+  Block block(4096);
+  ASSERT_TRUE(block.add_entry("k", "max", max_id, false));
+  ASSERT_TRUE(block.add_entry("k", "middle", middle_id, false));
+  ASSERT_TRUE(block.add_entry("k", "zero", 0, false));
+
+  auto decoded = Block::decode(block.encode());
+  const std::vector<std::tuple<uint64_t, uint64_t, std::string>> cases = {
+      {0, max_id, "max"}, {max_id, max_id, "max"},
+      {max_id - 1, middle_id, "middle"}, {middle_id, middle_id, "middle"},
+      {middle_id - 1, 0, "zero"}, {1, 0, "zero"}};
+  for (const auto &[read_id, expected_id, expected_value] : cases) {
+    SCOPED_TRACE(read_id);
+    BlockIterator it(decoded, "k", read_id);
+    ASSERT_NE(it, decoded->end());
+    EXPECT_EQ(it->second, expected_value);
+    EXPECT_EQ(it.get_cur_tranc_id(), expected_id);
+  }
+}
+
+// 目的：先过滤不可见版本，再决定是否跳过同 key 的旧版本；墓碑仍然保留。
+// 场景：a、c 整组不可见，b 有多个可见版本，d 的最新可见版本是墓碑。
+TEST_F(BlockTest, MvccIteratorFiltersBeforeDeduplicating) {
+  auto block = std::make_shared<Block>(4096);
+  ASSERT_TRUE(block->add_entry("a", "a12", 12, false));
+  ASSERT_TRUE(block->add_entry("b", "b12", 12, false));
+  ASSERT_TRUE(block->add_entry("b", "b7", 7, false));
+  ASSERT_TRUE(block->add_entry("b", "b3", 3, false));
+  ASSERT_TRUE(block->add_entry("c", "c10", 10, false));
+  ASSERT_TRUE(block->add_entry("c", "c9", 9, false));
+  ASSERT_TRUE(block->add_entry("d", "", 8, false));
+  ASSERT_TRUE(block->add_entry("d", "d2", 2, false));
+  ASSERT_TRUE(block->add_entry("e", "e0", 0, false));
+
+  using Record = std::tuple<std::string, std::string, uint64_t>;
+  for (bool keep_all : {false, true}) {
+    SCOPED_TRACE(keep_all);
+    const std::vector<Record> expected = keep_all
+        ? std::vector<Record>{{"b", "b7", 7}, {"b", "b3", 3},
+                              {"d", "", 8}, {"d", "d2", 2}, {"e", "e0", 0}}
+        : std::vector<Record>{{"b", "b7", 7}, {"d", "", 8}, {"e", "e0", 0}};
+    BlockIterator it(block, size_t{0}, 8, keep_all);
+    for (const auto &[key, value, id] : expected) {
+      ASSERT_NE(it, block->end());
+      EXPECT_EQ(it->first, key);
+      EXPECT_EQ(it->second, value);
+      EXPECT_EQ(it.get_cur_tranc_id(), id);
+      ++it;
+    }
+    EXPECT_EQ(it, block->end());
+  }
+}
+
+// 目的：范围起点和终点附近的不可见记录，不应让结果越过范围边界。
+// 场景：前缀 p 的首 key 全部不可见，末尾及范围外的 q 也不可见。
+// 全部匹配记录不可见时，允许返回空区间或 nullopt，两者都不能产生记录。
+TEST_F(BlockTest, MvccRangesRespectInvisibleBoundaries) {
+  auto block = std::make_shared<Block>(4096);
+  ASSERT_TRUE(block->add_entry("a", "a1", 1, false));
+  ASSERT_TRUE(block->add_entry("p0", "p0-new", 20, false));
+  ASSERT_TRUE(block->add_entry("p1", "p1-new", 15, false));
+  ASSERT_TRUE(block->add_entry("p1", "p1-old", 5, false));
+  ASSERT_TRUE(block->add_entry("p2", "p2-new", 9, false));
+  ASSERT_TRUE(block->add_entry("p2", "p2-old", 7, false));
+  ASSERT_TRUE(block->add_entry("q", "q-new", 20, false));
+  ASSERT_TRUE(block->add_entry("r", "r1", 1, false));
+
+  auto range = block->iters_preffix(6, "p");
+  ASSERT_TRUE(range.has_value());
+  auto [begin, end] = *range;
+  ASSERT_NE(*begin, *end);
+  EXPECT_EQ((*begin)->first, "p1");
+  EXPECT_EQ((*begin)->second, "p1-old");
+  EXPECT_EQ(begin->get_cur_tranc_id(), 5);
+  EXPECT_EQ(++(*begin), *end);
+
+  auto invisible = block->get_monotony_predicate_iters(
+      4, [](const std::string &key) {
+        if (key < "p0") return 1;
+        if (key >= "q") return -1;
+        return 0;
+      });
+  if (invisible.has_value()) {
+    EXPECT_EQ(*invisible->first, *invisible->second);
+  }
 }
 
 int main(int argc, char **argv) {
