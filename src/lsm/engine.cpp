@@ -394,6 +394,12 @@ uint64_t LSMEngine::flush() {
                                   flushed_tranc_ids, block_cache);
   }
 
+  // 等待写锁期间，其他线程可能已经刷完全部数据
+  // 本次没有生成 SST，直接返回，避免登记和解引用空指针
+  if (!new_sst) {
+    return 0;
+  }
+
   // 6. 更新 ssts 和 level_sst_ids[0] (push_front 保证新的在前)
   //    登记: id->SST 映射 + L0 队列头插 (新的在前, 查询从新到旧)
   ssts[new_sst_id] = new_sst;
@@ -412,7 +418,7 @@ uint64_t LSMEngine::flush() {
   // 8. 返回本次刷入 SST 的最大 tranc_id
   //    返回新 SST 的 max_tranc_id
   //    为什么返回 max？因为它的语义是水位线（watermark）：
-  //      回答"这次刷盘把数据 durable 到哪了"
+  //    回答"这次刷盘把数据 durable 到哪了"
   return new_sst->get_tranc_id_range().second;
 }
 
