@@ -429,13 +429,13 @@ size_t MemTable::get_total_size() {
   return current_table->get_size() + frozen_bytes;
 }
 
+// Lab2.2 MemTable 的迭代器 begin
 // 需要进一步判断这里的 HeapIterator 能否跳过删除元素
 HeapIterator MemTable::begin(uint64_t tranc_id, bool skip_delete) {
-  // Lab2.2 MemTable 的迭代器
-  // ? 加 cur_mtx 和 frozen_mtx 读锁, 遍历所有表收集 SearchItem
-  // ? 每个 item 包含 key, value, table_idx, 0, tranc_id
-  // ? 过滤 tranc_id 不可见的记录 (tranc_id != 0 && iter.get_tranc_id() >
-  // tranc_id) ? 返回 HeapIterator(item_vec, tranc_id)
+  // 加 cur_mtx 和 frozen_mtx 读锁, 遍历所有表收集 SearchItem
+  // 每个 item 包含 key, value, table_idx, 0, tranc_id
+  // 过滤 tranc_id 不可见的记录 (tranc_id != 0 && iter.get_tranc_id() > tranc_id) 
+  // 返回 HeapIterator(item_vec, tranc_id)
   std::vector<SearchItem> items;
   // 先 curr 后 frozen mtx，都是读锁
   std::shared_lock<std::shared_mutex> cur_lock(cur_mtx);
@@ -518,13 +518,13 @@ HeapIterator MemTable::iters_preffix(const std::string &preffix,
   return HeapIterator(items, tranc_id);
 }
 
+  // Lab2.3 MemTable 的谓词查询迭代器起始范围
 std::optional<std::pair<HeapIterator, HeapIterator>>
 MemTable::iters_monotony_predicate(
     uint64_t tranc_id, std::function<int(const std::string &)> predicate) {
-  // Lab2.3 MemTable 的谓词查询迭代器起始范围
-  // ? 加读锁, 对所有表调用 iters_monotony_predicate 获取结果
-  // ? 过滤事务可见性, 同 key 只保留最新版本
-  // ? 若结果为空返回 nullopt;
+  // 加读锁, 对所有表调用 iters_monotony_predicate 获取结果
+  // 过滤事务可见性, 同 key 只保留最新版本
+  // 若结果为空返回 nullopt;
   // 否则返回 make_pair(HeapIterator(item_vec,ctranc_id, true), HeapIterator{})
 
   std::vector<SearchItem> items;

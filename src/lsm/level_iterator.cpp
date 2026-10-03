@@ -83,8 +83,11 @@ Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
   //   墓碑不该被查询方看到, 所以循环处理:
   //   算出当前最小 key -> 是墓碑就把这个 key 在所有来源里的副本全部越过
   //   -> 再算下一个, 直到撞上活 key, 或者所有来源都耗尽 (= end 状态)。
-  while (!is_end()) {
 
+  // 空 key 是内部事务标记，不作为用户数据参与归并
+  // 只推进查询迭代器，不删除底层记录，刷盘仍然能收集这些标记
+  skip_key(""); 
+  while (!is_end()) {
     // 哪一路来源的头部 key 最小
     auto [min_idx, _] = get_min_key_idx();
     cur_idx_ = min_idx;
@@ -164,6 +167,11 @@ void Level_Iterator::update_current() const {
 BaseIterator &Level_Iterator::operator++() {
   // 1. 当前 key 已经吐过了: 把它在所有来源里的副本全部越过
   skip_key(cached_value->first);
+
+
+  // 在重新选择最小 key 前，跳过内部事务标记
+  // 普通墓碑的 key 非空，不会被这里跳过
+  skip_key(""); 
 
   // 2. 重新选最小 —— 和构造函数收尾是同一个循环:
   //    选最小 -> 读缓存 -> 是墓碑就整个 key 越过 -> 再选下一个

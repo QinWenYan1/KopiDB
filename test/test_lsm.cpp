@@ -147,6 +147,64 @@ TEST_F(LSMTest, IteratorOperations) {
   EXPECT_EQ(it == lsm.end(), ref_it == reference.end());
 }
 
+// 目的：验证内部事务完成标记不会影响最终用户遍历的 key 顺序。
+// 场景：MemTable 含空 key 标记和 A，L0 SST 含 Z；归并时必须先处理标记，
+//       才能露出被它挡住的 A。直接构造提交后的数据状态，不依赖尚未完成的 WAL。
+// 预期：最终只输出 A、Z，顺序正确；不限定标记必须在哪一层过滤。
+TEST_F(LSMTest, TransactionMarkerDoesNotReorderMergedIteration) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+
+  SSTBuilder builder(256, false);
+  builder.add("Z", "disk-value", 3);
+  const size_t sst_id = engine->next_sst_id++;
+  engine->ssts[sst_id] = builder.build(
+      sst_id, engine->get_sst_path(sst_id, 0), engine->block_cache);
+  engine->level_sst_ids[0].push_front(sst_id);
+
+  engine->memtable.put("A", "memory-value", 5);
+  engine->memtable.put("", "", 5);
+
+  auto it = engine->begin(0);
+  ASSERT_TRUE(it.is_valid());
+  EXPECT_EQ(it->first, "A");
+  EXPECT_EQ(it->second, "memory-value");
+  ++it;
+  ASSERT_TRUE(it.is_valid());
+  EXPECT_EQ(it->first, "Z");
+  EXPECT_EQ(it->second, "disk-value");
+  ++it;
+  EXPECT_TRUE(it.is_end());
+}
+
+// 目的：验证查询跳过事务标记后，刷盘仍能取得标记对应的事务 ID。
+// 场景：MemTable 含 A 和事务 5 的完成标记，先遍历用户数据，再刷出该表。
+// 预期：查询只返回 A；flush_last 仍输出事务 ID 5，说明推进查询迭代器
+//       不会删除底层记录。直接构造提交后的状态，不依赖 WAL 的实现。
+TEST_F(LSMTest, QuerySkippingTransactionMarkerPreservesFlushMetadata) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  engine->memtable.put("A", "value", 5);
+  engine->memtable.put("", "", 5);
+
+  {
+    auto it = engine->begin(0);
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(it->first, "A");
+    EXPECT_EQ(it->second, "value");
+    ++it;
+    EXPECT_TRUE(it.is_end());
+  } // 查询结束，释放 Level_Iterator 持有的 SST 读锁。
+
+  SSTBuilder builder(256, false);
+  const size_t sst_id = engine->next_sst_id++;
+  auto path = engine->get_sst_path(sst_id, 0);
+  std::vector<uint64_t> flushed_ids;
+  auto sst = engine->memtable.flush_last(
+      builder, path, sst_id, flushed_ids, engine->block_cache);
+  ASSERT_NE(sst, nullptr);
+  ASSERT_EQ(flushed_ids.size(), 1u);
+  EXPECT_EQ(flushed_ids.front(), 5u);
+}
+
 // Test mixed operations
 TEST_F(LSMTest, MixedOperations) {
   LSM lsm(test_dir);

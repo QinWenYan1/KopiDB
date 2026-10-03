@@ -857,23 +857,30 @@ TEST(MemTableTest, PredicateAllDeletedReturnsNoRange) {
   EXPECT_EQ(old_range->first->second, "old");
 }
 
-// 目的：验证用于跨层归并的遍历保留普通 key 的墓碑，但不暴露内部事务完成标记。
+// 目的：验证用于跨层归并的遍历保留普通 key 的最新可见墓碑。
 // 场景：冻结表、活跃表都有空 key/空 value 标记，普通 K 则有旧值和新墓碑。
-// 预期：begin(0, false) 仅返回 K@9 墓碑；空 key 标记不成为用户记录。
-TEST(MemTableTest, BeginPreservesTombstonesButSkipsTransactionMarkers) {
+// 预期：普通 key 只返回 K@9 墓碑；允许内部事务标记留给上层过滤。
+//       最终用户结果的顺序和标记过滤由 test_lsm 的归并测试验证。
+TEST(MemTableTest, BeginRetainsTombstonesForUpperLevelFiltering) {
   MemTable table;
   table.put("K", "old", 5);
   table.put("", "", 5);
   table.frozen_cur_table();
   table.remove("K", 9);
   table.put("", "", 9);
-  auto it = table.begin(0, false);
-  ASSERT_TRUE(it.is_valid());
-  EXPECT_EQ(it->first, "K");
-  EXPECT_TRUE(it->second.empty());
-  EXPECT_EQ(it.get_cur_tranc_id(), 9u);
-  ++it;
-  EXPECT_TRUE(it.is_end());
+  bool saw_tombstone = false;
+  for (auto it = table.begin(0, false); it.is_valid(); ++it) {
+    if (it->first.empty()) {
+      EXPECT_TRUE(it->second.empty());
+      continue;
+    }
+    EXPECT_FALSE(saw_tombstone);
+    saw_tombstone = true;
+    EXPECT_EQ(it->first, "K");
+    EXPECT_TRUE(it->second.empty());
+    EXPECT_EQ(it.get_cur_tranc_id(), 9u);
+  }
+  EXPECT_TRUE(saw_tombstone);
 }
 
 class MemTableFlushTest : public ::testing::Test {
