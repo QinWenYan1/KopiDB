@@ -563,7 +563,7 @@ MemTable::iters_monotony_predicate(
   HeapIterator begin_iter(std::move(items), tranc_id);
 
   // 所有表都没命中, 整体无结果
-  if (items.empty()) {
+  if (begin_iter.is_end()) {
     return std::nullopt;
   }
 
