@@ -334,7 +334,17 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
     // 不能像普通查询一样，只保留某个读取上限下的可见版本
     builder.add(key,value,version); 
   }
-  
+
+  // 5. 先预留输出空间
+  //    这样 build 成功后追加这些整数 ID 就不需要再次分配内存
+  //    reserve 只改变容量，不会提前追加任何事务 ID
+  flushed_tranc_ids.reserve(flushed_tranc_ids.size() + pending_ids.size()); 
+  auto sst = builder.build(sst_id, sst_path, block_cache); 
+
+  // 6. 到这里说明 SST 已构建成功，可以提交内存中的状态变更
+  //    如果前面的 add/build 抛异常，待刷数据仍保留在冻结队列中
+  //    没有被提前移除，也没有提前报告事务已经刷盘
+
   // 将最老的 memtable 写入 SST 的信息更新了
   frozen_tables.pop_back();
   frozen_bytes -= table->get_size();
