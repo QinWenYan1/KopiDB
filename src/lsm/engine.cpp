@@ -17,7 +17,6 @@
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
-#include <stdexcept>
 #include <utility>
 #include <vector>
 
