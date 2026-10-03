@@ -301,6 +301,28 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
   std::unique_lock<std::shared_mutex> cur_lock(cur_mtx);
   std::unique_lock<std::shared_mutex> frozen_lock(frozen_mtx);
 
+  // 2. 优先刷已有的冻结表；没有时，再冻结当前活跃表
+  //    复用刚修好的函数，避免在这里重复实现冻结逻辑
+  if (frozen_tables.empty())
+    frozen_cur_table_(); 
+
+  // 如果仍然为空，说明活跃表也没有数据，无须构建 SST
+  if (frozen_tables.empty()){
+    spdlog::debug(
+          "MemTable--flush_last(): Current table is empty, returning null");
+    return nullptr;
+  }
+
+  // 3. 队尾是最早冻结的表
+  //    这里只保存引用，构建成功之前不能将它移出队列
+  auto table = frozen_tables.back(); 
+  const auto &table_size = table->get_size(); 
+
+  //    后续只访问冻结表，释放活跃表锁
+  //    不需要冻结的写入可以继续执行；需要冻结时仍会等待 frozen_mtx
+  //    冻结表锁继续持有，防止其他线程清除或重复刷出同一张表
+  cur_lock.unlock(); 
+
   uint64_t max_tranc_id = 0;
   uint64_t min_tranc_id = UINT64_MAX;
 
