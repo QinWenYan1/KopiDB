@@ -434,8 +434,8 @@ size_t MemTable::get_total_size() {
 HeapIterator MemTable::begin(uint64_t tranc_id, bool skip_delete) {
   // 加 cur_mtx 和 frozen_mtx 读锁, 遍历所有表收集 SearchItem
   // 每个 item 包含 key, value, table_idx, 0, tranc_id
-  // 过滤 tranc_id 不可见的记录 (tranc_id != 0 && iter.get_tranc_id() > tranc_id) 
-  // 返回 HeapIterator(item_vec, tranc_id)
+  // 过滤 tranc_id 不可见的记录 (tranc_id != 0 && iter.get_tranc_id() >
+  // tranc_id) 返回 HeapIterator(item_vec, tranc_id)
   std::vector<SearchItem> items;
   // 先 curr 后 frozen mtx，都是读锁
   std::shared_lock<std::shared_mutex> cur_lock(cur_mtx);
