@@ -429,7 +429,7 @@ std::string LSMEngine::get_sst_path(size_t sst_id, size_t target_level) {
   return ss.str();
 }
 
-  // Lab 4.7 谓词查询
+// Lab 4.7 谓词查询
 std::optional<std::pair<TwoMergeIterator, TwoMergeIterator>>
 LSMEngine::lsm_iters_monotony_predicate(
     uint64_t tranc_id, std::function<int(const std::string &)> predicate) {
@@ -438,7 +438,7 @@ LSMEngine::lsm_iters_monotony_predicate(
 
   // 收集所有来源的候选记录
   // 此时必须保留墓碑，等跨来源比较完成后才能过滤
-  std::vector<SearchItem> items; 
+  std::vector<SearchItem> items;
 
   {
     // 收集期间保护 SST 列表和文件，避免 flush/compact 改动它们
@@ -448,56 +448,56 @@ LSMEngine::lsm_iters_monotony_predicate(
     // 只有 key 和版本号都相同时，才比较来源优先级:
     //  1.  MemTable 最高
     //  2. 随后按层从浅到深分配递减的优先级
-    size_t priority = ssts.size(); 
+    size_t priority = ssts.size();
 
     // 1. 收集 MemTable 中满足谓词的记录
-    //    从 memtable 查询: memtable.iters_monotony_predicate(tranc_id, predicate)
+    //    从 memtable 查询: memtable.iters_monotony_predicate(tranc_id,
+    //    predicate)
     // false 是 skip_delete=false：保留删除标记
-    auto mem_it = memtable.begin(tranc_id, false); 
-    for (; mem_it.is_valid(); ++mem_it){
-      auto [key, value] = *mem_it; 
-      const int pos = predicate(key); 
+    auto mem_it = memtable.begin(tranc_id, false);
+    for (; mem_it.is_valid(); ++mem_it) {
+      auto [key, value] = *mem_it;
+      const int pos = predicate(key);
 
       // 单调谓词: 正数在范围左侧，0 命中，负数在范围右侧
       // 单调谓词规定:
       //    0：满足条件
       //    >0：需要向右找
       //    <0：需要向左找
-      if (pos < 0) break; 
-      if (pos > 0) continue; 
+      if (pos < 0)
+        break;
+      if (pos > 0)
+        continue;
 
-      items.emplace_back(
-        std::move(key), 
-        std::move(value), 
-        priority, 0,
-        mem_it.get_cur_tranc_id()
-      ); 
+      items.emplace_back(std::move(key), std::move(value), priority, 0,
+                         mem_it.get_cur_tranc_id());
     }
 
-
     // 2. 遍历所有 SST, 对每个 SST 调用 sst_iters_monotony_predicate
-    //     将所有结果合并到 item_vec (注意过滤事务可见性和相同 key 只保留最新版本)
-    //     level_sst_ids 按层号递增；L0 文件按新到旧排列
-    for (const auto &[level, ids] : level_sst_ids){
-      for(size_t id : ids){
-        --priority; 
-        auto range = sst_iters_monotony_predicate(ssts.at(id), tranc_id, predicate); 
-        if (!range.has_value()) continue; 
+    //     将所有结果合并到 item_vec (注意过滤事务可见性和相同 key
+    //     只保留最新版本) level_sst_ids 按层号递增；L0 文件按新到旧排列
+    for (const auto &[level, ids] : level_sst_ids) {
+      for (size_t id : ids) {
+        --priority;
+        auto range =
+            sst_iters_monotony_predicate(ssts.at(id), tranc_id, predicate);
+        if (!range.has_value())
+          continue;
 
-        auto [it, range_end] = std::move(*range); 
-        for (; it != range_end && !it.is_end(); ++it){
+        auto [it, range_end] = std::move(*range);
+        for (; it != range_end && !it.is_end(); ++it) {
           //  可见性过滤可能让区间起点落在某个块的末尾
           //  此时不能解引用，让循环的 ++ 推进到后续块
           //  为什么？
-          //  你当前的范围查询在 sst_iterator.cpp 会把这个块迭代器直接装入 SST 迭代器
-          //  因此可能出现：
-          //  it.is_valid() == false  // 当前没有可读取的记录
-          //  it.is_end()   == false  // 仍持有块迭代器，尚未归一化为 SST 结束状态
-          //  所以先 continue，避免执行 *it，
-          //  for 循环的 continue 仍然会执行末尾的 ++it，
-          //  由 SST 迭代器推进到下一个可见的 Block 
-          if (!it.is_valid()) continue; 
-          
+          //  你当前的范围查询在 sst_iterator.cpp 会把这个块迭代器直接装入 SST
+          //  迭代器 因此可能出现： it.is_valid() == false  //
+          //  当前没有可读取的记录 it.is_end()   == false  //
+          //  仍持有块迭代器，尚未归一化为 SST 结束状态 所以先
+          //  continue，避免执行 *it， for 循环的 continue 仍然会执行末尾的
+          //  ++it， 由 SST 迭代器推进到下一个可见的 Block
+          if (!it.is_valid())
+            continue;
+
           //  重新执行谓词
           //  是在保护查询范围边界；跨块推进也可能跨过块尾形式的 range_end，
           //  不只与不可见记录有关
@@ -506,22 +506,22 @@ LSMEngine::lsm_iters_monotony_predicate(
           //  Block 1：key50@9   ← 不可见，在范围内
           //  Block 2：key70@2   ← 可见，但已超出范围
           //  这时范围函数可能把 range_end 设置在 Block 1 的尾后位置
-          //  但从 key20@2 执行一次 ++it 时: 
-          //  就出现问题: 迭代器直接跨过了 stop 所代表的位置，因此 it != stop 仍然成立
-          //  重新执行谓词就能发现，解决问题
-          auto [key, value] = *it; 
-          const int pos = predicate(key); 
+          //  但从 key20@2 执行一次 ++it 时:
+          //  就出现问题: 迭代器直接跨过了 stop 所代表的位置，因此 it != stop
+          //  仍然成立 重新执行谓词就能发现，解决问题
+          auto [key, value] = *it;
+          const int pos = predicate(key);
 
           // ++ 可能因不可见记录而跨过区间边界，再确认一次
-          if (pos < 0) break; 
-          if (pos > 0) continue; 
-          
+          if (pos < 0)
+            break;
+          if (pos > 0)
+            continue;
+
           // 不在收集阶段按 key 去重，也不删除墓碑
           // 使用真实版本号，让全局堆决定同 key 的胜者
-          items.emplace_back(
-            std::move(key), std::move(value), priority, 
-            static_cast<int>(level), it.get_cur_tranc_id()
-          ); 
+          items.emplace_back(std::move(key), std::move(value), priority,
+                             static_cast<int>(level), it.get_cur_tranc_id());
         }
       }
     }
@@ -532,27 +532,20 @@ LSMEngine::lsm_iters_monotony_predicate(
   //
   //    skip_delete=true：最新可见版本若为墓碑，整组 key 都跳过
   //    keep_all_versions=false：每个 key 只输出最新可见版本
-  auto results = std::make_shared<HeapIterator>(
-    std::move(items), tranc_id, true, false
-  );
+  auto results =
+      std::make_shared<HeapIterator>(std::move(items), tranc_id, true, false);
 
   // 候选记录可能全部被墓碑或可见性规则过滤
   // 因此要检查最终迭代器，不能只检查 items 是否为空
   if (!results->is_valid())
-    return std::nullopt; 
-
+    return std::nullopt;
 
   // 4. 接口要求返回 TwoMergeIterator
   //    全局归并已由上面的 HeapIterator 完成，
   //    这里用“结果流 + 空流”适配返回类型
   return std::make_pair(
-  TwoMergeIterator(
-      results,
-      std::make_shared<HeapIterator>(), 
-      tranc_id), 
-  TwoMergeIterator{}
-  ); 
-
+      TwoMergeIterator(results, std::make_shared<HeapIterator>(), tranc_id),
+      TwoMergeIterator{});
 }
 
 // Lab 4.7: 返回 Level_Iterator(shared_from_this(), tranc_id)
