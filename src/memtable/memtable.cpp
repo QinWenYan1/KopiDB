@@ -323,27 +323,27 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
   //    冻结表锁继续持有，防止其他线程清除或重复刷出同一张表
   cur_lock.unlock(); 
 
-  uint64_t max_tranc_id = 0;
-  uint64_t min_tranc_id = UINT64_MAX;
+  // 4. 暂存事务完成标记的 ID，暂时不修改调用方的输出列表
+  std::vector<uint64_t> pending_ids;
+  for (const auto&[key,value,version] : table->flush()){
+    if (key.empty() && value.empty())
+      // 本项目用“空 key + 空 value”记录事务完成标记
+      pending_ids.push_back(version); 
 
-  if (frozen_tables.empty()) {
-    // 如果当前表为空，直接返回nullptr
-    if (current_table->get_size() == 0) {
-      spdlog::debug(
-          "MemTable--flush_last(): Current table is empty, returning null");
-      return nullptr;
-    }
-    // 将当前表加入到frozen_tables头部
-    frozen_tables.push_front(current_table);
-    frozen_bytes += current_table->get_size();
-    // 创建新的空表作为当前表
-    current_table = std::make_shared<SkipList>();
+    // 刷盘必须保留全部版本、墓碑和现有格式中的事务标记
+    // 不能像普通查询一样，只保留某个读取上限下的可见版本
+    builder.add(key,value,version); 
   }
-
-  // 将最老的 memtable 写入 SST
-  std::shared_ptr<SkipList> table = frozen_tables.back();
+  
+  // 将最老的 memtable 写入 SST 的信息更新了
   frozen_tables.pop_back();
   frozen_bytes -= table->get_size();
+
+
+
+
+  uint64_t max_tranc_id = 0;
+  uint64_t min_tranc_id = UINT64_MAX;
 
   std::vector<std::tuple<std::string, std::string, uint64_t>> flush_data =
       table->flush();
