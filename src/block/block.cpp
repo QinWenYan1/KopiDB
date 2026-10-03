@@ -166,11 +166,11 @@ size_t Block::get_offset_at(size_t idx) const {
   return offsets[idx];
 }
 
+// Lab 3.1 添加一个键值对到block中
 // Block构建是由SST控制的, 其会不断地调用下面这个函数添加键值对
 bool Block::add_entry(const std::string &key, const std::string &value,
                       uint64_t tranc_id, bool force_write) {
-  // Lab 3.1 添加一个键值对到block中
-  // ? 每条 entry 格式:
+  // 每条 entry 格式:
   // [key_len:uint16_t][key][value_len:uint16_t][value][tranc_id:uint64_t] ? 若
   // force_write 且当前容量不足则返回 false ? 成功添加后记录偏移到 offsets,
   // 返回 true
@@ -216,9 +216,9 @@ bool Block::add_entry(const std::string &key, const std::string &value,
 }
 
 // 从指定偏移量获取entry的key
+// Lab 3.1 从指定偏移量获取entry的key
 std::string Block::get_key_at(size_t offset) const {
-  // Lab 3.1 从指定偏移量获取entry的key
-  // ? 读取 data[offset] 处的 uint16_t key_len, 再取后续 key_len 个字节
+  // 读取 data[offset] 处的 uint16_t key_len, 再取后续 key_len 个字节
   // 边界检查：读取 key_len 前，确认 offset 合法且剩余至少 2B
   if (offset > data.size() || data.size() - offset < 2)
     throw std::runtime_error("Block::get_key_at: Incomplete key length header");
@@ -331,14 +331,12 @@ int Block::compare_key_at(size_t offset, const std::string &target) const {
   return key.compare(target);
 }
 
-// 相同的key连续分布, 且相同的key的事务id从大到小排布
-// 这里的逻辑是找到最接近 tranc_id 的键值对的索引位置
-// tranc_id == 0: 向前找最小索引 (最大事务id) 版本
-// tranc_id != 0: 找满足 tranc_id_ <= tranc_id 的最新版本
+// Lab3.1: 找到 key 以后，从这个 key 的多个版本里，选出当前能读取的最新版本
+//    相同的key连续分布, 且相同的key的事务id从大到小排布
+//    这里的逻辑是找到最接近 tranc_id 的键值对的索引位置
+//    tranc_id == 0: 向前找最小索引 (最大事务id) 版本
+//    tranc_id != 0: 找满足 tranc_id_ <= tranc_id 的最新版本
 int Block::adjust_idx_by_tranc_id(size_t idx, uint64_t tranc_id) {
-  // Lab3.1 不需要在Lab3.1中实现, 只是进行标记
-  // ? 后续实现事务后需要更新这里的实现
-
   // 1. 先回退到同 key 组的最左端：组首 = 最新版本（tranc_id 最大）
   //    因为同 key 的版本降序连续存放，往左只要有同 key 就继续退
   const std::string key = get_key_at(offsets[idx]);
@@ -384,8 +382,8 @@ std::optional<std::string> Block::get_value_binary(const std::string &key,
 // Lab 3.1 使用二分查找获取key对应的索引
 std::optional<size_t> Block::get_idx_binary(const std::string &key,
                                             uint64_t tranc_id) {
-  // ? 在 offsets 数组上做二分查找, 利用 compare_key_at 比较
-  // ? 找到后调用 adjust_idx_by_tranc_id 进行事务可见性修正
+  // 在 offsets 数组上做二分查找, 利用 compare_key_at 比较
+  // 找到后调用 adjust_idx_by_tranc_id 进行事务可见性修正
 
   // 在 offsets 上二分: 比较 data 里每条 entry 的 key
   // [left, right) 左闭右开
