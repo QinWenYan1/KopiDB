@@ -224,17 +224,17 @@ MemTable::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
   return results;
 }
 
+// Lab2.1 无锁版本的remove
 void MemTable::remove_(const std::string &key, uint64_t tranc_id) {
-  // Lab2.1 无锁版本的remove
-  // ? 在 LSM 中, 删除操作是写入空值, 调用 current_table->put(key, "", tranc_id)
+  // 在 LSM 中, 删除操作是写入空值, 调用 current_table->put(key, "", tranc_id)
   spdlog::trace("MemTable--remove_({}, {})", key, tranc_id);
   current_table->put(key, "", tranc_id);
 }
 
+// Lab2.1 有锁版本的remove
 void MemTable::remove(const std::string &key, uint64_t tranc_id) {
-  // Lab2.1 有锁版本的remove
-  // ? 加 cur_mtx 写锁后调用 remove_()
-  // ? 若超限则冻结当前表
+  // 加 cur_mtx 写锁后调用 remove_()
+  // 若超限则冻结当前表
   spdlog::trace("MemTable--remove({}, {})", key, tranc_id);
   std::lock_guard<std::shared_mutex> write_lock(cur_mtx);
   remove_(key, tranc_id);
@@ -245,11 +245,12 @@ void MemTable::remove(const std::string &key, uint64_t tranc_id) {
   }
 }
 
+// Lab2.1 有锁版本的remove_batch
 void MemTable::remove_batch(const std::vector<std::string> &keys,
                             uint64_t tranc_id) {
-  // Lab2.1 有锁版本的remove_batch
-  // ? 加 cur_mtx 写锁后遍历 keys 依次调用 remove_()
-  // ? 结束后若超限则冻结当前表
+
+  // 加 cur_mtx 写锁后遍历 keys 依次调用 remove_()
+  // 结束后若超限则冻结当前表
   spdlog::trace("MemTable--remove_batch with {} keys", keys.size());
   std::lock_guard<std::shared_mutex> write_lock(cur_mtx);
   for (const auto &key : keys) {
@@ -284,7 +285,7 @@ void MemTable::clear() {
 }
 
 // 将最老的 memtable 写入 SST
-// 现版本函数有 3 个问题：
+// 现版本函数解决 3 个老版本问题：
 //  1. 只锁冻结表，却可能修改活跃表
 //  2. SST 尚未构建成功，就先移除了内存表；构建失败后，数据无法再从 MemTable
 //  查询
