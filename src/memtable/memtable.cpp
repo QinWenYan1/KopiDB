@@ -4,7 +4,6 @@
 #include "skiplist/skiplist.h"
 #include "spdlog/spdlog.h"
 #include "sst/sst.h"
-#include <algorithm>
 #include <cstddef>
 #include <memory>
 #include <mutex>
@@ -344,33 +343,20 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
   // 6. 到这里说明 SST 已构建成功，可以提交内存中的状态变更
   //    如果前面的 add/build 抛异常，待刷数据仍保留在冻结队列中
   //    没有被提前移除，也没有提前报告事务已经刷盘
+  flushed_tranc_ids.insert(
+    flushed_tranc_ids.end(), 
+    pending_ids.begin(), 
+    pending_ids.end()
+  ); 
 
   // 将最老的 memtable 写入 SST 的信息更新了
   frozen_tables.pop_back();
   frozen_bytes -= table->get_size();
 
-
-
-
-  uint64_t max_tranc_id = 0;
-  uint64_t min_tranc_id = UINT64_MAX;
-
-  std::vector<std::tuple<std::string, std::string, uint64_t>> flush_data =
-      table->flush();
-  for (auto &[k, v, t] : flush_data) {
-    if (k == "" && v == "") {
-      flushed_tranc_ids.push_back(t);
-    }
-    max_tranc_id = (std::max)(t, max_tranc_id);
-    min_tranc_id = (std::min)(t, min_tranc_id);
-    builder.add(k, v, t);
-  }
-  auto sst = builder.build(sst_id, sst_path, block_cache);
-
   spdlog::info("MemTable--flush_last(): SST{} built successfully at '{}'",
-               sst_id, sst_path);
+                sst_id, sst_path);
 
-  return sst;
+  return sst; 
 }
 
 //  Lab2.1 冻结活跃表（无锁版本 + 新版）
