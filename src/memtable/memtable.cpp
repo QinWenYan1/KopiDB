@@ -286,7 +286,8 @@ void MemTable::clear() {
 // 将最老的 memtable 写入 SST
 // 现版本函数有 3 个问题：
 //  1. 只锁冻结表，却可能修改活跃表
-//  2. SST 尚未构建成功，就先移除了内存表；构建失败后，数据无法再从 MemTable 查询
+//  2. SST 尚未构建成功，就先移除了内存表；构建失败后，数据无法再从 MemTable
+//  查询
 //  3. 提前追加已刷盘事务 ID，失败时会留下错误的输出结果
 std::shared_ptr<SST>
 MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
@@ -303,60 +304,57 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
   // 2. 优先刷已有的冻结表；没有时，再冻结当前活跃表
   //    复用刚修好的函数，避免在这里重复实现冻结逻辑
   if (frozen_tables.empty())
-    frozen_cur_table_(); 
+    frozen_cur_table_();
 
   // 如果仍然为空，说明活跃表也没有数据，无须构建 SST
-  if (frozen_tables.empty()){
+  if (frozen_tables.empty()) {
     spdlog::debug(
-          "MemTable--flush_last(): Current table is empty, returning null");
+        "MemTable--flush_last(): Current table is empty, returning null");
     return nullptr;
   }
 
   // 3. 队尾是最早冻结的表
   //    这里只保存引用，构建成功之前不能将它移出队列
-  auto table = frozen_tables.back(); 
-  const auto &table_size = table->get_size(); 
+  auto table = frozen_tables.back();
+  const auto &table_size = table->get_size();
 
   //    后续只访问冻结表，释放活跃表锁
   //    不需要冻结的写入可以继续执行；需要冻结时仍会等待 frozen_mtx
   //    冻结表锁继续持有，防止其他线程清除或重复刷出同一张表
-  cur_lock.unlock(); 
+  cur_lock.unlock();
 
   // 4. 暂存事务完成标记的 ID，暂时不修改调用方的输出列表
   std::vector<uint64_t> pending_ids;
-  for (const auto&[key,value,version] : table->flush()){
+  for (const auto &[key, value, version] : table->flush()) {
     if (key.empty() && value.empty())
       // 本项目用“空 key + 空 value”记录事务完成标记
-      pending_ids.push_back(version); 
+      pending_ids.push_back(version);
 
     // 刷盘必须保留全部版本、墓碑和现有格式中的事务标记
     // 不能像普通查询一样，只保留某个读取上限下的可见版本
-    builder.add(key,value,version); 
+    builder.add(key, value, version);
   }
 
   // 5. 先预留输出空间
   //    这样 build 成功后追加这些整数 ID 就不需要再次分配内存
   //    reserve 只改变容量，不会提前追加任何事务 ID
-  flushed_tranc_ids.reserve(flushed_tranc_ids.size() + pending_ids.size()); 
-  auto sst = builder.build(sst_id, sst_path, block_cache); 
+  flushed_tranc_ids.reserve(flushed_tranc_ids.size() + pending_ids.size());
+  auto sst = builder.build(sst_id, sst_path, block_cache);
 
   // 6. 到这里说明 SST 已构建成功，可以提交内存中的状态变更
   //    如果前面的 add/build 抛异常，待刷数据仍保留在冻结队列中
   //    没有被提前移除，也没有提前报告事务已经刷盘
-  flushed_tranc_ids.insert(
-    flushed_tranc_ids.end(), 
-    pending_ids.begin(), 
-    pending_ids.end()
-  ); 
+  flushed_tranc_ids.insert(flushed_tranc_ids.end(), pending_ids.begin(),
+                           pending_ids.end());
 
   // 将最老的 memtable 写入 SST 的信息更新了
   frozen_tables.pop_back();
   frozen_bytes -= table->get_size();
 
   spdlog::info("MemTable--flush_last(): SST{} built successfully at '{}'",
-                sst_id, sst_path);
+               sst_id, sst_path);
 
-  return sst; 
+  return sst;
 }
 
 //  Lab2.1 冻结活跃表（无锁版本 + 新版）
