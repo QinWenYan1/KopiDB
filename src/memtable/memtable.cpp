@@ -518,14 +518,14 @@ HeapIterator MemTable::iters_preffix(const std::string &preffix,
   return HeapIterator(items, tranc_id);
 }
 
-  // Lab2.3 MemTable 的谓词查询迭代器起始范围
+// Lab2.3 MemTable 的谓词查询迭代器起始范围
+// 过滤事务可见性, 同 key 只保留最新版本
+// 若结果为空返回 nullopt;
+// 否则返回 make_pair(HeapIterator(item_vec,ctranc_id, true), HeapIterator{})
 std::optional<std::pair<HeapIterator, HeapIterator>>
 MemTable::iters_monotony_predicate(
     uint64_t tranc_id, std::function<int(const std::string &)> predicate) {
   // 加读锁, 对所有表调用 iters_monotony_predicate 获取结果
-  // 过滤事务可见性, 同 key 只保留最新版本
-  // 若结果为空返回 nullopt;
-  // 否则返回 make_pair(HeapIterator(item_vec,ctranc_id, true), HeapIterator{})
 
   std::vector<SearchItem> items;
   // 加curr 和 frozen 读锁
@@ -557,12 +557,18 @@ MemTable::iters_monotony_predicate(
     collect(*table, idx);
   }
 
+  // 新版本：先完成去重和墓碑过滤，再判断最终有没有结果
+  // 老版本会由于有墓碑的情况显示items非空，然后返回“假”Heapiterator
+  // 所以我们先利用heapiterator过滤判断之后再返回
+  HeapIterator begin_iter(std::move(items), tranc_id);
+
   // 所有表都没命中, 整体无结果
   if (items.empty()) {
     return std::nullopt;
   }
 
   // 命中: (归并迭代器, 空哨兵), 与 begin()/end() 同款的用法
-  return std::make_pair(HeapIterator(items, tranc_id), HeapIterator{});
+  return std::make_pair(std::move(begin_iter), HeapIterator{});
 }
+
 } // namespace tiny_lsm
