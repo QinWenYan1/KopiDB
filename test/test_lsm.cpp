@@ -3,10 +3,13 @@
 #include "lsm/engine.h"
 #include "lsm/level_iterator.h"
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <gtest/gtest.h>
 #include <iostream>
+#include <latch>
 #include <string>
+#include <thread>
 #include <unordered_map>
 
 using namespace ::tiny_lsm;
@@ -203,6 +206,78 @@ TEST_F(LSMTest, QuerySkippingTransactionMarkerPreservesFlushMetadata) {
   ASSERT_NE(sst, nullptr);
   ASSERT_EQ(flushed_ids.size(), 1u);
   EXPECT_EQ(flushed_ids.front(), 5u);
+}
+
+// 目的：验证引擎刷盘正确处理空表，并且不会在重复刷盘时登记空 SST。
+// 场景：先刷空表，再写 K@5 刷盘，最后再次刷已清空的 MemTable。
+// 预期：返回值依次为 0、5、0，仅登记一张有效 SST，数据仍然可读。
+TEST_F(LSMTest, EngineFlushEmptyAndNonemptyTables) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  EXPECT_EQ(engine->flush(), 0u);
+  EXPECT_TRUE(engine->ssts.empty());
+  EXPECT_TRUE(engine->level_sst_ids.empty());
+
+  engine->memtable.put("K", "value", 5);
+  EXPECT_EQ(engine->flush(), 5u);
+  EXPECT_EQ(engine->memtable.get_total_size(), 0u);
+  EXPECT_EQ(engine->flush(), 0u);
+
+  ASSERT_EQ(engine->ssts.size(), 1u);
+  const auto level = engine->level_sst_ids.find(0);
+  ASSERT_NE(level, engine->level_sst_ids.end());
+  ASSERT_EQ(level->second.size(), 1u);
+  ASSERT_NE(engine->ssts.at(level->second.front()), nullptr);
+  auto result = engine->get("K", 0);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->first, "value");
+  EXPECT_EQ(result->second, 5u);
+}
+
+// 目的：验证并发刷盘不会重复登记同一张表或留下空 SST。
+// 场景：多个线程一起请求刷出唯一一张 MemTable，只有一个线程应生成 SST。
+// 预期：一个调用返回 5，其余返回 0；最终仅有一张有效 SST，数据可读。
+//       此用例检查并发结果，不保证每次调度都进入加锁前检查的竞争窗口。
+TEST_F(LSMTest, ConcurrentFlushRegistersOnlyOneSst) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  engine->memtable.put("K", "value", 5);
+
+  constexpr size_t worker_count = 8;
+  std::latch start(1);
+  std::vector<uint64_t> results(worker_count, 0);
+  std::vector<std::exception_ptr> errors(worker_count);
+  std::vector<std::thread> workers;
+  workers.reserve(worker_count);
+  for (size_t i = 0; i < worker_count; ++i) {
+    workers.emplace_back([&, i] {
+      start.wait();
+      try {
+        results[i] = engine->flush();
+      } catch (...) {
+        errors[i] = std::current_exception();
+      }
+    });
+  }
+  start.count_down();
+  for (auto &worker : workers)
+    worker.join();
+
+  size_t successful_flushes = 0;
+  for (size_t i = 0; i < worker_count; ++i) {
+    ASSERT_FALSE(static_cast<bool>(errors[i]));
+    EXPECT_TRUE(results[i] == 0 || results[i] == 5);
+    successful_flushes += results[i] == 5;
+  }
+  EXPECT_EQ(successful_flushes, 1u);
+  EXPECT_EQ(engine->memtable.get_total_size(), 0u);
+  ASSERT_EQ(engine->ssts.size(), 1u);
+  const auto level = engine->level_sst_ids.find(0);
+  ASSERT_NE(level, engine->level_sst_ids.end());
+  ASSERT_EQ(level->second.size(), 1u);
+  ASSERT_NE(engine->ssts.at(level->second.front()), nullptr);
+  auto result = engine->get("K", 0);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->first, "value");
+  EXPECT_EQ(result->second, 5u);
 }
 
 // Test mixed operations
