@@ -145,6 +145,11 @@ void SstIterator::seek_first() {
 // Lab 3.6 将迭代器定位到指定key的位置
 void SstIterator::seek(const std::string &key) {
 
+  // seek 会重新定位，旧位置的缓存必须作废
+  // 后续解引用时，update_current() 会从新位置重新读取
+  // 提前清理，也能覆盖查找失败、提前返回的情况
+  cached_value.reset();
+
   if (!m_sst) {
     m_block_it = nullptr;
     return;
