@@ -83,13 +83,11 @@ std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
   if (!final_begin.has_value())
     return std::nullopt; 
 
-  // 块尾只是一个中间状态，正常的 SST ++ 会直接跨过它。
-  // 将终点也推进到后续第一条可见记录，使遍历能够与终点相等。
-  //
-  // 此时块内 ++ 不会移动，因为已经在块尾；
-  // SST 的 ++ 会负责跨块，跳过不可见块，或者进入 SST end。
-  //
-  // 如果终点已经指向有效记录，则不能再 ++，否则会越过正确边界。
+  // 范围终点可能停在 Block 的尾后位置，但 SST 的 ++ 会直接跨过它
+  // 例如：Block 0 = [a, b]，Block 1 = [c, d]，查询 [a, b]，全部可见
+  // 原终点在 Block 0 的块尾；从 b 执行 ++ 却直接到 c，无法与终点相等
+  // 因此将终点也推进到 c：遍历完 b 后，it == end，停止且不读取 c
+  // 如果后面没有可见记录，则统一进入 SST 的 end
   if (final_end->m_block_it->is_end())
     ++(*final_end); 
 
