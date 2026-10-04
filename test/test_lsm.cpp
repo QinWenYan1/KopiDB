@@ -2,6 +2,7 @@
 #include "logger/logger.h"
 #include "lsm/engine.h"
 #include "lsm/level_iterator.h"
+#include "sst/concact_iterator.h"
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
@@ -10,7 +11,9 @@
 #include <latch>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
+#include <vector>
 
 using namespace ::tiny_lsm;
 
@@ -39,6 +42,172 @@ protected:
   std::string test_dir;
   bool no_clear = false;
 };
+
+namespace {
+using MvccRecord = std::tuple<std::string, std::string, uint64_t>;
+
+// 用有限的期望序列检查内容、真实版本及结束状态，避免错误实现导致测试无限遍历。
+void expect_mvcc_records(BaseIterator &it,
+                         const std::vector<MvccRecord> &expected) {
+  for (const auto &[key, value, id] : expected) {
+    ASSERT_TRUE(it.is_valid()) << key;
+    EXPECT_EQ((*it).first, key);
+    EXPECT_EQ((*it).second, value);
+    EXPECT_EQ(it.get_cur_tranc_id(), id);
+    ++it;
+  }
+  EXPECT_TRUE(it.is_end());
+}
+
+std::shared_ptr<HeapIterator> make_mvcc_heap(
+    const std::vector<MvccRecord> &records, uint64_t read_id, bool keep_all) {
+  std::vector<SearchItem> items;
+  for (const auto &[key, value, id] : records)
+    items.emplace_back(key, value, 0, 0, id);
+  return std::make_shared<HeapIterator>(std::move(items), read_id, false,
+                                        keep_all);
+}
+} // namespace
+
+// 目的：先判断版本可见性，再处理墓碑；普通模式去重，全版本模式保留历史。
+// 场景：读上限 8 看不到 a@12 的删除，却看得到 b@8 的删除。
+TEST(IteratorMvccTest, HeapFiltersVersionsBeforeTombstones) {
+  const std::vector<SearchItem> items = {
+      {"a", "", 0, 0, 12}, {"a", "a5", 0, 0, 5},
+      {"b", "", 0, 0, 8}, {"b", "b3", 0, 0, 3},
+      {"c", "c20", 0, 0, 20}, {"d", "d0", 0, 0, 0}};
+
+  HeapIterator user_view(items, 8, true, false);
+  expect_mvcc_records(user_view, {{"a", "a5", 5}, {"d", "d0", 0}});
+  HeapIterator merge_view(items, 8, false, false);
+  expect_mvcc_records(merge_view,
+                      {{"a", "a5", 5}, {"b", "", 8}, {"d", "d0", 0}});
+  HeapIterator all_versions(items, 8, false, true);
+  expect_mvcc_records(all_versions, {{"a", "a5", 5}, {"b", "", 8},
+                                     {"b", "b3", 3}, {"d", "d0", 0}});
+  HeapIterator latest(items, 0, true, false);
+  expect_mvcc_records(latest, {{"c", "c20", 20}, {"d", "d0", 0}});
+}
+
+// 目的：验证当前 compaction 的标准调用方式：两路均保留全部版本，读上限为 0。
+// 场景：同 key 的版本分布在两路中，输出必须按真实版本降序，且保留墓碑。
+TEST(IteratorMvccTest, TwoMergePreservesAllVersionsInDescendingOrder) {
+  auto a = make_mvcc_heap({{"k", "k9", 9}, {"k", "k3", 3}}, 0, true);
+  auto b = make_mvcc_heap({{"k", "", 7}, {"z", "z2", 2}}, 0, true);
+  TwoMergeIterator it(a, b, 0, true);
+  expect_mvcc_records(it, {{"k", "k9", 9}, {"k", "", 7},
+                           {"k", "k3", 3}, {"z", "z2", 2}});
+}
+
+// 目的：外层给出读上限时，不能把子迭代器的读上限 0 当成记录版本。
+// 场景：两路各只有一条记录，不涉及子迭代器提前去重造成的历史版本丢失。
+//       k@12 对读上限 8 不可见，最终只能返回 z@5。
+TEST(IteratorMvccTest, TwoMergeFiltersByActualRecordVersion) {
+  auto a = make_mvcc_heap({{"k", "future", 12}}, 0, false);
+  auto b = make_mvcc_heap({{"z", "visible", 5}}, 0, false);
+  TwoMergeIterator it(a, b, 8, false);
+  expect_mvcc_records(it, {{"z", "visible", 5}});
+}
+
+// 目的：同 key 在两路中出现时，查询应选最新可见版本。
+// 场景：两路已经按同一个快照 8 过滤，但 A 为 k@5，B 为 k@7。
+//       不能仅凭来源 A 优先而丢掉 B 的更新版本。
+TEST(IteratorMvccTest, TwoMergeQueryChoosesNewestVisibleVersion) {
+  auto a = make_mvcc_heap({{"k", "old", 5}}, 8, false);
+  auto b = make_mvcc_heap({{"k", "new", 7}}, 8, false);
+  TwoMergeIterator it(a, b, 8, false);
+  expect_mvcc_records(it, {{"k", "new", 7}});
+}
+
+// 目的：排序使用真实版本号，而不依赖子迭代器 keep_all_versions 的设置。
+// 场景：每路只有一条记录，真实版本分别为 9、5，读上限同为 10。
+TEST(IteratorMvccTest, TwoMergeOrdersByActualVersionNotReadBound) {
+  auto a = make_mvcc_heap({{"k", "new", 9}}, 10, false);
+  auto b = make_mvcc_heap({{"k", "old", 5}}, 10, false);
+  TwoMergeIterator it(a, b, 0, true);
+  expect_mvcc_records(it, {{"k", "new", 9}, {"k", "old", 5}});
+}
+
+// 目的：Concact 的构造和 ++ 都能跨过整张不可见 SST，并保持版本模式。
+// 场景：a/c/e 所在表不可见，b 有历史版本，d 的最新可见版本是墓碑。
+TEST_F(LSMTest, MvccConcactSkipsInvisibleSsts) {
+  auto cache = std::make_shared<BlockCache>(8, 2);
+  const std::vector<std::vector<MvccRecord>> groups = {
+      {{"a", "a20", 20}}, {{"b", "b12", 12}, {"b", "b7", 7}, {"b", "b3", 3}},
+      {{"c", "c20", 20}}, {{"d", "", 8}, {"d", "d2", 2}}, {{"e", "e20", 20}}};
+  std::vector<std::shared_ptr<SST>> ssts;
+  for (size_t i = 0; i < groups.size(); ++i) {
+    SSTBuilder builder(32, false);
+    for (const auto &[key, value, id] : groups[i])
+      builder.add(key, value, id);
+    ssts.push_back(builder.build(i, test_dir + "/concat" + std::to_string(i) + ".sst", cache));
+  }
+  ConcactIterator visible(ssts, 8, false);
+  expect_mvcc_records(visible, {{"b", "b7", 7}, {"d", "", 8}});
+  ConcactIterator history(ssts, 8, true);
+  expect_mvcc_records(history, {{"b", "b7", 7}, {"b", "b3", 3},
+                                {"d", "", 8}, {"d", "d2", 2}});
+  ConcactIterator invisible(ssts, 1, false);
+  EXPECT_TRUE(invisible.is_end());
+}
+
+// 目的：Level 从 MemTable/L0/L1 中选择真实的最新可见版本，并最后过滤墓碑。
+// 场景：MemTable 的 k@4 比磁盘旧；L0 的 k@9 是墓碑，L1 的 k@7 仍应被快照 8 看见。
+TEST_F(LSMTest, MvccLevelMergesSnapshotsAcrossSources) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto install = [&](size_t level, const std::vector<MvccRecord> &records) {
+    SSTBuilder builder(32, false);
+    for (const auto &[key, value, id] : records)
+      builder.add(key, value, id);
+    const size_t sst_id = engine->next_sst_id++;
+    engine->ssts[sst_id] = builder.build(sst_id, engine->get_sst_path(sst_id, level),
+                                         engine->block_cache);
+    engine->level_sst_ids[level].push_back(sst_id);
+  };
+  install(0, {{"k", "", 9}, {"k", "l0-old", 5}});
+  install(1, {{"k", "l1-newer", 7}, {"z", "z2", 2}});
+  engine->cur_max_level = 1;
+  engine->memtable.put("", "", 4);
+  engine->memtable.put("a", "future", 12);
+  engine->memtable.put("a", "a3", 3);
+  engine->memtable.put("k", "memory-old", 4);
+
+  {
+    auto it = engine->begin(8);
+    expect_mvcc_records(it, {{"a", "a3", 3}, {"k", "l1-newer", 7}, {"z", "z2", 2}});
+  }
+  {
+    auto it = engine->begin(0);
+    expect_mvcc_records(it, {{"a", "future", 12}, {"z", "z2", 2}});
+  }
+}
+
+// 目的：compaction 中同 key、同版本冲突时，应延续较新来源 A 的优先级。
+// 场景：A 中 k 是墓碑，B 中 k 是旧值；若 B 先写入新 SST，点查询会复活旧值。
+//       读上限 0、两路及外层全部 keep_all=true，与当前 compaction 调用一致。
+TEST_F(LSMTest, MvccTwoMergeCompactionPreservesEqualVersionTombstone) {
+  for (uint64_t id : {uint64_t{0}, uint64_t{5}}) {
+    SCOPED_TRACE(id);
+    auto a = make_mvcc_heap({{"k", "", id}}, 0, true);
+    auto b = make_mvcc_heap({{"k", "old", id}}, 0, true);
+    TwoMergeIterator it(a, b, 0, true);
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_TRUE(it->second.empty());
+
+    SSTBuilder builder(128, false);
+    size_t count = 0;
+    while (it.is_valid()) {
+      ASSERT_LT(count++, 3u);
+      builder.add((*it).first, (*it).second, it.get_cur_tranc_id());
+      ++it;
+    }
+    auto sst = builder.build(id, test_dir + "/tie" + std::to_string(id) + ".sst",
+                             std::make_shared<BlockCache>(2, 2));
+    auto found = sst->get("k", 0);
+    ASSERT_TRUE(found.is_valid());
+    EXPECT_TRUE(found->second.empty());
+  }
+}
 
 // Test basic operations: put, get, remove
 TEST_F(LSMTest, BasicOperations) {
