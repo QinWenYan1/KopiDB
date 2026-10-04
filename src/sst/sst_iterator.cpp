@@ -12,12 +12,15 @@ namespace tiny_lsm {
 
 // Lab 3.7 实现谓词查询功能
 // predicate返回值:
-//   0: 谓词
+//    0: 谓词
 //   >0: 不满足谓词, 需要向右移动
 //   <0: 不满足谓词, 需要向左移动
 std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
     std::shared_ptr<SST> sst, uint64_t tranc_id,
     std::function<int(const std::string &)> predicate) {
+  
+  if (!sst)
+    return std::nullopt; 
   // 块级别枝剪 -> 块中精找
   //    命中区是连续的 (谓词单调), 所以块与命中区只有三种关系:
   //    整块在左 (跳过) / 相交 (进块二分) / 整块在右 (后面的块更右, 收工)
@@ -38,11 +41,17 @@ std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
 
     // 2. 落到范围中 → 读块精找 (块内两次二分, 返回 [first, last+1) 迭代器对)
     auto block = sst->read_block(block_idx);
-    auto result_i = block->get_monotony_predicate_iters(tranc_id, predicate);
-    if (!result_i.has_value())
+    auto range = block->get_monotony_predicate_iters(tranc_id, predicate);
+    if (!range.has_value())
       // 范围命中但可见性过滤后无命中 (tranc 太旧)
       continue;
-    auto [i_begin, i_end] = result_i.value();
+    auto [i_begin, i_end] = std::move(range.value());
+
+    // 有区间对象，不代表有可见记录
+    // 过滤后 begin == end，说明这个块没有可见的匹配记录
+    // 必须跳过，否则可能把块尾当成整段查询的起点
+    if (*i_begin == *i_end)
+        continue; 
 
     // 3. 组装 SST 级迭代器: 把"块内迭代器"升级成"SST 级迭代器"
     //    begin 只在第一个命中块定一次; end 每个命中块都刷新
