@@ -71,7 +71,7 @@ std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
       final_end.emplace(nullptr, tranc_id); 
       final_end->m_sst = sst; 
       final_end->set_block_idx(block_idx);
-      final_end->set_block_it(std::move(i_begin)); 
+      final_end->set_block_it(std::move(i_end)); 
 
     // 4. 命中区顶到 SST 末尾: i_end 已是末块块尾 → 归一化成全局 end 态
     //    参考实现这里的条件写错了 (is_end() 在 set_block_it 后恒 false,
