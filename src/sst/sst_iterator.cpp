@@ -56,31 +56,45 @@ std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
     // 3. 组装 SST 级迭代器: 把"块内迭代器"升级成"SST 级迭代器"
     //    begin 只在第一个命中块定一次; end 每个命中块都刷新
     //    (循环结束自然留下最右命中块的 end)
+    //
+    //    第一次遇到非空区间，确定整段查询的起点
     if (!final_begin.has_value()) {
-      auto tmp_it = SstIterator(sst, tranc_id);
-      tmp_it.set_block_idx(block_idx);
-      tmp_it.set_block_it(i_begin);
-      final_begin = tmp_it;
+      // 先构造空迭代器，再装入已找到的位置
+      // 避免正常构造函数调用 seek_first()，重复读取 SST 开头
+      final_begin.emplace(nullptr, tranc_id); 
+      final_begin->m_sst = sst; 
+      final_begin->set_block_idx(block_idx);
+      final_begin->set_block_it(std::move(i_begin)); 
     }
-
-    auto tmp_it = SstIterator(sst, tranc_id);
-    tmp_it.set_block_idx(block_idx);
-    tmp_it.set_block_it(i_end);
+    // 每遇到一个非空区间，就更新终点
+    // 循环结束时，保留的是最后一个非空区间的终点
+      final_end.emplace(nullptr, tranc_id); 
+      final_end->m_sst = sst; 
+      final_end->set_block_idx(block_idx);
+      final_end->set_block_it(std::move(i_begin)); 
 
     // 4. 命中区顶到 SST 末尾: i_end 已是末块块尾 → 归一化成全局 end 态
     //    参考实现这里的条件写错了 (is_end() 在 set_block_it 后恒 false,
     //    永远不触发); 这里按意图修正, 否则边界场景扫到末尾会死循环
-    if (block_idx + 1 == sst->num_blocks() && i_end->is_end()) {
-      tmp_it.set_block_idx(sst->num_blocks());
-      tmp_it.set_block_it(nullptr);
-    }
-    final_end = tmp_it;
+    
   }
 
-  // 5. 一个命中块都没有 → 无区间
-  if (!final_begin.has_value() || !final_end.has_value())
-    return std::nullopt;
-  return std::make_pair(final_begin.value(), final_end.value());
+  // 所有块都没有可见的匹配记录。
+  if (!final_begin.has_value())
+    return std::nullopt; 
+
+  // 块尾只是一个中间状态，正常的 SST ++ 会直接跨过它。
+  // 将终点也推进到后续第一条可见记录，使遍历能够与终点相等。
+  //
+  // 此时块内 ++ 不会移动，因为已经在块尾；
+  // SST 的 ++ 会负责跨块，跳过不可见块，或者进入 SST end。
+  //
+  // 如果终点已经指向有效记录，则不能再 ++，否则会越过正确边界。
+  if (final_end->m_block_it->is_end())
+    ++(*final_end); 
+
+  return std::make_pair(std::move(*final_begin),
+                        std::move(*final_end));
 }
 
 SstIterator::SstIterator(std::shared_ptr<SST> sst, uint64_t tranc_id,
