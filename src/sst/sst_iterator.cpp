@@ -18,9 +18,9 @@ namespace tiny_lsm {
 std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
     std::shared_ptr<SST> sst, uint64_t tranc_id,
     std::function<int(const std::string &)> predicate) {
-  
+
   if (!sst)
-    return std::nullopt; 
+    return std::nullopt;
   // 块级别枝剪 -> 块中精找
   //    命中区是连续的 (谓词单调), 所以块与命中区只有三种关系:
   //    整块在左 (跳过) / 相交 (进块二分) / 整块在右 (后面的块更右, 收工)
@@ -51,7 +51,7 @@ std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
     // 过滤后 begin == end，说明这个块没有可见的匹配记录
     // 必须跳过，否则可能把块尾当成整段查询的起点
     if (*i_begin == *i_end)
-        continue; 
+      continue;
 
     // 3. 组装 SST 级迭代器: 把"块内迭代器"升级成"SST 级迭代器"
     //    begin 只在第一个命中块定一次; end 每个命中块都刷新
@@ -61,27 +61,26 @@ std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
     if (!final_begin.has_value()) {
       // 先构造空迭代器，再装入已找到的位置
       // 避免正常构造函数调用 seek_first()，重复读取 SST 开头
-      final_begin.emplace(nullptr, tranc_id); 
-      final_begin->m_sst = sst; 
+      final_begin.emplace(nullptr, tranc_id);
+      final_begin->m_sst = sst;
       final_begin->set_block_idx(block_idx);
-      final_begin->set_block_it(std::move(i_begin)); 
+      final_begin->set_block_it(std::move(i_begin));
     }
     // 每遇到一个非空区间，就更新终点
     // 循环结束时，保留的是最后一个非空区间的终点
-      final_end.emplace(nullptr, tranc_id); 
-      final_end->m_sst = sst; 
-      final_end->set_block_idx(block_idx);
-      final_end->set_block_it(std::move(i_end)); 
+    final_end.emplace(nullptr, tranc_id);
+    final_end->m_sst = sst;
+    final_end->set_block_idx(block_idx);
+    final_end->set_block_it(std::move(i_end));
 
     // 4. 命中区顶到 SST 末尾: i_end 已是末块块尾 → 归一化成全局 end 态
     //    参考实现这里的条件写错了 (is_end() 在 set_block_it 后恒 false,
     //    永远不触发); 这里按意图修正, 否则边界场景扫到末尾会死循环
-    
   }
 
   // 所有块都没有可见的匹配记录。
   if (!final_begin.has_value())
-    return std::nullopt; 
+    return std::nullopt;
 
   // 范围终点可能停在 Block 的尾后位置，但 SST 的 ++ 会直接跨过它
   // 例如：Block 0 = [a, b]，Block 1 = [c, d]，查询 [a, b]，全部可见
@@ -89,10 +88,9 @@ std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
   // 因此将终点也推进到 c：遍历完 b 后，it == end，停止且不读取 c
   // 如果后面没有可见记录，则统一进入 SST 的 end
   if (final_end->m_block_it->is_end())
-    ++(*final_end); 
+    ++(*final_end);
 
-  return std::make_pair(std::move(*final_begin),
-                        std::move(*final_end));
+  return std::make_pair(std::move(*final_begin), std::move(*final_end));
 }
 
 SstIterator::SstIterator(std::shared_ptr<SST> sst, uint64_t tranc_id,
