@@ -32,10 +32,18 @@ bool TwoMergeIterator::choose_it_a() {
   if (key_a != key_b)
     return key_a < key_b;
 
-  // key 相同: keep_all_versions 模式选 tranc 大者 (版本降序,
-  // compaction 重建 block 依赖这个序)
   if (keep_all_versions_)
-    return it_a->get_tranc_id() > it_b->get_tranc_id();
+    // 同 key 按真实版本号降序排列；版本号相同时，优先较新来源 A
+    // 因为 A 来自更上层
+    // 前提：调用方保证 A 是较新来源，B 是较旧来源
+    //
+    // 例如：A 为 k@5 的墓碑，B 为 k@5 的旧值
+    // 若旧值先写入新 SST，后续点查询就可能读到旧值，导致删除失效
+    // 因此使用 >=，让版本相等时也优先输出 A
+    //
+    // 这里只调整顺序，仍保留全部记录，包括墓碑
+    // 若 A 是删除后重新写入的新值，也应优先 A，而非一律优先墓碑
+    return it_a->get_tranc_id() >= it_b->get_tranc_id();
 
   // 普通模式: 同 key 选 a (a 是更新的一路, 旧版本让 skip_it_b 沉掉)
   return true;

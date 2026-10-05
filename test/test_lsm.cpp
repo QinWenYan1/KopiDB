@@ -209,6 +209,44 @@ TEST_F(LSMTest, MvccTwoMergeCompactionPreservesEqualVersionTombstone) {
   }
 }
 
+// 目的：实际读未提交事务的删除，不能仅因后台 compaction 而失效。
+// 场景：同一事务先写 k，再在旧值进入 L1 后删除 k；两次操作都使用事务 ID 5。
+//       使用正常 put/flush 触发合并，不手工构造 SST，也不调用尚未完成的提交/WAL。
+TEST_F(LSMTest, MvccReadUncommittedDeleteSurvivesActualCompaction) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  TranContext transaction(5, engine, nullptr,
+                          IsolationLevel::READ_UNOP_COMMITTED);
+  const int ratio = TomlConfig::getInstance().getLsmSstLevelRatio();
+  ASSERT_GE(ratio, 2);
+
+  transaction.put("k", "old");
+  engine->flush();
+
+  // 填充其他 key 并逐个刷盘，使旧值通过正常 compaction 进入 L1。
+  for (int i = 0; i < ratio; ++i) {
+    engine->put("filler-before-" + std::to_string(i), "v", 100 + i);
+    engine->flush();
+  }
+  ASSERT_FALSE(engine->level_sst_ids[1].empty());
+  auto old_value = transaction.get("k");
+  ASSERT_TRUE(old_value.has_value());
+  ASSERT_EQ(*old_value, "old");
+
+  transaction.remove("k");
+  engine->flush();
+  // 此时 L0 墓碑先于 L1 旧值被查询到，删除正常生效。
+  ASSERT_FALSE(transaction.get("k").has_value());
+
+  // 再次触发正常合并，把 L0 的墓碑与 L1 的同版本旧值合到一起。
+  for (int i = 0; i < ratio; ++i) {
+    engine->put("filler-after-" + std::to_string(i), "v", 200 + i);
+    engine->flush();
+  }
+  auto after_compaction = transaction.get("k");
+  EXPECT_FALSE(after_compaction.has_value())
+      << "Compaction resurrected value: " << after_compaction.value_or("");
+}
+
 // Test basic operations: put, get, remove
 TEST_F(LSMTest, BasicOperations) {
   LSM lsm(test_dir);
