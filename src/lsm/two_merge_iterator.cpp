@@ -67,11 +67,21 @@ void TwoMergeIterator::skip_by_tranc_id() {
 
   // 同一 key 的版本按 tranc 降序聚在前头 -> 不可见版本一定堵在队首,
   // while 连续跳, 直到撞上可见版本或到底
-  while (it_a->get_tranc_id() > max_tranc_id_) {
+  // 需要提前检查是否已经走到末尾
+  // 不然调用 get_cur_tranc_id() 后，如果不先判有效，空迭代器就会抛异常
+  while (
+        it_a && 
+        it_a->is_valid() &&
+        it_a->get_cur_tranc_id() > max_tranc_id_
+      ) {
     ++(*it_a);
   }
 
-  while (it_b->get_tranc_id() > max_tranc_id_) {
+  while (
+      it_b && 
+      it_b->is_valid() &&
+      it_b->get_cur_tranc_id() > max_tranc_id_
+  ) {
     ++(*it_b);
   }
 }
