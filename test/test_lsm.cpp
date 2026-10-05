@@ -122,10 +122,16 @@ TEST(IteratorMvccTest, TwoMergeQueryChoosesNewestVisibleVersion) {
 // 目的：排序使用真实版本号，而不依赖子迭代器 keep_all_versions 的设置。
 // 场景：每路只有一条记录，真实版本分别为 9、5，读上限同为 10。
 TEST(IteratorMvccTest, TwoMergeOrdersByActualVersionNotReadBound) {
-  auto a = make_mvcc_heap({{"k", "new", 9}}, 10, false);
-  auto b = make_mvcc_heap({{"k", "old", 5}}, 10, false);
-  TwoMergeIterator it(a, b, 0, true);
-  expect_mvcc_records(it, {{"k", "new", 9}, {"k", "old", 5}});
+  // 两个方向都验证，避免恰好固定选 A 或 B 也能通过测试。
+  for (bool larger_version_in_a : {false, true}) {
+    SCOPED_TRACE(larger_version_in_a);
+    const std::vector<MvccRecord> newer = {{"k", "new", 9}};
+    const std::vector<MvccRecord> older = {{"k", "old", 5}};
+    auto a = make_mvcc_heap(larger_version_in_a ? newer : older, 10, false);
+    auto b = make_mvcc_heap(larger_version_in_a ? older : newer, 10, false);
+    TwoMergeIterator it(a, b, 0, true);
+    expect_mvcc_records(it, {{"k", "new", 9}, {"k", "old", 5}});
+  }
 }
 
 // 目的：Concact 的构造和 ++ 都能跨过整张不可见 SST，并保持版本模式。
@@ -245,6 +251,40 @@ TEST_F(LSMTest, MvccReadUncommittedDeleteSurvivesActualCompaction) {
   auto after_compaction = transaction.get("k");
   EXPECT_FALSE(after_compaction.has_value())
       << "Compaction resurrected value: " << after_compaction.value_or("");
+}
+
+// 目的：同版本冲突也要支持先删除、后重新写入，不能固定让墓碑优先。
+// 场景：同一个读未提交事务先删除 k，使墓碑进入 L1，再把新值写到 L0。
+//       实际 compaction 后，仍应读到最后写入的新值。
+TEST_F(LSMTest, MvccReadUncommittedRewriteSurvivesActualCompaction) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  TranContext transaction(5, engine, nullptr,
+                          IsolationLevel::READ_UNOP_COMMITTED);
+  const int ratio = TomlConfig::getInstance().getLsmSstLevelRatio();
+  ASSERT_GE(ratio, 2);
+
+  transaction.remove("k");
+  engine->flush();
+  for (int i = 0; i < ratio; ++i) {
+    engine->put("filler-before-" + std::to_string(i), "v", 100 + i);
+    engine->flush();
+  }
+  ASSERT_FALSE(engine->level_sst_ids[1].empty());
+  ASSERT_FALSE(transaction.get("k").has_value());
+
+  transaction.put("k", "new");
+  engine->flush();
+  auto before_compaction = transaction.get("k");
+  ASSERT_TRUE(before_compaction.has_value());
+  ASSERT_EQ(*before_compaction, "new");
+
+  for (int i = 0; i < ratio; ++i) {
+    engine->put("filler-after-" + std::to_string(i), "v", 200 + i);
+    engine->flush();
+  }
+  auto after_compaction = transaction.get("k");
+  ASSERT_TRUE(after_compaction.has_value());
+  EXPECT_EQ(*after_compaction, "new");
 }
 
 // Test basic operations: put, get, remove

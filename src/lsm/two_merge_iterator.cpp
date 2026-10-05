@@ -43,7 +43,7 @@ bool TwoMergeIterator::choose_it_a() {
     //
     // 这里只调整顺序，仍保留全部记录，包括墓碑
     // 若 A 是删除后重新写入的新值，也应优先 A，而非一律优先墓碑
-    return it_a->get_tranc_id() >= it_b->get_tranc_id();
+    return it_a->get_cur_tranc_id() >= it_b->get_cur_tranc_id();
 
   // 普通模式: 同 key 选 a (a 是更新的一路, 旧版本让 skip_it_b 沉掉)
   return true;
