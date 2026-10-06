@@ -48,14 +48,6 @@ bool TwoMergeIterator::choose_it_a() {
   return it_a->get_cur_tranc_id() >= it_b->get_cur_tranc_id();
 }
 
-void TwoMergeIterator::skip_it_b() {
-  if (keep_all_versions_) {
-    return;
-  }
-  if (!it_a->is_end() && !it_b->is_end() && (**it_a).first == (**it_b).first) {
-    ++(*it_b);
-  }
-}
 
 // Lab 4.4:根据事务可见性进行滤除的辅助函数
 void TwoMergeIterator::skip_by_tranc_id() {

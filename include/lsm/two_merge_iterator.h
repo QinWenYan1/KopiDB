@@ -25,7 +25,6 @@ public:
   bool choose_it_a();
   // 跳过当前不可见事务的id (如果开启了事务功能)
   void skip_by_tranc_id();
-  void skip_it_b();
 
   virtual BaseIterator &operator++() override;
   virtual bool operator==(const BaseIterator &other) const override;
