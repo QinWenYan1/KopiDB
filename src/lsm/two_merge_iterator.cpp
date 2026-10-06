@@ -87,17 +87,34 @@ void TwoMergeIterator::skip_by_tranc_id() {
 
 // Lab 4.4:实现 ++ 重载
 BaseIterator &TwoMergeIterator::operator++() {
-
-  // 1. 只推进当前选中的那一路
+  choose_a = choose_it_a(); 
   const auto &select = choose_a? it_a : it_b; 
-  
+
   // 已经没有可消费的记录
   if (!select || !select->is_valid())
     return *this; 
 
-  // 2. 推进后重做"构造三件套": tranc 过滤 -> 同 key 去重 -> 重新抉择
+  // 1. 只推进当前选中的那一路
+  if (keep_all_versions_){
+    // 全版本模式：只消费刚输出的一条记录
+    // 其他版本留着，下一轮继续比较和输出
+    ++(*select); 
+  }else{
+    // 普通模式：当前 key 的最大可见版本已经输出
+    // 必须先复制 key，因为推进迭代器后当前记录会改变
+    const std::string &key = (**select).first; 
+
+    // 两路中这个 key 的其余记录都不再输出
+    // 例如刚输出 B 的 k@7，A 的 k@5 也要一起跳过，
+    // 否则下一次又会输出同一个 key 的旧版本
+    while(it_a && it_a->is_valid() && (**it_a).first == key)
+      ++(*it_a);
+    
+    while(it_b && it_b->is_valid() && (**it_b).first == key)
+      ++(*it_b);
+  }
+  // 2. 推进后，重新过滤可见性并选择下一条记录
   skip_by_tranc_id();
-  skip_it_b();              // 跳过与 it_a 重复的 key
   choose_a = choose_it_a(); // 重新决定使用哪个迭代器
   return *this;
 }
