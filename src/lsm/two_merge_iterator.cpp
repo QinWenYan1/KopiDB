@@ -79,7 +79,6 @@ void TwoMergeIterator::skip_by_tranc_id() {
 
 // Lab 4.4:实现 ++ 重载
 BaseIterator &TwoMergeIterator::operator++() {
-  choose_a = choose_it_a(); 
   const auto &select = choose_a? it_a : it_b; 
 
   // 已经没有可消费的记录

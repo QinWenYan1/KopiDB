@@ -16,15 +16,15 @@ private:
   bool keep_all_versions_ = false;
 
   void update_current() const;
+  bool choose_it_a();
+  // 跳过当前不可见事务的id (如果开启了事务功能)
+  void skip_by_tranc_id();
 
 public:
   TwoMergeIterator();
   TwoMergeIterator(std::shared_ptr<BaseIterator> it_a,
                    std::shared_ptr<BaseIterator> it_b, uint64_t max_tranc_id,
                    bool keep_all_versions = false);
-  bool choose_it_a();
-  // 跳过当前不可见事务的id (如果开启了事务功能)
-  void skip_by_tranc_id();
 
   virtual BaseIterator &operator++() override;
   virtual bool operator==(const BaseIterator &other) const override;
