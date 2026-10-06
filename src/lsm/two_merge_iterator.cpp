@@ -87,11 +87,13 @@ void TwoMergeIterator::skip_by_tranc_id() {
 
 // Lab 4.4:实现 ++ 重载
 BaseIterator &TwoMergeIterator::operator++() {
+
   // 1. 只推进当前选中的那一路
-  if (choose_a)
-    ++(*it_a);
-  else
-    ++(*it_b);
+  const auto &select = choose_a? it_a : it_b; 
+  
+  // 已经没有可消费的记录
+  if (!select || !select->is_valid())
+    return *this; 
 
   // 2. 推进后重做"构造三件套": tranc 过滤 -> 同 key 去重 -> 重新抉择
   skip_by_tranc_id();
