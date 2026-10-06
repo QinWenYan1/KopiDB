@@ -27,7 +27,9 @@ TwoMergeIterator::TwoMergeIterator(std::shared_ptr<BaseIterator> it_a,
   choose_a = choose_it_a(); 
 }
 
-// Lab 4.4:实现选择迭代器的逻辑
+// Lab 4.4: 实现选择迭代器的逻辑
+//          choose_it_a() 要决定“当前应该输出哪条记录”，普通模式也必须比较版本号
+//          无关 keep_all_version_
 bool TwoMergeIterator::choose_it_a() {
   // 一路耗尽, 无条件选另一路
   if (it_a->is_end())
@@ -41,21 +43,9 @@ bool TwoMergeIterator::choose_it_a() {
   if (key_a != key_b)
     return key_a < key_b;
 
-  if (keep_all_versions_)
-    // 同 key 按真实版本号降序排列；版本号相同时，优先较新来源 A
-    // 因为 A 来自更上层
-    // 前提：调用方保证 A 是较新来源，B 是较旧来源
-    //
-    // 例如：A 为 k@5 的墓碑，B 为 k@5 的旧值
-    // 若旧值先写入新 SST，后续点查询就可能读到旧值，导致删除失效
-    // 因此使用 >=，让版本相等时也优先输出 A
-    //
-    // 这里只调整顺序，仍保留全部记录，包括墓碑
-    // 若 A 是删除后重新写入的新值，也应优先 A，而非一律优先墓碑
-    return it_a->get_cur_tranc_id() >= it_b->get_cur_tranc_id();
-
-  // 普通模式: 同 key 选 a (a 是更新的一路, 旧版本让 skip_it_b 沉掉)
-  return true;
+  // 同 key，优先输出版本号较大的记录，包括墓碑。
+  // 版本号也相等时优先 A，沿用“相同版本 A 来源优先”的约定。
+  return it_a->get_cur_tranc_id() >= it_b->get_cur_tranc_id();
 }
 
 void TwoMergeIterator::skip_it_b() {
