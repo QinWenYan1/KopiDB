@@ -6,6 +6,13 @@ namespace tiny_lsm {
 
 TwoMergeIterator::TwoMergeIterator() {}
 
+// A：k@5 = "old"
+// B：k@7 = "new"
+// 读上限：8
+// keep_all_versions：false
+// 我们需要注意不能直接skip_it_b，这样可能会跳过最新正确的版本
+
+//构造函数
 TwoMergeIterator::TwoMergeIterator(std::shared_ptr<BaseIterator> it_a,
                                    std::shared_ptr<BaseIterator> it_b,
                                    uint64_t max_tranc_id,
@@ -14,8 +21,10 @@ TwoMergeIterator::TwoMergeIterator(std::shared_ptr<BaseIterator> it_a,
       keep_all_versions_(keep_all_versions) {
   // 先跳过不可见的事务
   skip_by_tranc_id();
-  skip_it_b();              // 跳过与 it_a 重复的 key
-  choose_a = choose_it_a(); // 决定使用哪个迭代器
+  // 两路候选都保留下来，比较后再决定输出谁
+  // 例如 A=k@5、B=k@7，不能在比较前直接丢掉 B
+  // 决定使用哪个迭代器
+  choose_a = choose_it_a(); 
 }
 
 // Lab 4.4:实现选择迭代器的逻辑
