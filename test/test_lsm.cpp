@@ -99,6 +99,17 @@ TEST(IteratorMvccTest, TwoMergePreservesAllVersionsInDescendingOrder) {
                            {"k", "k3", 3}, {"z", "z2", 2}});
 }
 
+// 目的：compaction 使用的全版本归并必须保留两路中的事务完成标记。
+// 场景：空 key、空 value 的标记分别属于事务 7 和 5，应按版本降序输出，
+//       然后继续输出普通数据；对用户隐藏标记由查询层负责。
+TEST(IteratorMvccTest, TwoMergeCompactionPreservesTransactionMarkers) {
+  auto a = make_mvcc_heap({{"", "", 7}, {"a", "a7", 7}}, 0, true);
+  auto b = make_mvcc_heap({{"", "", 5}, {"b", "b5", 5}}, 0, true);
+  TwoMergeIterator it(a, b, 0, true);
+  expect_mvcc_records(it, {{"", "", 7}, {"", "", 5},
+                           {"a", "a7", 7}, {"b", "b5", 5}});
+}
+
 // 目的：外层给出读上限时，不能把子迭代器的读上限 0 当成记录版本。
 // 场景：两路各只有一条记录，不涉及子迭代器提前去重造成的历史版本丢失。
 //       k@12 对读上限 8 不可见，最终只能返回 z@5。
@@ -472,6 +483,38 @@ TEST_F(LSMTest, TransactionMarkerDoesNotReorderMergedIteration) {
   EXPECT_EQ(it->second, "disk-value");
   ++it;
   EXPECT_TRUE(it.is_end());
+}
+
+// 目的：内部事务完成标记既不出现在查询结果中，也不能传给用户的谓词。
+// 场景：MemTable 与 SST 都包含标记和普通数据；用户谓词接受所有用户 key。
+//       即使最终 HeapIterator 去掉了空值，也不能掩盖此前回调收到空 key 的问题。
+// 待 Engine MVCC 阶段修复；当前保留此回归测试，不归入迭代器阶段的通过结论。
+TEST_F(LSMTest, PredicateDoesNotExposeTransactionMarkersToCallback) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  SSTBuilder builder(256, false);
+  builder.add("", "", 3);
+  builder.add("Z", "disk-value", 3);
+  const size_t sst_id = engine->next_sst_id++;
+  engine->ssts[sst_id] = builder.build(
+      sst_id, engine->get_sst_path(sst_id, 0), engine->block_cache);
+  engine->level_sst_ids[0].push_front(sst_id);
+  engine->memtable.put("", "", 5);
+  engine->memtable.put("A", "memory-value", 5);
+
+  bool saw_internal_key = false;
+  auto range = engine->lsm_iters_monotony_predicate(
+      0, [&saw_internal_key](const std::string &key) {
+        if (key.empty()) {
+          saw_internal_key = true;
+        }
+        return 0;
+      });
+  EXPECT_FALSE(saw_internal_key)
+      << "Internal transaction marker was passed to the user predicate";
+  ASSERT_TRUE(range.has_value());
+  expect_mvcc_records(range->first,
+                      {{"A", "memory-value", 5}, {"Z", "disk-value", 3}});
+  EXPECT_TRUE(range->first == range->second);
 }
 
 // 目的：验证查询跳过事务标记后，刷盘仍能取得标记对应的事务 ID。
