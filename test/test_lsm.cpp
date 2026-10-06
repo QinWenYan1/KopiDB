@@ -119,6 +119,54 @@ TEST(IteratorMvccTest, TwoMergeQueryChoosesNewestVisibleVersion) {
   expect_mvcc_records(it, {{"k", "new", 7}});
 }
 
+// 目的：普通模式合并全版本输入时，每个 key 只输出最大可见版本。
+// 场景：两路都有历史版本，B 的 a@7 是墓碑；去重后还会遇到不可见的
+//       k@9 和整个不可见的 m，必须继续过滤，不能重复输出旧版本。
+TEST(IteratorMvccTest, TwoMergeQuerySkipsHistoryAndFiltersNextKeys) {
+  auto a = make_mvcc_heap({{"a", "a12", 12}, {"a", "a5", 5},
+                           {"a", "a3", 3}, {"k", "k9", 9},
+                           {"k", "k5", 5}, {"k", "k1", 1},
+                           {"m", "m11", 11}, {"t", "t4", 4}},
+                          0, true);
+  auto b = make_mvcc_heap({{"a", "", 7}, {"a", "a2", 2},
+                           {"b", "b6", 6}, {"k", "k7", 7},
+                           {"k", "k2", 2}, {"n", "n6", 6}},
+                          0, true);
+  TwoMergeIterator it(a, b, 8, false);
+  expect_mvcc_records(it, {{"a", "", 7}, {"b", "b6", 6},
+                           {"k", "k7", 7}, {"n", "n6", 6},
+                           {"t", "t4", 4}});
+}
+
+// 目的：普通模式下，同 key、同版本仍优先 A，而不是固定优先墓碑。
+// 场景：分别检查 A 为较新的删除、A 为删除后重写的新值，B 都不应再输出。
+TEST(IteratorMvccTest, TwoMergeQueryPrefersAOnEqualVersions) {
+  for (bool a_is_tombstone : {false, true}) {
+    SCOPED_TRACE(a_is_tombstone);
+    const std::string a_value = a_is_tombstone ? "" : "new";
+    const std::string b_value = a_is_tombstone ? "old" : "";
+    auto a = make_mvcc_heap({{"k", a_value, 5}}, 8, false);
+    auto b = make_mvcc_heap({{"k", b_value, 5}}, 8, false);
+    TwoMergeIterator it(a, b, 8, false);
+    expect_mvcc_records(it, {{"k", a_value, 5}});
+  }
+}
+
+// 目的：一路为空时，普通模式仍能对另一条全版本流过滤并去重。
+// 场景：分别让 A/B 为空；有记录的一路含不可见 k@12 和可见 k@5、k@3。
+TEST(IteratorMvccTest, TwoMergeQueryHandlesEitherEmptyInput) {
+  for (bool a_is_empty : {false, true}) {
+    SCOPED_TRACE(a_is_empty);
+    auto records = make_mvcc_heap({{"k", "k12", 12}, {"k", "k5", 5},
+                                   {"k", "k3", 3}, {"z", "z2", 2}},
+                                  0, true);
+    auto empty = make_mvcc_heap({}, 0, true);
+    TwoMergeIterator it(a_is_empty ? empty : records,
+                        a_is_empty ? records : empty, 8, false);
+    expect_mvcc_records(it, {{"k", "k5", 5}, {"z", "z2", 2}});
+  }
+}
+
 // 目的：排序使用真实版本号，而不依赖子迭代器 keep_all_versions 的设置。
 // 场景：每路只有一条记录，真实版本分别为 9、5，读上限同为 10。
 TEST(IteratorMvccTest, TwoMergeOrdersByActualVersionNotReadBound) {
