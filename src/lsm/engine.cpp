@@ -100,7 +100,7 @@ std::optional<std::pair<std::string, uint64_t>>
 LSMEngine::get(const std::string &key, uint64_t tranc_id) {
   // best 保存目前找到的最大可见版本：
   // nullopt 表示没有候选；{"", id} 表示候选是墓碑
-  std::optional<std::pair<std::string, uint64_t>> best; 
+  std::optional<std::pair<std::string, uint64_t>> best;
 
   // 1. 先查 memtable.get(key, tranc_id), 命中则返回 (value 非空) 或
   // nullopt(value 为空=删除)
@@ -120,13 +120,11 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id) {
 
     // 磁盘有候选，且内存未命中或磁盘版本更大，才替换
     // 使用 > 而非 >=：版本相同时保留内存来源
-    if (sst_ret.has_value() && 
-        (!best.has_value() || sst_ret->second > best->second)){
-        best = std::move(sst_ret); 
+    if (sst_ret.has_value() &&
+        (!best.has_value() || sst_ret->second > best->second)) {
+      best = std::move(sst_ret);
     }
-
   }
-
 
   // 3. 所有来源比较完毕，再处理最终胜出的墓碑。
   //    例如内存是墓碑 k@5，SST 是普通值 k@7，应返回 k@7
@@ -225,33 +223,33 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
   return results;
 }
 
-void LSMEngine::update_best_from_sst( const std::shared_ptr<SST>& sst,
-                                              const std::string& key, 
-                                              uint64_t tranc_id,
-                                              std::optional<std::pair<std::string, uint64_t>>& best){
+void LSMEngine::update_best_from_sst(
+    const std::shared_ptr<SST> &sst, const std::string &key, uint64_t tranc_id,
+    std::optional<std::pair<std::string, uint64_t>> &best) {
   // SST::get 已经按读上限选择这张表中的最新可见版本
-  auto candidate = sst->get(key ,tranc_id); 
-  if (!candidate.is_valid()) return; 
+  auto candidate = sst->get(key, tranc_id);
+  if (!candidate.is_valid())
+    return;
 
   const uint64_t version = candidate.get_cur_tranc_id();
 
   // 找到更大的版本才替换
   // 相同版本保留先遇到的来源，沿用原来的来源优先级
-  if (!best.has_value() || version > best->second){
+  if (!best.has_value() || version > best->second) {
     // 墓碑也参与比较，并保留它的真实版本号
-    best = std::make_pair(candidate->second, version); 
+    best = std::make_pair(candidate->second, version);
   }
-  
 }
 
 // Lab 4.2 sst 内部查询 (不查 memtable)
 //         由于 sst 中无法保证先查询到的就是 tranc_id 最大的
-//         所以我们需要用 best 保存目前找到的最大可见版本，查完其他候选来源再返回
+//         所以我们需要用 best
+//         保存目前找到的最大可见版本，查完其他候选来源再返回
 std::optional<std::pair<std::string, uint64_t>>
 LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
   // 不加锁: 约定调用方已持有 ssts_mtx (get 的读锁 / compact 的写锁)
   // 沿用原来的锁约定：调用方已经持有 ssts_mtx
-  std::optional<std::pair<std::string, uint64_t>> best; 
+  std::optional<std::pair<std::string, uint64_t>> best;
 
   // 1. L0: 各 SST key 范围重叠, 逐个查; 队列头部 id 最大 = 最新, 先查
   if (level_sst_ids.find(0) != level_sst_ids.end()) {
@@ -265,8 +263,9 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
   }
 
   // 2. L1+: 每层内 SST 不重叠且按 key 有序, 二分定位唯一候选文件
-  for (const auto& [lvl, ids]: level_sst_ids) {
-    if (lvl == 0) continue; 
+  for (const auto &[lvl, ids] : level_sst_ids) {
+    if (lvl == 0)
+      continue;
 
     size_t left = 0, right = ids.size();
 
@@ -279,7 +278,7 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
         update_best_from_sst(sst, key, tranc_id, best);
         // 本层只有这张表可能含有目标 key
         // 结束本层二分，但外层循环继续检查下一层
-        break; 
+        break;
       } else if (sst->get_last_key() < key)
         left = mid + 1;
       else
@@ -287,7 +286,7 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
     }
   }
 
-  if (!best.has_value()){
+  if (!best.has_value()) {
     spdlog::trace("LSMEngine::sst_get_({}, {}): key not exist", key, tranc_id);
     return std::nullopt;
   }
@@ -474,19 +473,20 @@ LSMEngine::lsm_iters_monotony_predicate(
   // 因为我们需要在调用原本谓词之前，过滤空key空value
   // 后续调用 predicate，以及传给 SST/Block 的 predicate，
   // 都会先经过下面的检查
-  predicate = [user_predicate = std::move(predicate)](const std::string& key)->int{
+  predicate = [user_predicate =
+                   std::move(predicate)](const std::string &key) -> int {
     // 本项目将空 key 保留给内部事务标记
     // 遇到它时直接跳过，不调用用户的谓词
     //
     // 空 key 排在所有普通 key 前面
     // 返回 1 表示“继续向右查找”，不能返回 -1 提前结束查询
-    if(key.empty())
-      return 1; 
-    
+    if (key.empty())
+      return 1;
+
     // 普通 key 才交给原来的用户谓词处理
     // 不检查 value：普通墓碑仍需参与归并，才能遮住旧值
-    return user_predicate(key); 
-  }; 
+    return user_predicate(key);
+  };
 
   {
     // 收集期间保护 SST 列表和文件，避免 flush/compact 改动它们
@@ -499,8 +499,8 @@ LSMEngine::lsm_iters_monotony_predicate(
     size_t priority = ssts.size();
 
     // 1. 收集 MemTable 中满足谓词的记录
-    //    从 memtable 查询: memtable.iters_monotony_predicate(tranc_id, predicate)
-    //    false 是 skip_delete=false：保留删除标记
+    //    从 memtable 查询: memtable.iters_monotony_predicate(tranc_id,
+    //    predicate) false 是 skip_delete=false：保留删除标记
     auto mem_it = memtable.begin(tranc_id, false);
     for (; mem_it.is_valid(); ++mem_it) {
       auto [key, value] = *mem_it;
