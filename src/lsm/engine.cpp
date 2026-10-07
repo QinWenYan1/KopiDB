@@ -102,8 +102,8 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id) {
   // nullopt 表示没有候选；{"", id} 表示候选是墓碑
   std::optional<std::pair<std::string, uint64_t>> best;
 
-  // 1. 先查 memtable.get(key, tranc_id), 命中则返回 (value 非空) 或
-  // nullopt(value 为空=删除)
+  // 1. MemTable 已经比较过活跃表和冻结表，
+  //    返回内存中的最大可见版本
   auto mem_ret = memtable.get(key, tranc_id);
   if (mem_ret.is_valid()) {
     // 墓碑也先保存，不能在这里直接返回“不存在”
