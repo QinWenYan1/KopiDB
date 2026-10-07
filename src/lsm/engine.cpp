@@ -140,12 +140,28 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
   // 每项都保留真实版本号，包括墓碑；结果顺序与输入一致
   auto results = memtable.get_batch(keys, tranc_id);
 
-  // 2. 全部命中直接返回, 不碰 SST
-  bool need_search_sst = false;
-  for (auto &[key, value] : results) {
-    if (!value.has_value()) {
-      need_search_sst = true;
-      break;
+  // results.empty() 表示没有任何待查询的 key，而不是“内存没有命中”
+  // MemTable::get_batch() 会为每个输入 key 保留一项，没找到也会放入 nullopt
+  if (results.empty())
+    return results; 
+
+  // 2. 整个批次共用一次 SST 读锁
+  // sst_get_ 不自行加锁，调用期间由这里保护 SST 集合  
+  {
+    std::shared_lock<std::shared_mutex> lock(ssts_mtx); 
+
+    for (auto &[key, best] : results){
+      // 即使内存命中，也要与磁盘中的最大可见版本比较
+      auto sst_ret = sst_get_(key, tranc_id); 
+
+      // 版本相同时保留内存来源；只有磁盘版本更大才替换
+      if (sst_ret.has_value() && (!best.has_value() || sst_ret->second > best->second))
+        best = std::move(sst_ret); 
+
+      // 当前 key 的所有来源已经比较完，可以处理胜出的墓碑
+      // reset 只清空查询结果，保留该 key 在返回数组中的位置
+      if (best.has_value() && best->first.empty())
+        best.reset(); 
     }
   }
 

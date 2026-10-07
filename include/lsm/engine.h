@@ -1,6 +1,5 @@
 #pragma once
 
-#include "compact.h"
 #include "memtable/memtable.h"
 #include "sst/sst.h"
 #include "transaction.h"
