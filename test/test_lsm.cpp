@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 #include <iostream>
 #include <latch>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -344,6 +345,100 @@ TEST_F(LSMTest, MvccReadUncommittedRewriteSurvivesActualCompaction) {
   auto after_compaction = transaction.get("k");
   ASSERT_TRUE(after_compaction.has_value());
   EXPECT_EQ(*after_compaction, "new");
+}
+
+// 目的：Engine 点查应和范围遍历一样，跨 MemTable/SST 选择最大可见版本。
+// 场景：k@7 已刷入 L0，随后较早事务的 k@5 才写入内存；再验证新墓碑
+//       不能被内存中的旧值覆盖，以及旧墓碑不能遮住 SST 中的新值。
+TEST_F(LSMTest, EngineMvccPointReadComparesMemoryAndSstVersions) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  engine->put("k", "disk7", 7);
+  engine->remove("deleted", 7);
+  engine->put("restored", "disk7", 7);
+  engine->flush();
+  engine->put("k", "memory5", 5);
+  engine->put("deleted", "memory5", 5);
+  engine->remove("restored", 5);
+
+  // 范围遍历已经按真实版本比较，作为同一状态下的一致性检查。
+  {
+    auto it = engine->begin(8);
+    expect_mvcc_records(it, {{"k", "disk7", 7}, {"restored", "disk7", 7}});
+  }
+  for (uint64_t read_id : {uint64_t{0}, uint64_t{8}}) {
+    SCOPED_TRACE(read_id);
+    for (const std::string key : {"k", "restored"}) {
+      auto result = engine->get(key, read_id);
+      EXPECT_EQ(result, std::make_optional(
+                            std::make_pair(std::string("disk7"), uint64_t{7})));
+    }
+    EXPECT_FALSE(engine->get("deleted", read_id).has_value());
+  }
+  EXPECT_EQ(engine->get("k", 6), std::make_optional(
+                                   std::make_pair(std::string("memory5"), uint64_t{5})));
+  EXPECT_FALSE(engine->get("k", 4).has_value());
+}
+
+// 目的：批量查询也必须跨来源比较版本，不能只对 MemTable 未命中的 key 查 SST。
+// 场景：分别覆盖所有 key 都在内存命中、有缺失 key 触发 SST 查询两条路径；
+//       同时验证墓碑、重复 key 和返回顺序。
+TEST_F(LSMTest, EngineMvccBatchReadComparesMemoryAndSstVersions) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  engine->put("k", "disk7", 7);
+  engine->remove("deleted", 7);
+  engine->flush();
+  engine->put("k", "memory5", 5);
+  engine->put("deleted", "memory5", 5);
+
+  for (bool include_missing : {false, true}) {
+    SCOPED_TRACE(include_missing);
+    std::vector<std::string> keys = {"k", "deleted", "k"};
+    if (include_missing) {
+      keys.push_back("missing");
+    }
+    auto results = engine->get_batch(keys, 8);
+    ASSERT_EQ(results.size(), keys.size());
+    for (size_t i = 0; i < keys.size(); ++i) {
+      EXPECT_EQ(results[i].first, keys[i]);
+      if (keys[i] == "k") {
+        EXPECT_EQ(results[i].second, std::make_optional(
+                      std::make_pair(std::string("disk7"), uint64_t{7})));
+      } else {
+        EXPECT_FALSE(results[i].second.has_value());
+      }
+    }
+  }
+}
+
+// 目的：SST 内部点查不能把文件刷新顺序或层号当成事务版本顺序。
+// 场景：先刷 k@7，再刷 k@5；分别检查同在 L0，以及将最先刷出的文件
+//       作为 L1 来源的状态。内部查询必须保留胜出墓碑及其真实版本号。
+TEST_F(LSMTest, EngineMvccSstReadComparesFilesAndLevels) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  engine->put("k", "v7", 7);
+  engine->remove("deleted", 7);
+  engine->flush();
+  const size_t first_sst_id = engine->level_sst_ids.at(0).front();
+  engine->put("k", "v5", 5);
+  engine->put("deleted", "v5", 5);
+  engine->flush();
+
+  for (bool first_sst_in_l1 : {false, true}) {
+    SCOPED_TRACE(first_sst_in_l1);
+    if (first_sst_in_l1) {
+      // 构造跨层查询状态；此测试不重开引擎，不验证 compaction 文件重命名。
+      engine->level_sst_ids.at(0).pop_back();
+      engine->level_sst_ids[1].push_back(first_sst_id);
+      engine->cur_max_level = 1;
+    }
+    std::shared_lock<std::shared_mutex> lock(engine->ssts_mtx);
+    EXPECT_EQ(engine->sst_get_("k", 8), std::make_optional(
+                  std::make_pair(std::string("v7"), uint64_t{7})));
+    EXPECT_EQ(engine->sst_get_("deleted", 8), std::make_optional(
+                  std::make_pair(std::string(""), uint64_t{7})));
+    EXPECT_EQ(engine->sst_get_("k", 6), std::make_optional(
+                  std::make_pair(std::string("v5"), uint64_t{5})));
+  }
 }
 
 // Test basic operations: put, get, remove
