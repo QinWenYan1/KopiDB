@@ -1,8 +1,8 @@
 #pragma once
 
+#include "compact.h"
 #include "memtable/memtable.h"
 #include "sst/sst.h"
-#include "compact.h"
 #include "transaction.h"
 #include "two_merge_iterator.h"
 #include "vlog/vlog.h"
@@ -72,10 +72,10 @@ public:
   void set_tran_manager(std::shared_ptr<TranManager> tran_manager);
 
 private:
-  static void update_best_from_sst( const std::shared_ptr<SST>&,
-                                              const std::string&, 
-                                              uint64_t,
-                                              std::optional<std::pair<std::string, uint64_t>>&); 
+  static void
+  update_best_from_sst(const std::shared_ptr<SST> &, const std::string &,
+                       uint64_t,
+                       std::optional<std::pair<std::string, uint64_t>> &);
 
   void full_compact(size_t src_level);
   std::vector<std::shared_ptr<SST>>
