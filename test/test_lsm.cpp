@@ -583,7 +583,7 @@ TEST_F(LSMTest, TransactionMarkerDoesNotReorderMergedIteration) {
 // 目的：内部事务完成标记既不出现在查询结果中，也不能传给用户的谓词。
 // 场景：MemTable 与 SST 都包含标记和普通数据；用户谓词接受所有用户 key。
 //       即使最终 HeapIterator 去掉了空值，也不能掩盖此前回调收到空 key 的问题。
-// 待 Engine MVCC 阶段修复；当前保留此回归测试，不归入迭代器阶段的通过结论。
+// 回归：Engine 在查询入口包装谓词后，所有来源都应拦截空 key。
 TEST_F(LSMTest, PredicateDoesNotExposeTransactionMarkersToCallback) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
   SSTBuilder builder(256, false);
