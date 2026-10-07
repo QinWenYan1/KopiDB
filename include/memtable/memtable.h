@@ -49,6 +49,12 @@ public:
                  uint64_t tranc_id);
 
   SkipListIterator get(const std::string &key, uint64_t tranc_id);
+
+  // 点查询：在读锁保护下复制记录，返回 {value, 真实版本号}。
+  // 未命中返回 nullopt；墓碑保留为 {"", 版本号}。
+  std::optional<std::pair<std::string, uint64_t>>
+  get_record(const std::string &key, uint64_t tranc_id);
+  
   std::vector<
       std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
   get_batch(const std::vector<std::string> &keys, uint64_t tranc_id);
