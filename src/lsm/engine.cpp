@@ -165,76 +165,7 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
     }
   }
 
-  if (!need_search_sst) {
-    // MemTable 的批量结果也会保留墓碑。
-    // 这条路径不再查询 SST，因此可以直接转换。
-    for (auto &[key, value] : results) {
-      if (value.has_value() && value->first.empty())
-        value.reset();
-    }
-    return results;
-  }
-
-  std::shared_lock<std::shared_mutex> rlock(ssts_mtx);
-
-  // 3. 进入 L0: 对每个未命中的 key, 从新到旧逐文件补
-  if (level_sst_ids.find(0) != level_sst_ids.end()) {
-    for (auto &[key, value] : results) {
-      if (value.has_value())
-        continue;
-
-      for (auto &sst_id : level_sst_ids[0]) {
-        // 从 engine 中加载 sst handle 用于之后的 key 查找
-        auto &sst = ssts[sst_id];
-        auto sst_it = sst->get(key, tranc_id);
-
-        if (sst_it != sst->end()) {
-          // 墓碑也记录为 {"", 版本号}
-          // 此时 has_value() 为 true，后续层就会跳过这个 key
-          value = std::make_pair(sst_it->second, sst_it.get_cur_tranc_id());
-          break;
-        }
-      }
-    }
-  }
-
-  // 4. L1+: 对每个仍未命中 key, 每层二分定位候选文件补
-  for (size_t level = 1; level <= cur_max_level; ++level) {
-    if (level_sst_ids.find(level) == level_sst_ids.end())
-      continue;
-
-    const auto &id_list = level_sst_ids[level];
-    for (auto &[key, value] : results) {
-      if (value.has_value())
-        continue; // 现在普通记录和墓碑都会跳过
-
-      size_t left = 0, right = id_list.size();
-      while (left < right) {
-        size_t mid = (left + right) / 2;
-        auto &sst = ssts[id_list[mid]];
-
-        // sst 命中， 进入查找
-        if (sst->get_first_key() <= key && key <= sst->get_last_key()) {
-          auto sst_it = sst->get(key, tranc_id);
-
-          // 命中就记录，包括墓碑，阻止后续更深层补入旧值。
-          if (sst_it != sst->end())
-            value = std::make_pair(sst_it->second, sst_it.get_cur_tranc_id());
-          break;
-        } else if (sst->get_last_key() < key)
-          left = mid + 1;
-        else
-          right = mid;
-      }
-    }
-  }
-
-  // 查询已经结束，可以将墓碑转换为对外的“不存在”
-  // 墓碑就是有 ID 但是没有string，我们直接过滤掉
-  for (auto &[key, value] : results) {
-    if (value.has_value() && value->first.empty())
-      value.reset();
-  }
+  // 原地更新结果，因此输入顺序和重复 key 都会保留
   return results;
 }
 
