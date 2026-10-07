@@ -112,8 +112,6 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id) {
 
   // 2. 即使内存命中，也继续查询 SST
   //    sst_get_ 不自行加锁，由这里保护 SST 集合及查询过程
-  //    参考实现这里把 SST 查询逻辑原样复制了一遍, sst_get_ 沦为死代码;
-  //    我们委托消重 (语义逐行核对过, 等价; sst_get_ 就是为此存在的)
   {
     std::shared_lock<std::shared_mutex> lock(ssts_mtx);
     auto sst_ret = sst_get_(key, tranc_id);
@@ -138,7 +136,8 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id) {
 std::vector<
     std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
 LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
-  // 1. 先从 memtable 批量查询: memtable.get_batch(keys, tranc_id)
+  // 1. 批量获取内存候选
+  // 每项都保留真实版本号，包括墓碑；结果顺序与输入一致
   auto results = memtable.get_batch(keys, tranc_id);
 
   // 2. 全部命中直接返回, 不碰 SST
