@@ -107,6 +107,7 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id) {
   auto mem_ret = memtable.get(key, tranc_id);
   if (mem_ret.is_valid()) {
     // 墓碑也先保存，不能在这里直接返回“不存在”
+    best = std::make_pair(mem_ret.get_value(), mem_ret.get_cur_tranc_id());
   }
 
   // 2. memtable 没有 -> 加读锁查 SST
