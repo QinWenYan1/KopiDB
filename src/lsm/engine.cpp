@@ -98,13 +98,15 @@ LSMEngine::~LSMEngine() = default;
 // Lab 4.2 查询
 std::optional<std::pair<std::string, uint64_t>>
 LSMEngine::get(const std::string &key, uint64_t tranc_id) {
+  // best 保存目前找到的最大可见版本：
+  // nullopt 表示没有候选；{"", id} 表示候选是墓碑
+  std::optional<std::pair<std::string, uint64_t>> best; 
+
   // 1. 先查 memtable.get(key, tranc_id), 命中则返回 (value 非空) 或
   // nullopt(value 为空=删除)
   auto mem_ret = memtable.get(key, tranc_id);
   if (mem_ret.is_valid()) {
-    if (mem_ret.get_value().empty())
-      return std::nullopt;
-    return std::make_pair(mem_ret.get_value(), mem_ret.get_tranc_id());
+    // 墓碑也先保存，不能在这里直接返回“不存在”
   }
 
   // 2. memtable 没有 -> 加读锁查 SST
