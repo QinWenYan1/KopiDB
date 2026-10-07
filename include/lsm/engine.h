@@ -72,6 +72,11 @@ public:
   void set_tran_manager(std::shared_ptr<TranManager> tran_manager);
 
 private:
+  static void update_best_from_sst( const std::shared_ptr<SST>&,
+                                              const std::string&, 
+                                              uint64_t,
+                                              std::optional<std::pair<std::string, uint64_t>>&); 
+
   void full_compact(size_t src_level);
   std::vector<std::shared_ptr<SST>>
   full_l0_l1_compact(std::vector<size_t> &l0_ids, std::vector<size_t> &l1_ids);

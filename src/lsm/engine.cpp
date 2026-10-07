@@ -210,11 +210,34 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
   return results;
 }
 
+void LSMEngine::update_best_from_sst( const std::shared_ptr<SST>& sst,
+                                              const std::string& key, 
+                                              uint64_t tranc_id,
+                                              std::optional<std::pair<std::string, uint64_t>>& best){
+  // SST::get 已经按读上限选择这张表中的最新可见版本
+  auto candidate = sst->get(key ,tranc_id); 
+  if (!candidate.is_valid()) return; 
+
+  const uint64_t version = candidate.get_cur_tranc_id();
+
+  // 找到更大的版本才替换
+  // 相同版本保留先遇到的来源，沿用原来的来源优先级
+  if (!best.has_value() || version > best->second){
+    // 墓碑也参与比较，并保留它的真实版本号
+    best = std::make_pair(candidate->second, version); 
+  }
+  
+}
+
 // Lab 4.2 sst 内部查询 (不查 memtable)
+//         由于 sst 中无法保证先查询到的就是 tranc_id 最大的
+//         所以我们需要用 best 保存目前找到的最大可见版本，查完其他候选来源再返回
 std::optional<std::pair<std::string, uint64_t>>
 LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
   // 不加锁: 约定调用方已持有 ssts_mtx (get 的读锁 / compact 的写锁)
-
+  // 沿用原来的锁约定：调用方已经持有 ssts_mtx
+  std::optional<std::pair<std::string, uint64_t>> best; 
+  
   // 1. L0: 各 SST key 范围重叠, 逐个查; 队列头部 id 最大 = 最新, 先查
   if (level_sst_ids.find(0) != level_sst_ids.end()) {
 
