@@ -237,20 +237,15 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
   // 不加锁: 约定调用方已持有 ssts_mtx (get 的读锁 / compact 的写锁)
   // 沿用原来的锁约定：调用方已经持有 ssts_mtx
   std::optional<std::pair<std::string, uint64_t>> best; 
-  
+
   // 1. L0: 各 SST key 范围重叠, 逐个查; 队列头部 id 最大 = 最新, 先查
   if (level_sst_ids.find(0) != level_sst_ids.end()) {
 
     for (auto &sst_id : level_sst_ids[0]) {
       // 取出 sst 和 sst_it 一个一个查找
       // get_cur_tranc_id()：永远返回当前 entry 的真实写入 id
-      auto &sst = ssts[sst_id];
-      auto sst_it = sst->get(key, tranc_id);
-      if (sst_it != sst->end()) {
-        // 保留墓碑及其版本号，供事务提交时检查冲突。
-        // 找到墓碑也立即返回，不能继续查更旧的值。
-        return std::make_pair(sst_it->second, sst_it.get_cur_tranc_id());
-      }
+      auto &sst = ssts.at(sst_id);
+      update_best_from_sst(sst, key, tranc_id, best);
     }
   }
 
