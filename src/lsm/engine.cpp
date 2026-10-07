@@ -250,27 +250,21 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
   }
 
   // 2. L1+: 每层内 SST 不重叠且按 key 有序, 二分定位唯一候选文件
-  for (size_t lvl = 1; lvl <= cur_max_level; ++lvl) {
-    if (level_sst_ids.find(lvl) == level_sst_ids.end())
-      continue;
+  for (const auto& [lvl, ids]: level_sst_ids) {
+    if (lvl == 0) continue; 
 
-    const auto &id_list = level_sst_ids[lvl];
-    size_t left = 0, right = id_list.size();
+    size_t left = 0, right = ids.size();
 
     while (left < right) {
       size_t mid = (left + right) / 2;
-      auto &sst = ssts[id_list[mid]];
+      auto &sst = ssts.at(ids[mid]);
 
       // 找到目标 sst
       if (sst->get_first_key() <= key && key <= sst->get_last_key()) {
-        auto sst_it = sst->get(key, tranc_id);
-        // 检查是否为有效 sst, 而不是尾后 sst
-        if (sst_it != sst->end()) {
-          // 普通记录和墓碑都返回，保留真实版本号。
-          return std::make_pair(sst_it->second, sst_it.get_cur_tranc_id());
-        }
-        // 本层只有这一个文件可能含 key, 不在就换更旧的一层
-        break;
+        update_best_from_sst(sst, key, tranc_id, best);
+        // 本层只有这张表可能含有目标 key
+        // 结束本层二分，但外层循环继续检查下一层
+        break; 
       } else if (sst->get_last_key() < key)
         left = mid + 1;
       else
@@ -278,8 +272,14 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
     }
   }
 
-  spdlog::trace("LSMEngine::sst_get_({}, {}): key not exist", key, tranc_id);
-  return std::nullopt;
+  if (!best.has_value()){
+    spdlog::trace("LSMEngine::sst_get_({}, {}): key not exist", key, tranc_id);
+    return std::nullopt;
+  }
+
+  // 内部接口保留胜出的墓碑及版本号，供冲突检查等逻辑使用
+  // 面向用户的查询再把最终墓碑转换成“不存在”
+  return best;
 }
 
 // Lab 4.1 插入
