@@ -23,6 +23,8 @@ public:
   MemTable memtable;
   std::map<size_t, std::deque<size_t>> level_sst_ids;
   std::unordered_map<size_t, std::shared_ptr<SST>> ssts;
+  // ssts_mtx 保护的是 Engine 管理的“SST 集合和层级关系”
+  // MemTable 自己管理锁，Engine 调用它的接口时，内部会加锁，Engine 不需要自己管理
   std::shared_mutex ssts_mtx;
   std::shared_ptr<BlockCache> block_cache;
   std::shared_ptr<VLog> vlog_;
