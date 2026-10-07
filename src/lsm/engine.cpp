@@ -433,12 +433,27 @@ std::string LSMEngine::get_sst_path(size_t sst_id, size_t target_level) {
 std::optional<std::pair<TwoMergeIterator, TwoMergeIterator>>
 LSMEngine::lsm_iters_monotony_predicate(
     uint64_t tranc_id, std::function<int(const std::string &)> predicate) {
-  // ? 3. 构造 TwoMergeIterator 合并 memtable 结果和 sst 结果
-  // ? 4. 若均为空返回 nullopt
-
   // 收集所有来源的候选记录
   // 此时必须保留墓碑，等跨来源比较完成后才能过滤
   std::vector<SearchItem> items;
+
+  // 保存原来的用户谓词，再用新的函数包装它
+  // 因为我们需要在调用原本谓词之前，过滤空key空value
+  // 后续调用 predicate，以及传给 SST/Block 的 predicate，
+  // 都会先经过下面的检查
+  predicate = [user_predicate = std::move(predicate)](const std::string& key)->int{
+    // 本项目将空 key 保留给内部事务标记
+    // 遇到它时直接跳过，不调用用户的谓词
+    //
+    // 空 key 排在所有普通 key 前面
+    // 返回 1 表示“继续向右查找”，不能返回 -1 提前结束查询
+    if(key.empty())
+      return 1; 
+    
+    // 普通 key 才交给原来的用户谓词处理
+    // 不检查 value：普通墓碑仍需参与归并，才能遮住旧值
+    return user_predicate(key); 
+  }; 
 
   {
     // 收集期间保护 SST 列表和文件，避免 flush/compact 改动它们
@@ -451,9 +466,8 @@ LSMEngine::lsm_iters_monotony_predicate(
     size_t priority = ssts.size();
 
     // 1. 收集 MemTable 中满足谓词的记录
-    //    从 memtable 查询: memtable.iters_monotony_predicate(tranc_id,
-    //    predicate)
-    // false 是 skip_delete=false：保留删除标记
+    //    从 memtable 查询: memtable.iters_monotony_predicate(tranc_id, predicate)
+    //    false 是 skip_delete=false：保留删除标记
     auto mem_it = memtable.begin(tranc_id, false);
     for (; mem_it.is_valid(); ++mem_it) {
       auto [key, value] = *mem_it;
@@ -461,7 +475,7 @@ LSMEngine::lsm_iters_monotony_predicate(
 
       // 单调谓词: 正数在范围左侧，0 命中，负数在范围右侧
       // 单调谓词规定:
-      //    0：满足条件
+      //     0：满足条件
       //    >0：需要向右找
       //    <0：需要向左找
       if (pos < 0)
