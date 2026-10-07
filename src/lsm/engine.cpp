@@ -127,8 +127,9 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id) {
 
   }
 
-  // 对普通查询而言，墓碑表示 key 已删除x
-  // 先确认 optional 有值，再访问其中的记录
+
+  // 3. 所有来源比较完毕，再处理最终胜出的墓碑。
+  //    例如内存是墓碑 k@5，SST 是普通值 k@7，应返回 k@7
   if (!best.has_value() || best->first.empty())
     return std::nullopt;
 
