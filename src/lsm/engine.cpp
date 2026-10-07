@@ -110,18 +110,29 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id) {
     best = std::make_pair(mem_ret.get_value(), mem_ret.get_cur_tranc_id());
   }
 
-  // 2. memtable 没有 -> 加读锁查 SST
+  // 2. 即使内存命中，也继续查询 SST
+  //    sst_get_ 不自行加锁，由这里保护 SST 集合及查询过程
   //    参考实现这里把 SST 查询逻辑原样复制了一遍, sst_get_ 沦为死代码;
   //    我们委托消重 (语义逐行核对过, 等价; sst_get_ 就是为此存在的)
-  std::shared_lock<std::shared_mutex> lock(ssts_mtx);
-  auto sst_ret = sst_get_(key, tranc_id);
+  {
+    std::shared_lock<std::shared_mutex> lock(ssts_mtx);
+    auto sst_ret = sst_get_(key, tranc_id);
+
+    // 磁盘有候选，且内存未命中或磁盘版本更大，才替换
+    // 使用 > 而非 >=：版本相同时保留内存来源
+    if (sst_ret.has_value() && 
+        (!best.has_value() || sst_ret->second > best->second)){
+        best = std::move(sst_ret); 
+    }
+
+  }
 
   // 对普通查询而言，墓碑表示 key 已删除x
   // 先确认 optional 有值，再访问其中的记录
-  if (sst_ret.has_value() && sst_ret->first.empty())
+  if (!best.has_value() || best->first.empty())
     return std::nullopt;
 
-  return sst_ret;
+  return best;
 }
 
 // Lab 4.2 批量查询
