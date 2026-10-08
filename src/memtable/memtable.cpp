@@ -138,6 +138,29 @@ SkipListIterator MemTable::get(const std::string &key, uint64_t tranc_id) {
   return it;
 }
 
+std::optional<std::pair<std::string, uint64_t>>
+MemTable::get_record(const std::string& key, uint64_t tranc_id){
+  spdlog::trace("MemTable--get_record({}, {})", key, tranc_id);
+
+  // 沿用统一加锁顺序：先活跃表，再冻结表
+  // 锁的保护范围同时覆盖查找和 value 的复制
+  std::shared_lock<std::shared_mutex> cur_lock(cur_mtx); 
+  std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
+
+  // 已持有锁，调用无锁版本 get_，避免重复获取同一把锁
+  // get_ 已负责可见性过滤，以及活跃表、冻结表之间的版本比较
+  auto it = get_(key, tranc_id); 
+  if (!it.is_valid())
+    return std::nullopt; 
+
+
+  // return 会先构造返回结果，再销毁局部锁对象
+  // 因此字符串在锁内完成复制，返回后不再依赖原节点
+  //
+  // 墓碑也要返回，让 Engine 与 SST 中的版本比较后再决定结果
+  return std::make_pair(it.get_value(), it.get_cur_tranc_id()); 
+}
+
 // Lab2.1 查询, 无锁版本
 SkipListIterator MemTable::get_(const std::string &key, uint64_t tranc_id) {
   spdlog::trace("MemTable--get_({}, {})", key, tranc_id);
