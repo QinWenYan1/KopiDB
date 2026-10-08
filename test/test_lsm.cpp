@@ -10,6 +10,7 @@
 #include <iostream>
 #include <latch>
 #include <shared_mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -439,6 +440,28 @@ TEST_F(LSMTest, EngineMvccSstReadComparesFilesAndLevels) {
     EXPECT_EQ(engine->sst_get_("k", 6), std::make_optional(
                   std::make_pair(std::string("v5"), uint64_t{5})));
   }
+}
+
+// 目的：保留 16 位偏移和同 key 不跨块的约定，超出编码范围时明确拒绝刷盘。
+// 场景：k 有 80 个版本，每个 value 仅 1 KiB；单条长度合法，但版本组超过
+//       uint16_t 偏移范围。SSTBuilder 会把相同 key 强制留在同一个 Block。
+// 预期：flush 抛出 length_error，不登记 SST、不移除内存数据，旧版本仍可查询。
+TEST_F(LSMTest, EngineMvccOversizedVersionGroupFlushPreservesMemory) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  const std::string value(1024, 'x');
+  for (uint64_t version = 1; version <= 80; ++version) {
+    engine->put("k", value, version);
+  }
+
+  const auto oldest = std::make_optional(std::make_pair(value, uint64_t{1}));
+  ASSERT_EQ(engine->get("k", 1), oldest);
+  const auto size_before = engine->memtable.get_total_size();
+  ASSERT_THROW(engine->flush(), std::length_error);
+  EXPECT_TRUE(engine->ssts.empty());
+  EXPECT_EQ(engine->memtable.get_total_size(), size_before);
+  EXPECT_EQ(engine->get("k", 1), oldest);
+  EXPECT_EQ(engine->get("k", 0),
+            std::make_optional(std::make_pair(value, uint64_t{80})));
 }
 
 // Test basic operations: put, get, remove

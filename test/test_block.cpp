@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <tuple>
 #include <vector>
 
@@ -193,6 +194,60 @@ TEST_F(BlockTest, ErrorHandlingTest) {
   // 测试空vector
   std::vector<uint8_t> empty_data;
   EXPECT_THROW(Block::decode(empty_data), std::runtime_error);
+}
+
+// 目的：key/value 长度字段只有 16 位，超长输入应在修改 Block 前被拒绝。
+// 场景：分别写入 65536 字节的 key、value，同时覆盖普通写入和强制写入。
+// 预期：抛出 length_error，Block 仍为空；force_write 不能绕过格式边界。
+TEST_F(BlockTest, RejectsUnencodableKeyAndValueLengths) {
+  const std::string oversized(65536, 'x');
+  for (bool force_write : {false, true}) {
+    SCOPED_TRACE(force_write);
+    Block key_block(32768);
+    EXPECT_THROW(key_block.add_entry(oversized, "v", 1, force_write),
+                 std::length_error);
+    EXPECT_TRUE(key_block.is_empty());
+
+    Block value_block(32768);
+    EXPECT_THROW(value_block.add_entry("k", oversized, 1, force_write),
+                 std::length_error);
+    EXPECT_TRUE(value_block.is_empty());
+  }
+}
+
+// 目的：65535 是合法的记录起点；只有下一条起点超出 16 位范围时才拒绝追加。
+// 场景：第一条记录恰好占 65535 字节，第二条起点为 65535，第三条起点已超限。
+// 预期：前两条可编解码、查询；强制追加第三条抛错，已有数据保持不变。
+TEST_F(BlockTest, RejectsOffsetOverflowWithoutChangingExistingRecords) {
+  Block block(32768);
+  // 单字节 key 的 entry 开销为 2 + 1 + 2 + 8 = 13 字节。
+  const std::string value(65535 - 13, 'x');
+  ASSERT_TRUE(block.add_entry("k", value, 3, false));
+  ASSERT_TRUE(block.add_entry("k", "", 2, true));
+  ASSERT_EQ(block.get_offset_at(1), 65535u);
+
+  const auto size_before = block.cur_size();
+  ASSERT_THROW(block.add_entry("k", "old", 1, true), std::length_error);
+  EXPECT_EQ(block.size(), 2u);
+  EXPECT_EQ(block.cur_size(), size_before);
+
+  auto decoded = Block::decode(block.encode());
+  EXPECT_EQ(decoded->get_value_binary("k", 3), std::make_optional(value));
+  EXPECT_EQ(decoded->get_value_binary("k", 2),
+            std::make_optional(std::string("")));
+  EXPECT_FALSE(decoded->get_value_binary("k", 1).has_value());
+}
+
+// 目的：格式边界检查不能误伤仍可编码的同 key 强制追加。
+// 场景：两条记录总大小超过配置容量 32 字节，但其长度、偏移均在 16 位范围内。
+// 预期：force_write 仍可突破配置容量，保留同 key 的历史版本。
+TEST_F(BlockTest, ForceWriteWithinEncodingLimitsStillSucceeds) {
+  Block block(32);
+  ASSERT_TRUE(block.add_entry("k", std::string(20, 'n'), 2, false));
+  ASSERT_TRUE(block.add_entry("k", std::string(20, 'o'), 1, true));
+  EXPECT_GT(block.cur_size(), 32u);
+  EXPECT_EQ(block.get_value_binary("k", 1),
+            std::make_optional(std::string(20, 'o')));
 }
 
 // 测试迭代器
