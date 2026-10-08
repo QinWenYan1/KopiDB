@@ -104,11 +104,10 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id) {
 
   // 1. MemTable 已经比较过活跃表和冻结表，
   //    返回内存中的最大可见版本
-  auto mem_ret = memtable.get(key, tranc_id);
-  if (mem_ret.is_valid()) {
-    // 墓碑也先保存，不能在这里直接返回“不存在”
-    best = std::make_pair(mem_ret.get_value(), mem_ret.get_cur_tranc_id());
-  }
+  // MemTable 在内部持锁期间完成查找和复制
+  // best 是独立结果，后续原节点被更新不会影响它
+  // nullopt 表示未命中；{"", id} 表示墓碑
+  best = memtable.get_record(key, tranc_id);
 
   // 2. 即使内存命中，也继续查询 SST
   //    sst_get_ 不自行加锁，由这里保护 SST 集合及查询过程
