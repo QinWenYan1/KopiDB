@@ -86,7 +86,7 @@ Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
 
   // 空 key 是内部事务标记，不作为用户数据参与归并
   // 只推进查询迭代器，不删除底层记录，刷盘仍然能收集这些标记
-  skip_key(""); 
+  skip_key("");
   while (!is_end()) {
     // 哪一路来源的头部 key 最小
     auto [min_idx, _] = get_min_key_idx();
@@ -157,8 +157,8 @@ void Level_Iterator::skip_key(const std::string &key) {
 void Level_Iterator::update_current() const {
   // cur_idx_ 指向的那一路已经耗尽, 还被要求读值 = 用法错误, 抛异常
   if (!iter_vec[cur_idx_]->is_valid())
-    throw std::runtime_error(
-        "Level_Iterator::update_current: cannot dereference this invalid iterator");
+    throw std::runtime_error("Level_Iterator::update_current: cannot "
+                             "dereference this invalid iterator");
   // 解引用孩子, 按值拷进停车位
   cached_value = **iter_vec[cur_idx_];
 }
@@ -168,10 +168,9 @@ BaseIterator &Level_Iterator::operator++() {
   // 1. 当前 key 已经吐过了: 把它在所有来源里的副本全部越过
   skip_key(cached_value->first);
 
-
   // 在重新选择最小 key 前，跳过内部事务标记
   // 普通墓碑的 key 非空，不会被这里跳过
-  skip_key(""); 
+  skip_key("");
 
   // 2. 重新选最小 —— 和构造函数收尾是同一个循环:
   //    选最小 -> 读缓存 -> 是墓碑就整个 key 越过 -> 再选下一个
