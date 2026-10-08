@@ -3,6 +3,7 @@
 #include "memtable/memtable.h"
 #include "sst/sst.h"
 #include "sst/sst_iterator.h"
+#include <atomic>
 #include <filesystem>
 #include <gtest/gtest.h>
 #include <iomanip>
@@ -788,6 +789,97 @@ TEST(MemTableTest, MvccBatchPreservesOrderDuplicatesAndMissingKeys) {
     EXPECT_EQ(batch[i].second->first, keys[i] == "T" ? "" : "new");
   }
   EXPECT_TRUE(table.get_batch({}, 0).empty());
+}
+
+// 目的：验证 get_record 返回独立副本，同 key、同版本的后续更新不会改变旧结果。
+// 场景：读取 K@7 后，以更长的 value 覆盖同一节点，最后清空 MemTable。
+// 预期：新查询取得新值，已返回的记录在覆盖和清空后仍保持原值及版本号。
+TEST(MemTableTest, GetRecordReturnsIndependentCopy) {
+  MemTable table;
+  const std::string original(256, 'a');
+  const std::string updated(8192, 'b');
+  table.put("K", original, 7);
+  const auto saved = table.get_record("K", 0);
+  ASSERT_TRUE(saved.has_value());
+
+  table.put("K", updated, 7);
+  const auto latest = table.get_record("K", 0);
+  ASSERT_TRUE(latest.has_value());
+  EXPECT_EQ(latest->first, updated);
+  EXPECT_EQ(latest->second, 7u);
+  EXPECT_EQ(saved->first, original);
+  EXPECT_EQ(saved->second, 7u);
+
+  table.clear();
+  EXPECT_FALSE(table.get_record("K", 0).has_value());
+  EXPECT_EQ(saved->first, original);
+  EXPECT_EQ(saved->second, 7u);
+}
+
+// 目的：验证复制接口仍返回最大可见版本，并保留胜出墓碑供 Engine 比较。
+// 场景：冻结表有 K@9 普通值和 T@9 墓碑，活跃表有 K@5 墓碑和 T@5 普通值。
+// 预期：上限 0/9 选版本 9，上限 8 选版本 5；过小上限和不存在的 key 返回空。
+TEST(MemTableTest, GetRecordPreservesMvccAndTombstones) {
+  MemTable table;
+  EXPECT_FALSE(table.get_record("missing", 0).has_value());
+  table.put("K", "new", 9);
+  table.remove("T", 9);
+  table.frozen_cur_table();
+  table.remove("K", 5);
+  table.put("T", "old", 5);
+
+  for (uint64_t read_id : {0, 8, 9}) {
+    SCOPED_TRACE(read_id);
+    const auto k = table.get_record("K", read_id);
+    const auto t = table.get_record("T", read_id);
+    ASSERT_TRUE(k.has_value());
+    ASSERT_TRUE(t.has_value());
+    EXPECT_EQ(k->first, read_id == 8 ? "" : "new");
+    EXPECT_EQ(t->first, read_id == 8 ? "old" : "");
+    EXPECT_EQ(k->second, read_id == 8 ? 5u : 9u);
+    EXPECT_EQ(t->second, read_id == 8 ? 5u : 9u);
+  }
+  EXPECT_FALSE(table.get_record("K", 4).has_value());
+  EXPECT_FALSE(table.get_record("T", 4).has_value());
+  EXPECT_FALSE(table.get_record("missing", 0).has_value());
+}
+
+// 目的：覆盖同一节点的 value 被并发复制和更新的访问路径。
+// 场景：写线程以相同 key、版本交替写短字符串和长字符串，读线程持续取副本。
+// 预期：每次返回完整的某个已写入值及正确版本；配合 TSan 可检查数据竞争。
+// 注意：普通构建下通过压力测试，本身不能证明不存在数据竞争。
+TEST(MemTableTest, GetRecordConcurrentSameVersionUpdate) {
+  MemTable table;
+  const std::string short_value = "short";
+  const std::string long_value(8192, 'x');
+  table.put("K", short_value, 7);
+  std::atomic<bool> start{false};
+
+  std::thread writer([&] {
+    while (!start.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+    for (int i = 0; i < 2000; ++i) {
+      table.put("K", i % 2 == 0 ? long_value : short_value, 7);
+      if (i % 16 == 0) {
+        std::this_thread::yield();
+      }
+    }
+  });
+
+  start.store(true, std::memory_order_release);
+  for (int i = 0; i < 2000; ++i) {
+    const auto record = table.get_record("K", 0);
+    EXPECT_TRUE(record.has_value());
+    if (record.has_value()) {
+      EXPECT_EQ(record->second, 7u);
+      EXPECT_TRUE(record->first == short_value || record->first == long_value);
+    }
+    if (i % 16 == 0) {
+      std::this_thread::yield();
+    }
+  }
+  writer.join();
 }
 
 // 目的：验证 clear 同时清理数据和统计，随后复用对象不会继承旧冻结表大小。
