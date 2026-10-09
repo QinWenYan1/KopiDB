@@ -817,6 +817,54 @@ TEST_F(LSMTest, MonotonyPredicate) {
   EXPECT_EQ(actual_keys, expected_keys);
 }
 
+// 目的：新事务应处于未结束状态，并为后续操作保留正确的事务身份和开始记录。
+// 场景：分别创建四种隔离级别的上下文；构造本身不执行读写、提交或 WAL 持久化。
+TEST_F(LSMTest, TranContextConstructorInitializesTransaction) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = std::make_shared<TranManager>(test_dir);
+  uint64_t id = 7;
+  for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
+                     IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    TranContext context(id, engine, manager, level);
+
+    EXPECT_EQ(context.tranc_id_, id);
+    EXPECT_EQ(context.engine_, engine);
+    EXPECT_EQ(context.tranManager_.lock(), manager);
+    EXPECT_EQ(context.isolation_level_, level);
+    EXPECT_FALSE(context.isCommited);
+    EXPECT_FALSE(context.isAborted);
+    EXPECT_TRUE(context.temp_map_.empty());
+    ASSERT_EQ(context.operations.size(), 1u);
+    EXPECT_EQ(context.operations.front().getOperationType(),
+              OperationType::OP_CREATE);
+    EXPECT_EQ(context.operations.front().getTrancId(), id);
+    ++id;
+  }
+}
+
+// 目的：上下文保持引擎存活，但不通过强引用延长管理器生命周期，避免双方互持。
+// 场景：释放外部引用后，引擎随上下文存活，管理器可以先销毁；不调用提交或回滚。
+TEST_F(LSMTest, TranContextConstructorPreservesOwnershipRules) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = std::make_shared<TranManager>(test_dir);
+  std::weak_ptr<LSMEngine> engine_observer = engine;
+  std::weak_ptr<TranManager> manager_observer = manager;
+  auto context = std::make_shared<TranContext>(
+      7, engine, manager, IsolationLevel::REPEATABLE_READ);
+
+  engine.reset();
+  manager.reset();
+  EXPECT_FALSE(engine_observer.expired());
+  EXPECT_TRUE(manager_observer.expired());
+  EXPECT_TRUE(context->tranManager_.expired());
+
+  context.reset();
+  EXPECT_TRUE(engine_observer.expired());
+}
+
 TEST_F(LSMTest, TranContextTest) {
   LSM lsm(test_dir);
   {
