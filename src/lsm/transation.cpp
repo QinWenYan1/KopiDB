@@ -31,13 +31,11 @@ inline std::string isolation_level_to_string(const IsolationLevel &level) {
 }
 
 // *********************** TranContext ***********************
+// TODO: Lab 5.2 构造函数初始化
 TranContext::TranContext(uint64_t tranc_id, std::shared_ptr<LSMEngine> engine,
                          std::shared_ptr<TranManager> tranManager,
-                         const enum IsolationLevel &isolation_level)
-    : tranc_id_(tranc_id), engine_(std::move(engine)),
-      tranManager_(tranManager), isolation_level_(isolation_level) {
-  operations.emplace_back(Record::createRecord(tranc_id_));
-}
+                         const enum IsolationLevel &isolation_level){}
+
 
 void TranContext::put(const std::string &key, const std::string &value) {
   spdlog::trace("LSM--"
@@ -446,30 +444,10 @@ uint64_t TranManager::get_checkpoint_tranc_id() {
   return *flushedTrancIds_.begin();
 }
 
+// TODO: Lab 5.2 事务上下文分配
 std::shared_ptr<TranContext>
 TranManager::new_tranc(const IsolationLevel &isolation_level) {
-  spdlog::debug("TranManager--new_tranc(): Creating new transaction with "
-                "isolation level={}",
-                static_cast<int>(isolation_level));
-
-  // 获取锁
-  std::unique_lock<std::mutex> lock(mutex_);
-
-  auto tranc_id = getNextTransactionId();
-  activeTrans_[tranc_id] = std::make_shared<TranContext>(
-      tranc_id, engine_, shared_from_this(), isolation_level);
-
-  spdlog::debug("TranManager--new_tranc(): Created transaction ID={} with "
-                "isolation level={}",
-                tranc_id, static_cast<int>(isolation_level));
-
-  return activeTrans_[tranc_id];
-}
-std::string TranManager::get_tranc_id_file_path() {
-  if (data_dir_.empty()) {
-    data_dir_ = "./";
-  }
-  return data_dir_ + "/tranc_id";
+  return nullptr;
 }
 
 std::map<uint64_t, std::vector<Record>> TranManager::check_recover() {
