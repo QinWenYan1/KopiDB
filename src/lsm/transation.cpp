@@ -1,19 +1,19 @@
 #include "lsm/engine.h"
 #include "lsm/transaction.h"
+#include "spdlog/spdlog.h"
 #include "utils/files.h"
 #include "utils/set_operation.h"
-#include "spdlog/spdlog.h"
-#include <memory>
-#include <stdexcept>
-#include <utility>
 #include <algorithm>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace tiny_lsm {
@@ -35,45 +35,44 @@ inline std::string isolation_level_to_string(const IsolationLevel &level) {
 
 // *********************** TranContext ***********************
 // Lab 5.2 构造函数初始化
-// 初始化 engine, trancManager, 
+// 初始化 engine, trancManager,
 // isolation level, tranc_id, 和 operation
 // isCommited、isAborted 已在头文件中默认初始化为 false
 // 几个容器也会自动构造为空
-TranContext::TranContext(
-  uint64_t tranc_id, std::shared_ptr<LSMEngine> engine,
-  std::shared_ptr<TranManager> tranManager,
-  const enum IsolationLevel &isolation_level)
-  // 按头文件中成员的声明顺序初始化
-  // 保存引擎的 shared_ptr，让引擎在上下文存活期间保持有效
-  : engine_(std::move(engine)),
-  // 成员是 weak_ptr：管理器持有上下文，上下文弱引用管理器
-  // 避免双方通过 shared_ptr 互相持有，导致无法释放
-  // 这里即使使用移动语意依然调用 weak_ptr(const shared_ptr<Y>& r) noexcept 构造函数
-  // 没有额外的移动收益
-  tranManager_(tranManager),
-  // ID 已由管理器分配，这里只保存
-  tranc_id_(tranc_id), 
-  isolation_level_(isolation_level){
-    // 记录“事务开始”，后续 put/remove/commit 的操作记录追加在它后面
-    // 此时只保存在内存中的 operations 中，没有写入 WAL 或 MemTable
-    operations.emplace_back(Record::createRecord(tranc_id_)); 
-  }
-
+TranContext::TranContext(uint64_t tranc_id, std::shared_ptr<LSMEngine> engine,
+                         std::shared_ptr<TranManager> tranManager,
+                         const enum IsolationLevel &isolation_level)
+    // 按头文件中成员的声明顺序初始化
+    // 保存引擎的 shared_ptr，让引擎在上下文存活期间保持有效
+    : engine_(std::move(engine)),
+      // 成员是 weak_ptr：管理器持有上下文，上下文弱引用管理器
+      // 避免双方通过 shared_ptr 互相持有，导致无法释放
+      // 这里即使使用移动语意依然调用 weak_ptr(const shared_ptr<Y>& r) noexcept
+      // 构造函数 没有额外的移动收益
+      tranManager_(tranManager),
+      // ID 已由管理器分配，这里只保存
+      tranc_id_(tranc_id), isolation_level_(isolation_level) {
+  // 记录“事务开始”，后续 put/remove/commit 的操作记录追加在它后面
+  // 此时只保存在内存中的 operations 中，没有写入 WAL 或 MemTable
+  operations.emplace_back(Record::createRecord(tranc_id_));
+}
 
 // Lab 5.2 put 实现
 // 读未提交： 直接写入引擎，同时保存第一次修改前的值，供后续回滚使用
 // 其他隔离级别： 暂存在本事务的 temp_map_，等 commit() 再写入引擎
 void TranContext::put(const std::string &key, const std::string &value) {
-    spdlog::trace("TranContext--put({}, {}), tranc_id={}", key, value, tranc_id_);
+  spdlog::trace("TranContext--put({}, {}), tranc_id={}", key, value, tranc_id_);
 
   // 1. 检查开关标记
   //    已经结束的事务不能继续接受写入
-  if(isCommited || isAborted)
-    throw std::logic_error("TranContext::put: transaction has already finished"); 
+  if (isCommited || isAborted)
+    throw std::logic_error(
+        "TranContext::put: transaction has already finished");
 
   // 2. 设置写开关，确认是否为读未提交
-  const bool write_immediately = (isolation_level_ == IsolationLevel::READ_UNOP_COMMITTED);
-  
+  const bool write_immediately =
+      (isolation_level_ == IsolationLevel::READ_UNOP_COMMITTED);
+
   // 3. 记录回滚数据信息
   //    读未提交会直接修改数据库，因此需要保存修改前的值
   //    同一个 key 只保存第一次修改前的状态：
@@ -82,7 +81,6 @@ void TranContext::put(const std::string &key, const std::string &value) {
     // 读上限 0 表示查询最新版本
     // 即使结果为 nullopt，也要登记，表示修改前逻辑上不存在
     rollback_map_.emplace(key, engine_->get(key, 0));
-
 }
 
 void TranContext::remove(const std::string &key) {
@@ -465,52 +463,44 @@ uint64_t TranManager::get_checkpoint_tranc_id() {
 // 分配 ID → 创建上下文 → 登记到管理器 → 返回上下文
 std::shared_ptr<TranContext>
 TranManager::new_tranc(const IsolationLevel &isolation_level) {
-  spdlog::debug(
-      "TranManager--new_tranc(): Creating new transaction with "
-      "isolation level={}",
-      static_cast<int>(isolation_level)
-  );
+  spdlog::debug("TranManager--new_tranc(): Creating new transaction with "
+                "isolation level={}",
+                static_cast<int>(isolation_level));
 
   // 1. 设置锁:
   //    ID 计数器虽然是原子的，但 activeTrans_ 是普通 map
   //    多个线程可能同时创建事务，因此登记过程需要互斥保护
-  std::lock_guard<std::mutex> lock(mutex_); 
+  std::lock_guard<std::mutex> lock(mutex_);
 
   // 2. 管理器必须先绑定引擎: 否则创建出的事务无法进行读写
-  if(!engine_)
-    throw std::logic_error(
-      "TranManager::new_tranc: engine is not initialized"
-    ); 
-  
+  if (!engine_)
+    throw std::logic_error("TranManager::new_tranc: engine is not initialized");
+
   // 3. 为这个事务分配唯一的 ID
-  const auto tranc_id = getNextTransactionId(); 
+  const auto tranc_id = getNextTransactionId();
 
   // 4. 创建事务上下文
   //    shared_from_this() 获取共享当前管理器所有权的 shared_ptr 并绑定
-  //    TranContext 构造函数会将其保存为 weak_ptr，避免循环引用 
+  //    TranContext 构造函数会将其保存为 weak_ptr，避免循环引用
   auto context = std::make_shared<TranContext>(
-    tranc_id, engine_, shared_from_this(), isolation_level
-  );
+      tranc_id, engine_, shared_from_this(), isolation_level);
 
   // 5. 登记活跃事务，管理器持有该上下
-  activeTrans_.emplace(tranc_id, context); 
+  activeTrans_.emplace(tranc_id, context);
 
-  spdlog::debug(
-    "TranManager--new_tranc(): Created transaction ID={} with "
-    "isolation level={}",
-    tranc_id, 
-    static_cast<int>(isolation_level)
-  );
+  spdlog::debug("TranManager--new_tranc(): Created transaction ID={} with "
+                "isolation level={}",
+                tranc_id, static_cast<int>(isolation_level));
 
   // 6. 返回同一个上下文，让调用者执行 put/get/commit 等操作
-  return context; 
+  return context;
 }
 
-std::string TranManager::get_tranc_id_file_path(){
+std::string TranManager::get_tranc_id_file_path() {
   // 未指定数据目录时，使用当前目录
   // 同时规范成员值，供管理器的其他文件操作使用
-  if(data_dir_.empty())
-    data_dir_ = "."; 
+  if (data_dir_.empty())
+    data_dir_ = ".";
 
   return data_dir_ + "/tranc_id";
 }
