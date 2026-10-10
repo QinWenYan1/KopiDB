@@ -66,15 +66,22 @@ TranContext::TranContext(
 void TranContext::put(const std::string &key, const std::string &value) {
     spdlog::trace("TranContext--put({}, {}), tranc_id={}", key, value, tranc_id_);
 
-    // 已经结束的事务不能继续接受写入
-    if(isCommited || isAborted)
-      throw std::logic_error("TranContext::put: transaction has already finished"); 
+  // 1. 检查开关标记
+  //    已经结束的事务不能继续接受写入
+  if(isCommited || isAborted)
+    throw std::logic_error("TranContext::put: transaction has already finished"); 
 
-    const bool write_immediately = (isolation_level_ == IsolationLevel::READ_UNOP_COMMITTED);
-    
-  // 读未提交会直接修改数据库，因此需要保存修改前的值。
-  // 同一个 key 只保存第一次修改前的状态：
-  // 原值 old -> put(A) -> put(B)，回滚目标仍应是 old。
+  // 2. 设置写开关，确认是否为读未提交
+  const bool write_immediately = (isolation_level_ == IsolationLevel::READ_UNOP_COMMITTED);
+  
+  // 3. 记录回滚数据信息
+  //    读未提交会直接修改数据库，因此需要保存修改前的值
+  //    同一个 key 只保存第一次修改前的状态：
+  //    原值 old -> put(A) -> put(B)，回滚目标仍应是 old
+  if (write_immediately && !rollback_map_.contains(key))
+    // 读上限 0 表示查询最新版本
+    // 即使结果为 nullopt，也要登记，表示修改前逻辑上不存在
+    rollback_map_.emplace(key, engine_->get(key, 0));
 
 }
 
