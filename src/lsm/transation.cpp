@@ -474,9 +474,16 @@ TranManager::new_tranc(const IsolationLevel &isolation_level) {
       static_cast<int>(isolation_level)
   );
 
-  // ID 计数器虽然是原子的，但 activeTrans_ 是普通 map
-  // 多个线程可能同时创建事务，因此登记过程需要互斥保护
+  // 1. 设置锁:
+  //    ID 计数器虽然是原子的，但 activeTrans_ 是普通 map
+  //    多个线程可能同时创建事务，因此登记过程需要互斥保护
   std::lock_guard<std::mutex> lock(mutex_); 
+
+  // 2. 管理器必须先绑定引擎: 否则创建出的事务无法进行读写
+  if(!engine_)
+    throw std::logic_error(
+      "TranManager::new_tranc: engine is not initialized"
+    ); 
 
 
   return nullptr;
