@@ -506,7 +506,8 @@ TranManager::new_tranc(const IsolationLevel &isolation_level) {
     static_cast<int>(isolation_level)
   );
 
-  return nullptr;
+  // 6. 返回同一个上下文，让调用者执行 put/get/commit 等操作
+  return context; 
 }
 
 std::string TranManager::get_tranc_id_file_path(){
