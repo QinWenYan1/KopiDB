@@ -4,6 +4,7 @@
 #include "utils/set_operation.h"
 #include "spdlog/spdlog.h"
 #include <memory>
+#include <stdexcept>
 #include <utility>
 #include <algorithm>
 #include <cerrno>
@@ -59,8 +60,21 @@ TranContext::TranContext(
   }
 
 
-// TODO: Lab 5.2 put 实现
+// Lab 5.2 put 实现
+// 读未提交： 直接写入引擎，同时保存第一次修改前的值，供后续回滚使用
+// 其他隔离级别： 暂存在本事务的 temp_map_，等 commit() 再写入引擎
 void TranContext::put(const std::string &key, const std::string &value) {
+    spdlog::trace("TranContext--put({}, {}), tranc_id={}", key, value, tranc_id_);
+
+    // 已经结束的事务不能继续接受写入
+    if(isCommited || isAborted)
+      throw std::logic_error("TranContext::put: transaction has already finished"); 
+
+    const bool write_immediately = (isolation_level_ == IsolationLevel::READ_UNOP_COMMITTED);
+    
+  // 读未提交会直接修改数据库，因此需要保存修改前的值。
+  // 同一个 key 只保存第一次修改前的状态：
+  // 原值 old -> put(A) -> put(B)，回滚目标仍应是 old。
 
 }
 

@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 #include <iostream>
 #include <latch>
+#include <set>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
@@ -863,6 +864,114 @@ TEST_F(LSMTest, TranContextConstructorPreservesOwnershipRules) {
 
   context.reset();
   EXPECT_TRUE(engine_observer.expired());
+}
+
+// 目的：new_tranc 创建具有独立 ID 的上下文，并将它们登记为活跃事务。
+// 场景：不同隔离级别各创建一个事务；调用者释放句柄后，管理器仍持有上下文。
+//       管理器销毁后上下文也能释放，避免双方互持形成循环引用。
+TEST_F(LSMTest, NewTransactionRegistersContexts) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = std::make_shared<TranManager>(test_dir);
+  manager->set_engine(engine);
+
+  auto first = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  auto second = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
+  ASSERT_NE(first, nullptr);
+  ASSERT_NE(second, nullptr);
+  EXPECT_NE(first, second);
+  EXPECT_EQ(first->tranc_id_, 1u);
+  EXPECT_EQ(second->tranc_id_, 2u);
+  EXPECT_EQ(first->engine_, engine);
+  EXPECT_EQ(second->engine_, engine);
+  EXPECT_EQ(first->tranManager_.lock(), manager);
+  EXPECT_EQ(second->tranManager_.lock(), manager);
+  EXPECT_EQ(first->isolation_level_, IsolationLevel::READ_OP_COMMITTED);
+  EXPECT_EQ(second->isolation_level_, IsolationLevel::REPEATABLE_READ);
+  ASSERT_EQ(first->operations.size(), 1u);
+  EXPECT_EQ(first->operations.front().getTrancId(), first->tranc_id_);
+
+  std::weak_ptr<TranContext> first_observer = first;
+  std::weak_ptr<TranContext> second_observer = second;
+  first.reset();
+  second.reset();
+  EXPECT_FALSE(first_observer.expired());
+  EXPECT_FALSE(second_observer.expired());
+  manager.reset();
+  EXPECT_TRUE(first_observer.expired());
+  EXPECT_TRUE(second_observer.expired());
+}
+
+// 目的：缺少引擎时立即报告初始化错误，不返回无法使用的事务句柄。
+// 场景：首次创建失败，绑定引擎后重试；失败的调用不应提前分配 ID。
+TEST_F(LSMTest, NewTransactionRequiresEngine) {
+  auto manager = std::make_shared<TranManager>(test_dir);
+  EXPECT_THROW(manager->new_tranc(IsolationLevel::REPEATABLE_READ),
+               std::logic_error);
+
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  manager->set_engine(engine);
+  auto context = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
+  ASSERT_NE(context, nullptr);
+  EXPECT_EQ(context->tranc_id_, 1u);
+}
+
+// 目的：并发创建事务时，ID 不重复，且每个上下文都成功登记。
+// 场景：4 个线程同时各创建 64 个事务，结束后逐个检查句柄和管理器持有关系。
+TEST_F(LSMTest, NewTransactionConcurrentCreation) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = std::make_shared<TranManager>(test_dir);
+  manager->set_engine(engine);
+
+  constexpr size_t worker_count = 4;
+  constexpr size_t per_worker = 64;
+  std::vector<std::vector<std::shared_ptr<TranContext>>> contexts(
+      worker_count, std::vector<std::shared_ptr<TranContext>>(per_worker));
+  std::vector<std::exception_ptr> errors(worker_count);
+  std::vector<std::thread> workers;
+  std::latch start(1);
+  for (size_t worker = 0; worker < worker_count; ++worker) {
+    workers.emplace_back([&, worker] {
+      start.wait();
+      try {
+        for (auto &context : contexts[worker]) {
+          context = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
+        }
+      } catch (...) {
+        errors[worker] = std::current_exception();
+      }
+    });
+  }
+  start.count_down();
+  for (auto &worker : workers) {
+    worker.join();
+  }
+
+  for (const auto &error : errors) {
+    ASSERT_FALSE(static_cast<bool>(error));
+  }
+  std::set<uint64_t> ids;
+  std::vector<std::weak_ptr<TranContext>> observers;
+  for (const auto &batch : contexts) {
+    for (const auto &context : batch) {
+      ASSERT_NE(context, nullptr);
+      EXPECT_TRUE(ids.insert(context->tranc_id_).second);
+      EXPECT_EQ(context->engine_, engine);
+      EXPECT_EQ(context->tranManager_.lock(), manager);
+      observers.emplace_back(context);
+    }
+  }
+  ASSERT_EQ(ids.size(), worker_count * per_worker);
+  EXPECT_EQ(*ids.begin(), 1u);
+  EXPECT_EQ(*ids.rbegin(), worker_count * per_worker);
+
+  contexts.clear();
+  for (const auto &observer : observers) {
+    EXPECT_FALSE(observer.expired());
+  }
+  manager.reset();
+  for (const auto &observer : observers) {
+    EXPECT_TRUE(observer.expired());
+  }
 }
 
 TEST_F(LSMTest, TranContextTest) {
