@@ -467,6 +467,7 @@ uint64_t TranManager::get_checkpoint_tranc_id() {
 }
 
 // Lab 5.2 事务上下文分配
+// 分配 ID → 创建上下文 → 登记到管理器 → 返回上下文
 std::shared_ptr<TranContext>
 TranManager::new_tranc(const IsolationLevel &isolation_level) {
   spdlog::debug(
