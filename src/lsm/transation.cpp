@@ -465,9 +465,19 @@ uint64_t TranManager::get_checkpoint_tranc_id() {
   return *flushedTrancIds_.begin();
 }
 
-// TODO: Lab 5.2 事务上下文分配
+// Lab 5.2 事务上下文分配
 std::shared_ptr<TranContext>
 TranManager::new_tranc(const IsolationLevel &isolation_level) {
+  spdlog::debug(
+      "TranManager--new_tranc(): Creating new transaction with "
+      "isolation level={}",
+      static_cast<int>(isolation_level)
+  );
+
+  // ID 计数器虽然是原子的，但 activeTrans_ 是普通 map
+  // 多个线程可能同时创建事务，因此登记过程需要互斥保护
+  std::lock_guard<std::mutex> lock(mutex_); 
+
 
   return nullptr;
 }
