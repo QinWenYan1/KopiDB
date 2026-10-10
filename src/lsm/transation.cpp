@@ -31,10 +31,24 @@ inline std::string isolation_level_to_string(const IsolationLevel &level) {
 }
 
 // *********************** TranContext ***********************
-// TODO: Lab 5.2 构造函数初始化
-TranContext::TranContext(uint64_t tranc_id, std::shared_ptr<LSMEngine> engine,
-                         std::shared_ptr<TranManager> tranManager,
-                         const enum IsolationLevel &isolation_level){}
+// Lab 5.2 构造函数初始化
+TranContext::TranContext(
+  uint64_t tranc_id, std::shared_ptr<LSMEngine> engine,
+  std::shared_ptr<TranManager> tranManager,
+  const enum IsolationLevel &isolation_level)
+  // 按头文件中成员的声明顺序初始化
+  // 保存引擎的 shared_ptr，让引擎在上下文存活期间保持有效
+  : engine_(std::move(engine)),
+  // 成员是 weak_ptr：管理器持有上下文，上下文弱引用管理器
+  // 避免双方通过 shared_ptr 互相持有，导致无法释放
+  // 这里即使使用移动语意依然调用 weak_ptr(const shared_ptr<Y>& r) noexcept 构造函数
+  // 没有额外的移动收益
+  tranManager_(tranManager),
+  // ID 已由管理器分配，这里只保存
+  tranc_id_(tranc_id), 
+  isolation_level_(isolation_level){
+
+  }
 
 
 void TranContext::put(const std::string &key, const std::string &value) {
