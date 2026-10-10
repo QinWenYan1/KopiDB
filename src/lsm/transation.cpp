@@ -3,6 +3,7 @@
 #include "utils/files.h"
 #include "utils/set_operation.h"
 #include "spdlog/spdlog.h"
+#include <utility>
 #include <algorithm>
 #include <cerrno>
 #include <cstdint>
@@ -467,6 +468,7 @@ uint64_t TranManager::get_checkpoint_tranc_id() {
 // TODO: Lab 5.2 事务上下文分配
 std::shared_ptr<TranContext>
 TranManager::new_tranc(const IsolationLevel &isolation_level) {
+
   return nullptr;
 }
 
