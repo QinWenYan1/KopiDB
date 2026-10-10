@@ -32,6 +32,10 @@ inline std::string isolation_level_to_string(const IsolationLevel &level) {
 
 // *********************** TranContext ***********************
 // Lab 5.2 构造函数初始化
+// 初始化 engine, trancManager, 
+// isolation level, tranc_id, 和 operation
+// isCommited、isAborted 已在头文件中默认初始化为 false
+// 几个容器也会自动构造为空
 TranContext::TranContext(
   uint64_t tranc_id, std::shared_ptr<LSMEngine> engine,
   std::shared_ptr<TranManager> tranManager,
