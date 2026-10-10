@@ -59,35 +59,9 @@ TranContext::TranContext(
   }
 
 
+// TODO: Lab 5.2 put 实现
 void TranContext::put(const std::string &key, const std::string &value) {
-  spdlog::trace("LSM--"
-                "lsm_iters_monotony_predicate: Starting query for tranc_id={}",
-                this->tranc_id_);
 
-  auto isolation_level = get_isolation_level();
-
-  // 所有隔离级别都需要先写入 operations 中
-  operations.emplace_back(Record::putRecord(this->tranc_id_, key, value));
-
-  if (isolation_level == IsolationLevel::READ_UNOP_COMMITTED) {
-    // 1 如果隔离级别是 READ_UNOP_COMMITTED, 直接写入 memtable
-    // 先查询以前的记录, 因为回滚时可能需要
-    auto prev_record = engine_->get(key, 0);
-    rollback_map_[key] = prev_record;
-    engine_->put(key, value, tranc_id_);
-
-    spdlog::trace(
-        "TranContext--READ_UNOP_COMMITTED: put({}, {}) applied to memtable",
-        key, value);
-
-    return;
-  }
-
-  // 2 其他隔离级别需要 暂存到 temp_map_ 中, 统一提交后才在数据库中生效
-  temp_map_[key] = value;
-
-  spdlog::trace("TranContext--{}: put({}, {}) stored in temp map",
-                isolation_level_to_string(isolation_level_), key, value);
 }
 
 void TranContext::remove(const std::string &key) {
