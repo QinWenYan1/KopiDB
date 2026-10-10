@@ -3,6 +3,7 @@
 #include "utils/files.h"
 #include "utils/set_operation.h"
 #include "spdlog/spdlog.h"
+#include <memory>
 #include <utility>
 #include <algorithm>
 #include <cerrno>
@@ -484,6 +485,16 @@ TranManager::new_tranc(const IsolationLevel &isolation_level) {
     throw std::logic_error(
       "TranManager::new_tranc: engine is not initialized"
     ); 
+  
+  // 3. 为这个事务分配唯一的 ID
+  const auto tranc_id = getNextTransactionId(); 
+
+  // 2. 创建事务上下文
+  //    shared_from_this() 获取共享当前管理器所有权的 shared_ptr 并绑定
+  //    TranContext 构造函数会将其保存为 weak_ptr，避免循环引用 
+  auto context = std::make_shared<TranContext>(
+    tranc_id, engine_, shared_from_this(), isolation_level
+  );
 
 
   return nullptr;
