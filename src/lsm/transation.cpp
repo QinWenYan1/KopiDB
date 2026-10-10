@@ -47,7 +47,9 @@ TranContext::TranContext(
   // ID 已由管理器分配，这里只保存
   tranc_id_(tranc_id), 
   isolation_level_(isolation_level){
-
+    // 记录“事务开始”，后续 put/remove/commit 的操作记录追加在它后面
+    // 此时只保存在内存中的 operations 中，没有写入 WAL 或 MemTable
+    operations.emplace_back(Record::createRecord(tranc_id_)); 
   }
 
 
