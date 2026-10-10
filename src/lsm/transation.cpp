@@ -472,6 +472,15 @@ TranManager::new_tranc(const IsolationLevel &isolation_level) {
   return nullptr;
 }
 
+std::string TranManager::get_tranc_id_file_path(){
+  // 未指定数据目录时，使用当前目录
+  // 同时规范成员值，供管理器的其他文件操作使用
+  if(data_dir_.empty())
+    data_dir_ = "."; 
+
+  return data_dir_ + "/tranc_id";
+}
+
 std::map<uint64_t, std::vector<Record>> TranManager::check_recover() {
   spdlog::info("TranManager--check_recover(): Starting recovery from WAL");
 
