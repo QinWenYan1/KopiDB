@@ -81,6 +81,11 @@ void TranContext::put(const std::string &key, const std::string &value) {
     // 读上限 0 表示查询最新版本
     // 即使结果为 nullopt，也要登记，表示修改前逻辑上不存在
     rollback_map_.emplace(key, engine_->get(key, 0));
+  
+  // 4. 所有隔离级别都记录本次操作，供后续 WAL 使用
+  //    这里只追加内存记录，不执行日志持久化
+  operations.emplace_back(Record::putRecord(tranc_id_, key, value)); 
+
 }
 
 void TranContext::remove(const std::string &key) {
