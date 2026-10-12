@@ -1061,6 +1061,140 @@ TEST_F(LSMTest, TranContextPutRejectsFinishedTransactions) {
   }
 }
 
+// 目的：本事务自己的修改优先于旧读缓存，暂存墓碑应返回“不存在”。
+// 场景：先读取引擎旧值，再暂存新值、空值墓碑、重写值，依次观察 get 的结果。
+TEST_F(LSMTest, TranContextGetOwnWritesOverrideReadCache) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  engine->put("k", "old", 3);
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    TranContext context(10, engine, nullptr, level);
+    EXPECT_EQ(context.get("k"), std::make_optional(std::string("old")));
+    context.put("k", "own");
+    EXPECT_EQ(context.get("k"), std::make_optional(std::string("own")));
+    context.put("k", "");
+    EXPECT_FALSE(context.get("k").has_value());
+    context.put("k", "rewritten");
+    EXPECT_EQ(context.get("k"), std::make_optional(std::string("rewritten")));
+    EXPECT_EQ(engine->get("k", 0),
+              std::make_optional(std::make_pair(std::string("old"), uint64_t{3})));
+  }
+}
+
+// 目的：已缓存的结果保持稳定，每个事务各自维护读缓存。
+// 场景：事务 10 先读到 k@3，之后引擎出现同样满足 <=10 的 k@7；
+//       旧事务仍读 k@3，新事务 11 首次读取则选 k@7。
+//       SERIALIZABLE 这里只验证单键缓存规则，不代表验证了完整串行化。
+TEST_F(LSMTest, TranContextGetReadCacheBelongsToEachTransaction) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  for (auto level : {IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    const auto key = "k" + std::to_string(static_cast<int>(level));
+    SCOPED_TRACE(key);
+    engine->put(key, "old", 3);
+    TranContext first(10, engine, nullptr, level);
+    EXPECT_EQ(first.get(key), std::make_optional(std::string("old")));
+    engine->put(key, "new", 7);
+    EXPECT_EQ(first.get(key), std::make_optional(std::string("old")));
+    TranContext second(11, engine, nullptr, level);
+    EXPECT_EQ(second.get(key), std::make_optional(std::string("new")));
+  }
+}
+
+// 目的：首次未命中和首次读到墓碑，都应缓存为 nullopt。
+// 场景：事务 10 查询无记录/已删除的 key 后，版本 8 的新值进入引擎；
+//       原事务保持“不存在”，新事务可以读到新值，避免只缓存有值的查询。
+TEST_F(LSMTest, TranContextGetReadCachePreservesMissingResults) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  for (auto level : {IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    const auto suffix = std::to_string(static_cast<int>(level));
+    const auto missing = "missing" + suffix;
+    const auto deleted = "deleted" + suffix;
+    SCOPED_TRACE(suffix);
+    engine->put(deleted, "old", 3);
+    engine->remove(deleted, 7);
+    TranContext first(10, engine, nullptr, level);
+    EXPECT_FALSE(first.get(missing).has_value());
+    EXPECT_FALSE(first.get(deleted).has_value());
+    engine->put(missing, "created", 8);
+    engine->put(deleted, "restored", 8);
+    EXPECT_FALSE(first.get(missing).has_value());
+    EXPECT_FALSE(first.get(deleted).has_value());
+    TranContext second(11, engine, nullptr, level);
+    EXPECT_EQ(second.get(missing), std::make_optional(std::string("created")));
+    EXPECT_EQ(second.get(deleted), std::make_optional(std::string("restored")));
+  }
+}
+
+// 目的：不缓存查询的分支，每次都能看到引擎当前版本，不固定使用事务开始 ID。
+// 场景：事务 5 查询后，引擎出现版本 7 的更新和新增记录；再次查询看到新值。
+//       这里只验证刷新行为，不验证混合隔离级别下尚未完成的提交状态过滤。
+TEST_F(LSMTest, TranContextGetRefreshesCurrentVersions) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
+                     IsolationLevel::READ_OP_COMMITTED}) {
+    const auto suffix = std::to_string(static_cast<int>(level));
+    const auto key = "k" + suffix;
+    const auto missing = "missing" + suffix;
+    SCOPED_TRACE(suffix);
+    engine->put(key, "old", 3);
+    TranContext context(5, engine, nullptr, level);
+    EXPECT_EQ(context.get(key), std::make_optional(std::string("old")));
+    EXPECT_FALSE(context.get(missing).has_value());
+    engine->put(key, "new", 7);
+    engine->put(missing, "created", 7);
+    EXPECT_EQ(context.get(key), std::make_optional(std::string("new")));
+    EXPECT_EQ(context.get(missing), std::make_optional(std::string("created")));
+    engine->remove(key, 8);
+    EXPECT_FALSE(context.get(key).has_value());
+  }
+}
+
+// 目的：首次读取按版本上限选择候选，能跨内存和 SST 获取正确的历史值。
+// 场景：k@3、k@7 已刷盘，k@12 在内存；事务 10、4、2 首次查询应分别得到
+//       版本 7、版本 3 和“不存在”，不能直接读取不受限的最新版本 12。
+TEST_F(LSMTest, TranContextGetFirstReadRespectsVersionBound) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  engine->put("k", "v3", 3);
+  engine->flush();
+  engine->put("k", "v7", 7);
+  engine->flush();
+  engine->put("k", "v12", 12);
+  for (auto level : {IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    TranContext at10(10, engine, nullptr, level);
+    TranContext at4(4, engine, nullptr, level);
+    TranContext at2(2, engine, nullptr, level);
+    EXPECT_EQ(at10.get("k"), std::make_optional(std::string("v7")));
+    EXPECT_EQ(at4.get("k"), std::make_optional(std::string("v3")));
+    EXPECT_FALSE(at2.get("k").has_value());
+  }
+}
+
+// 目的：结束后的事务不能继续 get，即使自己的暂存表里有命中项也不能绕过检查。
+// 场景：先 put，再设置公开的提交/回滚标记，单独验证 get 的状态检查。
+TEST_F(LSMTest, TranContextGetRejectsFinishedTransactions) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
+                     IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    for (bool committed : {false, true}) {
+      SCOPED_TRACE(static_cast<int>(level));
+      SCOPED_TRACE(committed);
+      TranContext context(7, engine, nullptr, level);
+      context.put("k", "own");
+      context.isCommited = committed;
+      context.isAborted = !committed;
+      EXPECT_THROW(context.get("k"), std::logic_error);
+    }
+  }
+}
+
 TEST_F(LSMTest, TranContextTest) {
   LSM lsm(test_dir);
   {
