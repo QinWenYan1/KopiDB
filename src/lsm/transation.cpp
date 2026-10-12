@@ -204,6 +204,17 @@ bool TranContext::commit(bool test_fail) {
   // 1. 一个事务只能结束一次
   // 重复提交，或者回滚后再提交，都不应再次写数据、插入事务标记
   if(isCommited || isAborted) return false; 
+
+  // 2. test_fail 用于后续 WAL 恢复测试：
+  //    将来可以让日志成功落盘，却故意不把修改写进 MemTable
+  //    当前尚未实现 WAL，不能跳过数据写入后还声称提交成功
+  if (test_fail)
+    std::logic_error("TranContext::commit: test_fail requires WAL support"); 
+
+  auto manager = tranManager_.lock();
+  if (!manager || ! engine_)
+    throw std::logic_error( "TranContext::commit: missing transaction manager or engine"); 
+
   
   return true;
 }
