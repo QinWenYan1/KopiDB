@@ -183,6 +183,18 @@ std::optional<std::string> TranContext::get(const std::string &key) {
       read_map_.emplace(key,query); 
     }
   }
+
+  // 5. 检查我们的返回值是否有效
+  //    Engine::get 已将胜出的墓碑转换成 nullopt
+  //    对外只返回 value，真实版本号仍保留在读缓存中
+  if (!query.has_value()){
+        spdlog::trace("TranContext--get({}): returned no value", key);
+        return std::nullopt; 
+  }
+
+  spdlog::trace("TranContext--get({}): returned value={}",
+                key, query->first);
+  return query->first; 
 }
 
 bool TranContext::commit(bool test_fail) {
