@@ -151,6 +151,24 @@ std::optional<std::string> TranContext::get(const std::string &key) {
     return pending->second; 
   }
 
+  std::optional<std::pair<std::string, uint64_t>> query; 
+
+  if(isolation_level_ == IsolationLevel::READ_UNOP_COMMITTED || 
+     isolation_level_ == IsolationLevel::READ_OP_COMMITTED){
+  // 3. 这两种级别不复用上一次查询结果，每次重新读取当前版本
+  //    因为这两个级别都允许后一次查询看到新的修改，不要求一直返回第一次读到的值
+  //    读已提交不能一直使用事务开始时的 ID，否则会挡住后续的新版本
+  //    因为 tranc_id_ 在事务创建时就确定了。如果一直拿它作为查询上限，更大 ID 的版本就一直查不到，即使那个版本已经提
+  //
+  //    注意：0 仅表示不限制版本上限，并不表示“只读取已提交记录”。
+  //    混合隔离级别下的提交状态过滤，还需要事务模块进一步支持。
+    query = engine_->get(key, 0); 
+  }else{
+
+
+
+  }
+
 }
 
 bool TranContext::commit(bool test_fail) {
