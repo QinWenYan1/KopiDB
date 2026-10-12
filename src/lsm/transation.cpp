@@ -83,7 +83,7 @@ void TranContext::put(const std::string &key, const std::string &value) {
     rollback_map_.emplace(key, engine_->get(key, 0));
 
   // 4. 所有隔离级别都记录本次操作，供后续 WAL 使用
-  //    o 0这里只追加内存记录，不执行日志持久化
+  //    0这里只追加内存记录，不执行日志持久化
   operations.emplace_back(Record::putRecord(tranc_id_, key, value));
 
   // 5. 开始写入，有两种方式：立即写入 vs 暂存于上下文
@@ -131,51 +131,26 @@ void TranContext::remove(const std::string &key) {
                 isolation_level_to_string(isolation_level_), key);
 }
 
+// Lab 5.2 get 实现
 std::optional<std::string> TranContext::get(const std::string &key) {
   spdlog::trace("TranContext--get({}) called, tranc_id={}", key, tranc_id_);
 
-  auto isolation_level = get_isolation_level();
+  // 1. 已结束的事务不能继续使用
+  if (isCommited || isAborted)
+    throw std::logic_error( "TranContext::get: transaction has already finished");
+  
+  // 2. 优先读取本事务自己的修改
+  //    即使之前缓存过旧值，后续 put/remove 的结果也应优先
+  auto pending = temp_map_.find(key); 
+  if (pending != temp_map_.end()){
+    spdlog::trace("TranContext--get({}): found in temp map", key);
 
-  // 1 所有隔离级别先就近在当前操作的临时缓存中查找
-  if (temp_map_.find(key) != temp_map_.end()) {
-    // READ_UNOP_COMMITTED 随单次操作更新数据库, 不需要最后的统一更新
-    // 这一步骤肯定会自然跳过的
-    spdlog::trace("TranContext--{}: get({}) found in temp map",
-                  isolation_level_to_string(isolation_level), key);
+    // 空值是删除标记：返回“没查到”，不能返回一个有值的空字符串
+    if (pending->second.empty()) return std::nullopt; 
 
-    return temp_map_[key];
+    return pending->second; 
   }
 
-  // 2 否则使用 engine 查询
-  std::optional<std::pair<std::string, uint64_t>> query;
-  if (isolation_level == IsolationLevel::READ_UNOP_COMMITTED) {
-    // 2.1 如果隔离级别是 READ_UNOP_COMMITTED, 使用 engine
-    // 查询时不需要判断 tranc_id, 直接获取最新值
-    query = engine_->get(key, 0);
-  } else if (isolation_level == IsolationLevel::READ_OP_COMMITTED) {
-    // 2.2 如果隔离级别是 READ_OP_COMMITTED, 使用 engine
-    // 查询时判断 tranc_id
-    query = engine_->get(key, this->tranc_id_);
-  } else {
-    // 2.2 如果隔离级别是 SERIALIZABLE 或 REPEATABLE_READ, 第一次使用 engine
-    // 查询后还需要暂存
-    if (read_map_.find(key) != read_map_.end()) {
-      query = read_map_[key];
-    } else {
-      query = engine_->get(key, this->tranc_id_);
-      read_map_[key] = query;
-    }
-  }
-  if (query.has_value()) {
-    spdlog::trace("TranContext--{}: get({}) returned value={}",
-                  isolation_level_to_string(isolation_level), key,
-                  query->first);
-  } else {
-    spdlog::trace("TranContext--{}: get({}) returned no value",
-                  isolation_level_to_string(isolation_level), key);
-  }
-
-  return query.has_value() ? std::make_optional(query->first) : std::nullopt;
 }
 
 bool TranContext::commit(bool test_fail) {
