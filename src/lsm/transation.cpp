@@ -81,26 +81,26 @@ void TranContext::put(const std::string &key, const std::string &value) {
     // 读上限 0 表示查询最新版本
     // 即使结果为 nullopt，也要登记，表示修改前逻辑上不存在
     rollback_map_.emplace(key, engine_->get(key, 0));
-  
+
   // 4. 所有隔离级别都记录本次操作，供后续 WAL 使用
   //    o 0这里只追加内存记录，不执行日志持久化
-  operations.emplace_back(Record::putRecord(tranc_id_, key, value)); 
-  
-  // 5. 开始写入，有两种方式：立即写入 vs 暂存于上下文
-  if(write_immediately){
-    // 使用本事务的 ID 写入；底层查询此时就可能读到它
-    engine_->put(key, value, tranc_id_); 
+  operations.emplace_back(Record::putRecord(tranc_id_, key, value));
 
-    spdlog::trace("TranContext--put: applied to engine, tranc_id={}", tranc_id_); 
+  // 5. 开始写入，有两种方式：立即写入 vs 暂存于上下文
+  if (write_immediately) {
+    // 使用本事务的 ID 写入；底层查询此时就可能读到它
+    engine_->put(key, value, tranc_id_);
+
+    spdlog::trace("TranContext--put: applied to engine, tranc_id={}",
+                  tranc_id_);
   } else {
     // 暂存在自己的上下文中，其他事务无法通过引擎读取这次修改
     // 重复修改同一个 key 时，暂存表保留最后一次写入的值
-    temp_map_.insert_or_assign(key, value); 
+    temp_map_.insert_or_assign(key, value);
 
     spdlog::trace("TranContext--put: stored in temp map, tranc_id={}",
                   tranc_id_);
   }
-
 }
 
 void TranContext::remove(const std::string &key) {
