@@ -974,6 +974,93 @@ TEST_F(LSMTest, NewTransactionConcurrentCreation) {
   }
 }
 
+// 目的：暂存型事务的 put 不提前修改引擎，重复写同一 key 时保留最后一次值。
+// 场景：读已提交、可重复读及串行化分支分别修改已有 key 并新增 key；
+//       只检查写入暂存行为，不用尚未完成的 commit 验证隔离级别整体语义。
+TEST_F(LSMTest, TranContextPutStagesWritesAndRecordsOperations) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  engine->put("existing", "old", 1);
+
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    TranContext context(7, engine, nullptr, level);
+    context.put("existing", "first");
+    context.put("existing", "last");
+    context.put("new", "new-value");
+
+    ASSERT_EQ(context.temp_map_.size(), 2u);
+    EXPECT_EQ(context.temp_map_.at("existing"), "last");
+    EXPECT_EQ(context.temp_map_.at("new"), "new-value");
+    EXPECT_EQ(engine->get("existing", 0),
+              std::make_optional(std::make_pair(std::string("old"), uint64_t{1})));
+    EXPECT_FALSE(engine->get("new", 0).has_value());
+
+    ASSERT_EQ(context.operations.size(), 4u);
+    EXPECT_EQ(context.operations.front().getOperationType(), OperationType::OP_CREATE);
+    for (size_t i = 1; i < context.operations.size(); ++i) {
+      EXPECT_EQ(context.operations[i].getOperationType(), OperationType::OP_PUT);
+      EXPECT_EQ(context.operations[i].getTrancId(), 7u);
+    }
+    EXPECT_EQ(context.operations[1].getKey(), "existing");
+    EXPECT_EQ(context.operations[1].getValue(), "first");
+    EXPECT_EQ(context.operations[2].getKey(), "existing");
+    EXPECT_EQ(context.operations[2].getValue(), "last");
+    EXPECT_EQ(context.operations[3].getKey(), "new");
+    EXPECT_EQ(context.operations[3].getValue(), "new-value");
+  }
+}
+
+// 目的：读未提交的 put 立即写入引擎，使用本事务 ID，并保留更老版本。
+// 场景：k@3 原值 old，事务 7 连续两次修改 k；读上限 3 仍应读到 old，
+//       最新查询读到事务 7 的最后一次修改。此测试不调用待实现的 abort。
+TEST_F(LSMTest, TranContextPutReadUncommittedWritesOwnVersion) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  engine->put("k", "old", 3);
+  TranContext context(7, engine, nullptr, IsolationLevel::READ_UNOP_COMMITTED);
+
+  context.put("k", "first");
+  EXPECT_EQ(engine->get("k", 0),
+            std::make_optional(std::make_pair(std::string("first"), uint64_t{7})));
+  context.put("k", "last");
+  context.put("new", "created");
+  EXPECT_EQ(engine->get("k", 0),
+            std::make_optional(std::make_pair(std::string("last"), uint64_t{7})));
+  EXPECT_EQ(engine->get("k", 3),
+            std::make_optional(std::make_pair(std::string("old"), uint64_t{3})));
+  EXPECT_EQ(engine->get("new", 0),
+            std::make_optional(std::make_pair(std::string("created"), uint64_t{7})));
+  EXPECT_FALSE(engine->get("new", 3).has_value());
+  EXPECT_TRUE(context.temp_map_.empty());
+  ASSERT_EQ(context.operations.size(), 4u);
+  EXPECT_EQ(context.operations.back().getOperationType(), OperationType::OP_PUT);
+  EXPECT_EQ(context.operations.back().getTrancId(), 7u);
+}
+
+// 目的：事务结束后拒绝继续 put，且不追加操作记录、不修改暂存表或引擎。
+// 场景：直接设置公开的结束标记，单独验证 put 的状态检查，避免依赖未完成的提交/回滚。
+TEST_F(LSMTest, TranContextPutRejectsFinishedTransactions) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
+                     IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    for (bool committed : {false, true}) {
+      SCOPED_TRACE(static_cast<int>(level));
+      SCOPED_TRACE(committed);
+      TranContext context(7, engine, nullptr, level);
+      context.isCommited = committed;
+      context.isAborted = !committed;
+
+      EXPECT_THROW(context.put("blocked", "value"), std::logic_error);
+      EXPECT_EQ(context.operations.size(), 1u);
+      EXPECT_TRUE(context.temp_map_.empty());
+      EXPECT_FALSE(engine->get("blocked", 0).has_value());
+    }
+  }
+}
+
 TEST_F(LSMTest, TranContextTest) {
   LSM lsm(test_dir);
   {
