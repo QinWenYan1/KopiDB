@@ -167,6 +167,21 @@ std::optional<std::string> TranContext::get(const std::string &key) {
     //    混合隔离级别下的提交状态过滤，还需要事务模块进一步支持。
     query = engine_->get(key, 0);
   } else {
+    // 4. 可重复读：先查读缓存，命中后直接复用第一次的结果
+    //    SERIALIZABLE 的单键读缓存复用这里
+    //    完整串行化还需要额外的并发控制，不能仅凭缓存实现
+    auto cached = read_map_.find(key);
+    
+    if (cached != read_map_.end()){
+      query = cached->second; 
+    } else {
+      // 首次读取使用本事务的版本上限
+      query = engine_->get(key, tranc_id_); 
+
+      // 即使 query 是 nullopt，也必须缓存
+      // “第一次没查到”也是需要保持稳定的查询结果
+      read_map_.emplace(key,query); 
+    }
   }
 }
 
