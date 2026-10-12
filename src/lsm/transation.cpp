@@ -1,5 +1,6 @@
 #include "lsm/engine.h"
 #include "lsm/transaction.h"
+#include "memtable/memtable.h"
 #include "spdlog/spdlog.h"
 #include "utils/files.h"
 #include "utils/set_operation.h"
@@ -215,7 +216,19 @@ bool TranContext::commit(bool test_fail) {
   if (!manager || ! engine_)
     throw std::logic_error( "TranContext::commit: missing transaction manager or engine"); 
 
-  
+  MemTable &mem = engine_->memtable; 
+  // 3. 加锁顺序必须与 Engine::flush 一致：
+  //    SST -> 活跃表 -> 冻结表
+  //
+  //    如果 commit 先锁内存表，再等 SST
+  //    而 flush 已经锁住 SST，再等内存表，两边就会互相等待
+  //
+  //    SST 这里只查询，使用读锁，阻止刷盘和压缩修改 SST 集合
+  //    内存表的锁覆盖“检查冲突 + 写入”，防止检查后又插入冲突版本
+  std::shared_lock<std::shared_mutex> sst_lock(engine_->ssts_mtx); 
+  std::unique_lock<std::shared_mutex> curr_lock(mem.cur_mtx);
+  std::unique_lock<std::shared_mutex> frozen_lock(mem.frozen_mtx); 
+
   return true;
 }
 
