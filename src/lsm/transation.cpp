@@ -137,38 +137,37 @@ std::optional<std::string> TranContext::get(const std::string &key) {
 
   // 1. 已结束的事务不能继续使用
   if (isCommited || isAborted)
-    throw std::logic_error( "TranContext::get: transaction has already finished");
-  
+    throw std::logic_error(
+        "TranContext::get: transaction has already finished");
+
   // 2. 优先读取本事务自己的修改
   //    即使之前缓存过旧值，后续 put/remove 的结果也应优先
-  auto pending = temp_map_.find(key); 
-  if (pending != temp_map_.end()){
+  auto pending = temp_map_.find(key);
+  if (pending != temp_map_.end()) {
     spdlog::trace("TranContext--get({}): found in temp map", key);
 
     // 空值是删除标记：返回“没查到”，不能返回一个有值的空字符串
-    if (pending->second.empty()) return std::nullopt; 
+    if (pending->second.empty())
+      return std::nullopt;
 
-    return pending->second; 
+    return pending->second;
   }
 
-  std::optional<std::pair<std::string, uint64_t>> query; 
+  std::optional<std::pair<std::string, uint64_t>> query;
 
-  if(isolation_level_ == IsolationLevel::READ_UNOP_COMMITTED || 
-     isolation_level_ == IsolationLevel::READ_OP_COMMITTED){
-  // 3. 这两种级别不复用上一次查询结果，每次重新读取当前版本
-  //    因为这两个级别都允许后一次查询看到新的修改，不要求一直返回第一次读到的值
-  //    读已提交不能一直使用事务开始时的 ID，否则会挡住后续的新版本
-  //    因为 tranc_id_ 在事务创建时就确定了。如果一直拿它作为查询上限，更大 ID 的版本就一直查不到，即使那个版本已经提
-  //
-  //    注意：0 仅表示不限制版本上限，并不表示“只读取已提交记录”。
-  //    混合隔离级别下的提交状态过滤，还需要事务模块进一步支持。
-    query = engine_->get(key, 0); 
-  }else{
-
-
-
+  if (isolation_level_ == IsolationLevel::READ_UNOP_COMMITTED ||
+      isolation_level_ == IsolationLevel::READ_OP_COMMITTED) {
+    // 3. 这两种级别不复用上一次查询结果，每次重新读取当前版本
+    //    因为这两个级别都允许后一次查询看到新的修改，不要求一直返回第一次读到的值
+    //    读已提交不能一直使用事务开始时的 ID，否则会挡住后续的新版本
+    //    因为 tranc_id_ 在事务创建时就确定了。如果一直拿它作为查询上限，更大 ID
+    //    的版本就一直查不到，即使那个版本已经提
+    //
+    //    注意：0 仅表示不限制版本上限，并不表示“只读取已提交记录”。
+    //    混合隔离级别下的提交状态过滤，还需要事务模块进一步支持。
+    query = engine_->get(key, 0);
+  } else {
   }
-
 }
 
 bool TranContext::commit(bool test_fail) {
