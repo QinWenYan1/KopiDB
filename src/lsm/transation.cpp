@@ -204,19 +204,21 @@ bool TranContext::commit(bool test_fail) {
 
   // 1. 一个事务只能结束一次
   // 重复提交，或者回滚后再提交，都不应再次写数据、插入事务标记
-  if(isCommited || isAborted) return false; 
+  if (isCommited || isAborted)
+    return false;
 
   // 2. test_fail 用于后续 WAL 恢复测试：
   //    将来可以让日志成功落盘，却故意不把修改写进 MemTable
   //    当前尚未实现 WAL，不能跳过数据写入后还声称提交成功
   if (test_fail)
-    std::logic_error("TranContext::commit: test_fail requires WAL support"); 
+    std::logic_error("TranContext::commit: test_fail requires WAL support");
 
   auto manager = tranManager_.lock();
-  if (!manager || ! engine_)
-    throw std::logic_error( "TranContext::commit: missing transaction manager or engine"); 
+  if (!manager || !engine_)
+    throw std::logic_error(
+        "TranContext::commit: missing transaction manager or engine");
 
-  MemTable &mem = engine_->memtable; 
+  MemTable &mem = engine_->memtable;
   // 3. 加锁顺序必须与 Engine::flush 一致：
   //    SST -> 活跃表 -> 冻结表
   //
@@ -225,9 +227,9 @@ bool TranContext::commit(bool test_fail) {
   //
   //    SST 这里只查询，使用读锁，阻止刷盘和压缩修改 SST 集合
   //    内存表的锁覆盖“检查冲突 + 写入”，防止检查后又插入冲突版本
-  std::shared_lock<std::shared_mutex> sst_lock(engine_->ssts_mtx); 
+  std::shared_lock<std::shared_mutex> sst_lock(engine_->ssts_mtx);
   std::unique_lock<std::shared_mutex> curr_lock(mem.cur_mtx);
-  std::unique_lock<std::shared_mutex> frozen_lock(mem.frozen_mtx); 
+  std::unique_lock<std::shared_mutex> frozen_lock(mem.frozen_mtx);
 
   return true;
 }
