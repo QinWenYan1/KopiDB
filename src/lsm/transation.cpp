@@ -231,6 +231,16 @@ bool TranContext::commit(bool test_fail) {
   std::unique_lock<std::shared_mutex> curr_lock(mem.cur_mtx);
   std::unique_lock<std::shared_mutex> frozen_lock(mem.frozen_mtx);
 
+  using VersionValue = std::optional<std::pair<std::string, uint64_t>>; 
+  // 3. 查询某个 key 当前真实的最新版本，保留墓碑。
+  //
+  //    这里不能调用 Engine::get：
+  //    ① 已经持有内存表的锁，再调用自行加锁的接口会重复加锁；
+  //    ② Engine::get 会把墓碑转换成 nullopt，丢失删除操作的版本号。
+  //
+  //    例如库里存在 k@12 的墓碑，事务 10 想写 k：
+  //    删除也是一次更新，必须识别出 12 > 10，拒绝旧事务写入。
+
   return true;
 }
 
