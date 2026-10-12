@@ -200,6 +200,11 @@ std::optional<std::string> TranContext::get(const std::string &key) {
 bool TranContext::commit(bool test_fail) {
   spdlog::info("TranContext--commit(): Starting commit for transaction ID={}",
                tranc_id_);
+
+  // 1. 一个事务只能结束一次
+  // 重复提交，或者回滚后再提交，都不应再次写数据、插入事务标记
+  if(isCommited || isAborted) return false; 
+  
   return true;
 }
 
