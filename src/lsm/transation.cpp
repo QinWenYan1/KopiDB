@@ -171,30 +171,29 @@ std::optional<std::string> TranContext::get(const std::string &key) {
     //    SERIALIZABLE 的单键读缓存复用这里
     //    完整串行化还需要额外的并发控制，不能仅凭缓存实现
     auto cached = read_map_.find(key);
-    
-    if (cached != read_map_.end()){
-      query = cached->second; 
+
+    if (cached != read_map_.end()) {
+      query = cached->second;
     } else {
       // 首次读取使用本事务的版本上限
-      query = engine_->get(key, tranc_id_); 
+      query = engine_->get(key, tranc_id_);
 
       // 即使 query 是 nullopt，也必须缓存
       // “第一次没查到”也是需要保持稳定的查询结果
-      read_map_.emplace(key,query); 
+      read_map_.emplace(key, query);
     }
   }
 
   // 5. 检查我们的返回值是否有效
   //    Engine::get 已将胜出的墓碑转换成 nullopt
   //    对外只返回 value，真实版本号仍保留在读缓存中
-  if (!query.has_value()){
-        spdlog::trace("TranContext--get({}): returned no value", key);
-        return std::nullopt; 
+  if (!query.has_value()) {
+    spdlog::trace("TranContext--get({}): returned no value", key);
+    return std::nullopt;
   }
 
-  spdlog::trace("TranContext--get({}): returned value={}",
-                key, query->first);
-  return query->first; 
+  spdlog::trace("TranContext--get({}): returned value={}", key, query->first);
+  return query->first;
 }
 
 // Lab 5.2 commit 实现
