@@ -341,8 +341,9 @@ bool TranContext::commit(bool test_fail) {
   }
 
   if (conflict){
-    // 暂存数据还没有写入，无需恢复旧值
-    // 这里直接登记回滚，避免持锁调用会再次加锁的接口
+    // 冲突时终止整笔事务，不应用任何暂存修改。
+    // 此时数据仍在 temp_map_ 中，尚未写入数据库，因此无需恢复旧值。
+    // 只需向管理器登记取消状态，并禁止这个事务上下文继续使用。
     manager->add_ready_to_flush_tranc_id(tranc_id_, TransactionState::ABORTED); 
     isAborted = true; 
 
@@ -352,6 +353,7 @@ bool TranContext::commit(bool test_fail) {
   // 5. 冲突检查全部通过，记录提交操作并应用暂存数据
   //    本节只保存内存操作记录，后续 WAL 章节再接入日志持久化
   operations.emplace_back(Record::commitRecord(tranc_id_)); 
+  
 
 
 

@@ -1195,6 +1195,296 @@ TEST_F(LSMTest, TranContextGetRejectsFinishedTransactions) {
   }
 }
 
+// commit 测试单独管理容量配置；测试结束后恢复，避免影响其他用例。
+class TranCommitTest : public LSMTest {
+protected:
+  void SetUp() override {
+    LSMTest::SetUp();
+    config = &const_cast<TomlConfig &>(TomlConfig::getInstance());
+    saved_per_limit = config->getLsmPerMemSizeLimit();
+    saved_total_limit = config->getLsmTolMemSizeLimit();
+    config->modify_lsm_per_mem_size_limit(1024 * 1024);
+    config->modify_lsm_tol_mem_size_limit(4 * 1024 * 1024);
+    engine = std::make_shared<LSMEngine>(test_dir);
+    manager = std::make_shared<TranManager>(test_dir);
+    manager->set_engine(engine);
+    engine->set_tran_manager(manager);
+  }
+
+  void TearDown() override {
+    manager.reset();
+    engine.reset();
+    config->modify_lsm_per_mem_size_limit(saved_per_limit);
+    config->modify_lsm_tol_mem_size_limit(saved_total_limit);
+    LSMTest::TearDown();
+  }
+
+  TomlConfig *config = nullptr;
+  long long saved_per_limit = 0;
+  long long saved_total_limit = 0;
+  std::shared_ptr<LSMEngine> engine;
+  std::shared_ptr<TranManager> manager;
+};
+
+// 目的：正常提交应用最后一次暂存值、墓碑和事务标记，重复提交没有副作用。
+// 场景：分别走四种隔离级别；RU 已提前写入，其余级别在 commit 前不可见。
+TEST_F(TranCommitTest, AppliesWritesAndEndsOnlyOnce) {
+  for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
+                     IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    const auto suffix = std::to_string(static_cast<int>(level));
+    const auto key = "written-" + suffix;
+    const auto removed = "deleted-" + suffix;
+    const uint64_t id = 10 + static_cast<int>(level);
+    SCOPED_TRACE(suffix);
+    engine->put(removed, "old", 3);
+    TranContext context(id, engine, manager, level);
+    context.put(key, "first");
+    context.put(key, "last");
+    context.put(removed, "");
+    if (level != IsolationLevel::READ_UNOP_COMMITTED) {
+      EXPECT_FALSE(engine->get(key, 0));
+      ASSERT_TRUE(engine->get(removed, 0));
+    }
+    ASSERT_TRUE(context.commit());
+    EXPECT_TRUE(context.isCommited);
+    EXPECT_FALSE(context.isAborted);
+    EXPECT_EQ(engine->get(key, 0),
+              std::make_optional(std::make_pair(std::string("last"), id)));
+    EXPECT_FALSE(engine->get(removed, 0));
+    EXPECT_EQ(engine->memtable.get_record(removed, 0),
+              std::make_optional(std::make_pair(std::string(""), id)));
+    // 事务标记不会作为普通点查询结果返回；用刷盘通知验证它确实存在。
+    engine->flush();
+    EXPECT_TRUE(manager->get_flushed_tranc_ids().contains(id));
+    ASSERT_EQ(context.operations.back().getOperationType(), OperationType::OP_COMMIT);
+    const auto operation_count = context.operations.size();
+    EXPECT_FALSE(context.commit());
+    EXPECT_EQ(context.operations.size(), operation_count);
+    EXPECT_THROW(context.put("after-end", "value"), std::logic_error);
+    EXPECT_THROW(context.get(key), std::logic_error);
+  }
+}
+
+// 目的：内存/SST 中的新值和新墓碑都拒绝旧事务，且整个暂存集合零写入。
+// 场景：三个暂存型级别各测四种冲突来源；另放一个无冲突 key，防止部分提交。
+TEST_F(TranCommitTest, ConflictCancelsWithoutApplyingAnyPendingWrite) {
+  uint64_t id = 10;
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    for (bool on_disk : {false, true}) {
+      for (bool tombstone : {false, true}) {
+        const auto key = "conflict-" + std::to_string(id);
+        const auto extra = "must-not-appear-" + std::to_string(id);
+        SCOPED_TRACE(key);
+        const std::string existing = tombstone ? "" : "newer";
+        engine->put(key, existing, id + 1);
+        if (on_disk) {
+          while (engine->memtable.get_total_size() > 0) {
+            engine->flush();
+          }
+          ASSERT_FALSE(engine->memtable.get_record(key, 0));
+        }
+        TranContext context(id, engine, manager, level);
+        context.put(key, "stale");
+        context.put(extra, "pending");
+        const auto operation_count = context.operations.size();
+        const auto memory_size = engine->memtable.get_total_size();
+        ASSERT_FALSE(context.commit());
+        EXPECT_TRUE(context.isAborted);
+        EXPECT_FALSE(context.isCommited);
+        EXPECT_FALSE(engine->get(extra, 0));
+        EXPECT_FALSE(engine->get(key, id));
+        if (tombstone) {
+          EXPECT_FALSE(engine->get(key, 0));
+        } else {
+          EXPECT_EQ(engine->get(key, 0),
+                    std::make_optional(std::make_pair(existing, id + 1)));
+        }
+        EXPECT_EQ(engine->memtable.get_total_size(), memory_size);
+        EXPECT_EQ(context.operations.size(), operation_count);
+        EXPECT_FALSE(context.commit());
+        EXPECT_THROW(context.put(extra, "retry"), std::logic_error);
+        id += 2;
+      }
+    }
+  }
+}
+
+// 目的：串行化分支检查已有值变化、缺失变存在、删除以及同值新版本。
+// 场景：事务 10 缓存读取结果，版本 7 随后变化；不只检查“版本是否大于 10”。
+TEST_F(TranCommitTest, SerialReadValidationIncludesMissingAndDeletedKeys) {
+  for (int scenario = 0; scenario < 4; ++scenario) {
+    const auto key = "read-" + std::to_string(scenario);
+    const auto output = "output-" + std::to_string(scenario);
+    SCOPED_TRACE(scenario);
+    if (scenario != 1) {
+      engine->put(key, "old", 3);
+    }
+    TranContext context(10, engine, manager, IsolationLevel::SERIALIZABLE);
+    const auto first = context.get(key);
+    EXPECT_EQ(first.has_value(), scenario != 1);
+    context.put(output, "pending");
+    engine->put(key, scenario == 2 ? "" : scenario == 3 ? "old" : "new", 7);
+    ASSERT_FALSE(context.commit());
+    EXPECT_TRUE(context.isAborted);
+    EXPECT_FALSE(engine->get(output, 0));
+  }
+}
+
+// 目的：RR 保持自身读缓存，但不使用 SERIALIZABLE 的读集合冲突检查。
+// 场景：读 k@3 后出现 k@7，事务 10 只写另一个 key，仍允许提交。
+TEST_F(TranCommitTest, RepeatableReadDoesNotValidateUnwrittenReadKeys) {
+  engine->put("read", "old", 3);
+  TranContext context(10, engine, manager, IsolationLevel::REPEATABLE_READ);
+  EXPECT_EQ(context.get("read"), std::make_optional(std::string("old")));
+  engine->put("read", "new", 7);
+  context.put("output", "value");
+  ASSERT_TRUE(context.commit());
+  EXPECT_EQ(engine->get("output", 0),
+            std::make_optional(std::make_pair(std::string("value"), uint64_t{10})));
+}
+
+// 目的：达到单表阈值会自动冻结，但没有达到总量阈值时不提前刷盘。
+// 场景：小单表阈值、大总量阈值；随后显式刷盘，检查事务完成标记通知管理器。
+TEST_F(TranCommitTest, FreezesTableAndRegistersBeforeFlush) {
+  config->modify_lsm_per_mem_size_limit(128);
+  TranContext context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
+  const std::string value(256, 'v');
+  context.put("k", value);
+  ASSERT_TRUE(context.commit());
+  EXPECT_EQ(engine->memtable.get_cur_size(), 0u);
+  EXPECT_GE(engine->memtable.get_frozen_size(), 128u);
+  EXPECT_TRUE(engine->ssts.empty());
+  EXPECT_FALSE(manager->get_flushed_tranc_ids().contains(5));
+  engine->flush();
+  EXPECT_EQ(engine->memtable.get_total_size(), 0u);
+  EXPECT_TRUE(manager->get_flushed_tranc_ids().contains(5));
+  EXPECT_EQ(engine->get("k", 0),
+            std::make_optional(std::make_pair(value, uint64_t{5})));
+}
+
+// 目的：一次提交能连续刷出多张旧冻结表，使总量低于阈值。
+// 场景：先积累三张冻结表，再调低总量阈值并提交；只调用一次 flush 无法达标。
+TEST_F(TranCommitTest, FlushesMultipleTablesUntilBelowTotalLimit) {
+  config->modify_lsm_per_mem_size_limit(128);
+  const std::string value(180, 'v');
+  for (int i = 0; i < 3; ++i) {
+    engine->put("old-" + std::to_string(i), value, 1);
+  }
+  ASSERT_GT(engine->memtable.get_frozen_size(), 500u);
+  config->modify_lsm_tol_mem_size_limit(200);
+  TranContext context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
+  context.put("new", "value");
+  ASSERT_TRUE(context.commit());
+  EXPECT_LT(engine->memtable.get_total_size(), 200u);
+  EXPECT_EQ(engine->memtable.get_frozen_size(), 0u);
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_EQ(engine->get("old-" + std::to_string(i), 0),
+              std::make_optional(std::make_pair(value, uint64_t{1})));
+  }
+  EXPECT_EQ(engine->get("new", 0),
+            std::make_optional(std::make_pair(std::string("value"), uint64_t{5})));
+}
+
+// 目的：刷盘编码失败会抛出异常，但不能把已经生效的提交误判为取消。
+// 场景：关闭 WiscKey 的默认配置下写入超出 uint16_t 编码长度的 value，
+//       检查已提交状态、内存数据保留、刷盘状态未登记以及不可重复提交。
+TEST_F(TranCommitTest, FlushFailurePreservesCommittedStateAndMemory) {
+  ASSERT_EQ(config->getWisckeyValueThreshold(), 0u);
+  config->modify_lsm_per_mem_size_limit(128);
+  config->modify_lsm_tol_mem_size_limit(256);
+  const std::string value(70000, 'v');
+  TranContext context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
+  context.put("k", value);
+  EXPECT_THROW(context.commit(), std::length_error);
+  EXPECT_TRUE(context.isCommited);
+  EXPECT_FALSE(context.isAborted);
+  EXPECT_FALSE(manager->get_flushed_tranc_ids().contains(5));
+  EXPECT_TRUE(engine->ssts.empty());
+  EXPECT_EQ(engine->get("k", 0),
+            std::make_optional(std::make_pair(value, uint64_t{5})));
+  const auto operation_count = context.operations.size();
+  EXPECT_FALSE(context.commit());
+  EXPECT_EQ(context.operations.size(), operation_count);
+}
+
+// 目的：0 容量阈值触发刷盘后可以正常退出，避免对空 MemTable 无限循环。
+TEST_F(TranCommitTest, ZeroLimitsStopAfterMemoryBecomesEmpty) {
+  config->modify_lsm_per_mem_size_limit(0);
+  config->modify_lsm_tol_mem_size_limit(0);
+  TranContext context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
+  context.put("k", "v");
+  ASSERT_TRUE(context.commit());
+  EXPECT_EQ(engine->memtable.get_total_size(), 0u);
+  EXPECT_TRUE(manager->get_flushed_tranc_ids().contains(5));
+  EXPECT_EQ(engine->get("k", 0),
+            std::make_optional(std::make_pair(std::string("v"), uint64_t{5})));
+}
+
+// 目的：尚未支持的故障注入以及缺失组件必须在应用数据前报错。
+TEST_F(TranCommitTest, InvalidInputsDoNotApplyWritesOrEndTransaction) {
+  TranContext context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
+  context.put("k", "v");
+  const auto operation_count = context.operations.size();
+  EXPECT_THROW(context.commit(true), std::logic_error);
+  EXPECT_FALSE(context.isCommited);
+  EXPECT_FALSE(context.isAborted);
+  EXPECT_EQ(context.operations.size(), operation_count);
+  EXPECT_FALSE(engine->get("k", 0));
+  TranContext no_manager(6, engine, nullptr, IsolationLevel::REPEATABLE_READ);
+  no_manager.put("missing-manager", "v");
+  EXPECT_THROW(no_manager.commit(), std::logic_error);
+  EXPECT_FALSE(engine->get("missing-manager", 0));
+  TranContext no_engine(7, nullptr, manager, IsolationLevel::REPEATABLE_READ);
+  EXPECT_THROW(no_engine.commit(), std::logic_error);
+}
+
+// 目的：并发提交和刷盘不形成锁顺序死锁，同 key 的新版本不会被旧事务覆盖。
+// 场景：事务 5/6 同时提交，允许 5 先成功或因 6 抢先而被取消；6 必须成功。
+TEST_F(TranCommitTest, ConcurrentCommitsAndFlushRespectVersionOrder) {
+  TranContext older(5, engine, manager, IsolationLevel::REPEATABLE_READ);
+  TranContext newer(6, engine, manager, IsolationLevel::REPEATABLE_READ);
+  older.put("k", "old");
+  older.put("older-only", "value");
+  newer.put("k", "new");
+  std::latch start(1);
+  bool older_result = false;
+  bool newer_result = false;
+  std::exception_ptr errors[3];
+  std::thread first([&] {
+    start.wait();
+    try { older_result = older.commit(); }
+    catch (...) { errors[0] = std::current_exception(); }
+  });
+  std::thread second([&] {
+    start.wait();
+    try { newer_result = newer.commit(); }
+    catch (...) { errors[1] = std::current_exception(); }
+  });
+  std::thread flusher([&] {
+    start.wait();
+    try {
+      for (int i = 0; i < 10; ++i) { engine->flush(); }
+    } catch (...) { errors[2] = std::current_exception(); }
+  });
+  start.count_down();
+  first.join();
+  second.join();
+  flusher.join();
+  for (const auto &error : errors) {
+    ASSERT_FALSE(static_cast<bool>(error));
+  }
+  EXPECT_TRUE(newer_result);
+  EXPECT_EQ(older.isCommited, older_result);
+  EXPECT_EQ(older.isAborted, !older_result);
+  EXPECT_EQ(engine->get("older-only", 0).has_value(), older_result);
+  EXPECT_EQ(engine->get("k", 0),
+            std::make_optional(std::make_pair(std::string("new"), uint64_t{6})));
+}
+
 TEST_F(LSMTest, TranContextTest) {
   LSM lsm(test_dir);
   {
