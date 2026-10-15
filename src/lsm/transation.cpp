@@ -198,6 +198,41 @@ std::optional<std::string> TranContext::get(const std::string &key) {
 }
 
 // Lab 5.2 commit 实现
+// commit() 提交流程：
+//
+// 1. 检查事务状态和组件是否有效，避免已结束的事务再次提交。
+//
+// 2. 按 SST -> 活跃表 -> 冻结表的顺序加锁。
+//    SST 拿读锁，内存表拿写锁；检查与写入期间持续持锁，
+//    防止检查通过后，其他线程又插入冲突版本。
+//
+// 3. 检查暂存写入：查询每个 key 在内存和 SST 中的最新版本。
+//    墓碑也参与比较；若已有版本大于本事务 ID，登记回滚并返回 false。
+//    必须检查完所有 key，才能开始应用暂存修改。
+//
+// 4. SERIALIZABLE 额外检查 read_map_：
+//    若某个 key 的当前结果与首次读取结果不同，拒绝提交。
+//    首次读取“不存在”的情况也参与检查。
+//
+// 5. 追加内存中的提交操作记录，将 temp_map_ 的修改写入 MemTable。
+//    读未提交的数据此前已经写入，这里无需重复写。
+//    当前 Lab 阶段尚不执行 WAL 持久化。
+//
+// 6. 写入空 key、空 value 的事务结束标记，供后续刷盘识别。
+//    在释放锁之前，向管理器登记提交完成，并设置 isCommited = true。
+//
+// 7. 检查活跃表大小，达到单表阈值就冻结，并切换到新的活跃表。
+//    put_ 不会自动冻结，因此这里需要主动处理。
+//
+// 8. 按逆序释放冻结表、活跃表和 SST 的锁。
+//    后面的 get_total_size()、flush() 会自行加锁，不能持锁调用。
+//
+// 9. 检查总内存大小，达到总量阈值就调用 flush()。
+//    每次只刷一张表，因此刷完重新检查，直到低于阈值或内存为空。
+//
+// 10. 正常结束返回 true。
+//     第 6 步之后，事务已经提交；若冻结或刷盘失败，保留已提交状态，
+//     记录错误并重新抛出异常，不能把它当作未提交而重新执行。
 bool TranContext::commit(bool test_fail) {
   spdlog::info("TranContext--commit(): Starting commit for transaction ID={}",
                tranc_id_);
@@ -277,8 +312,31 @@ bool TranContext::commit(bool test_fail) {
         break; 
       }
     }
- 
+  }
 
+  // 5. SERIALIZABLE 额外验证已记录的单键读取结果
+  //    例如读 A 后决定修改 B，如果 A 已变化，就不能继续按旧结果提交
+  //    这里检查的是 read_map_ 中的单键记录，不涵盖范围查询的幻读
+  if (!conflict && isolation_level_ == IsolationLevel::SERIALIZABLE){
+    for (const auto &[key, expected] : read_map_){
+      auto current = latest_record(key);
+
+      // get() 把墓碑表示为 nullopt，这里转换为相同表示再比较
+      // 首次查询不存在也要比较，才能发现“原来没有，后来出现”
+      if (current && current->first.empty())
+        current.reset(); 
+
+      if (current != expected){
+        conflict = true; 
+        spdlog::warn(
+            "TranContext--commit(): Read conflict on key={}, "
+            "transaction ID={}",
+            key, tranc_id_);
+
+        break; 
+      }
+      
+    }
   }
 
 
