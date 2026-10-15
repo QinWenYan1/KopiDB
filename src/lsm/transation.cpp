@@ -1,3 +1,4 @@
+#include "config/config.h"
 #include "lsm/engine.h"
 #include "lsm/transaction.h"
 #include "memtable/memtable.h"
@@ -199,52 +200,19 @@ std::optional<std::string> TranContext::get(const std::string &key) {
 
 // Lab 5.2 commit 实现
 // commit() 提交流程：
-//
-// 1. 检查事务状态和组件是否有效，避免已结束的事务再次提交。
-//
-// 2. 按 SST -> 活跃表 -> 冻结表的顺序加锁。
-//    SST 拿读锁，内存表拿写锁；检查与写入期间持续持锁，
-//    防止检查通过后，其他线程又插入冲突版本。
-//
-// 3. 检查暂存写入：查询每个 key 在内存和 SST 中的最新版本。
-//    墓碑也参与比较；若已有版本大于本事务 ID，登记回滚并返回 false。
-//    必须检查完所有 key，才能开始应用暂存修改。
-//
-// 4. SERIALIZABLE 额外检查 read_map_：
-//    若某个 key 的当前结果与首次读取结果不同，拒绝提交。
-//    首次读取“不存在”的情况也参与检查。
-//
-// 5. 追加内存中的提交操作记录，将 temp_map_ 的修改写入 MemTable。
-//    读未提交的数据此前已经写入，这里无需重复写。
-//    当前 Lab 阶段尚不执行 WAL 持久化。
-//
-// 6. 写入空 key、空 value 的事务结束标记，供后续刷盘识别。
-//    在释放锁之前，向管理器登记提交完成，并设置 isCommited = true。
-//
-// 7. 检查活跃表大小，达到单表阈值就冻结，并切换到新的活跃表。
-//    put_ 不会自动冻结，因此这里需要主动处理。
-//
-// 8. 按逆序释放冻结表、活跃表和 SST 的锁。
-//    后面的 get_total_size()、flush() 会自行加锁，不能持锁调用。
-//
-// 9. 检查总内存大小，达到总量阈值就调用 flush()。
-//    每次只刷一张表，因此刷完重新检查，直到低于阈值或内存为空。
-//
-// 10. 正常结束返回 true。
-//     第 6 步之后，事务已经提交；若冻结或刷盘失败，保留已提交状态，
-//     记录错误并重新抛出异常，不能把它当作未提交而重新执行。
+// 检查是否允许提交 -> 应用修改 -> 登记提交完成 -> 按容量冻结、刷盘。
+// 冲突时取消整笔事务；暂存修改尚未写入，因此不需要恢复数据库旧值。
+// 当前阶段不写 WAL；同一个 TranContext 的操作由调用者串行执行。
 bool TranContext::commit(bool test_fail) {
   spdlog::info("TranContext--commit(): Starting commit for transaction ID={}",
                tranc_id_);
 
-  // 1. 一个事务只能结束一次
-  // 重复提交，或者回滚后再提交，都不应再次写数据、插入事务标记
+  // 1. 已结束的事务不能再次提交
   if (isCommited || isAborted)
     return false;
 
-  // 2. test_fail 用于后续 WAL 恢复测试：
-  //    将来可以让日志成功落盘，却故意不把修改写进 MemTable
-  //    当前尚未实现 WAL，不能跳过数据写入后还声称提交成功
+  // 这个开关用于后续 WAL 恢复测试，当前阶段尚不支持
+  // 必须抛出异常；仅构造一个 logic_error 对象不会阻止后续执行
   if (test_fail)
     std::logic_error("TranContext::commit: test_fail requires WAL support");
 
@@ -252,9 +220,14 @@ bool TranContext::commit(bool test_fail) {
   if (!manager || !engine_)
     throw std::logic_error(
         "TranContext::commit: missing transaction manager or engine");
-
+  
+  // 准备常用数据
+  const auto &config = TomlConfig::getInstance(); 
+  const auto &per_mem_limit = config.getLsmPerMemSizeLimit(); 
+  const auto &total_mem_limit = config.getLsmTolMemSizeLimit(); 
   MemTable &mem = engine_->memtable;
-  // 3. 加锁顺序必须与 Engine::flush 一致：
+
+  // 2. 加锁顺序必须与 Engine::flush 一致：
   //    SST -> 活跃表 -> 冻结表
   //
   //    如果一个线程 commit 先锁内存表，再等 SST
