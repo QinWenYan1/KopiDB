@@ -317,6 +317,8 @@ bool TranContext::commit(bool test_fail) {
   // 5. SERIALIZABLE 额外验证已记录的单键读取结果
   //    例如读 A 后决定修改 B，如果 A 已变化，就不能继续按旧结果提交
   //    这里检查的是 read_map_ 中的单键记录，不涵盖范围查询的幻读
+  //    read_map_ 是当前事务自己的“读取记录表”，保存第一次查询某个 key 时看到的结果
+  //    1. 实现可重复读, 2. 给 SERIALIZABLE 的提交检查提供依据。
   if (!conflict && isolation_level_ == IsolationLevel::SERIALIZABLE){
     for (const auto &[key, expected] : read_map_){
       auto current = latest_record(key);
@@ -335,9 +337,21 @@ bool TranContext::commit(bool test_fail) {
 
         break; 
       }
-      
     }
   }
+
+  if (conflict){
+    // 暂存数据还没有写入，无需恢复旧值
+    // 这里直接登记回滚，避免持锁调用会再次加锁的接口
+    manager->add_ready_to_flush_tranc_id(tranc_id_, TransactionState::ABORTED); 
+    isAborted = true; 
+
+    return false; 
+  }
+
+  // 5. 冲突检查全部通过，记录提交操作并应用暂存数据
+  //    本节只保存内存操作记录，后续 WAL 章节再接入日志持久化
+  operations.emplace_back(Record::commitRecord(tranc_id_)); 
 
 
 
