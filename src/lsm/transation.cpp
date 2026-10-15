@@ -241,17 +241,46 @@ bool TranContext::commit(bool test_fail) {
   //
   //    例如库里存在 k@12 的墓碑，事务 10 想写 k：
   //    删除也是一次更新，必须识别出 12 > 10，拒绝旧事务写入
-  auto last_record = [&](const std::string &key) -> VersionValue{
-    auto lastest = engine_->sst_get_(key, 0);
+  auto latest_record = [&](const std::string &key) -> VersionValue{
+    auto latest = engine_->sst_get_(key, 0);
     auto memory = mem.get_(key, 0); 
 
-    if (memory.is_valid() && (!lastest || memory.get_cur_tranc_id() >= lastest->second)){
-      lastest = std::make_pair(
+    if (memory.is_valid() && (!latest || memory.get_cur_tranc_id() >= latest->second)){
+      latest = std::make_pair(
         memory.get_value(), memory.get_cur_tranc_id()
       ); 
     }
-    return lastest; 
+    return latest; 
   }; 
+
+  const bool write_immediately = (isolation_level_ == IsolationLevel::READ_UNOP_COMMITTED); 
+  bool conflict = false; 
+
+
+  // 4. 所有暂存型事务先检查全部写入，再应用任何一条修改
+  //
+  //    例如事务 5 想写 k，但库里已有 k@6（包括墓碑），就拒绝提交
+  //    否则新写入的 k@5 会被 k@6 遮住
+  //
+  //    这是针对本项目“开始 ID 就是写入版本”的保守冲突策略
+  //    并非读已提交隔离级别本身要求必须这样检查
+  if (!write_immediately){
+    for (const auto &[key, value]:temp_map_){
+      auto latest = latest_record(key);
+
+      if (latest && latest->second > tranc_id_){
+        conflict = true; 
+        spdlog::warn(
+            "TranContext--commit(): Write conflict on key={}, "
+            "latest version={}, transaction ID={}",
+            key, latest->second, tranc_id_);
+        break; 
+      }
+    }
+ 
+
+  }
+
 
 
   return true;
