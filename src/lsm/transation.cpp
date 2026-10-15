@@ -222,8 +222,8 @@ bool TranContext::commit(bool test_fail) {
   // 3. 加锁顺序必须与 Engine::flush 一致：
   //    SST -> 活跃表 -> 冻结表
   //
-  //    如果 commit 先锁内存表，再等 SST
-  //    而 flush 已经锁住 SST，再等内存表，两边就会互相等待
+  //    如果一个线程 commit 先锁内存表，再等 SST
+  //    而另外一个线程 flush 已经锁住 SST，再等内存表，两边就会互相等待
   //
   //    SST 这里只查询，使用读锁，阻止刷盘和压缩修改 SST 集合
   //    内存表的锁覆盖“检查冲突 + 写入”，防止检查后又插入冲突版本
@@ -232,14 +232,27 @@ bool TranContext::commit(bool test_fail) {
   std::unique_lock<std::shared_mutex> frozen_lock(mem.frozen_mtx);
 
   using VersionValue = std::optional<std::pair<std::string, uint64_t>>; 
-  // 3. 查询某个 key 当前真实的最新版本，保留墓碑。
+  // 3. 查询某个 key 当前真实的最新版本，保留墓碑
+  //    0 表示不限制版本上限，才能发现比当前事务更新的记录
   //
   //    这里不能调用 Engine::get：
   //    ① 已经持有内存表的锁，再调用自行加锁的接口会重复加锁；
-  //    ② Engine::get 会把墓碑转换成 nullopt，丢失删除操作的版本号。
+  //    ② Engine::get 会把墓碑转换成 nullopt，丢失删除操作的版本号
   //
   //    例如库里存在 k@12 的墓碑，事务 10 想写 k：
-  //    删除也是一次更新，必须识别出 12 > 10，拒绝旧事务写入。
+  //    删除也是一次更新，必须识别出 12 > 10，拒绝旧事务写入
+  auto last_record = [&](const std::string &key) -> VersionValue{
+    auto lastest = engine_->sst_get_(key, 0);
+    auto memory = mem.get_(key, 0); 
+
+    if (memory.is_valid() && (!lastest || memory.get_cur_tranc_id() >= lastest->second)){
+      lastest = std::make_pair(
+        memory.get_value(), memory.get_cur_tranc_id()
+      ); 
+    }
+    return lastest; 
+  }; 
+
 
   return true;
 }
