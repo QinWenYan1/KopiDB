@@ -345,8 +345,16 @@ bool TranContext::commit(bool test_fail) {
   // 先登记提交完成，再允许刷盘线程处理这些数据
   // 否则标记可能已经刷出，管理器却还没有这笔事务的结束登记
   manager->add_ready_to_flush_tranc_id(tranc_id_, TransactionState::OP_COMMITTED); 
-
   isCommited = true; 
+
+  try{
+    // 7. 写完整笔事务及结束标记后，检查单表容量
+    //    put_ 不会自动冻结，因此这里主动处理
+    //    冻结只把旧表放入内存队列、换上新表，此时尚未写 SST
+    if (mem.current_table->get_size() >= per_mem_limit)
+      mem.frozen_cur_table_(); 
+    
+  }
   
 
 
