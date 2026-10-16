@@ -214,7 +214,7 @@ bool TranContext::commit(bool test_fail) {
   // 这个开关用于后续 WAL 恢复测试，当前阶段尚不支持
   // 必须抛出异常；仅构造一个 logic_error 对象不会阻止后续执行
   if (test_fail)
-    std::logic_error("TranContext::commit: test_fail requires WAL support");
+    throw std::logic_error("TranContext::commit: test_fail requires WAL support");
 
   auto manager = tranManager_.lock();
   if (!manager || !engine_)
@@ -368,9 +368,24 @@ bool TranContext::commit(bool test_fail) {
 
       engine_->flush();
     }
+  } catch (const std::exception &e){
+    // 到这里事务已经提交。冻结或刷盘失败，不会撤销已应用的修改
+    // 保留 isCommited == true，并原样抛出异常，供调用者处理刷盘故障
+    // 若冻结时就失败，尚未手动释放的锁会在函数退出时自动释放
+    spdlog::error(
+        "TranContext--commit(): Transaction ID={} is already committed, "
+        "but memtable maintenance failed: {}",
+        tranc_id_, e.what());
+        
+    // throw;：重新抛出当前异常，让调用者处理
+    throw; 
   }
 
-  return true;
+  spdlog::info(
+      "TranContext--commit(): Transaction ID={} committed successfully",
+      tranc_id_);
+
+  return true; 
 }
 
 bool TranContext::abort() {
