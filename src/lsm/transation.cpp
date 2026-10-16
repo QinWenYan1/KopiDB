@@ -353,7 +353,13 @@ bool TranContext::commit(bool test_fail) {
     //    冻结只把旧表放入内存队列、换上新表，此时尚未写 SST
     if (mem.current_table->get_size() >= per_mem_limit)
       mem.frozen_cur_table_(); 
-    
+
+    // 8. 按逆序释放锁，然后才能调用自行加锁的容量查询和刷盘接口
+    frozen_lock.unlock(); 
+    curr_lock.unlock(); 
+    sst_lock.unlock(); 
+
+  
   }
   
 
