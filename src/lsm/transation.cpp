@@ -272,6 +272,8 @@ bool TranContext::commit(bool test_fail) {
   //
   //    这是针对本项目“开始 ID 就是写入版本”的保守冲突策略
   //    并非读已提交隔离级别本身要求必须这样检查
+  //    这条策略适配本项目的版本编号方式，也用于读已提交事务。
+  //    读未提交此前已直接写入引擎，不经过这里的暂存写入检查。
   if (!write_immediately){
     for (const auto &[key, value]:temp_map_){
       auto latest = latest_record(key);
@@ -296,8 +298,9 @@ bool TranContext::commit(bool test_fail) {
     for (const auto &[key, expected] : read_map_){
       auto current = latest_record(key);
 
-      // get() 把墓碑表示为 nullopt，这里转换为相同表示再比较
-      // 首次查询不存在也要比较，才能发现“原来没有，后来出现”
+      // get() 将墓碑缓存为 nullopt，这里采用相同表示再比较
+      // expected 为 nullopt 也参与比较，
+      // 才能发现“原来不存在的 key，后来被创建了”
       if (current && current->first.empty())
         current.reset(); 
 
@@ -314,18 +317,32 @@ bool TranContext::commit(bool test_fail) {
   }
 
   if (conflict){
-    // 冲突时终止整笔事务，不应用任何暂存修改。
+    // 冲突时终止整笔事务，取消整笔事务，不应用任何暂存修改
     // 此时数据仍在 temp_map_ 中，尚未写入数据库，因此无需恢复旧值。
     // 只需向管理器登记取消状态，并禁止这个事务上下文继续使用。
     manager->add_ready_to_flush_tranc_id(tranc_id_, TransactionState::ABORTED); 
-    isAborted = true; 
 
+    isAborted = true; 
     return false; 
   }
 
-  // 5. 冲突检查全部通过，记录提交操作并应用暂存数据
-  //    本节只保存内存操作记录，后续 WAL 章节再接入日志持久化
-  operations.emplace_back(Record::commitRecord(tranc_id_)); 
+  // 6. 检查全部通过后，才开始应用修改
+  // operations 是内存中的操作记录，目前不会调用 write_to_wal
+  operations.emplace_back(Record::commitRecord(tranc_id_));
+  
+  if (!write_immediately){
+    for (const auto &[key, value]:temp_map_){
+      // 外层已经持锁，使用不自行加锁的 put_
+      // 空 value 也写入，表示删除这个 key
+      mem.put_(key, value,tranc_id_); 
+    }
+  }
+
+  // 所有隔离级别都补上结束标记
+  // 后续刷盘识别这个标记，通过 Engine 通知管理器对应事务已刷盘
+  mem.put_("", "", tranc_id_); 
+
+  
   
 
 
