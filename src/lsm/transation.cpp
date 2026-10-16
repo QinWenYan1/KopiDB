@@ -376,7 +376,7 @@ bool TranContext::commit(bool test_fail) {
         "TranContext--commit(): Transaction ID={} is already committed, "
         "but memtable maintenance failed: {}",
         tranc_id_, e.what());
-        
+
     // throw;：重新抛出当前异常，让调用者处理
     throw; 
   }
@@ -389,45 +389,6 @@ bool TranContext::commit(bool test_fail) {
 }
 
 bool TranContext::abort() {
-  auto isolation_level = get_isolation_level();
-  spdlog::info("TranContext--abort(): Aborting transaction ID={}", tranc_id_);
-
-  auto tranManager = tranManager_.lock();
-
-  if (isolation_level == IsolationLevel::READ_UNOP_COMMITTED) {
-    // 需要手动恢复之前的更改
-    // TODO: 需要使用批量化操作优化性能
-    for (auto &[k, res] : rollback_map_) {
-      if (res.has_value()) {
-        engine_->put(k, res.value().first, res.value().second);
-      } else {
-        // 之前本就不存在, 需要移除当前事务的新增操作
-        engine_->remove(k, tranc_id_);
-      }
-    }
-    isAborted = true;
-    tranManager->add_ready_to_flush_tranc_id(tranc_id_,
-                                             TransactionState::ABORTED);
-
-    spdlog::info("TranContext--abort(): Transaction ID={} aborted", tranc_id_);
-
-    return true;
-  }
-  // ! 由于目前 records 是在 commit 时统一刷入 wal 的, 因此这个情况下, abort
-  // ! 简单丢弃 operations 即可 ! 后续会将 records 分批次写入 wal
-  // ! 这时就需要加上 ! rollback 标记了, 执行下面注释的逻辑
-
-  // operations.emplace_back(Record::rollbackRecord(this->tranc_id_));
-  // // 先刷入wal
-  // auto wal_success = tranManager->write_to_wal(operations);
-
-  // if (!wal_success) {
-  //   throw std::runtime_error("write to wal failed");
-  // }
-
-  isAborted = true;
-  tranManager->add_ready_to_flush_tranc_id(tranc_id_,
-                                           TransactionState::ABORTED);
   return true;
 }
 
