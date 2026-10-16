@@ -1226,6 +1226,98 @@ protected:
   std::shared_ptr<TranManager> manager;
 };
 
+// 复用事务测试的引擎、管理器绑定和容量恢复，避免测试依赖尚未完成的 LSM 入口。
+class TranAbortTest : public TranCommitTest {};
+
+// 目的：暂存型事务主动取消后，不把修改写入数据库，也不能再提交。
+// 场景：原值保持不变，新增 key 不出现；不要求通过写回旧值来“恢复”。
+TEST_F(TranAbortTest, CancelsStagedWritesWithoutChangingDatabase) {
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    const auto suffix = std::to_string(static_cast<int>(level));
+    const auto existing = "existing-" + suffix;
+    const auto added = "added-" + suffix;
+    engine->put(existing, "old", 3);
+    TranContext context(10 + static_cast<int>(level), engine, manager, level);
+    context.put(existing, "pending");
+    context.put(added, "pending");
+    ASSERT_TRUE(context.abort());
+    EXPECT_TRUE(context.isAborted);
+    EXPECT_FALSE(context.isCommited);
+    EXPECT_EQ(engine->get(existing, 0),
+              std::make_optional(std::make_pair(std::string("old"), uint64_t{3})));
+    EXPECT_FALSE(engine->get(added, 0));
+    EXPECT_FALSE(context.commit());
+  }
+}
+
+// 目的：撤销读未提交事务的更新或删除后，应重新读到原记录及其真实版本号。
+// 场景：k@3=old，事务写入 k@10=new 或墓碑，再 abort；分别覆盖内存与 SST。
+//       只重写 k@3 无法遮住 k@10；写一个 k@10 的墓碑也会错误遮住原值。
+TEST_F(TranAbortTest, ReadUncommittedRestoresPreviousVersionInMemoryAndSst) {
+  uint64_t id = 10;
+  for (bool flushed : {false, true}) {
+    for (bool deleted : {false, true}) {
+      SCOPED_TRACE(flushed);
+      SCOPED_TRACE(deleted);
+      const auto key = "k-" + std::to_string(id);
+      engine->put(key, "old", 3);
+      TranContext context(id, engine, manager,
+                          IsolationLevel::READ_UNOP_COMMITTED);
+      if (deleted) {
+        context.remove(key);
+      } else {
+        context.put(key, "first");
+        context.put(key, "last");
+      }
+      if (flushed)
+        engine->flush();
+
+      ASSERT_TRUE(context.abort());
+      const auto original =
+          std::make_optional(std::make_pair(std::string("old"), uint64_t{3}));
+      EXPECT_EQ(engine->get(key, 0), original);
+      EXPECT_EQ(engine->get(key, id), original);
+      EXPECT_EQ(engine->get(key, 3), original);
+      ++id;
+    }
+  }
+}
+
+// 目的：取消事务 5 不能改掉事务 6 的提交结果，也不能让旧快照继续看到已取消的 5。
+// 场景：k@3=old -> 未提交 k@5=dirty -> 已提交 k@6=newest -> abort(5)。
+//       最新查询应得到 6，读上限 5 应退回 3；只检查最新值会漏掉后一种错误。
+TEST_F(TranAbortTest, KeepsNewerCommitButHidesAbortedVersionFromOlderSnapshot) {
+  engine->put("k", "old", 3);
+  TranContext older(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  older.put("k", "dirty");
+  engine->flush();
+  TranContext newer(6, engine, manager, IsolationLevel::READ_OP_COMMITTED);
+  newer.put("k", "newest");
+  ASSERT_TRUE(newer.commit());
+
+  ASSERT_TRUE(older.abort());
+  EXPECT_EQ(engine->get("k", 0),
+            std::make_optional(std::make_pair(std::string("newest"), uint64_t{6})));
+  EXPECT_EQ(engine->get("k", 5),
+            std::make_optional(std::make_pair(std::string("old"), uint64_t{3})));
+}
+
+// 目的：已提交的事务不能再被改成已取消，也不能撤销已经提交的数据。
+// 场景：读未提交事务新增 k 并 commit，随后误调用 abort，应返回 false 且无副作用。
+TEST_F(TranAbortTest, CannotAbortAnAlreadyCommittedTransaction) {
+  TranContext context(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  context.put("k", "committed");
+  ASSERT_TRUE(context.commit());
+  EXPECT_FALSE(context.abort());
+  EXPECT_TRUE(context.isCommited);
+  EXPECT_FALSE(context.isAborted);
+  EXPECT_EQ(engine->get("k", 0),
+            std::make_optional(std::make_pair(std::string("committed"), uint64_t{5})));
+}
+
 // 目的：正常提交应用最后一次暂存值、墓碑和事务标记，重复提交没有副作用。
 // 场景：分别走四种隔离级别；RU 已提前写入，其余级别在 commit 前不可见。
 TEST_F(TranCommitTest, AppliesWritesAndEndsOnlyOnce) {
