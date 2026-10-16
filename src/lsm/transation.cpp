@@ -220,11 +220,11 @@ bool TranContext::commit(bool test_fail) {
   if (!manager || !engine_)
     throw std::logic_error(
         "TranContext::commit: missing transaction manager or engine");
-  
+
   // 准备常用数据
-  const auto &config = TomlConfig::getInstance(); 
-  const auto &per_mem_limit = config.getLsmPerMemSizeLimit(); 
-  const auto &total_mem_limit = config.getLsmTolMemSizeLimit(); 
+  const auto &config = TomlConfig::getInstance();
+  const auto &per_mem_limit = config.getLsmPerMemSizeLimit();
+  const auto &total_mem_limit = config.getLsmTolMemSizeLimit();
   MemTable &mem = engine_->memtable;
 
   // 2. 加锁顺序必须与 Engine::flush 一致：
@@ -239,7 +239,7 @@ bool TranContext::commit(bool test_fail) {
   std::unique_lock<std::shared_mutex> curr_lock(mem.cur_mtx);
   std::unique_lock<std::shared_mutex> frozen_lock(mem.frozen_mtx);
 
-  using VersionValue = std::optional<std::pair<std::string, uint64_t>>; 
+  using VersionValue = std::optional<std::pair<std::string, uint64_t>>;
   // 3. 查询某个 key 当前真实的最新版本，保留墓碑
   //    0 表示不限制版本上限，才能发现比当前事务更新的记录
   //
@@ -249,21 +249,20 @@ bool TranContext::commit(bool test_fail) {
   //
   //    例如库里存在 k@12 的墓碑，事务 10 想写 k：
   //    删除也是一次更新，必须识别出 12 > 10，拒绝旧事务写入
-  auto latest_record = [&](const std::string &key) -> VersionValue{
+  auto latest_record = [&](const std::string &key) -> VersionValue {
     auto latest = engine_->sst_get_(key, 0);
-    auto memory = mem.get_(key, 0); 
+    auto memory = mem.get_(key, 0);
 
-    if (memory.is_valid() && (!latest || memory.get_cur_tranc_id() >= latest->second)){
-      latest = std::make_pair(
-        memory.get_value(), memory.get_cur_tranc_id()
-      ); 
+    if (memory.is_valid() &&
+        (!latest || memory.get_cur_tranc_id() >= latest->second)) {
+      latest = std::make_pair(memory.get_value(), memory.get_cur_tranc_id());
     }
-    return latest; 
-  }; 
+    return latest;
+  };
 
-  const bool write_immediately = (isolation_level_ == IsolationLevel::READ_UNOP_COMMITTED); 
-  bool conflict = false; 
-
+  const bool write_immediately =
+      (isolation_level_ == IsolationLevel::READ_UNOP_COMMITTED);
+  bool conflict = false;
 
   // 4. 所有暂存型事务先检查全部写入，再应用任何一条修改
   //
@@ -274,17 +273,16 @@ bool TranContext::commit(bool test_fail) {
   //    并非读已提交隔离级别本身要求必须这样检查
   //    这条策略适配本项目的版本编号方式，也用于读已提交事务。
   //    读未提交此前已直接写入引擎，不经过这里的暂存写入检查。
-  if (!write_immediately){
-    for (const auto &[key, value]:temp_map_){
+  if (!write_immediately) {
+    for (const auto &[key, value] : temp_map_) {
       auto latest = latest_record(key);
 
-      if (latest && latest->second > tranc_id_){
-        conflict = true; 
-        spdlog::warn(
-            "TranContext--commit(): Write conflict on key={}, "
-            "latest version={}, transaction ID={}",
-            key, latest->second, tranc_id_);
-        break; 
+      if (latest && latest->second > tranc_id_) {
+        conflict = true;
+        spdlog::warn("TranContext--commit(): Write conflict on key={}, "
+                     "latest version={}, transaction ID={}",
+                     key, latest->second, tranc_id_);
+        break;
       }
     }
   }
@@ -292,87 +290,85 @@ bool TranContext::commit(bool test_fail) {
   // 5. SERIALIZABLE 额外验证已记录的单键读取结果
   //    例如读 A 后决定修改 B，如果 A 已变化，就不能继续按旧结果提交
   //    这里检查的是 read_map_ 中的单键记录，不涵盖范围查询的幻读
-  //    read_map_ 是当前事务自己的“读取记录表”，保存第一次查询某个 key 时看到的结果
+  //    read_map_ 是当前事务自己的“读取记录表”，保存第一次查询某个 key
+  //    时看到的结果
   //    1. 实现可重复读, 2. 给 SERIALIZABLE 的提交检查提供依据。
-  if (!conflict && isolation_level_ == IsolationLevel::SERIALIZABLE){
-    for (const auto &[key, expected] : read_map_){
+  if (!conflict && isolation_level_ == IsolationLevel::SERIALIZABLE) {
+    for (const auto &[key, expected] : read_map_) {
       auto current = latest_record(key);
 
       // get() 将墓碑缓存为 nullopt，这里采用相同表示再比较
       // expected 为 nullopt 也参与比较，
       // 才能发现“原来不存在的 key，后来被创建了”
       if (current && current->first.empty())
-        current.reset(); 
+        current.reset();
 
-      if (current != expected){
-        conflict = true; 
-        spdlog::warn(
-            "TranContext--commit(): Read conflict on key={}, "
-            "transaction ID={}",
-            key, tranc_id_);
+      if (current != expected) {
+        conflict = true;
+        spdlog::warn("TranContext--commit(): Read conflict on key={}, "
+                     "transaction ID={}",
+                     key, tranc_id_);
 
-        break; 
+        break;
       }
     }
   }
 
-  if (conflict){
+  if (conflict) {
     // 冲突时终止整笔事务，取消整笔事务，不应用任何暂存修改
     // 此时数据仍在 temp_map_ 中，尚未写入数据库，因此无需恢复旧值。
     // 只需向管理器登记取消状态，并禁止这个事务上下文继续使用。
-    manager->add_ready_to_flush_tranc_id(tranc_id_, TransactionState::ABORTED); 
+    manager->add_ready_to_flush_tranc_id(tranc_id_, TransactionState::ABORTED);
 
-    isAborted = true; 
-    return false; 
+    isAborted = true;
+    return false;
   }
 
   // 6. 检查全部通过后，才开始应用修改
   // operations 是内存中的操作记录，目前不会调用 write_to_wal
   operations.emplace_back(Record::commitRecord(tranc_id_));
-  
-  if (!write_immediately){
-    for (const auto &[key, value]:temp_map_){
+
+  if (!write_immediately) {
+    for (const auto &[key, value] : temp_map_) {
       // 外层已经持锁，使用不自行加锁的 put_
       // 空 value 也写入，表示删除这个 key
-      mem.put_(key, value,tranc_id_); 
+      mem.put_(key, value, tranc_id_);
     }
   }
 
   // 所有隔离级别都补上结束标记
   // 后续刷盘识别这个标记，通过 Engine 通知管理器对应事务已刷盘
-  mem.put_("", "", tranc_id_); 
+  mem.put_("", "", tranc_id_);
 
   // 先登记提交完成，再允许刷盘线程处理这些数据
   // 否则标记可能已经刷出，管理器却还没有这笔事务的结束登记
-  manager->add_ready_to_flush_tranc_id(tranc_id_, TransactionState::OP_COMMITTED); 
-  isCommited = true; 
+  manager->add_ready_to_flush_tranc_id(tranc_id_,
+                                       TransactionState::OP_COMMITTED);
+  isCommited = true;
 
-  try{
+  try {
     // 7. 写完整笔事务及结束标记后，检查单表容量
     //    put_ 不会自动冻结，因此这里主动处理
     //    冻结只把旧表放入内存队列、换上新表，此时尚未写 SST
     if (mem.current_table->get_size() >= per_mem_limit)
-      mem.frozen_cur_table_(); 
+      mem.frozen_cur_table_();
 
     // 8. 按逆序释放锁，然后才能调用自行加锁的容量查询和刷盘接口
-    frozen_lock.unlock(); 
-    curr_lock.unlock(); 
-    sst_lock.unlock(); 
+    frozen_lock.unlock();
+    curr_lock.unlock();
+    sst_lock.unlock();
 
     // 9. 总内存达到阈值就刷盘；一次只刷一张表，所以每次重新检查
     //    空表直接结束，也避免阈值为 0 时反复尝试刷空表
-    for (;;){
-      const auto &total_size = mem.get_total_size(); 
+    for (;;) {
+      const auto &total_size = mem.get_total_size();
 
       if (total_size == 0 || total_size < total_mem_limit)
-        break; 
-      
+        break;
+
       engine_->flush();
-    } 
+    }
   }
-  
-
-
 
   return true;
 }
