@@ -342,7 +342,11 @@ bool TranContext::commit(bool test_fail) {
   // 后续刷盘识别这个标记，通过 Engine 通知管理器对应事务已刷盘
   mem.put_("", "", tranc_id_); 
 
-  
+  // 先登记提交完成，再允许刷盘线程处理这些数据
+  // 否则标记可能已经刷出，管理器却还没有这笔事务的结束登记
+  manager->add_ready_to_flush_tranc_id(tranc_id_, TransactionState::OP_COMMITTED); 
+
+  isCommited = true; 
   
 
 
