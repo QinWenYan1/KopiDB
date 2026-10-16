@@ -435,36 +435,10 @@ void TranManager::set_engine(std::shared_ptr<LSMEngine> engine) {
 TranManager::~TranManager() { write_tranc_id_file(); }
 
 void TranManager::write_tranc_id_file() {
-  // 共4个8字节的整型id记录
-  // std::atomic<uint64_t> nextTransactionId_;
-  // std::atomic<uint64_t> max_flushed_tranc_id_;
-  // std::atomic<uint64_t> checkpoint_tranc_id_;
-
-  int buffer_size = sizeof(uint64_t) * (flushedTrancIds_.size() + 2);
-  std::vector<uint8_t> buf(buffer_size, 0);
-  uint64_t nextTransactionId = nextTransactionId_.load();
-  uint64_t tranc_size = flushedTrancIds_.size();
-  memcpy(buf.data(), &nextTransactionId, sizeof(uint64_t));
-  memcpy(buf.data() + sizeof(uint64_t), &tranc_size, sizeof(uint64_t));
-  int offset = sizeof(uint64_t) * 2;
-  for (auto &tranc_id : flushedTrancIds_) {
-    memcpy(buf.data() + offset, &tranc_id, sizeof(uint64_t));
-    offset += sizeof(uint64_t);
-  }
-
-  tranc_id_file_.write(0, buf);
-  tranc_id_file_.sync();
 }
 
 void TranManager::read_tranc_id_file() {
-  nextTransactionId_ = tranc_id_file_.read_uint64(0);
-  uint64_t size = tranc_id_file_.read_uint64(sizeof(uint64_t));
-  int offset = sizeof(uint64_t) * 2;
-  for (int i = 0; i < size; i++) {
-    uint64_t flushed_id = tranc_id_file_.read_uint64(offset);
-    flushedTrancIds_.insert(flushed_id);
-    offset += sizeof(uint64_t);
-  }
+
 }
 
 void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id,
