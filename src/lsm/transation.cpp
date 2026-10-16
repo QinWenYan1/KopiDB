@@ -359,7 +359,16 @@ bool TranContext::commit(bool test_fail) {
     curr_lock.unlock(); 
     sst_lock.unlock(); 
 
-  
+    // 9. 总内存达到阈值就刷盘；一次只刷一张表，所以每次重新检查
+    //    空表直接结束，也避免阈值为 0 时反复尝试刷空表
+    for (;;){
+      const auto &total_size = mem.get_total_size(); 
+
+      if (total_size == 0 || total_size < total_mem_limit)
+        break; 
+      
+      engine_->flush();
+    } 
   }
   
 
