@@ -390,7 +390,11 @@ bool TranContext::abort() {
   if (isCommited || isAborted)
     return false; 
 
-  
+  // 上下文持有的是 weak_ptr，管理器可能已经销毁
+  // 回滚必须让管理器记住这个 ID，不能只修改本地标志
+  auto manager = tranManager_.lock(); 
+  if(!manager)
+    throw std::logic_error("TranContext::abort: transaction manager has expired"); 
 }
 
 enum IsolationLevel TranContext::get_isolation_level() {
