@@ -444,7 +444,19 @@ bool TranManager::is_aborted(uint64_t tranc_id) const {
 
 void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id,
                                               TransactionState state) {
-  std::unique_lock lock(mutex_);
+  // 两份状态共用同一把锁
+  // 其他线程不能在登记进行到一半时，查询到不完整的更新
+  std::lock_guard<std::mutex> lock(mutex_); 
+  // 记录这个 ID 是否由本次调用首次加入回滚名单
+  // 后面若登记失败，只能撤销本次新增的项
+  // 不能删除之前已经成功登记的回滚 ID
+  bool added_abort_id = false; 
+
+  if (state == TransactionState::ABORTED){
+    // insert 返回值的 second 表示是否真的插入了新元素：
+    // 首次登记为 true，重复登记为 false
+    added_abort_id = aborted_tranc_ids_.insert(tranc_id).second; 
+  }
   readyToFlushTrancIds_[tranc_id] = state;
 }
 
