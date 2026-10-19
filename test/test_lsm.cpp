@@ -980,6 +980,90 @@ TEST_F(LSMTest, NewTransactionConcurrentCreation) {
   }
 }
 
+// 目的：结束登记区分提交与回滚，重复登记回滚不会影响其他事务。
+// 场景：5 取消、6 提交、7 未登记；再次取消 5 后，只有 5 属于回滚名单。
+TEST_F(LSMTest, TransactionEndRegistrationTracksOnlyAbortedIds) {
+  TranManager manager(test_dir);
+  EXPECT_FALSE(manager.is_aborted(5));
+  EXPECT_FALSE(manager.is_aborted(6));
+
+  manager.add_ready_to_flush_tranc_id(5, TransactionState::ABORTED);
+  manager.add_ready_to_flush_tranc_id(6, TransactionState::OP_COMMITTED);
+  EXPECT_TRUE(manager.is_aborted(5));
+  EXPECT_FALSE(manager.is_aborted(6));
+  EXPECT_FALSE(manager.is_aborted(7));
+
+  manager.add_ready_to_flush_tranc_id(5, TransactionState::ABORTED);
+  EXPECT_TRUE(manager.is_aborted(5));
+  EXPECT_FALSE(manager.is_aborted(6));
+  EXPECT_FALSE(manager.is_aborted(7));
+}
+
+// 目的：待刷盘登记清理后，回滚名单仍有效，不能让 SST 中的取消版本重新可见。
+// 场景：5 已取消，6 已提交；登记 6 刷盘时会一并清理较小的回滚 ID 5。
+//       再对 5 重复登记、清理，仍不得丢失其回滚身份。
+TEST_F(LSMTest, TransactionEndRegistrationSurvivesFlushCleanup) {
+  TranManager manager(test_dir);
+  manager.add_ready_to_flush_tranc_id(5, TransactionState::ABORTED);
+  manager.add_ready_to_flush_tranc_id(6, TransactionState::OP_COMMITTED);
+  manager.add_flushed_tranc_id(6);
+
+  EXPECT_TRUE(manager.get_flushed_tranc_ids().contains(5));
+  EXPECT_TRUE(manager.get_flushed_tranc_ids().contains(6));
+  EXPECT_TRUE(manager.is_aborted(5));
+  EXPECT_FALSE(manager.is_aborted(6));
+
+  manager.add_ready_to_flush_tranc_id(5, TransactionState::ABORTED);
+  manager.add_flushed_tranc_id(5);
+  EXPECT_TRUE(manager.is_aborted(5));
+  EXPECT_FALSE(manager.is_aborted(6));
+}
+
+// 目的：多个线程登记结束状态，同时查询回滚名单，不能丢登记或误判提交事务。
+// 场景：4 个线程各登记 64 个不同 ID，奇数取消、偶数提交；每次登记后立即查询，
+//       全部线程结束后再逐一核对。并发用例之外，仍需检查所有集合访问均持锁。
+TEST_F(LSMTest, TransactionEndRegistrationSupportsConcurrentQueries) {
+  TranManager manager(test_dir);
+  constexpr size_t worker_count = 4;
+  constexpr size_t per_worker = 64;
+  std::vector<std::exception_ptr> errors(worker_count);
+  std::vector<int> queries_correct(worker_count, 1);
+  std::vector<std::thread> workers;
+  std::latch start(1);
+
+  for (size_t worker = 0; worker < worker_count; ++worker) {
+    workers.emplace_back([&, worker] {
+      start.wait();
+      try {
+        for (size_t offset = 0; offset < per_worker; ++offset) {
+          const uint64_t id = worker * per_worker + offset + 1;
+          const bool aborted = (id % 2 != 0);
+          manager.add_ready_to_flush_tranc_id(
+              id, aborted ? TransactionState::ABORTED
+                          : TransactionState::OP_COMMITTED);
+          if (manager.is_aborted(id) != aborted || manager.is_aborted(0)) {
+            queries_correct[worker] = 0;
+          }
+        }
+      } catch (...) {
+        errors[worker] = std::current_exception();
+      }
+    });
+  }
+  start.count_down();
+  for (auto &worker : workers) {
+    worker.join();
+  }
+
+  for (size_t worker = 0; worker < worker_count; ++worker) {
+    ASSERT_FALSE(static_cast<bool>(errors[worker])) << worker;
+    EXPECT_EQ(queries_correct[worker], 1) << worker;
+  }
+  for (uint64_t id = 1; id <= worker_count * per_worker; ++id) {
+    EXPECT_EQ(manager.is_aborted(id), id % 2 != 0) << id;
+  }
+}
+
 // 目的：暂存型事务的 put 不提前修改引擎，重复写同一 key 时保留最后一次值。
 // 场景：读已提交、可重复读及串行化分支分别修改已有 key 并新增 key；
 //       只检查写入暂存行为，不用尚未完成的 commit 验证隔离级别整体语义。

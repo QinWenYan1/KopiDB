@@ -8,9 +8,9 @@
 
 正在进行 **Lab 5.2：事务上下文与事务管理器**。此前已经推进过 SkipList、MemTable、Block、SST、迭代器和 Engine 的 MVCC 改造，当前继续接入事务状态判断，整个数据库的事务功能尚未验收完成。
 
-当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合与查询接口已加入，回滚登记和存储查询过滤尚未接入。
+当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、查询接口及结束登记已完成，abort 和存储查询过滤尚未接入。
 
-当前推进项：修改 `TranManager::add_ready_to_flush_tranc_id()`，把 ABORTED 状态同步登记到回滚集合；业务代码由用户手动加入。
+当前推进项：实现 `TranContext::abort()`，登记取消并结束事务上下文；业务代码由用户手动加入。
 
 当前排期约束：项目时间紧，优先沿现有结构完成回滚。迭代器职责重构已经讨论，但列为后续事项，本轮只做必要的判断接入与参数传递。
 
@@ -20,8 +20,8 @@
 | `TranContext::remove()` | 仍有原来的实现，尚未按本轮方案独立实现。 |
 | `TranContext::abort()` | 仍为 `return true;` 占位实现，没有执行回滚登记。 |
 | `TranManager::getNextTransactionId()`、`new_tranc()` | 已实现 ID 分配、上下文创建和活跃事务登记。 |
-| [TranManager 成员](../include/lsm/transaction.h) | 已新增 `aborted_tranc_ids_` 和加锁的 const 查询接口 `is_aborted()`，代码检查和构建通过；登记回滚 ID 尚未接入。 |
-| `add_ready_to_flush_tranc_id()` | 当前只更新待刷盘状态表。 |
+| [TranManager 成员](../include/lsm/transaction.h) | 已新增 `aborted_tranc_ids_` 和加锁的 const 查询接口 `is_aborted()`；回滚登记已接入并通过对应测试。 |
+| `add_ready_to_flush_tranc_id()` | 同锁更新待刷盘状态与回滚集合；map 更新失败时撤销本次新增的回滚 ID。正常、重复、清理后保留及并发登记测试通过，分配失败分支通过代码检查。 |
 | `add_flushed_tranc_id()` | 会清理待刷盘状态表；该表不能充当长期回滚名单。 |
 | `write_tranc_id_file()`、`read_tranc_id_file()` | 当前均为空函数；正常重启后的状态与 ID 延续尚未完成。 |
 | [LSM 构造函数](../src/lsm/engine.cpp) | 已创建 Engine 和 TranManager，互相绑定仍为待办；部分测试自行完成绑定。 |
@@ -100,10 +100,10 @@
 
 - [test/test_lsm.cpp](../test/test_lsm.cpp) 已有事务创建、读写、提交等测试，以及 `TranAbortTest` 的 4 个回滚用例。
 - 回滚用例覆盖暂存写取消、内存/SST 中恢复旧版本、保留更晚提交的更新，以及禁止回滚已提交事务。
-- 2026-10-19：`xmake build test_lsm` 通过。在 `NewTransactionRegistersContexts` 中补充了 const 查询接口的断言：未登记 ID 和活跃事务返回 false，查询不消耗事务 ID。
-- 在独立临时目录复制配置后运行 `test_lsm --gtest_filter='LSMTest.TranContextConstructor*:LSMTest.NewTransaction*:TranCommitTest.*'`，**15/15 通过**，覆盖 2 个上下文构造、3 个事务创建、10 个提交用例。
-- 测试执行文件：`build/macosx/arm64/debug/test_lsm`（实际使用绝对路径）；日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-abort-lookup-review-i3kudbyk/result.log`。
-- 验证边界：本次未运行完整 `test_lsm`，也未运行 `TranAbortTest`；`abort()` 仍为占位函数。回滚登记后返回 true、重复登记和并发登记等测试要在登记函数接通后执行，不能把当前通过结果当作整个回滚功能通过。
+- 2026-10-19：`xmake build test_lsm` 通过。此前 `NewTransactionRegistersContexts` 已检查未登记和活跃事务返回 false，查询不消耗 ID；本次新增 3 个 `TransactionEndRegistration*` 测试，覆盖提交/回滚区分、重复登记、刷盘清理后仍保留回滚 ID，以及 4 线程登记与查询。
+- 在独立临时目录复制配置后运行 `test_lsm --gtest_filter='LSMTest.TranContextConstructor*:LSMTest.NewTransaction*:LSMTest.TransactionEndRegistration*:TranCommitTest.*'`，**18/18 通过**，覆盖 2 个上下文构造、3 个事务创建、3 个结束登记、10 个提交用例。
+- 测试执行文件：`build/macosx/arm64/debug/test_lsm`（实际使用绝对路径）；日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-abort-registration-review-0dsjnanr/result.log`。
+- 验证边界：分配失败分支仅做代码检查，未注入内存分配故障；并发测试未启用 ThreadSanitizer。本次未运行完整 `test_lsm`，也未运行 `TranAbortTest`；`abort()` 仍为占位函数，不能把登记测试通过当作整个回滚功能通过。
 
 ## 协作方式
 
