@@ -384,7 +384,14 @@ bool TranContext::commit(bool test_fail) {
   return true;
 }
 
-bool TranContext::abort() { return true; }
+bool TranContext::abort() { 
+  // 同一个 TranContext 的操作由调用者串行执行
+  // 已经提交或回滚的事务，不能再次取消
+  if (isCommited || isAborted)
+    return false; 
+
+  
+}
 
 enum IsolationLevel TranContext::get_isolation_level() {
   return isolation_level_;
