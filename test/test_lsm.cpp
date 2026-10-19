@@ -869,10 +869,14 @@ TEST_F(LSMTest, TranContextConstructorPreservesOwnershipRules) {
 // 目的：new_tranc 创建具有独立 ID 的上下文，并将它们登记为活跃事务。
 // 场景：不同隔离级别各创建一个事务；调用者释放句柄后，管理器仍持有上下文。
 //       管理器销毁后上下文也能释放，避免双方互持形成循环引用。
+//       查询未登记 ID 不消耗事务 ID；活跃事务也不应被误判为已回滚。
 TEST_F(LSMTest, NewTransactionRegistersContexts) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
   auto manager = std::make_shared<TranManager>(test_dir);
   manager->set_engine(engine);
+
+  const TranManager &read_only_manager = *manager;
+  EXPECT_FALSE(read_only_manager.is_aborted(1));
 
   auto first = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
   auto second = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
@@ -881,6 +885,8 @@ TEST_F(LSMTest, NewTransactionRegistersContexts) {
   EXPECT_NE(first, second);
   EXPECT_EQ(first->tranc_id_, 1u);
   EXPECT_EQ(second->tranc_id_, 2u);
+  EXPECT_FALSE(read_only_manager.is_aborted(first->tranc_id_));
+  EXPECT_FALSE(read_only_manager.is_aborted(second->tranc_id_));
   EXPECT_EQ(first->engine_, engine);
   EXPECT_EQ(second->engine_, engine);
   EXPECT_EQ(first->tranManager_.lock(), manager);

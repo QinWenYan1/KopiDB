@@ -18,9 +18,9 @@
 
 ## 当前推进项
 
-**第①阶段：在 `TranManager` 中添加回滚 ID 集合、声明并实现 `is_aborted(uint64_t) const`。**
+**第①阶段：修改 `TranManager::add_ready_to_flush_tranc_id()`，让 ABORTED 登记同时写入回滚集合。**
 
-涉及 [include/lsm/transaction.h](../include/lsm/transaction.h) 和 [src/lsm/transation.cpp](../src/lsm/transation.cpp)。先讲职责和调用关系，再给出带注释的实现；用户手动加入后检查，再推进登记函数。
+回滚集合与 `is_aborted()` 已实现并检查通过；未登记、活跃事务返回 false 的检查及相关回归已通过。下一函数位于 [src/lsm/transation.cpp](../src/lsm/transation.cpp)，用户手动加入后，再验证回滚登记、重复登记和刷盘清理等场景。
 
 ## 本轮验收场景约定
 
@@ -29,8 +29,8 @@
 
 ## ① 保存并查询回滚 ID
 
-- [ ] 添加 `aborted_tranc_ids_` 集合，使用现有 `mutex_` 保护。
-- [ ] 实现 `is_aborted(uint64_t) const`，不向调用方暴露可修改的集合引用。
+- [x] 添加 `aborted_tranc_ids_` 集合，使用现有 `mutex_` 保护。
+- [x] 实现 `is_aborted(uint64_t) const`，不向调用方暴露可修改的集合引用。
 - [ ] 修改 `add_ready_to_flush_tranc_id()`：登记 ABORTED 时同步更新回滚集合，检查异常情况下两份状态的一致性。
 - [ ] 补充并运行测试：初始无回滚、提交不加入名单、取消加入、重复登记、刷盘状态清理后仍保留回滚 ID。
 
@@ -165,4 +165,4 @@
 - [ ] 区分本次回归失败与后续 Lab 尚未实现的测试，不以整套 `test_lsm` 全绿作为当前唯一判断依据。
 - [ ] 更新 STATE.md，列清已经完成的能力、剩余限制和下一节 Lab 的入口。
 
-最终通过条件：六个阶段的适用验收项均有证据，没有未解释的回归失败。当前所有阶段均待实现和验收。
+最终通过条件：六个阶段的适用验收项均有证据，没有未解释的回归失败。当前第①阶段已完成集合与查询接口，登记和该阶段其余验收尚未完成；后续阶段仍待推进。
