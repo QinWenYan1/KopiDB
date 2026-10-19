@@ -1,5 +1,5 @@
 #pragma once
-
+#include <unordered_set>
 #include "utils/files.h"
 #include "wal/wal.h"
 #include <atomic>
@@ -78,6 +78,11 @@ public:
   uint64_t get_max_flushed_tranc_id();
   uint64_t get_checkpoint_tranc_id();
   std::set<uint64_t>& get_flushed_tranc_ids();
+
+  // 判断事务是否已经登记回滚
+  // false 只表示不在回滚名单中，也可能是事务仍在进行
+  // 不能把它当作“事务已经提交”的判断
+  bool is_aborted(uint64_t tranc_id) const; 
 
   void add_ready_to_flush_tranc_id(uint64_t tranc_id, TransactionState state);
   void add_flushed_tranc_id(uint64_t tranc_id);
