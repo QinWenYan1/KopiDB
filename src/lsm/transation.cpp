@@ -442,6 +442,8 @@ bool TranManager::is_aborted(uint64_t tranc_id) const {
   return aborted_tranc_ids_.contains(tranc_id); 
 }
 
+// 负责登记事务的结束状态（已提交或已回滚），供后续刷盘时处理
+// 如果是回滚，还会把事务 ID 加入回滚名单
 void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id,
                                               TransactionState state) {
   // 两份状态共用同一把锁
@@ -457,7 +459,21 @@ void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id,
     // 首次登记为 true，重复登记为 false
     added_abort_id = aborted_tranc_ids_.insert(tranc_id).second; 
   }
-  readyToFlushTrancIds_[tranc_id] = state;
+
+  try {
+    // 正常提交和回滚，都需要登记事务结束状态
+    // ID 不存在时插入，已经存在时更新状态
+    readyToFlushTrancIds_.insert_or_assign(tranc_id, state); 
+  } catch (...){
+    // map 插入新节点时可能因内存分配失败而抛异常
+    // 此时撤销本次新增的回滚名单项，使两份登记保持一致
+    // 这里只撤销未完成的状态登记，不操作数据库里的 key/value
+    if (added_abort_id)
+      aborted_tranc_ids_.erase(tranc_id); 
+
+    // 把失败传给调用方，不能让 commit/abort 误认为登记成功
+    throw;
+  }
 }
 
 void TranManager::add_flushed_tranc_id(uint64_t tranc_id) {
