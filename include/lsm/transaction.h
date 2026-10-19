@@ -103,6 +103,15 @@ private:
   std::shared_ptr<WAL> wal;
   std::string data_dir_;
   // std::atomic<bool> flush_thread_running_ = true;
+  
+  // 已回滚的事务 ID，默认构造为空集合。
+  // 一个 ID 对应整个事务：该事务写入的所有 key 都应被排除。
+  //
+  // 这份名单独立于待刷盘状态表：
+  // 刷盘登记结束后，SST 中仍可能保存着这个事务的记录，
+  // 因此不能跟着待刷盘记录一起删除。
+  // 所有读写均由 mutex_ 保护。
+  std::unordered_set<uint64_t> aborted_tranc_ids_;
   std::atomic<uint64_t> nextTransactionId_ = 1;
   std::map<uint64_t, std::shared_ptr<TranContext>> activeTrans_;
   std::map<uint64_t, TransactionState> readyToFlushTrancIds_;
