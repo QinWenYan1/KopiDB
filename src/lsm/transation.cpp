@@ -432,6 +432,16 @@ void TranManager::write_tranc_id_file() {}
 
 void TranManager::read_tranc_id_file() {}
 
+bool TranManager::is_aborted(uint64_t tranc_id) const {
+  // 查询期间，其他线程可能正在登记回滚并修改集合
+  // 读取和写入必须使用同一把锁，避免同时访问正在变化的容器
+  std::lock_guard<std::mutex> lock(mutex_); 
+
+  // contains 只查询，不插入元素，也不会复制整个集合
+  // 空集合或没有找到该 ID 时，自然返回 false，无需额外判空
+  return aborted_tranc_ids_.contains(tranc_id); 
+}
+
 void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id,
                                               TransactionState state) {
   std::unique_lock lock(mutex_);
