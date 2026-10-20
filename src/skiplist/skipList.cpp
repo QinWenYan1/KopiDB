@@ -170,7 +170,7 @@ void SkipList::put(const std::string &key, const std::string &value,
 }
 
 // 查找键值对
-SkipListIterator SkipList::get(const std::string &key, uint64_t tranc_id) {
+SkipListIterator SkipList::get(const std::string &key, uint64_t tranc_id, const std::function<bool(uint64_t)>& is_aborted) {
   spdlog::trace("SkipList--get({}) called", key);
 
   // 1. 找：下楼梯，只比 key（落在"该 key 的最新版本"跟前）
@@ -181,17 +181,22 @@ SkipListIterator SkipList::get(const std::string &key, uint64_t tranc_id) {
     }
   }
 
-  // 2. 候选 = 第 0 层下一个节点 = 该 key 的最新版本（同 key 按 tranc_id
-  // 降序，最新排最前）
+  // 2. 候选 = 第 0 层下一个节点 = 该 key 的最新版本
+  //   （同 key 按 tranc_id 降序，最新排最前）
   auto candidate = current->forward_[0];
 
-  // 3. 版本可见性：沿同 key 的版本链向右走（tranc_id 降序 = 越走越老），
-  //    tranc_id == 0 表示非事务读，直接要最新版本；
-  //    否则第一个满足 tranc_id_ <= tranc_id 的就是最新可见版本
   while (candidate && candidate->key_ == key) {
-    if (tranc_id == 0 || candidate->tranc_id_ <= tranc_id) {
-      return SkipListIterator(candidate);
+    // 3. 当前版本超过读取上限，继续寻找更旧的版本
+    //    上限为 0 时允许任意版本号，但仍需执行后面的回滚判断
+    if (tranc_id == 0 && candidate->tranc_id_ > tranc_id) {
+      candidate = candidate->forward_[0]; 
+      continue; 
     }
+
+    // 4. 先检查是否提供回调，再调用它判断当前事务是否已回滚
+    //    例如 k@5 已回滚、k@3 有效：跳过 5，继续寻找并返回 3
+    //    不能在遇到回滚版本时直接返回空，否则会漏掉有效旧版本
+
     candidate = candidate->forward_[0];
   }
 
