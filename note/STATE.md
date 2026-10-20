@@ -10,9 +10,9 @@
 
 当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、状态查询接口、结束登记、abort 及写入路径的旧方案清理已完成；存储查询过滤尚未完成。
 
-当前推进项：第②阶段已完成，remove 经代码检查和新增测试验收，构建及当前已实现范围的 36 个相关测试通过。进入第③阶段，从 SkipList::get 的版本选择开始接入回滚过滤，业务代码由用户手动加入。
+当前推进项：第②阶段已完成，上一轮 remove 及相关回归为 36/36 通过。第③阶段的 SkipList::get 已修正读取上限条件，并通过完整 test_skiplist（29/29，包含 6 个回滚测试）。下一函数为 MemTable::cur_get_ 的回调转发，业务代码由用户手动加入。
 
-当前已提供 SkipList::get 的可选回滚判断参数草案，尚未加入业务代码或验收；MemTable/Engine 的判断传递也尚未接通。当前测试结果仍是上一轮的 36/36，不代表回滚点查已经通过。
+当前 SkipList::get 在传入判断函数时会排除已取消版本，保留有效墓碑；未提供回调时保持原有版本上限筛选。MemTable/Engine 的判断传递尚未接通，不能据此宣称数据库回滚查询已经完成。cur_get_ 草案已在聊天中提供，尚未加入业务代码。
 
 2026-10-20 用户纠正任务范围：撤回把 LSM 构造函数绑定作为当前下一步的安排，组件初始化整合按 Lab 5.5 推进。绑定是引擎使用管理器的依赖，但现有事务测试已显式完成绑定，可以先验证回滚逻辑；本轮不以修复 LSM 初始化入口为前置任务，也不把测试绑定视为生产入口已完成。
 
@@ -30,7 +30,7 @@
 | `add_flushed_tranc_id()` | 会清理待刷盘状态表；该表不能充当长期回滚名单。 |
 | `write_tranc_id_file()`、`read_tranc_id_file()` | 当前均为空函数；正常重启后的状态与 ID 延续尚未完成。 |
 | [LSM 构造函数](../src/lsm/engine.cpp) | 已创建 Engine 和 TranManager，互相绑定仍为待办，按用户要求留在 Lab 5.5 初始化整合时处理；当前事务测试自行绑定。 |
-| 查询与迭代器 | 已有版本上限、真实版本比较等逻辑，尚未接入回滚名单。 |
+| 查询与迭代器 | SkipList 点查已支持传入回滚判断并通过测试；MemTable/Engine 点查链和范围迭代器尚未接入回滚名单。 |
 
 ## 已确认的设计
 
@@ -124,8 +124,10 @@
 
 ## 测试状态
 
-- 最新检查（2026-10-20）：remove 的删除路径及结束状态检查正确；搜索 src/include/test 没有 rollback_map_ 引用，`xmake build test_lsm` 成功。独立临时目录中运行当前已实现范围的测试，**36/36 通过**；未修改原有失败用例的断言。
-- 本轮过滤器：`--gtest_filter='LSMTest.TranContextConstructor*:LSMTest.TranContextPut*:LSMTest.TranContextGet*:LSMTest.NewTransaction*:LSMTest.TransactionEndRegistration*:TranCommitTest.*:TranRemoveTest.*:TranAbortTest.Cancels*:TranAbortTest.ExpiredManager*:TranAbortTest.ReadUncommittedRegisters*:TranAbortTest.CannotAbort*'`。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-remove-review-kcekzes_/result.log`。
+- 最新检查（2026-10-20）：用户已修正读取上限条件，`xmake build test_skiplist` 成功，在独立临时目录中运行完整 test_skiplist，**29/29 通过**，包含全部 6 个回滚测试。此前上限条件导致的 3 个失败已解决。本轮未重跑 LSM 回归，也未修改业务代码。
+- 本轮日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-skiplist-abort-fixed-djbup06n/result.log`。
+- 上一轮 LSM 检查（2026-10-20）：remove 的删除路径及结束状态检查正确；搜索 src/include/test 没有 rollback_map_ 引用，`xmake build test_lsm` 成功。独立临时目录中运行当时已实现范围的测试，**36/36 通过**；这是本次 SkipList 修改之前的结果，未修改原有失败用例的断言。
+- 上一轮 LSM 过滤器：`--gtest_filter='LSMTest.TranContextConstructor*:LSMTest.TranContextPut*:LSMTest.TranContextGet*:LSMTest.NewTransaction*:LSMTest.TransactionEndRegistration*:TranCommitTest.*:TranRemoveTest.*:TranAbortTest.Cancels*:TranAbortTest.ExpiredManager*:TranAbortTest.ReadUncommittedRegisters*:TranAbortTest.CannotAbort*'`。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-remove-review-kcekzes_/result.log`。
 - [test/test_lsm.cpp](../test/test_lsm.cpp) 已有事务创建、读写、提交、结束登记等测试，以及 `TranAbortTest` 的 7 个回滚用例和 `TranRemoveTest` 的 4 个删除用例。
 - 本轮新增删除测试：暂存删除到提交后生效；读未提交立即写墓碑但保留历史版本；put/remove 交替取最后一次操作；实际 commit/abort 后拒绝删除且无副作用。同步扩充暂存取消测试，加入结束后的 remove 检查。
 - 2026-10-20：新增 3 个 abort 用例，覆盖空事务取消、管理器失效时保留原状态、读未提交取消不改写物理记录；扩充暂存取消用例，检查暂存删除、清空容器、重复调用及已结束的 put/get/commit。已提交事务取消还检查管理器未误记回滚。

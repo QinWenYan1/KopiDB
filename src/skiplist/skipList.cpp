@@ -188,7 +188,7 @@ SkipListIterator SkipList::get(const std::string &key, uint64_t tranc_id, const 
   while (candidate && candidate->key_ == key) {
     // 3. 当前版本超过读取上限，继续寻找更旧的版本
     //    上限为 0 时允许任意版本号，但仍需执行后面的回滚判断
-    if (tranc_id == 0 && candidate->tranc_id_ > tranc_id) {
+    if (tranc_id != 0 && candidate->tranc_id_ > tranc_id) {
       candidate = candidate->forward_[0]; 
       continue; 
     }

@@ -382,15 +382,113 @@ using SkipListRecord = std::tuple<std::string, std::string, uint64_t>;
 // 先判空再读取，避免查找失败时测试直接崩溃；同时核对真实版本号。
 void expect_skiplist_record(SkipList &list, const std::string &key,
                             uint64_t read_id, const std::string &value,
-                            uint64_t version) {
+                            uint64_t version,
+                            const std::function<bool(uint64_t)> &is_aborted = {}) {
   SCOPED_TRACE("key=" + key + ", read_id=" + std::to_string(read_id));
-  auto it = list.get(key, read_id);
+  auto it = list.get(key, read_id, is_aborted);
   ASSERT_TRUE(it.is_valid());
   EXPECT_EQ(it.get_key(), key);
   EXPECT_EQ(it.get_value(), value);
   EXPECT_EQ(it.get_cur_tranc_id(), version);
 }
 } // namespace
+
+// 目的：不限制读取上限时，仍需跳过取消版本，找回旧值及其真实版本号。
+// 场景：K@3=old，事务 5 写入新值或墓碑后取消；两种情况都应返回 old@3。
+TEST(SkipListTest, RollbackLatestValueOrTombstoneRevealsOldVersion) {
+  for (const std::string value : {"new", ""}) {
+    SCOPED_TRACE(value);
+    SkipList list;
+    list.put("K", "old", 3);
+    list.put("K", value, 5);
+    expect_skiplist_record(list, "K", 0, "old", 3,
+                           [](uint64_t id) { return id == 5; });
+  }
+}
+
+// 目的：回滚筛选不能替代读取上限，两项条件必须同时满足。
+// 场景：K@7 有效、K@5 已取消、K@3 有效；上限 4/5/6 返回 3，
+//       上限 7 返回 7，上限 2 返回不存在。
+TEST(SkipListTest, RollbackFilteringAlsoRespectsReadBound) {
+  SkipList list;
+  list.put("K", "old", 3);
+  list.put("K", "cancelled", 5);
+  list.put("K", "newest", 7);
+  const auto is_aborted = [](uint64_t id) { return id == 5; };
+  for (uint64_t bound : {4u, 5u, 6u}) {
+    expect_skiplist_record(list, "K", bound, "old", 3, is_aborted);
+  }
+  expect_skiplist_record(list, "K", 7, "newest", 7, is_aborted);
+  EXPECT_TRUE(list.get("K", 2, is_aborted).is_end());
+}
+
+// 目的：可以连续跳过多个取消版本，且查询不删除或改写物理记录。
+// 场景：9、7、5 都已取消（其中 7 为墓碑），查询返回有效的 3；
+//       查询前后 flush 导出的全部记录及大小统计保持一致。
+TEST(SkipListTest, RollbackSkipsConsecutiveVersionsWithoutChangingStorage) {
+  SkipList list;
+  list.put("K", "old", 3);
+  list.put("K", "cancelled-5", 5);
+  list.put("K", "", 7);
+  list.put("K", "cancelled-9", 9);
+  const auto records = list.flush();
+  const auto bytes = list.get_size();
+  const std::unordered_set<uint64_t> cancelled{5, 7, 9};
+
+  expect_skiplist_record(list, "K", 9, "old", 3,
+                         [&](uint64_t id) { return cancelled.contains(id); });
+  EXPECT_EQ(list.flush(), records);
+  EXPECT_EQ(list.get_size(), bytes);
+}
+
+// 目的：取消的新值被跳过后，剩余的有效墓碑必须作为候选返回。
+// 场景：K@7 已取消，K@5 是有效墓碑，K@3 是旧值；必须返回墓碑@5，
+//       不能直接返回空，也不能继续跳过墓碑而返回 old@3。
+TEST(SkipListTest, RollbackPreservesValidTombstone) {
+  SkipList list;
+  list.put("K", "old", 3);
+  list.put("K", "", 5);
+  list.put("K", "cancelled", 7);
+  expect_skiplist_record(list, "K", 7, "", 5,
+                         [](uint64_t id) { return id == 7; });
+}
+
+// 目的：空表、缺失 key 或全部版本取消时返回空，不能误返回邻接 key。
+// 场景：K 仅有已取消的版本 5，后面还有有效的 L@1；查 K/B/Z 均为空，
+//       查 L 仍正确，分别覆盖读取上限 0 和非零上限。
+TEST(SkipListTest, RollbackAllCancelledAndMissingKeysReturnEmpty) {
+  SkipList list;
+  const auto is_aborted = [](uint64_t id) { return id == 5; };
+  EXPECT_TRUE(list.get("K", 0, is_aborted).is_end());
+  EXPECT_TRUE(list.get("K", 7, is_aborted).is_end());
+  list.put("K", "cancelled", 5);
+  list.put("L", "neighbor", 1);
+  for (uint64_t bound : {0u, 7u}) {
+    for (const std::string key : {"K", "B", "Z"}) {
+      SCOPED_TRACE(key);
+      SCOPED_TRACE(bound);
+      EXPECT_TRUE(list.get(key, bound, is_aborted).is_end());
+    }
+  }
+  expect_skiplist_record(list, "L", 7, "neighbor", 1, is_aborted);
+}
+
+// 目的：增加可选回调后，原来的两参数调用和显式空回调都保持版本筛选语义。
+// 场景：K 有版本 3/5；上限 0 返回 5，上限 4 返回 3，上限 2 返回空，
+//       空回调不能被直接调用而抛出 bad_function_call。
+TEST(SkipListTest, RollbackAbsentCallbackKeepsOriginalReadSemantics) {
+  SkipList list;
+  list.put("K", "old", 3);
+  list.put("K", "new", 5);
+  auto latest = list.get("K", 0);
+  EXPECT_TRUE(latest.is_valid());
+  if (latest.is_valid()) {
+    EXPECT_EQ(latest.get_value(), "new");
+    EXPECT_EQ(latest.get_cur_tranc_id(), 5u);
+  }
+  expect_skiplist_record(list, "K", 4, "old", 3);
+  EXPECT_TRUE(list.get("K", 2).is_end());
+}
 
 // 目的：验证版本选择按版本号大小判断，不依赖插入先后顺序。
 // 场景：按 K@9、K@5、K@7 的顺序写入，查询精确版本、版本间隙和范围外上限。
