@@ -394,7 +394,22 @@ bool TranContext::abort() {
   // 回滚必须让管理器记住这个 ID，不能只修改本地标志
   auto manager = tranManager_.lock(); 
   if(!manager)
-    throw std::logic_error("TranContext::abort: transaction manager has expired"); 
+    throw std::logic_error("TranContext::abort: transaction manager has expired");
+
+  // 先登记回滚，再修改上下文状态
+  // 如果登记抛异常，下面的代码不会执行
+  // 上下文仍保留原来的状态和暂存内容，不会假装回滚成功
+  //
+  // 两类事务都登记同一个回滚 ID：
+  // 1. 暂存型事务：修改尚未写入存储层，随后丢弃暂存内容
+  // 2. 读未提交事务：记录可能已在 MemTable 或 SST 中
+  //    后续查询根据回滚名单跳过这些版本，不在这里回写旧值
+  //
+  // 登记函数内部负责加锁，这里无需再次获取管理器的锁
+  manager->add_ready_to_flush_tranc_id(tranc_id_, TransactionState::ABORTED);
+
+  // 登记成功后，正式结束这个上下文
+  // 前面的检查已保证 isCommited 为 false，无需重复赋值
 }
 
 enum IsolationLevel TranContext::get_isolation_level() {
