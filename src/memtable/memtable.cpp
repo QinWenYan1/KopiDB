@@ -5,6 +5,7 @@
 #include "spdlog/spdlog.h"
 #include "sst/sst.h"
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -81,12 +82,20 @@ void MemTable::put_batch(
   }
 }
 
-SkipListIterator MemTable::cur_get_(const std::string &key, uint64_t tranc_id) {
-  // 检查当前活跃的memtable
-  // Lab2.1 从活跃跳表中查询
-  // ? 调用 current_table->get(), 找到则返回; 未找到则返回空迭代器
+// Lab2.1 检查当前活跃的 memtable
+SkipListIterator MemTable::cur_get_(const std::string &key, uint64_t tranc_id, const std::function<bool(uint64_t)>& is_aborted) {
+  // 调用 current_table->get(), 找到则返回; 未找到则返回空迭代器
   spdlog::trace("MemTable--cur_get_({}, {})", key, tranc_id);
-  return current_table->get(key, tranc_id);
+  // 调用方已持有 cur_mtx，保护活跃表及本次查找。
+  // 这里不重复加锁，避免同一线程重复获取同一把锁。
+  //
+  // 将回滚判断传给 SkipList，让它在同 key 的版本链中继续找：
+  // 例如 k@5 已回滚、k@3 有效，底层直接返回 k@3。
+  //
+  // 原样返回查找结果：
+  // 未命中就是空迭代器；命中有效墓碑也保留，
+  // 后续 get_ 还需要将它与冻结表的候选记录比较。
+  return current_table->get(key, tranc_id, is_aborted);
 }
 
 // Lab2.1 从冻结跳表中查询

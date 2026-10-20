@@ -28,7 +28,8 @@ private:
 
   SkipListIterator get_(const std::string &key, uint64_t tranc_id);
 
-  SkipListIterator cur_get_(const std::string &key, uint64_t tranc_id);
+  // Lab2.1 检查当前活跃的 memtable
+  SkipListIterator cur_get_(const std::string &key, uint64_t tranc_id, const std::function<bool(uint64_t)>& is_aborted = {});
 
   SkipListIterator frozen_get_(const std::string &key, uint64_t tranc_id);
 
