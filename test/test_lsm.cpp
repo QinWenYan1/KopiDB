@@ -1320,7 +1320,8 @@ protected:
 class TranAbortTest : public TranCommitTest {};
 
 // 目的：暂存型事务主动取消后，不把修改写入数据库，也不能再提交。
-// 场景：原值保持不变，新增 key 不出现；不要求通过写回旧值来“恢复”。
+// 场景：修改和删除的原值保持不变，新增 key 不出现；同时检查取消登记、
+//       暂存清理、重复取消以及结束后的 put/get/commit。remove 的结束检查待其实现。
 TEST_F(TranAbortTest, CancelsStagedWritesWithoutChangingDatabase) {
   for (auto level : {IsolationLevel::READ_OP_COMMITTED,
                      IsolationLevel::REPEATABLE_READ,
@@ -1329,18 +1330,112 @@ TEST_F(TranAbortTest, CancelsStagedWritesWithoutChangingDatabase) {
     const auto suffix = std::to_string(static_cast<int>(level));
     const auto existing = "existing-" + suffix;
     const auto added = "added-" + suffix;
+    const auto removed = "removed-" + suffix;
     engine->put(existing, "old", 3);
+    engine->put(removed, "keep", 3);
     TranContext context(10 + static_cast<int>(level), engine, manager, level);
+    EXPECT_EQ(context.get(existing), std::make_optional(std::string("old")));
     context.put(existing, "pending");
     context.put(added, "pending");
+    context.remove(removed);
     ASSERT_TRUE(context.abort());
     EXPECT_TRUE(context.isAborted);
     EXPECT_FALSE(context.isCommited);
+    EXPECT_TRUE(manager->is_aborted(context.tranc_id_));
+    EXPECT_TRUE(context.temp_map_.empty());
+    EXPECT_TRUE(context.operations.empty());
     EXPECT_EQ(engine->get(existing, 0),
               std::make_optional(std::make_pair(std::string("old"), uint64_t{3})));
+    EXPECT_EQ(engine->get(removed, 0),
+              std::make_optional(std::make_pair(std::string("keep"), uint64_t{3})));
     EXPECT_FALSE(engine->get(added, 0));
+    EXPECT_FALSE(context.abort());
+    EXPECT_THROW(context.put(added, "too-late"), std::logic_error);
+    EXPECT_THROW(context.get(existing), std::logic_error);
+    EXPECT_FALSE(context.commit());
+    EXPECT_TRUE(context.isAborted);
+    EXPECT_FALSE(context.isCommited);
+    EXPECT_TRUE(context.temp_map_.empty());
+    EXPECT_TRUE(context.operations.empty());
+  }
+}
+
+// 目的：没有执行过写入的事务也能正常取消，不能要求必须先产生数据记录。
+// 场景：四种隔离级别分别创建空事务，首次取消成功，再次取消返回 false。
+TEST_F(TranAbortTest, CancelsEmptyTransactionsOnlyOnce) {
+  for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
+                     IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    TranContext context(10 + static_cast<int>(level), engine, manager, level);
+    ASSERT_TRUE(context.abort());
+    EXPECT_TRUE(manager->is_aborted(context.tranc_id_));
+    EXPECT_TRUE(context.isAborted);
+    EXPECT_FALSE(context.isCommited);
+    EXPECT_TRUE(context.temp_map_.empty());
+    EXPECT_TRUE(context.operations.empty());
+    EXPECT_FALSE(context.abort());
     EXPECT_FALSE(context.commit());
   }
+}
+
+// 目的：无法登记回滚时必须报错，不能提前结束事务或丢弃仍在暂存的修改。
+// 场景：事务暂存了写入，但管理器已销毁；abort 抛异常，状态和暂存内容保持原样。
+TEST_F(TranAbortTest, ExpiredManagerPreservesUnfinishedContext) {
+  TranContext context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
+  context.put("k", "pending");
+  const auto pending = context.temp_map_;
+  const auto operation_count = context.operations.size();
+  manager.reset();
+  ASSERT_TRUE(context.tranManager_.expired());
+
+  EXPECT_THROW(context.abort(), std::logic_error);
+  EXPECT_FALSE(context.isAborted);
+  EXPECT_FALSE(context.isCommited);
+  EXPECT_EQ(context.temp_map_, pending);
+  EXPECT_EQ(context.operations.size(), operation_count);
+  EXPECT_EQ(context.get("k"), std::make_optional(std::string("pending")));
+  EXPECT_FALSE(engine->get("k", 0));
+}
+
+// 目的：读未提交的取消只登记 ID，不通过改写原节点或补写墓碑来模拟撤销。
+// 场景：修改、新增、删除后保留原节点的迭代器，取消后检查物理记录和内存大小不变。
+//       这里检查原节点，不用用户查询结果判断回滚；查询过滤由后续阶段验收。
+TEST_F(TranAbortTest, ReadUncommittedRegistersWithoutRewritingRecords) {
+  engine->put("existing", "old", 3);
+  engine->put("removed", "keep", 3);
+  TranContext context(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  context.put("existing", "first");
+  context.put("existing", "last");
+  context.put("added", "new");
+  context.remove("removed");
+
+  auto updated = engine->memtable.get("existing", 0);
+  auto original = engine->memtable.get("existing", 3);
+  auto added = engine->memtable.get("added", 0);
+  auto removed = engine->memtable.get("removed", 0);
+  ASSERT_TRUE(updated.is_valid());
+  ASSERT_TRUE(original.is_valid());
+  ASSERT_TRUE(added.is_valid());
+  ASSERT_TRUE(removed.is_valid());
+  const auto bytes = engine->memtable.get_total_size();
+
+  ASSERT_TRUE(context.abort());
+  EXPECT_TRUE(context.isAborted);
+  EXPECT_FALSE(context.isCommited);
+  EXPECT_TRUE(manager->is_aborted(5));
+  EXPECT_FALSE(manager->is_aborted(3));
+  EXPECT_TRUE(context.operations.empty());
+  EXPECT_EQ(engine->memtable.get_total_size(), bytes);
+  EXPECT_EQ(updated.get_value(), "last");
+  EXPECT_EQ(updated.get_cur_tranc_id(), 5u);
+  EXPECT_EQ(original.get_value(), "old");
+  EXPECT_EQ(original.get_cur_tranc_id(), 3u);
+  EXPECT_EQ(added.get_value(), "new");
+  EXPECT_EQ(added.get_cur_tranc_id(), 5u);
+  EXPECT_EQ(removed.get_value(), "");
+  EXPECT_EQ(removed.get_cur_tranc_id(), 5u);
 }
 
 // 目的：撤销读未提交事务的更新或删除后，应重新读到原记录及其真实版本号。
@@ -1404,6 +1499,7 @@ TEST_F(TranAbortTest, CannotAbortAnAlreadyCommittedTransaction) {
   EXPECT_FALSE(context.abort());
   EXPECT_TRUE(context.isCommited);
   EXPECT_FALSE(context.isAborted);
+  EXPECT_FALSE(manager->is_aborted(context.tranc_id_));
   EXPECT_EQ(engine->get("k", 0),
             std::make_optional(std::make_pair(std::string("committed"), uint64_t{5})));
 }
