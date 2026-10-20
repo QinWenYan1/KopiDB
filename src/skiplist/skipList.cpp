@@ -196,11 +196,20 @@ SkipListIterator SkipList::get(const std::string &key, uint64_t tranc_id, const 
     // 4. 先检查是否提供回调，再调用它判断当前事务是否已回滚
     //    例如 k@5 已回滚、k@3 有效：跳过 5，继续寻找并返回 3
     //    不能在遇到回滚版本时直接返回空，否则会漏掉有效旧版本
+    if (is_aborted && is_aborted(candidate->tranc_id_)){
+      candidate = candidate->forward_[0]; 
+      continue;
+    }
 
-    candidate = candidate->forward_[0];
+    // 5. 第一个通过两项检查的节点，就是本表的最新有效版本
+    //    即使 value 为空，也保留这个有效墓碑：
+    //    上层还需要用它遮住其他来源中的旧值
+    return SkipListIterator(candidate); 
   }
 
-  // 4. key 不存在，或所有版本对改事务都不可见
+
+  // 空表、key 不存在，或者这个 key 的所有版本都被跳过
+  // 循环要求 key 相等，因此不会误返回相邻 key 的记录
   return SkipListIterator{};
 }
 
