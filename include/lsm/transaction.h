@@ -71,9 +71,6 @@ private:
   std::unordered_map<std::string,
                      std::optional<std::pair<std::string, uint64_t>>>
       read_map_;
-  std::unordered_map<std::string,
-                     std::optional<std::pair<std::string, uint64_t>>>
-      rollback_map_;
 };
 
 class TranManager : public std::enable_shared_from_this<TranManager> {

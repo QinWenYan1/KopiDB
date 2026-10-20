@@ -55,7 +55,7 @@ TranContext::TranContext(uint64_t tranc_id, std::shared_ptr<LSMEngine> engine,
 }
 
 // Lab 5.2 put 实现
-// 读未提交： 直接写入引擎，同时保存第一次修改前的值，供后续回滚使用
+// 读未提交：使用本事务 ID 直接写入引擎，不再备份旧值。
 // 其他隔离级别： 暂存在本事务的 temp_map_，等 commit() 再写入引擎
 void TranContext::put(const std::string &key, const std::string &value) {
   spdlog::trace("TranContext--put({}, {}), tranc_id={}", key, value, tranc_id_);
@@ -70,20 +70,11 @@ void TranContext::put(const std::string &key, const std::string &value) {
   const bool write_immediately =
       (isolation_level_ == IsolationLevel::READ_UNOP_COMMITTED);
 
-  // 3. 记录回滚数据信息
-  //    读未提交会直接修改数据库，因此需要保存修改前的值
-  //    同一个 key 只保存第一次修改前的状态：
-  //    原值 old -> put(A) -> put(B)，回滚目标仍应是 old
-  if (write_immediately && !rollback_map_.contains(key))
-    // 读上限 0 表示查询最新版本
-    // 即使结果为 nullopt，也要登记，表示修改前逻辑上不存在
-    rollback_map_.emplace(key, engine_->get(key, 0));
-
-  // 4. 所有隔离级别都记录本次操作，供后续 WAL 使用
+  // 3. 所有隔离级别都记录本次操作，供后续 WAL 使用
   //    0这里只追加内存记录，不执行日志持久化
   operations.emplace_back(Record::putRecord(tranc_id_, key, value));
 
-  // 5. 开始写入，有两种方式：立即写入 vs 暂存于上下文
+  // 4. 开始写入，有两种方式：立即写入 vs 暂存于上下文
   if (write_immediately) {
     // 使用本事务的 ID 写入；底层查询此时就可能读到它
     engine_->put(key, value, tranc_id_);
@@ -110,9 +101,6 @@ void TranContext::remove(const std::string &key) {
 
   if (isolation_level == IsolationLevel::READ_UNOP_COMMITTED) {
     // 1 如果隔离级别是 READ_UNOP_COMMITTED, 直接写入 memtable
-    // 先查询以前的记录, 因为回滚时可能需要
-    auto prev_record = engine_->get(key, 0);
-    rollback_map_[key] = prev_record;
     engine_->remove(key, tranc_id_);
 
     spdlog::trace(
@@ -417,11 +405,7 @@ bool TranContext::abort() {
   // 丢弃尚未提交的修改，以及这个事务自己的读取缓存
   // clear 只清理上下文容器，不修改数据库里的记录
   temp_map_.clear(); 
-  read_map_.clear(); 
-
-  // put/remove 目前还保存旧值，先释放这些记录
-  // 后续修改这两个函数时，再一并删除 rollback_map_ 成员
-  rollback_map_.clear(); 
+  read_map_.clear();  
 
   // 当前阶段没有把这些操作记录写入 WAL，可以直接丢弃
   // 后续接入 WAL 时，再处理回滚日志
