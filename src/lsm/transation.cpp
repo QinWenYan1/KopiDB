@@ -410,6 +410,22 @@ bool TranContext::abort() {
 
   // 登记成功后，正式结束这个上下文
   // 前面的检查已保证 isCommited 为 false，无需重复赋值
+  isAborted = true; 
+
+  // 丢弃尚未提交的修改，以及这个事务自己的读取缓存
+  // clear 只清理上下文容器，不修改数据库里的记录
+  temp_map_.clear(); 
+  read_map_.clear(); 
+
+  // put/remove 目前还保存旧值，先释放这些记录
+  // 后续修改这两个函数时，再一并删除 rollback_map_ 成员
+  rollback_map_.clear(); 
+
+  // 当前阶段没有把这些操作记录写入 WAL，可以直接丢弃
+  // 后续接入 WAL 时，再处理回滚日志
+  operations.clear(); 
+
+  return true; 
 }
 
 enum IsolationLevel TranContext::get_isolation_level() {
