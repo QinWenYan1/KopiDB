@@ -135,11 +135,16 @@ public:
   // 这里不对 tranc_id 进行检查，由上层保证 tranc_id 的合法性
   void put(const std::string &key, const std::string &value, uint64_t tranc_id);
 
-  // 查找键对应的值
-  // 事务 id 为0 表示没有开启事务
-  // 否则只能查找事务 id 小于等于 tranc_id 的值
-  // 返回值: 如果找到，返回 value 和 tranc_id，否则返回空
-  SkipListIterator get(const std::string &key, uint64_t tranc_id);
+  // 返回同 key 中满足读取上限、且未被回滚的最新记录。
+  // tranc_id == 0 表示不限制版本大小，仍执行传入的回滚判断。
+  //
+  // is_aborted(id) 返回 true：该事务已回滚，需要跳过它的记录
+  // 默认空函数：保持原来的两参数调用方式，不执行回滚判断
+  // 本函数只在查找期间使用回调，不保存它
+  //
+  // 有效墓碑也要返回，供上层进行跨表比较；未找到则返回空迭代器
+  SkipListIterator get(const std::string &key, uint64_t tranc_id, 
+                        const std::function<bool(uint64_t)> &is_aborted = {});
 
   // 这里的 remove 是跳表本身真实的 remove,  lsm 应该使用 put 空值表示删除
   void remove(const std::string &key); // 删除键值对

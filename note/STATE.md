@@ -10,7 +10,11 @@
 
 当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、状态查询接口、结束登记、abort 及写入路径的旧方案清理已完成；存储查询过滤尚未完成。
 
-当前推进项：第②阶段已完成，remove 经代码检查和新增测试验收，构建及当前已实现范围的 36 个相关测试通过。进入第③阶段，先提供 LSM 构造函数的组件绑定实现，业务代码由用户手动加入。
+当前推进项：第②阶段已完成，remove 经代码检查和新增测试验收，构建及当前已实现范围的 36 个相关测试通过。进入第③阶段，从 SkipList::get 的版本选择开始接入回滚过滤，业务代码由用户手动加入。
+
+当前已提供 SkipList::get 的可选回滚判断参数草案，尚未加入业务代码或验收；MemTable/Engine 的判断传递也尚未接通。当前测试结果仍是上一轮的 36/36，不代表回滚点查已经通过。
+
+2026-10-20 用户纠正任务范围：撤回把 LSM 构造函数绑定作为当前下一步的安排，组件初始化整合按 Lab 5.5 推进。绑定是引擎使用管理器的依赖，但现有事务测试已显式完成绑定，可以先验证回滚逻辑；本轮不以修复 LSM 初始化入口为前置任务，也不把测试绑定视为生产入口已完成。
 
 当前排期约束：项目时间紧，优先沿现有结构完成回滚。迭代器职责重构已经讨论，但列为后续事项，本轮只做必要的判断接入与参数传递。
 
@@ -25,7 +29,7 @@
 | `add_ready_to_flush_tranc_id()` | 同锁更新待刷盘状态与回滚集合；map 更新失败时撤销本次新增的回滚 ID。正常、重复、清理后保留及并发登记测试通过，分配失败分支通过代码检查。 |
 | `add_flushed_tranc_id()` | 会清理待刷盘状态表；该表不能充当长期回滚名单。 |
 | `write_tranc_id_file()`、`read_tranc_id_file()` | 当前均为空函数；正常重启后的状态与 ID 延续尚未完成。 |
-| [LSM 构造函数](../src/lsm/engine.cpp) | 已创建 Engine 和 TranManager，互相绑定仍为待办；部分测试自行完成绑定。 |
+| [LSM 构造函数](../src/lsm/engine.cpp) | 已创建 Engine 和 TranManager，互相绑定仍为待办，按用户要求留在 Lab 5.5 初始化整合时处理；当前事务测试自行绑定。 |
 | 查询与迭代器 | 已有版本上限、真实版本比较等逻辑，尚未接入回滚名单。 |
 
 ## 已确认的设计
@@ -57,6 +61,8 @@
 
 ## 全局排期与延期事项
 
+- **以 Lab 章节顺序为主线。** 当前推进 Lab 5.2 的事务回滚，不能因发现其他模块未完成，就把后续 Lab 的任务插入当前步骤。每个拟修改函数都应说明它与当前验收目标的直接关系；必要依赖先解释清楚，无关缺陷、优化和重构记入全局待办，不自行扩大任务。
+- 后续章节顺序：完成 Lab 5.2 的事务逻辑、状态维护及对应验收，再进入 Lab 5.3 Record、Lab 5.4 WAL、Lab 5.5 恢复与初始化整合。骨架已有函数体不代表已经按我们的流程实现、验收。
 - 优先完成当前 Lab 功能。沿用现有迭代器组合、接口拼写与 Block/SST 编码；只对本轮需要的调用链进行局部接入，小型辅助函数仅在直接减少重复代码时引入。
 - 每完成一项功能运行对应测试，接通后做受影响范围的回归；没有新改动或失败线索时，不重复全库排查。
 - 新发现的问题先判断是否阻碍当前验收；无关问题放入全局待办。有效旧值丢失、取消墓碑继续遮住旧值等问题必须在对应任务中修复。
@@ -70,6 +76,7 @@
 | 同一 TranContext 被并发访问的风险 | 当前由调用方保证串行使用，类接口说明已补充；是否支持内部同步留待后续评估，详见下方议题三。 |
 | 回滚名单查询性能优化、共享只读快照 | 先采用普通集合加锁方案，性能优化另行评估。 |
 | 回滚版本物理清理与回滚 ID 安全回收 | 后续设计；当前名单不能因刷盘登记结束就删除。 |
+| LSM 构造函数的组件初始化整合 | 留到 Lab 5.5；当前回滚测试显式绑定 Engine/TranManager。生产入口接通后另做集成验收。 |
 | WAL 写入、日志重放和崩溃恢复 | 按后续 Lab 推进；恢复流程需适配事务 ID 回滚方案，覆盖取消/未完成版本已落入 SST 的情况，与当前正常关闭、重启验收区分。 |
 | Block 长期容量设计 | 保留当前编码超限抛异常方案，长期方案继续讨论。 |
 
@@ -122,8 +129,8 @@
 - [test/test_lsm.cpp](../test/test_lsm.cpp) 已有事务创建、读写、提交、结束登记等测试，以及 `TranAbortTest` 的 7 个回滚用例和 `TranRemoveTest` 的 4 个删除用例。
 - 本轮新增删除测试：暂存删除到提交后生效；读未提交立即写墓碑但保留历史版本；put/remove 交替取最后一次操作；实际 commit/abort 后拒绝删除且无副作用。同步扩充暂存取消测试，加入结束后的 remove 检查。
 - 2026-10-20：新增 3 个 abort 用例，覆盖空事务取消、管理器失效时保留原状态、读未提交取消不改写物理记录；扩充暂存取消用例，检查暂存删除、清空容器、重复调用及已结束的 put/get/commit。已提交事务取消还检查管理器未误记回滚。
-- 前一轮较宽范围验证：在独立临时目录复制配置后运行 `test_lsm --gtest_filter='LSMTest.TranContext*:LSMTest.NewTransaction*:LSMTest.TransactionEndRegistration*:TranCommitTest.*:TranAbortTest.*'`，**35 个测试：32 个通过，3 个失败**。下述 3 个失败依赖后续阶段，本轮未重跑，仍未解决。
-- 失败一：`LSMTest.TranContextTest` 抛出 `TranManager::new_tranc: engine is not initialized`；LSM 构造中的组件绑定尚未实现，属于 PLAN 第③阶段。
+- 前一轮较宽范围验证：在独立临时目录复制配置后运行 `test_lsm --gtest_filter='LSMTest.TranContext*:LSMTest.NewTransaction*:LSMTest.TransactionEndRegistration*:TranCommitTest.*:TranAbortTest.*'`，**35 个测试：32 个通过，3 个失败**。下述 3 个失败本轮未重跑，仍未解决；其中 2 个属于当前回滚任务，1 个属于初始化入口集成。
+- 失败一：`LSMTest.TranContextTest` 抛出 `TranManager::new_tranc: engine is not initialized`；LSM 构造中的组件绑定尚未实现，按用户要求留到 Lab 5.5 初始化整合，不列为当前回滚阶段的修复项。
 - 失败二、三：`TranAbortTest.ReadUncommittedRestoresPreviousVersionInMemoryAndSst`、`TranAbortTest.KeepsNewerCommitButHidesAbortedVersionFromOlderSnapshot` 仍读到取消版本，或被取消墓碑遮住旧值；查询过滤尚未接入，属于 PLAN 第③阶段。保留原断言，未降低预期。
 - 测试执行文件：`build/macosx/arm64/debug/test_lsm`（实际使用绝对路径）；日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-abort-context-review-738zvtgk/result.log`。
 - 验证边界：分配失败分支仅做代码检查，未注入内存分配故障；并发登记测试未启用 ThreadSanitizer。本次未运行完整 `test_lsm`；回滚查询与持久化仍未验收。
