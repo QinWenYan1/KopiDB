@@ -186,28 +186,35 @@ MemTable::get_record(const std::string& key, uint64_t tranc_id){
 }
 
 // Lab2.1 查询, 无锁版本
-SkipListIterator MemTable::get_(const std::string &key, uint64_t tranc_id) {
+SkipListIterator MemTable::get_(
+  const std::string &key, 
+  uint64_t tranc_id, 
+  const std::function<bool(uint64_t)> &is_aborted) {
   spdlog::trace("MemTable--get_({}, {})", key, tranc_id);
 
-  // 无锁版本：调用方必须已经持有 cur_mtx 和 frozen_mtx。
+  // 1. 调用方已经持有 cur_mtx 和 frozen_mtx
+  // 这里直接调用不自行加锁的内部查询，避免重复加锁
   //
-  // 两个查询都会先按照 tranc_id 过滤可见性：
-  //  best   ：活跃表中的最大可见版本
-  //  frozen ：所有冻结表中的最大可见版本
-  auto best = cur_get_(key, tranc_id);
-  auto frozen = frozen_get_(key, tranc_id);
+  // 两侧都接收同一个回滚判断：
+  // best   是活跃表筛选后的最大有效版本
+  // frozen 是所有冻结表筛选后的最大有效版本
+  auto best = cur_get_(key, tranc_id, is_aborted);
+  auto frozen = frozen_get_(key, tranc_id, is_aborted);
 
-  // 冻结表存在候选，并且：
-  //  1. 活跃表没有候选；或者
-  //  2. 冻结表候选的真实版本号更大
+  // 2. 冻结表存在候选，并且活跃表没有候选，
+  // 或冻结表候选的真实版本号更大时，采用冻结表结果。
   //
-  //  || 会短路：best 无效时，不会调用它的 get_cur_tranc_id()
+  // 例如活跃表中的 k@9 已回滚，筛选后返回 k@3；
+  // 冻结表返回有效的 k@7，那么最终应选择 k@7。
+  //
+  // 先判空再读取版本号，&& 和 || 的短路保证不会访问空迭代器。
   if (frozen.is_valid() &&
       (!best.is_valid() || frozen.get_cur_tranc_id() > best.get_cur_tranc_id()))
     best = frozen;
 
-  // 相同版本：保留活跃表中的记录，所以这里使用 >，不用 >=
-  // 墓碑：也参与版本比较，不能因为 value 为空就丢掉
+  // 3. 版本相同时保留活跃表，所以比较使用 > 而不是 >=
+  // 有效墓碑也原样返回，后续 Engine 还要与 SST 的候选比较
+  // 两侧都没找到记录时，best 自然为空迭代器
   return best;
 }
 

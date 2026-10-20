@@ -25,8 +25,13 @@ class MemTable {
 private:
   void put_(const std::string &key, const std::string &value,
             uint64_t tranc_id);
-
-  SkipListIterator get_(const std::string &key, uint64_t tranc_id);
+  
+  // 汇总活跃表和冻结表，返回符合读取上限且未回滚的最大版本
+  // 调用方必须已经持有 cur_mtx 和 frozen_mtx，本函数不加锁
+  SkipListIterator get_(const std::string &key, 
+                        uint64_t tranc_id,
+                        const std::function<bool(uint64_t)> &is_aborted = {}
+                        );
 
   // 查询活跃表，将读取上限和回滚判断交给底层 SkipList
   // 本函数不加锁，调用方必须持有保护活跃表的 cur_mtx
