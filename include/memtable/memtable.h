@@ -28,10 +28,13 @@ private:
 
   SkipListIterator get_(const std::string &key, uint64_t tranc_id);
 
-  // Lab2.1 检查当前活跃的 memtable
+  // 查询活跃表，将读取上限和回滚判断交给底层 SkipList
+  // 本函数不加锁，调用方必须持有保护活跃表的 cur_mtx
   SkipListIterator cur_get_(const std::string &key, uint64_t tranc_id, const std::function<bool(uint64_t)>& is_aborted = {});
-
-  SkipListIterator frozen_get_(const std::string &key, uint64_t tranc_id);
+  
+  // 查询所有冻结表，选出符合读取上限、且未被回滚的最新记录
+  // 本函数不加锁，调用方必须持有保护冻结表的 frozen_mtx
+  SkipListIterator frozen_get_(const std::string &key, uint64_t tranc_id, const std::function<bool(uint64_t)>& is_aborted = {});
 
   void remove_(const std::string &key, uint64_t tranc_id);
   void frozen_cur_table_(); // _ 表示不需要锁的版本

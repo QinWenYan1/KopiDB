@@ -82,7 +82,6 @@ void MemTable::put_batch(
   }
 }
 
-// Lab2.1 检查当前活跃的 memtable
 SkipListIterator MemTable::cur_get_(const std::string &key, uint64_t tranc_id, const std::function<bool(uint64_t)>& is_aborted) {
   // 调用 current_table->get(), 找到则返回; 未找到则返回空迭代器
   spdlog::trace("MemTable--cur_get_({}, {})", key, tranc_id);
@@ -99,27 +98,43 @@ SkipListIterator MemTable::cur_get_(const std::string &key, uint64_t tranc_id, c
 }
 
 // Lab2.1 从冻结跳表中查询
-SkipListIterator MemTable::frozen_get_(const std::string &key,
-                                       uint64_t tranc_id) {
+SkipListIterator MemTable::frozen_get_( const std::string &key,
+                                        uint64_t tranc_id,
+                                        const std::function<bool(uint64_t)>& is_aborted) {
 
-  // 记录目前找到的最大可见版本；初始为空
+  // 保存所有冻结表中，目前找到的最大有效版本
+  // 初始为空，表示还没有找到候选记录
   SkipListIterator best{};
 
-  // 本函数不加锁，由调用方保护冻结表
+  // 调用方已持有 frozen_mtx，这里不重复加锁
+  // frozen_tables 按冻结时间从新到旧排列
   for (const auto &table : frozen_tables) {
-    // SkipList::get 已完成本表内的可见性筛选：
-    // tranc_id == 0 时不限制版本，否则只返回 <= tranc_id 的版本
-    auto candidate = table->get(key, tranc_id);
+    // 1. 每张表内部先完成版本筛选：
+    //    - tranc_id == 0 时不限制版本，否则只返回 <= tranc_id 的版本
+    //    - 记录所属的事务不能已回滚
+    //
+    // 例如本表有 k@9 和 k@3，9 已回滚：
+    // SkipList::get 会继续找到 3，再把它交给我们参与跨表比较。
+    auto candidate = table->get(key, tranc_id, is_aborted);
+
+    // 本表没有符合条件的记录，继续查询其他冻结表
+    // 不能直接返回空，因为其他表可能保存着有效旧版本
     if (!candidate.is_valid())
       continue;
 
+    // 2. 比较各表筛选后的候选，保留真实版本号最大的记录
+    // best 为空时直接接收候选；|| 会短路，不会读取空迭代器
+    //
+    // 墓碑也参与比较：有效的删除记录仍需要遮住其他表中的旧值
+    // 因此这里不能因为 candidate 的 value 为空就跳过它
     // 在不同冻结表的候选记录中，选择真实版本号最大的记录。
     // 先判空，再读取 best 的版本号，避免访问空迭代器。
     if (!best.is_valid() ||
         candidate.get_cur_tranc_id() > best.get_cur_tranc_id())
       best = candidate;
 
-    // 版本相同时不替换：冻结表从新到旧遍历，保留先找到的记录
+    // 相同版本不替换：
+    // 因为按冻结时间从新到旧遍历，所以保留较新冻结表的记录。
     // 墓碑也参与比较，不能因 value 为空就忽略
   }
 
