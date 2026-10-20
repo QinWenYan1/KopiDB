@@ -8,9 +8,9 @@
 
 正在进行 **Lab 5.2：事务上下文与事务管理器**。此前已经推进过 SkipList、MemTable、Block、SST、迭代器和 Engine 的 MVCC 改造，当前继续接入事务状态判断，整个数据库的事务功能尚未验收完成。
 
-当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、查询接口、结束登记及 abort 已完成；写入路径的旧方案清理与存储查询过滤尚未完成。
+当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、状态查询接口、结束登记、abort 及写入路径的旧方案清理已完成；存储查询过滤尚未完成。
 
-当前推进项：rollback_map_ 清理已完成，构建及当前已实现范围的 32 个相关测试通过；现在独立实现 remove，补齐结束状态检查并完成删除语义的验收。业务代码由用户手动加入。
+当前推进项：第②阶段已完成，remove 经代码检查和新增测试验收，构建及当前已实现范围的 36 个相关测试通过。进入第③阶段，先提供 LSM 构造函数的组件绑定实现，业务代码由用户手动加入。
 
 当前排期约束：项目时间紧，优先沿现有结构完成回滚。迭代器职责重构已经讨论，但列为后续事项，本轮只做必要的判断接入与参数传递。
 
@@ -18,7 +18,7 @@
 | --- | --- |
 | [TranContext 构造、get、commit](../src/lsm/transation.cpp) | 已按此前讨论实现；接入回滚状态后还需调整有关调用。 |
 | `TranContext::put()` | 已删除旧值查询和备份，更新函数说明，代码检查、构建及对应回归通过。 |
-| `TranContext::remove()` | 旧值备份引用已清理，仍缺少已结束事务的状态检查；本轮提供独立实现草案，尚未验收完成。 |
+| `TranContext::remove()` | 已独立实现结束状态检查、DELETE 记录、立即/暂存墓碑；新增 4 个测试通过，覆盖重复删除、历史版本、与 put 交替及结束后拒绝删除。 |
 | `TranContext::abort()` | 已实现状态检查、回滚登记及上下文清理；删除旧容器清理后，5 个当前阶段的回滚测试再次通过。查询层仍未接入回滚名单。 |
 | `TranManager::getNextTransactionId()`、`new_tranc()` | 已实现 ID 分配、上下文创建和活跃事务登记。 |
 | [TranManager 成员](../include/lsm/transaction.h) | 已新增 `aborted_tranc_ids_` 和加锁的 const 查询接口 `is_aborted()`；回滚登记已接入并通过对应测试。 |
@@ -117,15 +117,16 @@
 
 ## 测试状态
 
-- 最新检查（2026-10-20）：remove 的残留引用及 put 的过时说明已清理；搜索 src/include/test 没有 rollback_map_ 引用，`xmake build test_lsm` 成功。独立临时目录中运行当前已实现范围的测试，**32/32 通过**；未修改原有失败用例的断言。
-- 本轮过滤器：`--gtest_filter='LSMTest.TranContextConstructor*:LSMTest.TranContextPut*:LSMTest.TranContextGet*:LSMTest.NewTransaction*:LSMTest.TransactionEndRegistration*:TranCommitTest.*:TranAbortTest.Cancels*:TranAbortTest.ExpiredManager*:TranAbortTest.ReadUncommittedRegisters*:TranAbortTest.CannotAbort*'`。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-rollback-map-cleanup-52msmqmp/result.log`。
-- [test/test_lsm.cpp](../test/test_lsm.cpp) 已有事务创建、读写、提交、结束登记等测试，以及 `TranAbortTest` 的 7 个回滚用例。
+- 最新检查（2026-10-20）：remove 的删除路径及结束状态检查正确；搜索 src/include/test 没有 rollback_map_ 引用，`xmake build test_lsm` 成功。独立临时目录中运行当前已实现范围的测试，**36/36 通过**；未修改原有失败用例的断言。
+- 本轮过滤器：`--gtest_filter='LSMTest.TranContextConstructor*:LSMTest.TranContextPut*:LSMTest.TranContextGet*:LSMTest.NewTransaction*:LSMTest.TransactionEndRegistration*:TranCommitTest.*:TranRemoveTest.*:TranAbortTest.Cancels*:TranAbortTest.ExpiredManager*:TranAbortTest.ReadUncommittedRegisters*:TranAbortTest.CannotAbort*'`。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-remove-review-kcekzes_/result.log`。
+- [test/test_lsm.cpp](../test/test_lsm.cpp) 已有事务创建、读写、提交、结束登记等测试，以及 `TranAbortTest` 的 7 个回滚用例和 `TranRemoveTest` 的 4 个删除用例。
+- 本轮新增删除测试：暂存删除到提交后生效；读未提交立即写墓碑但保留历史版本；put/remove 交替取最后一次操作；实际 commit/abort 后拒绝删除且无副作用。同步扩充暂存取消测试，加入结束后的 remove 检查。
 - 2026-10-20：新增 3 个 abort 用例，覆盖空事务取消、管理器失效时保留原状态、读未提交取消不改写物理记录；扩充暂存取消用例，检查暂存删除、清空容器、重复调用及已结束的 put/get/commit。已提交事务取消还检查管理器未误记回滚。
 - 前一轮较宽范围验证：在独立临时目录复制配置后运行 `test_lsm --gtest_filter='LSMTest.TranContext*:LSMTest.NewTransaction*:LSMTest.TransactionEndRegistration*:TranCommitTest.*:TranAbortTest.*'`，**35 个测试：32 个通过，3 个失败**。下述 3 个失败依赖后续阶段，本轮未重跑，仍未解决。
 - 失败一：`LSMTest.TranContextTest` 抛出 `TranManager::new_tranc: engine is not initialized`；LSM 构造中的组件绑定尚未实现，属于 PLAN 第③阶段。
 - 失败二、三：`TranAbortTest.ReadUncommittedRestoresPreviousVersionInMemoryAndSst`、`TranAbortTest.KeepsNewerCommitButHidesAbortedVersionFromOlderSnapshot` 仍读到取消版本，或被取消墓碑遮住旧值；查询过滤尚未接入，属于 PLAN 第③阶段。保留原断言，未降低预期。
 - 测试执行文件：`build/macosx/arm64/debug/test_lsm`（实际使用绝对路径）；日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-abort-context-review-738zvtgk/result.log`。
-- 验证边界：分配失败分支仅做代码检查，未注入内存分配故障；并发登记测试未启用 ThreadSanitizer。本次未运行完整 `test_lsm`；remove 的结束检查尚待实现，回滚查询与持久化仍未验收。
+- 验证边界：分配失败分支仅做代码检查，未注入内存分配故障；并发登记测试未启用 ThreadSanitizer。本次未运行完整 `test_lsm`；回滚查询与持久化仍未验收。
 
 ## 协作方式
 

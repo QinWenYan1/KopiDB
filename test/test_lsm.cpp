@@ -1316,12 +1316,163 @@ protected:
   std::shared_ptr<TranManager> manager;
 };
 
+// 删除测试复用组件绑定与容量配置，分别检查暂存删除和立即删除。
+class TranRemoveTest : public TranCommitTest {};
+
+// 目的：暂存删除要保留墓碑，覆盖本事务先前的写入和读缓存；提交前不影响引擎。
+// 场景：三个暂存型级别分别删除已有 key、重复删除和删除不存在的 key，
+//       检查 DELETE 记录，并在提交后核对墓碑的真实版本号。
+TEST_F(TranRemoveTest, StagesTombstonesUntilCommit) {
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    const uint64_t id = 10 + static_cast<int>(level);
+    const auto existing = "existing-" + std::to_string(id);
+    const auto missing = "missing-" + std::to_string(id);
+    engine->put(existing, "old", 3);
+    TranContext context(id, engine, manager, level);
+    EXPECT_EQ(context.get(existing), std::make_optional(std::string("old")));
+    context.put(existing, "pending");
+    context.remove(existing);
+    context.remove(existing);
+    context.remove(missing);
+
+    EXPECT_FALSE(context.get(existing));
+    EXPECT_FALSE(context.get(missing));
+    ASSERT_EQ(context.temp_map_.size(), 2u);
+    EXPECT_EQ(context.temp_map_.at(existing), "");
+    EXPECT_EQ(context.temp_map_.at(missing), "");
+    EXPECT_EQ(engine->get(existing, 0),
+              std::make_optional(std::make_pair(std::string("old"), uint64_t{3})));
+    EXPECT_FALSE(engine->memtable.get_record(missing, 0));
+    ASSERT_EQ(context.operations.size(), 5u);
+    for (size_t i = 2; i < context.operations.size(); ++i) {
+      EXPECT_EQ(context.operations[i].getOperationType(), OperationType::OP_DELETE);
+      EXPECT_EQ(context.operations[i].getTrancId(), id);
+      EXPECT_EQ(context.operations[i].getKey(), i == 4 ? missing : existing);
+    }
+
+    ASSERT_TRUE(context.commit());
+    for (const auto &key : {existing, missing}) {
+      EXPECT_FALSE(engine->get(key, 0));
+      EXPECT_EQ(engine->memtable.get_record(key, 0),
+                std::make_optional(std::make_pair(std::string(""), id)));
+    }
+    EXPECT_EQ(engine->get(existing, 3),
+              std::make_optional(std::make_pair(std::string("old"), uint64_t{3})));
+  }
+}
+
+// 目的：读未提交的 remove 立即写入本事务版本的墓碑，而不是物理删除历史记录。
+// 场景：k@3=old，事务 5 删除两次；最新查询不存在，读上限 3 仍能读到 old。
+//       删除不存在的 key 也记录删除意图，并且不使用暂存表。
+TEST_F(TranRemoveTest, ReadUncommittedDeletesImmediatelyAndKeepsHistory) {
+  engine->put("k", "old", 3);
+  TranContext context(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  context.remove("k");
+  context.remove("k");
+  context.remove("missing");
+
+  EXPECT_TRUE(context.temp_map_.empty());
+  for (const auto &key : {"k", "missing"}) {
+    EXPECT_FALSE(context.get(key));
+    EXPECT_FALSE(engine->get(key, 0));
+    EXPECT_EQ(engine->memtable.get_record(key, 0),
+              std::make_optional(std::make_pair(std::string(""), uint64_t{5})));
+  }
+  EXPECT_EQ(engine->get("k", 3),
+            std::make_optional(std::make_pair(std::string("old"), uint64_t{3})));
+  EXPECT_FALSE(engine->memtable.get_record("missing", 3));
+  ASSERT_EQ(context.operations.size(), 4u);
+  for (size_t i = 1; i < context.operations.size(); ++i) {
+    EXPECT_EQ(context.operations[i].getOperationType(), OperationType::OP_DELETE);
+    EXPECT_EQ(context.operations[i].getTrancId(), 5u);
+    EXPECT_EQ(context.operations[i].getKey(), i == 3 ? "missing" : "k");
+  }
+}
+
+// 目的：同一事务交替 put/remove 时，查询及提交结果取决于最后一次操作。
+// 场景：四种隔离级别分别执行 put→remove→put 和 remove→put→remove，
+//       前者最终保留新值，后者最终保留删除墓碑。
+TEST_F(TranRemoveTest, LastOperationWinsWhenMixedWithPut) {
+  for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
+                     IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    const uint64_t id = 10 + static_cast<int>(level);
+    const auto kept = "kept-" + std::to_string(id);
+    const auto removed = "removed-" + std::to_string(id);
+    engine->put(kept, "old", 3);
+    engine->put(removed, "old", 3);
+    TranContext context(id, engine, manager, level);
+    context.put(kept, "first");
+    context.remove(kept);
+    EXPECT_FALSE(context.get(kept));
+    context.put(kept, "last");
+    EXPECT_EQ(context.get(kept), std::make_optional(std::string("last")));
+
+    context.remove(removed);
+    context.put(removed, "temporary");
+    EXPECT_EQ(context.get(removed), std::make_optional(std::string("temporary")));
+    context.remove(removed);
+    EXPECT_FALSE(context.get(removed));
+
+    ASSERT_TRUE(context.commit());
+    EXPECT_EQ(engine->get(kept, 0),
+              std::make_optional(std::make_pair(std::string("last"), id)));
+    EXPECT_FALSE(engine->get(removed, 0));
+    EXPECT_EQ(engine->memtable.get_record(removed, 0),
+              std::make_optional(std::make_pair(std::string(""), id)));
+  }
+}
+
+// 目的：事务已提交或已取消后，remove 必须在产生任何副作用之前报错。
+// 场景：四种隔离级别实际执行 commit/abort，再尝试删除已有和不存在的 key；
+//       引擎记录、内存大小、操作记录数量及暂存内容都应保持不变。
+TEST_F(TranRemoveTest, RejectsFinishedTransactionsWithoutSideEffects) {
+  uint64_t id = 10;
+  for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
+                     IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    for (bool committed : {false, true}) {
+      SCOPED_TRACE(static_cast<int>(level));
+      SCOPED_TRACE(committed);
+      const auto existing = "existing-" + std::to_string(id);
+      const auto missing = "missing-" + std::to_string(id);
+      engine->put(existing, "old", 3);
+      TranContext context(id++, engine, manager, level);
+      if (committed) {
+        ASSERT_TRUE(context.commit());
+      } else {
+        ASSERT_TRUE(context.abort());
+      }
+      const auto operation_count = context.operations.size();
+      const auto pending = context.temp_map_;
+      const auto bytes = engine->memtable.get_total_size();
+
+      EXPECT_THROW(context.remove(existing), std::logic_error);
+      EXPECT_THROW(context.remove(missing), std::logic_error);
+      EXPECT_EQ(context.operations.size(), operation_count);
+      EXPECT_EQ(context.temp_map_, pending);
+      EXPECT_EQ(engine->memtable.get_total_size(), bytes);
+      EXPECT_EQ(engine->get(existing, 0),
+                std::make_optional(std::make_pair(std::string("old"), uint64_t{3})));
+      EXPECT_FALSE(engine->memtable.get_record(missing, 0));
+      EXPECT_EQ(context.isCommited, committed);
+      EXPECT_EQ(context.isAborted, !committed);
+    }
+  }
+}
+
 // 复用事务测试的引擎、管理器绑定和容量恢复，避免测试依赖尚未完成的 LSM 入口。
 class TranAbortTest : public TranCommitTest {};
 
 // 目的：暂存型事务主动取消后，不把修改写入数据库，也不能再提交。
 // 场景：修改和删除的原值保持不变，新增 key 不出现；同时检查取消登记、
-//       暂存清理、重复取消以及结束后的 put/get/commit。remove 的结束检查待其实现。
+//       暂存清理、重复取消以及结束后的 put/remove/get/commit。
 TEST_F(TranAbortTest, CancelsStagedWritesWithoutChangingDatabase) {
   for (auto level : {IsolationLevel::READ_OP_COMMITTED,
                      IsolationLevel::REPEATABLE_READ,
@@ -1351,6 +1502,7 @@ TEST_F(TranAbortTest, CancelsStagedWritesWithoutChangingDatabase) {
     EXPECT_FALSE(engine->get(added, 0));
     EXPECT_FALSE(context.abort());
     EXPECT_THROW(context.put(added, "too-late"), std::logic_error);
+    EXPECT_THROW(context.remove(existing), std::logic_error);
     EXPECT_THROW(context.get(existing), std::logic_error);
     EXPECT_FALSE(context.commit());
     EXPECT_TRUE(context.isAborted);
