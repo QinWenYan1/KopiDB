@@ -31,6 +31,16 @@ inline std::string isolation_level_to_string(const IsolationLevel &level);
 class LSMEngine;
 class TranManager;
 
+
+// 一个 TranContext 对应一个事务，每次 begin_tran() 都创建独立上下文。
+// 本类不提供内部线程同步，也不会自动绑定到某个线程。
+//
+// 通常由一个线程依次执行本事务的 put/get/remove/commit/abort。
+// 不同线程可以各自操作不同的事务上下文。
+// 若多个线程访问同一个上下文，调用方必须通过外部同步保证串行访问，
+// 包括直接访问其成员；跨线程移交时也必须正确同步。
+//
+// shared_ptr 只管理对象生命周期，不保证上下文成员的并发访问安全。
 class TranContext {
   friend class TranManager;
 
