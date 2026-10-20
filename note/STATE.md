@@ -10,16 +10,16 @@
 
 当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、查询接口、结束登记及 abort 已完成；写入路径的旧方案清理与存储查询过滤尚未完成。
 
-当前推进项：put/abort 与头文件中的 rollback_map_ 已清理，但 remove 仍引用该成员，当前构建失败。先清理该残留及 put 的过时注释，再继续 remove 的独立实现与测试；业务代码由用户手动加入。
+当前推进项：rollback_map_ 清理已完成，构建及当前已实现范围的 32 个相关测试通过；现在独立实现 remove，补齐结束状态检查并完成删除语义的验收。业务代码由用户手动加入。
 
 当前排期约束：项目时间紧，优先沿现有结构完成回滚。迭代器职责重构已经讨论，但列为后续事项，本轮只做必要的判断接入与参数传递。
 
 | 位置 | 当前代码状态 |
 | --- | --- |
 | [TranContext 构造、get、commit](../src/lsm/transation.cpp) | 已按此前讨论实现；接入回滚状态后还需调整有关调用。 |
-| `TranContext::put()` | 已删除旧值查询和备份，逻辑经代码检查；上方仍有“保存第一次修改前的值”的过时注释，本次修改尚未通过构建测试。 |
-| `TranContext::remove()` | 尚未按本轮方案独立实现；仍引用已删除的 rollback_map_，构建失败的直接原因。 |
-| `TranContext::abort()` | 已实现状态检查、回滚登记及上下文清理，前一轮 5 个当前阶段的回滚测试通过；本次删除 rollback_map_.clear() 后尚未重跑。查询层仍未接入回滚名单。 |
+| `TranContext::put()` | 已删除旧值查询和备份，更新函数说明，代码检查、构建及对应回归通过。 |
+| `TranContext::remove()` | 旧值备份引用已清理，仍缺少已结束事务的状态检查；本轮提供独立实现草案，尚未验收完成。 |
+| `TranContext::abort()` | 已实现状态检查、回滚登记及上下文清理；删除旧容器清理后，5 个当前阶段的回滚测试再次通过。查询层仍未接入回滚名单。 |
 | `TranManager::getNextTransactionId()`、`new_tranc()` | 已实现 ID 分配、上下文创建和活跃事务登记。 |
 | [TranManager 成员](../include/lsm/transaction.h) | 已新增 `aborted_tranc_ids_` 和加锁的 const 查询接口 `is_aborted()`；回滚登记已接入并通过对应测试。 |
 | `add_ready_to_flush_tranc_id()` | 同锁更新待刷盘状态与回滚集合；map 更新失败时撤销本次新增的回滚 ID。正常、重复、清理后保留及并发登记测试通过，分配失败分支通过代码检查。 |
@@ -39,7 +39,7 @@
 7. **读未提交 put 的冲突检查暂缓。** 当前先完成回滚主线；后续再讨论是否增加这项约束。
 8. **迭代器重构不作为本轮前置任务。** 保留现有迭代器组合与推进逻辑，在去重之前接入必要的回滚判断；不要求每个迭代器各新增一套过滤。此前讨论的统一 MVCC 迭代器仍是延期的重构方向。
 
-不采用“重新写入旧值/旧版本”作为回滚方案：它不能可靠消除已经写入的较新版本。`rollback_map_` 成员及 put/abort 中的引用已删除，remove 中的残留尚待清理。
+不采用“重新写入旧值/旧版本”作为回滚方案：它不能可靠消除已经写入的较新版本。`rollback_map_` 成员及所有业务引用已删除，相关旧值备份说明已清理。
 
 2026-10-20 已核对 Lab 5.3～5.5：Lab 5.5 的“情形3：事务回滚”确实再次使用作者的 rollback_map_，但明确说明还原方式取决于前面 Lab 的实现，并非必须保留该成员。我们继续按事务 ID 排除版本，因此删除旧值备份及其引用；operations、WAL 的提交/回滚记录仍需保留。后续恢复必须接通持久化事务状态与查询过滤，不能仅跳过 WAL 重放就认为已落入 SST 的取消或未完成版本已失效。参考：[Lab 5.5](https://github.com/Vanilla-Beauty/tiny-lsm/blob/lab-doc-2/src/lab5/lab5.5-Recover.md)。
 
@@ -117,10 +117,11 @@
 
 ## 测试状态
 
-- 最新检查（2026-10-20）：删除 rollback_map_ 成员后执行 `xmake build test_lsm` 失败，错误为 `src/lsm/transation.cpp:106:5: use of undeclared identifier 'rollback_map_'`，来自 remove 的残留引用。本轮未运行测试，以下通过数量属于删除成员之前的验证。
+- 最新检查（2026-10-20）：remove 的残留引用及 put 的过时说明已清理；搜索 src/include/test 没有 rollback_map_ 引用，`xmake build test_lsm` 成功。独立临时目录中运行当前已实现范围的测试，**32/32 通过**；未修改原有失败用例的断言。
+- 本轮过滤器：`--gtest_filter='LSMTest.TranContextConstructor*:LSMTest.TranContextPut*:LSMTest.TranContextGet*:LSMTest.NewTransaction*:LSMTest.TransactionEndRegistration*:TranCommitTest.*:TranAbortTest.Cancels*:TranAbortTest.ExpiredManager*:TranAbortTest.ReadUncommittedRegisters*:TranAbortTest.CannotAbort*'`。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-rollback-map-cleanup-52msmqmp/result.log`。
 - [test/test_lsm.cpp](../test/test_lsm.cpp) 已有事务创建、读写、提交、结束登记等测试，以及 `TranAbortTest` 的 7 个回滚用例。
 - 2026-10-20：新增 3 个 abort 用例，覆盖空事务取消、管理器失效时保留原状态、读未提交取消不改写物理记录；扩充暂存取消用例，检查暂存删除、清空容器、重复调用及已结束的 put/get/commit。已提交事务取消还检查管理器未误记回滚。
-- `xmake build test_lsm` 通过。在独立临时目录复制配置后运行 `test_lsm --gtest_filter='LSMTest.TranContext*:LSMTest.NewTransaction*:LSMTest.TransactionEndRegistration*:TranCommitTest.*:TranAbortTest.*'`，**35 个测试：32 个通过，3 个失败**。当前阶段的 5 个 abort 测试、10 个 commit 测试及创建/put/get/登记相关测试通过。
+- 前一轮较宽范围验证：在独立临时目录复制配置后运行 `test_lsm --gtest_filter='LSMTest.TranContext*:LSMTest.NewTransaction*:LSMTest.TransactionEndRegistration*:TranCommitTest.*:TranAbortTest.*'`，**35 个测试：32 个通过，3 个失败**。下述 3 个失败依赖后续阶段，本轮未重跑，仍未解决。
 - 失败一：`LSMTest.TranContextTest` 抛出 `TranManager::new_tranc: engine is not initialized`；LSM 构造中的组件绑定尚未实现，属于 PLAN 第③阶段。
 - 失败二、三：`TranAbortTest.ReadUncommittedRestoresPreviousVersionInMemoryAndSst`、`TranAbortTest.KeepsNewerCommitButHidesAbortedVersionFromOlderSnapshot` 仍读到取消版本，或被取消墓碑遮住旧值；查询过滤尚未接入，属于 PLAN 第③阶段。保留原断言，未降低预期。
 - 测试执行文件：`build/macosx/arm64/debug/test_lsm`（实际使用绝对路径）；日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-abort-context-review-738zvtgk/result.log`。
