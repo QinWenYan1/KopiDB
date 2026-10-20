@@ -94,13 +94,23 @@ void TranContext::put(const std::string &key, const std::string &value) {
 void TranContext::remove(const std::string &key) {
   spdlog::trace("TranContext--remove({}) called, tranc_id={}", key, tranc_id_);
 
-  auto isolation_level = get_isolation_level();
+  // 1. 已结束的事务不能继续删除。
+  // 必须在追加日志记录、修改暂存表或引擎之前检查，
+  // 避免 abort 后又产生新的操作。
+  if (isCommited || isAborted) {
+    throw std::logic_error(
+        "TranContext::remove: transaction has already finished");
+  }
 
-  // 所有隔离级别都需要先写入 operations 中
+  // 2. 所有隔离级别都需要先写入 operations 中
   operations.emplace_back(Record::deleteRecord(this->tranc_id_, key));
 
+  // 3. 按隔离级别决定立即写入墓碑还是暂存墓碑
+  auto isolation_level = get_isolation_level();
   if (isolation_level == IsolationLevel::READ_UNOP_COMMITTED) {
-    // 1 如果隔离级别是 READ_UNOP_COMMITTED, 直接写入 memtable
+    // Engine::remove 会写入 {key, "", tranc_id_}
+    // 这是新增或更新本事务的删除版本，不是物理删除历史节点
+    // 不需要备份旧值：取消事务后，由查询过滤排除这个墓碑版本
     engine_->remove(key, tranc_id_);
 
     spdlog::trace(
@@ -110,8 +120,13 @@ void TranContext::remove(const std::string &key) {
     return;
   }
 
-  // 2 其他隔离级别需要 暂存到 temp_map_ 中, 统一提交后才在数据库中生效
-  temp_map_[key] = "";
+  // 空字符串表示“本事务准备删除这个 key”
+  // 如果此前 put 过这个 key，就用墓碑覆盖暂存值
+  //
+  // 不能用 temp_map_.erase(key)：
+  // 那会丢失删除意图，随后 get 可能重新读到数据库中的旧值。
+  // 保留墓碑后，本事务 get 返回不存在，commit 再应用这次删除。
+  temp_map_.insert_or_assign(key,std::string{});
   spdlog::trace("TranContext--{}: remove({}) stored in temp map",
                 isolation_level_to_string(isolation_level_), key);
 }
