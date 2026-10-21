@@ -10,9 +10,9 @@
 
 当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、状态查询接口、结束登记、abort 及写入路径的旧方案清理已完成；存储查询过滤尚未完成。
 
-当前推进项：第②阶段已完成，之前 remove 及相关回归为 36/36 通过。第③阶段的 SkipList::get 已通过完整 test_skiplist（29/29，包含 6 个回滚测试）；MemTable 的公开 get 已通过 get_、cur_get_、frozen_get_ 将回调传到底层跳表。2026-10-21 新增 7 个回滚点查测试，构建及完整 test_memtable 37/37 通过。下一函数为 get_record，业务代码仍由用户手动加入。
+当前推进项：第②阶段已完成，之前 remove 及相关回归为 36/36 通过。第③阶段的 SkipList::get 已通过完整 test_skiplist（29/29，包含 6 个回滚测试）；MemTable 的 get 和 get_record 已通过内部查询将回调传到底层跳表。2026-10-21 get_record 检查通过，扩充跨表回滚测试并新增副本与空结果测试，完整 test_memtable 38/38 通过，test_lsm 构建通过。下一函数为 get_batch，业务代码仍由用户手动加入。
 
-当前 SkipList::get 和 MemTable::get 在传入判断函数时会排除已取消版本，保留有效墓碑，并选出最大有效版本。公开 get 的回滚集成已验证；返回的原节点迭代器不保存回调，后续 ++ 不自动筛选。get_record/get_batch、Engine 和 commit 调用点尚未传入回滚判断，不能据此宣称数据库回滚查询已经完成。
+当前 SkipList::get 和 MemTable::get/get_record 在传入判断函数时会排除已取消版本，保留有效墓碑，并选出最大有效版本。get 返回的原节点迭代器不保存回调，后续 ++ 不自动筛选；get_record 在锁内复制结果，返回后不再依赖节点。get_batch、Engine 和 commit 调用点尚未传入回滚判断，不能据此宣称数据库回滚查询已经完成。
 
 2026-10-20 用户纠正任务范围：撤回把 LSM 构造函数绑定作为当前下一步的安排，组件初始化整合按 Lab 5.5 推进。绑定是引擎使用管理器的依赖，但现有事务测试已显式完成绑定，可以先验证回滚逻辑；本轮不以修复 LSM 初始化入口为前置任务，也不把测试绑定视为生产入口已完成。
 
@@ -30,7 +30,7 @@
 | `add_flushed_tranc_id()` | 会清理待刷盘状态表；该表不能充当长期回滚名单。 |
 | `write_tranc_id_file()`、`read_tranc_id_file()` | 当前均为空函数；正常重启后的状态与 ID 延续尚未完成。 |
 | [LSM 构造函数](../src/lsm/engine.cpp) | 已创建 Engine 和 TranManager，互相绑定仍为待办，按用户要求留在 Lab 5.5 初始化整合时处理；当前事务测试自行绑定。 |
-| 查询与迭代器 | SkipList 和 MemTable::get 点查链支持回滚判断并通过测试；get_record/get_batch、上层点查链及范围迭代器尚未接通。 |
+| 查询与迭代器 | SkipList 和 MemTable::get/get_record 点查链支持回滚判断并通过测试；get_batch、上层点查链及范围迭代器尚未接通。 |
 
 ## 已确认的设计
 
@@ -124,8 +124,9 @@
 
 ## 测试状态
 
-- 最新检查（2026-10-21）：公开 get 的签名、回调转发、锁顺序及原节点返回约定正确。新增 7 个 MemTable 回滚点查测试，`xmake build test_memtable` 成功；在独立临时目录复制配置后运行完整 test_memtable，**37/37 通过**。覆盖取消新值/墓碑、活跃表与冻结表的候选比较、多张冻结表、有效墓碑、相同版本来源优先、全部取消/缺失 key，以及独立查询间更新取消状态。未修改业务代码。
-- 本轮日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-memtable-get-rollback-ohi4rqe3/result.log`。日志中的无法打开 missing/fail.sst 来自预期失败的刷盘测试，该测试通过。
+- 最新检查（2026-10-21）：get_record 的签名、回调转发、锁顺序及锁内复制正确。扩充已有回滚测试的公共校验函数，让 get_record 同样核对跨表场景的预期值和版本；新增 GetRecordRollbackPreservesCopiesAndEmptyResults，覆盖有效墓碑、全部取消、空表、缺失 key、读取上限以及后续更新/清空不改变返回副本。`xmake build test_memtable`、`xmake build test_lsm` 成功，独立临时目录复制配置后运行完整 test_memtable，**38/38 通过**。test_lsm 本轮只构建、未运行；未修改业务代码。
+- 本轮日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-get-record-rollback-vaop21p9/result.log`。日志中的无法打开 missing/fail.sst 来自预期失败的刷盘测试，该测试通过。
+- 前一轮公开 get 检查：新增 7 个回滚点查测试，完整 MemTable **37/37 通过**。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-memtable-get-rollback-ohi4rqe3/result.log`。
 - 前一轮 get_ 检查（2026-10-21）：test_lsm 与 test_memtable 均构建成功，MemTable **30/30**、`TranCommitTest.*` **10/10** 通过。本轮没有重跑提交测试，commit 的回滚判断仍待接入。对应日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-get-internal-memtable-942g3zya/result.log`、`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-get-internal-commit-ompvxjq9/result.log`。
 - 上一轮 SkipList 检查（2026-10-20）：用户修正读取上限条件后，构建及完整 test_skiplist **29/29 通过**，包含全部 6 个回滚测试。此前上限条件导致的 3 个失败已解决。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-skiplist-abort-fixed-djbup06n/result.log`。
 - 上一轮 LSM 检查（2026-10-20）：remove 的删除路径及结束状态检查正确；搜索 src/include/test 没有 rollback_map_ 引用，`xmake build test_lsm` 成功。独立临时目录中运行当时已实现范围的测试，**36/36 通过**；这是本次 SkipList 修改之前的结果，未修改原有失败用例的断言。

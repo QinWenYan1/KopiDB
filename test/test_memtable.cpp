@@ -794,7 +794,7 @@ TEST(MemTableTest, MvccBatchPreservesOrderDuplicatesAndMissingKeys) {
 }
 
 namespace {
-// 通过公开 get 验证完整查询链；先判空，再核对值和真实版本号。
+// 通过 get 和 get_record 验证两条公开点查入口；分别核对预期值和真实版本号。
 void expect_memtable_point(
     MemTable &table, const std::string &key, uint64_t read_id,
     const std::function<bool(uint64_t)> &is_aborted,
@@ -805,6 +805,11 @@ void expect_memtable_point(
   EXPECT_EQ(it.get_key(), key);
   EXPECT_EQ(it.get_value(), value);
   EXPECT_EQ(it.get_cur_tranc_id(), version);
+
+  const auto record = table.get_record(key, read_id, is_aborted);
+  ASSERT_TRUE(record.has_value());
+  EXPECT_EQ(record->first, value);
+  EXPECT_EQ(record->second, version);
 }
 } // namespace
 
@@ -978,6 +983,53 @@ TEST(MemTableTest, RollbackGetUsesUpdatedCancellationStateBetweenQueries) {
   cancelled.insert(3);
   EXPECT_TRUE(table.get("K", 0, is_aborted).is_end());
   expect_memtable_point(table, "K", 0, {}, "new", 5);
+}
+
+// 目的：get_record 排除回滚版本后，仍区分有效墓碑与未命中，并返回独立副本。
+// 场景：K@3 有效、K@5 取消；T@7 是有效墓碑、T@9 取消；only 只有取消版本。
+//       有效记录分别位于活跃表和冻结表，查询后再更新 K@3 并清空表。
+// 预期：K 返回 old@3，T 保留墓碑@7；全部取消、超出上限或缺失返回 nullopt；
+//       已返回的副本不会随后续更新或清空而改变。
+TEST(MemTableTest, GetRecordRollbackPreservesCopiesAndEmptyResults) {
+  for (bool frozen_source : {false, true}) {
+    SCOPED_TRACE(frozen_source);
+    MemTable table;
+    const auto is_aborted = [](uint64_t id) { return id == 5 || id == 9; };
+    EXPECT_FALSE(table.get_record("K", 0, is_aborted).has_value());
+    table.put("K", "old", 3);
+    table.remove("T", 7);
+    table.put("only", "cancelled", 5);
+    if (frozen_source)
+      table.frozen_cur_table();
+    table.put("K", "cancelled", 5);
+    table.put("T", "cancelled", 9);
+
+    const auto saved = table.get_record("K", 0, is_aborted);
+    const auto tombstone = table.get_record("T", 0, is_aborted);
+    ASSERT_TRUE(saved.has_value());
+    ASSERT_TRUE(tombstone.has_value());
+    EXPECT_EQ(saved->first, "old");
+    EXPECT_EQ(saved->second, 3u);
+    EXPECT_EQ(tombstone->first, "");
+    EXPECT_EQ(tombstone->second, 7u);
+    EXPECT_FALSE(table.get_record("K", 2, is_aborted).has_value());
+    EXPECT_FALSE(table.get_record("only", 0, is_aborted).has_value());
+    EXPECT_FALSE(table.get_record("missing", 0, is_aborted).has_value());
+    EXPECT_FALSE(table.get_record("K", 0, [](uint64_t) { return true; })
+                     .has_value());
+
+    table.put("K", "updated", 3);
+    const auto updated = table.get_record("K", 0, is_aborted);
+    ASSERT_TRUE(updated.has_value());
+    EXPECT_EQ(updated->first, "updated");
+    EXPECT_EQ(updated->second, 3u);
+    table.clear();
+    EXPECT_FALSE(table.get_record("K", 0, is_aborted).has_value());
+    EXPECT_EQ(saved->first, "old");
+    EXPECT_EQ(saved->second, 3u);
+    EXPECT_EQ(tombstone->first, "");
+    EXPECT_EQ(tombstone->second, 7u);
+  }
 }
 
 // 目的：验证 get_record 返回独立副本，同 key、同版本的后续更新不会改变旧结果。
