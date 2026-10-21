@@ -174,24 +174,34 @@ MemTable::get(const std::string &key, uint64_t tranc_id,
 }
 
 std::optional<std::pair<std::string, uint64_t>>
-MemTable::get_record(const std::string &key, uint64_t tranc_id) {
+MemTable::get_record(
+  const std::string &key, 
+  uint64_t tranc_id,
+  const std::function<bool(uint64_t)> &is_aborted
+) {
   spdlog::trace("MemTable--get_record({}, {})", key, tranc_id);
 
-  // 沿用统一加锁顺序：先活跃表，再冻结表
-  // 锁的保护范围同时覆盖查找和 value 的复制
+  // 1. 按统一顺序获取读锁：先活跃表，再冻结表
+  // 锁同时保护查找过程和后面的结果复制
+  // 避免刚找到节点，它的 value 就被其他线程修改
   std::shared_lock<std::shared_mutex> cur_lock(cur_mtx);
   std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
 
-  // 已持有锁，调用无锁版本 get_，避免重复获取同一把锁
-  // get_ 已负责可见性过滤，以及活跃表、冻结表之间的版本比较
-  auto it = get_(key, tranc_id);
+  // 2. 已持有两把锁，调用不自行加锁的 get_
+  // 不调用公开 get，避免重复获取同一把锁
+  //
+  // get_ 会将读取上限和回滚判断传到底层：
+  // 例如 k@5 已回滚、k@3 有效，就让 k@3 参与跨表比较
+  // 最后返回所有内存表中符合条件的最大版本
+  auto it = get_(key, tranc_id,is_aborted);
   if (!it.is_valid())
     return std::nullopt;
 
-  // return 会先构造返回结果，再销毁局部锁对象
-  // 因此字符串在锁内完成复制，返回后不再依赖原节点
+  // 3. 在锁释放之前复制 value 和真实版本号
+  // 返回的是独立结果，后续对原节点的修改不会改变这份结果
   //
-  // 墓碑也要返回，让 Engine 与 SST 中的版本比较后再决定结果
+  // 有效墓碑也必须保留，例如 {"", 7}
+  // Engine 还要把它与 SST 中的记录比较，才能决定最终是否存在
   return std::make_pair(it.get_value(), it.get_cur_tranc_id());
 }
 

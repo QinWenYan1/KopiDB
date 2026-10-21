@@ -65,10 +65,15 @@ public:
   SkipListIterator get(const std::string &key, uint64_t tranc_id,
                        const std::function<bool(uint64_t)> &is_aborted = {});
 
-  // 点查询：在读锁保护下复制记录，返回 {value, 真实版本号}。
-  // 未命中返回 nullopt；墓碑保留为 {"", 版本号}。
+  // 点查询：在读锁内完成版本筛选，并复制 {value, 真实版本号}
+  // 传入 is_aborted 时排除回滚版本；不传时保持原有查询行为
+  // 未命中返回 nullopt；有效墓碑保留为 {"", 版本号}
   std::optional<std::pair<std::string, uint64_t>>
-  get_record(const std::string &key, uint64_t tranc_id);
+  get_record(
+    const std::string &key, 
+    uint64_t tranc_id,
+    const std::function<bool(uint64_t)> &is_aborted = {}
+   );
 
   std::vector<
       std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
