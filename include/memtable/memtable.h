@@ -57,7 +57,14 @@ public:
   void put_batch(const std::vector<std::pair<std::string, std::string>> &kvs,
                  uint64_t tranc_id);
 
-  SkipListIterator get(const std::string &key, uint64_t tranc_id);
+  // 加锁查询 MemTable，返回符合读取上限且未回滚的命中节点
+  // 有效墓碑也返回；未命中返回空迭代器
+  // 回调只用于本次查找，不保存在返回的迭代器中
+  SkipListIterator get(
+    const std::string &key, 
+    uint64_t tranc_id,
+    const std::function<bool(uint64_t)> &is_aborted = {}
+  );
 
   // 点查询：在读锁保护下复制记录，返回 {value, 真实版本号}。
   // 未命中返回 nullopt；墓碑保留为 {"", 版本号}。
