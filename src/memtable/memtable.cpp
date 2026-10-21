@@ -237,11 +237,12 @@ MemTable::get_(const std::string &key, uint64_t tranc_id,
 // 返回结果中的每一项对应一个输入 key：
 //   first：被查询的 key
 //   second：optional，表示是否找到可见记录
-//     有值时，内部 pair 保存 {value, 记录的真实版本号}
-//     无值时，表示没有找到符合读取上限的记录
+//   有值时，内部 pair 保存 {value, 记录的真实版本号}
+//   无值时，表示没有找到符合读取上限的记录
 std::vector<
     std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
-MemTable::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
+MemTable::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id,
+                    const std::function<bool(uint64_t)> &is_aborted) {
   spdlog::trace("MemTable--get_batch with {} keys", keys.size());
 
   // 每个输入 key 都会产生一个结果，因此提前预留空间。
@@ -249,39 +250,45 @@ MemTable::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
   std::vector<
       std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
       results;
+
+  // 1. 输入为空时，没有任何 key 需要查询，可以直接返回。
+  // 判断的是 keys.empty()，不是尚未填充的 results.empty()。
+  if (keys.empty()) 
+    return results;
+
+  // 每个输入 key 都会产生一个结果，提前预留对应容量
+  // reserve 不创建元素，后面仍然逐项 emplace_back
   results.reserve(keys.size());
 
   // 2. 按统一顺序获取读锁：先活跃表，再冻结表
   //
   // 两把锁覆盖整个批次，保护查找以及后续 key/value 的复制
   // 避免查完活跃表、再查冻结表的间隙发生冻结或移除
-  // 读锁允许其他读者进入，但会阻止需要相应写锁的修改操作。、
+  // 读锁允许其他读者进入，但会阻止需要相应写锁的修改操作。
   std::shared_lock<std::shared_mutex> cur_lock(cur_mtx);
   std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
 
   for (const auto &key : keys) {
-    // 3. 复用 get_，统一单条查询与批量查询的版本选择规则
+    // 3. 复用 get_，让单条查询和批量查询使用相同规则：
+    // 先排除超过读取上限或已回滚的版本，
+    // 再比较活跃表、冻结表的候选，选出最大有效版本。
     //
-    // get_ 会先按 tranc_id 筛选可见版本，再跨表选择最大版本：
-    //   tranc_id == 0：不限制版本上限
-    //   tranc_id != 0：只允许版本号 <= tranc_id 的记录
+    // 例如 k@5 已回滚、k@3 有效，应该返回 k@3，
+    // 不能先取出 k@5，再把整个 key 判成不存在。
     //
-    // 不能在活跃表命中后直接返回：
-    // 例如活跃表是 K@5，冻结表是 K@9，最新查询应该选 K@9
-    //
-    // 这里已经持有两把锁，必须调用不自行加锁的 get_
-    // 如果调用公开 get()，就会重复获取相同的 shared_mutex
-    //
-    // 为什么不先查cur表，锁一张表，然后要查下一张表了，再锁另外一张？
-    // 不能直接认为分开加锁就一定更好，关键在于：两段查询之间，表可能发生变化
-    auto it = get_(key, tranc_id);
+    // 当前已经持有锁，因此不能调用会再次加锁的
+    // 公开 get 或 get_record
+    auto it = get_(key, tranc_id, is_aborted);
+
     if (it.is_valid()) {
+      // 4. 在锁内复制结果，返回后不再依赖原节点
+      // 有效墓碑也保留为 {"", 版本号}
+      // Engine 后续还需要把它与 SST 中的候选比较
       results.emplace_back(
           key, std::make_pair(it.get_value(), it.get_cur_tranc_id()));
     } else {
-      // 没有可见记录：可能 key 不存在，也可能所有版本都超过读取上限
-      //
-      // 保留这个 key 对应的位置，用 nullopt 表示未命中
+      // 没找到符合条件的记录，也必须保留这个输入的位置
+      // 可能是 key 不存在、版本全部超过上限，或版本全部已回滚
       results.emplace_back(key, std::nullopt);
     }
   }

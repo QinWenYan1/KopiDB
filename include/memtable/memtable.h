@@ -72,9 +72,14 @@ public:
   get_record(const std::string &key, uint64_t tranc_id,
              const std::function<bool(uint64_t)> &is_aborted = {});
 
+  // 批量查询：结果与输入一一对应，保留输入顺序和重复 key
+  // 每项保存 {key, optional<{value, 真实版本号}>}
+  // 回滚版本不参与选择；有效墓碑保留，未命中使用 nullopt
   std::vector<
       std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
-  get_batch(const std::vector<std::string> &keys, uint64_t tranc_id);
+  get_batch(const std::vector<std::string> &keys, uint64_t tranc_id,
+            const std::function<bool(uint64_t)> &is_aborted = {});
+
   void remove(const std::string &key, uint64_t tranc_id);
   void remove_batch(const std::vector<std::string> &keys, uint64_t tranc_id);
 
