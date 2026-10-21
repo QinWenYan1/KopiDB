@@ -2,6 +2,7 @@
 #include "block/block_iterator.h"
 #include "config/config.h"
 #include "logger/logger.h"
+#include <functional>
 #include <gtest/gtest.h>
 #include <iomanip>
 #include <limits>
@@ -468,6 +469,131 @@ TEST_F(BlockTest, TrancPredicateTest) {
   std::vector<std::string> expected = {"value2", "value3", "value4", "value55",
                                        "value6"};
   EXPECT_EQ(results, expected);
+}
+
+namespace {
+// 通过公开点查取得下标，再读取选中的记录，核对 key、value 和真实版本号。
+// 下标构造的迭代器这里只负责读取；不表示其自身已经支持回滚过滤。
+void expect_block_point(
+    const std::shared_ptr<Block> &block, const std::string &key,
+    uint64_t read_id, const std::function<bool(uint64_t)> &is_aborted,
+    size_t expected_index, const std::string &value, uint64_t version) {
+  SCOPED_TRACE("key=" + key + ", read_id=" + std::to_string(read_id));
+  const auto idx = block->get_idx_binary(key, read_id, is_aborted);
+  ASSERT_TRUE(idx.has_value());
+  ASSERT_LT(*idx, block->size());
+  EXPECT_EQ(*idx, expected_index);
+  BlockIterator it(block, *idx, 0, true);
+  EXPECT_EQ(it->first, key);
+  EXPECT_EQ(it->second, value);
+  EXPECT_EQ(it.get_cur_tranc_id(), version);
+}
+} // namespace
+
+// 目的：取消新值或墓碑后，连续跳过取消版本，找回有效旧版本。
+// 场景：k@9、k@7 取消，k@5 有效；版本 9 分别为普通值和墓碑。
+// 预期：最新及上限 >= 5 的查询返回 k@5；上限 4 无结果；原始编码不变。
+TEST_F(BlockTest, RollbackPointSkipsCancelledValuesAndTombstones) {
+  for (bool tombstone : {false, true}) {
+    SCOPED_TRACE(tombstone);
+    auto block = std::make_shared<Block>(4096);
+    ASSERT_TRUE(block->add_entry("a", "a1", 1, false));
+    const std::string newest = tombstone ? "" : "cancelled";
+    ASSERT_TRUE(block->add_entry("k", newest, 9, false));
+    ASSERT_TRUE(block->add_entry("k", "cancelled-7", 7, false));
+    ASSERT_TRUE(block->add_entry("k", "old", 5, false));
+    ASSERT_TRUE(block->add_entry("z", "z1", 1, false));
+    const auto encoded = block->encode();
+    const auto is_aborted = [](uint64_t id) { return id == 9 || id == 7; };
+
+    for (uint64_t read_id : {0u, 5u, 6u, 7u, 8u, 9u}) {
+      expect_block_point(block, "k", read_id, is_aborted, 3, "old", 5);
+    }
+    EXPECT_FALSE(block->get_idx_binary("k", 4, is_aborted).has_value());
+    expect_block_point(block, "k", 0, {}, 1, newest, 9);
+    EXPECT_EQ(block->encode(), encoded);
+  }
+}
+
+// 目的：回滚过滤不能顺便删除有效墓碑，否则会让已删除的旧值重新出现。
+// 场景：k@11 已取消、k@9 是有效墓碑、k@5 是旧值。
+// 预期：上限 0/9/10/11 返回墓碑@9；上限 8 返回 old@5。
+TEST_F(BlockTest, RollbackPointRetainsValidTombstone) {
+  auto block = std::make_shared<Block>(4096);
+  ASSERT_TRUE(block->add_entry("k", "cancelled", 11, false));
+  ASSERT_TRUE(block->add_entry("k", "", 9, false));
+  ASSERT_TRUE(block->add_entry("k", "old", 5, false));
+  const auto is_aborted = [](uint64_t id) { return id == 11; };
+  for (uint64_t read_id : {0u, 9u, 10u, 11u}) {
+    expect_block_point(block, "k", read_id, is_aborted, 1, "", 9);
+  }
+  expect_block_point(block, "k", 8, is_aborted, 2, "old", 5);
+}
+
+// 目的：目标 key 的全部版本取消时返回空，不返回邻接 key，也不越过块尾。
+// 场景：块首 a、中间 k、块尾 z 的版本 5/3 均取消，只有 b@1 有效。
+//       同时检查空块、缺失 key 以及读取上限。
+TEST_F(BlockTest, RollbackPointNeverReturnsNeighbourWhenAllVersionsCancelled) {
+  auto block = std::make_shared<Block>(4096);
+  const auto is_aborted = [](uint64_t id) { return id == 5 || id == 3; };
+  EXPECT_FALSE(block->get_idx_binary("k", 0, is_aborted).has_value());
+  ASSERT_TRUE(block->add_entry("a", "a5", 5, false));
+  ASSERT_TRUE(block->add_entry("a", "a3", 3, false));
+  ASSERT_TRUE(block->add_entry("b", "b1", 1, false));
+  ASSERT_TRUE(block->add_entry("k", "k5", 5, false));
+  ASSERT_TRUE(block->add_entry("k", "k3", 3, false));
+  ASSERT_TRUE(block->add_entry("z", "z5", 5, false));
+  ASSERT_TRUE(block->add_entry("z", "z3", 3, false));
+
+  for (uint64_t read_id : {0u, 4u, 6u}) {
+    SCOPED_TRACE(read_id);
+    for (const std::string key : {"a", "k", "z", "missing"}) {
+      SCOPED_TRACE(key);
+      EXPECT_FALSE(block->get_idx_binary(key, read_id, is_aborted).has_value());
+    }
+    expect_block_point(block, "b", read_id, is_aborted, 2, "b1", 1);
+  }
+}
+
+// 目的：二分命中同 key 的中间版本时，仍能找回位于左侧的最大有效版本。
+// 场景：a、k@13/11/9/7/5、z；二分首次落在 k@9，只有 13 被取消。
+// 预期：最新查询返回左侧的 k@11，上限 10 返回 k@9，上限 6 返回 k@5。
+TEST_F(BlockTest, RollbackPointFindsNewerVersionBeforeBinaryHit) {
+  auto block = std::make_shared<Block>(4096);
+  ASSERT_TRUE(block->add_entry("a", "a1", 1, false));
+  for (uint64_t id : {13u, 11u, 9u, 7u, 5u}) {
+    ASSERT_TRUE(block->add_entry("k", "k" + std::to_string(id), id, false));
+  }
+  ASSERT_TRUE(block->add_entry("z", "z1", 1, false));
+  const auto is_aborted = [](uint64_t id) { return id == 13; };
+  expect_block_point(block, "k", 0, is_aborted, 2, "k11", 11);
+  expect_block_point(block, "k", 10, is_aborted, 3, "k9", 9);
+  expect_block_point(block, "k", 6, is_aborted, 5, "k5", 5);
+}
+
+// 目的：编解码后仍能按完整的 64 位事务 ID 过滤，版本 0 也能作为有效候选。
+// 场景：k 有 UINT64_MAX、超过 32 位的 middle、0 三个版本，先取消 max，再取消 middle。
+// 预期：先返回 middle，再返回 0；不传回调仍能读到 max，查询不改写编码。
+TEST_F(BlockTest, RollbackPointSupportsDecodedBlocksAndFullWidthIds) {
+  const uint64_t max_id = std::numeric_limits<uint64_t>::max();
+  const uint64_t middle_id = (uint64_t{1} << 40) + 9;
+  Block original(4096);
+  ASSERT_TRUE(original.add_entry("k", "max", max_id, false));
+  ASSERT_TRUE(original.add_entry("k", "middle", middle_id, false));
+  ASSERT_TRUE(original.add_entry("k", "zero", 0, false));
+  const auto encoded = original.encode();
+  auto block = Block::decode(encoded);
+  const auto cancel_max = [max_id](uint64_t id) { return id == max_id; };
+  for (uint64_t read_id : {uint64_t{0}, middle_id, max_id}) {
+    expect_block_point(block, "k", read_id, cancel_max, 1, "middle", middle_id);
+  }
+  expect_block_point(block, "k", 1, cancel_max, 2, "zero", 0);
+  const auto cancel_both = [max_id, middle_id](uint64_t id) {
+    return id == max_id || id == middle_id;
+  };
+  expect_block_point(block, "k", 0, cancel_both, 2, "zero", 0);
+  expect_block_point(block, "k", 0, {}, 0, "max", max_id);
+  EXPECT_EQ(block->encode(), encoded);
 }
 
 // 目的：点查询选择不超过读上限的最新版本。

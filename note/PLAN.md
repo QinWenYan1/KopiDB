@@ -1,6 +1,6 @@
 # KopiDB 当前任务计划：事务回滚
 
-最后更新：2026-10-21。本文件只记录本轮任务、实施顺序和验收标准；项目状态、全局约定和延期事项统一见 [STATE.md](STATE.md)。
+最后更新：2026-10-22。本文件只记录本轮任务、实施顺序和验收标准；项目状态、全局约定和延期事项统一见 [STATE.md](STATE.md)。
 
 当前目标：完成 Lab 5.2 中的逻辑回滚，使事务取消后，查询能跳过其写入的版本并找到有效旧版本。
 
@@ -18,9 +18,9 @@
 
 ## 当前推进项
 
-**第②阶段已完成；第③阶段的 `Block::adjust_idx_by_tranc_id()` 已修正并通过代码检查及既有回归。当前下一函数为 `Block::get_idx_binary()`，草案已提供，待用户加入。**
+**第②阶段已完成；第③阶段的 Block::get_idx_binary → adjust_idx_by_tranc_id 回滚查询链已通过测试。当前下一函数为 `Block::get_value_binary()`，草案已提供，待用户加入。**
 
-2026-10-21 最新检查：adjust_idx_by_tranc_id 的 while 已只检查下标和同 key 边界；读取上限与回滚判断留在循环体内，之前的查询回归已修复。xmake build test_block 成功，独立临时目录运行完整 test_block：18/18 通过。非空回调尚无公开入口，回滚筛选本轮依据代码检查，待 get_idx_binary 接通后补充集成测试。
+2026-10-22 最新检查：get_idx_binary 已将回调传给 adjust_idx_by_tranc_id，正确处理空块、二分边界和负数结果。新增 5 个回滚点查测试，xmake build test_block 成功，独立临时目录运行完整 test_block：23/23 通过。已从公开入口验证连续取消、取消墓碑、有效墓碑、全部取消不串到邻居、历史上限、二分命中中间版本、编解码后的 64 位及版本 0 查询；编码不被查询改写。
 
 此前 MemTable 阶段：完整回归 41/41 通过，test_lsm 构建通过；该结果发生在本轮 Block 修改之前。Engine 回滚查询的 2 个既有失败用例仍待上层接通，本轮未重跑。
 
@@ -36,9 +36,9 @@
 
 已核对 SST 点查询调用链：SST::get → SstIterator::seek（由构造函数调用）→ 按 key 构造 BlockIterator → Block::get_idx_binary → adjust_idx_by_tranc_id。adjust_idx_by_tranc_id 已支持可选回调、越界判定、回到同 key 组首、寻找满足读取上限且未回滚的首个版本，无候选返回 -1，保留有效墓碑。上限 0 仅在没有回调时直接返回组首；有回调仍须筛选。
 
-下一函数 get_idx_binary：声明增加可选回调，保留 [left, right) 二分查找；命中 key 后将回调传给 adjust_idx_by_tranc_id，将 -1 转成 nullopt，否则返回记录下标。原代码仍有一条“上限 0 就直接返回组首”的过时注释，已提示改为包含“无回调”的完整条件，不阻塞下一函数。
+已完成 get_idx_binary：声明增加可选回调，保留 [left, right) 二分查找；命中 key 后将回调传给 adjust_idx_by_tranc_id，将 -1 转成 nullopt，否则返回记录下标。上限 0 的注释已补充“无回调”的条件。
 
-本轮未新增测试、未修改业务代码。get_idx_binary 的公开回调入口接通后补充取消值/墓碑、连续取消、全部取消不串到下一 key、历史读取和默认回调测试。get_value_binary、BlockIterator/SST、Engine 和 commit 的非空回调接入仍待完成。
+下一函数 get_value_binary：声明增加可选回调，转发给 get_idx_binary；无下标返回 nullopt，有下标则通过 offsets 读取 value，保留有效墓碑的空字符串。本轮只修改了测试和记录，业务代码由用户加入。BlockIterator/SST、Engine 和 commit 的非空回调接入仍待完成，当前测试不代表迭代器推进已经过滤回滚版本。
 
 已通过的 SkipList 验收：取消值/墓碑后找到旧版本、连续取消且不改变物理记录、保留有效墓碑、同时遵守版本上限、全部取消/空表/缺失 key 边界，以及未提供回调时保持原行为。完整回归同时覆盖原有 MVCC、遍历、谓词与物理删除行为。
 
@@ -96,8 +96,9 @@
 - [x] 接通公开 `MemTable::get`，补充 7 个回滚测试；完整 MemTable 回归 37/37 通过。
 - [x] 接通 `MemTable::get_record`，在读锁内复制筛选后的记录；扩充跨表测试并新增副本与空结果测试，MemTable 38/38 通过，上层调用构建通过。
 - [x] 接通 `MemTable::get_batch`，新增 3 个测试验证批量结果、逐条查询一致性及副本稳定性；完整 MemTable 41/41 通过，上层调用构建通过。
-- [x] 修正 `Block::adjust_idx_by_tranc_id` 的循环条件，代码检查与完整 Block 18/18 回归通过；非空回调测试待公开入口接通。
-- [ ] 接通 `Block::get_idx_binary`，通过公开入口验证上述筛选（当前草案）。
+- [x] 修正 `Block::adjust_idx_by_tranc_id` 的循环条件；已通过 get_idx_binary 的非空回调集成测试。
+- [x] 接通 `Block::get_idx_binary`，新增 5 个回滚测试；完整 Block 23/23 通过。
+- [ ] 接通 `Block::get_value_binary`，返回筛选后的 value，区分有效墓碑与未命中（当前草案）。
 - [ ] 明确回滚判断如何传入点查询链，以及查询期间的管理器生命周期。
 - [ ] 接通 SST 点查询链：`sst_get_`、候选 SST 查询及 SST/Block 版本选择。
 - [ ] 在 `Engine::get/get_batch` 中使用一致的回滚判断；上限 0 仍过滤回滚版本。

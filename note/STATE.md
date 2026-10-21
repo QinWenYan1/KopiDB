@@ -1,6 +1,6 @@
 # KopiDB 项目状态
 
-最后核对：2026-10-21。下一步与待办见 [PLAN.md](PLAN.md)。
+最后核对：2026-10-22。下一步与待办见 [PLAN.md](PLAN.md)。
 
 本文件记录当前事实、已确认的设计、全局约定、验收边界和延期事项。代码与记录不一致时，先检查代码，再更新记录；不能把讨论通过的方案当作已经实现。[PLAN.md](PLAN.md) 只记录本轮任务、执行顺序、TODO 与具体的验收场景。
 
@@ -12,9 +12,9 @@
 
 当前推进项：第②阶段已完成，之前 remove 及相关回归为 36/36 通过。第③阶段的 SkipList::get 已通过完整 test_skiplist（29/29，包含 6 个回滚测试）；MemTable 的 get/get_record/get_batch 已通过内部查询将回调传到底层跳表。2026-10-21 get_batch 检查通过，新增 3 个批量回滚测试，完整 test_memtable 41/41 通过，test_lsm 构建通过。下一步为 SST/Block 点查询链，继续逐函数推进，业务代码仍由用户手动加入。
 
-2026-10-21 最新 Block 检查：adjust_idx_by_tranc_id 的 while 条件已修正，构建与完整 test_block 18/18 通过，之前 7 个失败均已解决。回滚分支通过代码检查，非空回调行为尚待公开入口测试。当前提供 get_idx_binary 的回调转发草案，业务代码待用户加入；第 370 行仍有一条关于上限 0 的过时注释，已提示修正。SST 回滚过滤尚未完成。
+2026-10-22 最新 Block 检查：get_idx_binary 正确向 adjust_idx_by_tranc_id 转发回调，新增 5 个回滚测试，构建与完整 test_block 23/23 通过。已从公开入口验证回滚值/墓碑过滤、有效墓碑保留、同 key 边界、历史读取、组首查找及编解码后的完整版本号；上限 0 的旧注释已补充无回调条件。当前提供 get_value_binary 的回调转发草案，业务代码待用户加入。BlockIterator/SST 回滚过滤尚未接通。
 
-当前 SkipList::get 和 MemTable::get/get_record/get_batch 在传入判断函数时会排除已取消版本，保留有效墓碑，并选出最大有效版本。get 返回的原节点迭代器不保存回调，后续 ++ 不自动筛选；get_record/get_batch 在锁内复制结果，返回后不再依赖节点。SST/Block、Engine 和 commit 调用点尚未接入回滚判断，不能据此宣称数据库回滚查询已经完成。
+当前 SkipList::get、MemTable::get/get_record/get_batch 和 Block::get_idx_binary 在传入判断函数时会排除已取消版本，保留有效墓碑，并选出最大有效版本。MemTable::get 返回的原节点迭代器不保存回调，后续 ++ 不自动筛选；get_record/get_batch 在锁内复制结果。Block::get_value_binary、BlockIterator/SST、Engine 和 commit 调用点尚未接入回滚判断，不能据此宣称数据库回滚查询已经完成。
 
 2026-10-20 用户纠正任务范围：撤回把 LSM 构造函数绑定作为当前下一步的安排，组件初始化整合按 Lab 5.5 推进。绑定是引擎使用管理器的依赖，但现有事务测试已显式完成绑定，可以先验证回滚逻辑；本轮不以修复 LSM 初始化入口为前置任务，也不把测试绑定视为生产入口已完成。
 
@@ -32,7 +32,7 @@
 | `add_flushed_tranc_id()` | 会清理待刷盘状态表；该表不能充当长期回滚名单。 |
 | `write_tranc_id_file()`、`read_tranc_id_file()` | 当前均为空函数；正常重启后的状态与 ID 延续尚未完成。 |
 | [LSM 构造函数](../src/lsm/engine.cpp) | 已创建 Engine 和 TranManager，互相绑定仍为待办，按用户要求留在 Lab 5.5 初始化整合时处理；当前事务测试自行绑定。 |
-| 查询与迭代器 | SkipList 和 MemTable::get/get_record/get_batch 支持回滚判断并通过测试；SST/Block、上层点查链及范围迭代器尚未接通。 |
+| 查询与迭代器 | SkipList、MemTable::get/get_record/get_batch 和 Block::get_idx_binary 支持回滚判断并通过测试；Block::get_value_binary、BlockIterator/SST、上层点查链及范围迭代器尚未接通。 |
 
 ## 已确认的设计
 
@@ -126,8 +126,9 @@
 
 ## 测试状态
 
-- 最新检查（2026-10-21）：用户移除 adjust_idx_by_tranc_id 的 while 残留版本条件后，`xmake build test_block` 成功；独立临时目录复制配置后运行完整 test_block，**18/18 通过**。本轮未新增测试、未修改业务代码；回滚分支依据代码检查，非空回调测试待 get_idx_binary 的公开参数接通。
-- 本轮日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-adjust-fixed-e8ntbyst/result.log`。
+- 最新检查（2026-10-22）：get_idx_binary 的签名、回调转发、二分边界和负数判定正确。新增 5 个回滚点查测试，`xmake build test_block` 成功；独立临时目录复制配置后运行完整 test_block，**23/23 通过**。测试核对记录下标、key、value 和真实版本号，覆盖连续取消值/墓碑、有效墓碑、全部取消/空块/缺失 key、二分命中中间版本、编解码后的 64 位和版本 0，以及查询不改写编码。未修改业务代码。
+- 本轮日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-index-rollback-imu5tn3s/result.log`。测试中的下标迭代器只读取已选记录，不代表其自身已接通回滚过滤。本轮未运行 SST 或 LSM 测试。
+- 前一轮 Block 检查（2026-10-21）：修正 while 条件后，完整 test_block **18/18 通过**。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-adjust-fixed-e8ntbyst/result.log`。
 - 已解决的上一轮回归：BlockTest.DecodeTest、EncodeTest、RejectsOffsetOverflowWithoutChangingExistingRecords、ForceWriteWithinEncodingLimitsStillSucceeds、MvccPointReadSelectsNewestVisibleVersion、MvccTombstoneDoesNotFallBackToOlderValue、MvccEncodingPreservesFullWidthTransactionIds 曾因同一个循环条件错误失败，本轮均通过。旧日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-adjust-review-gcsp5sbr/result.log`。
 - 前一轮 get_batch 检查（本轮 Block 修改之前）：新增 3 个批量测试，覆盖跨表取消值/墓碑、版本上限、顺序和重复 key、逐条查询一致性、空结果和副本稳定性。test_memtable、test_lsm 构建成功，完整 MemTable **41/41 通过**，test_lsm 只构建未运行。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-get-batch-rollback-ae5vyu8v/result.log`；其中 missing/fail.sst 打开失败来自预期的刷盘失败测试。
 - 前一轮 get_record 检查：扩充跨表回滚测试并新增副本与空结果测试，完整 MemTable **38/38 通过**，test_lsm 构建通过。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-get-record-rollback-vaop21p9/result.log`。
