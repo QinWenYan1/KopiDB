@@ -69,11 +69,8 @@ public:
   // 传入 is_aborted 时排除回滚版本；不传时保持原有查询行为
   // 未命中返回 nullopt；有效墓碑保留为 {"", 版本号}
   std::optional<std::pair<std::string, uint64_t>>
-  get_record(
-    const std::string &key, 
-    uint64_t tranc_id,
-    const std::function<bool(uint64_t)> &is_aborted = {}
-   );
+  get_record(const std::string &key, uint64_t tranc_id,
+             const std::function<bool(uint64_t)> &is_aborted = {});
 
   std::vector<
       std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>

@@ -174,11 +174,8 @@ MemTable::get(const std::string &key, uint64_t tranc_id,
 }
 
 std::optional<std::pair<std::string, uint64_t>>
-MemTable::get_record(
-  const std::string &key, 
-  uint64_t tranc_id,
-  const std::function<bool(uint64_t)> &is_aborted
-) {
+MemTable::get_record(const std::string &key, uint64_t tranc_id,
+                     const std::function<bool(uint64_t)> &is_aborted) {
   spdlog::trace("MemTable--get_record({}, {})", key, tranc_id);
 
   // 1. 按统一顺序获取读锁：先活跃表，再冻结表
@@ -193,7 +190,7 @@ MemTable::get_record(
   // get_ 会将读取上限和回滚判断传到底层：
   // 例如 k@5 已回滚、k@3 有效，就让 k@3 参与跨表比较
   // 最后返回所有内存表中符合条件的最大版本
-  auto it = get_(key, tranc_id,is_aborted);
+  auto it = get_(key, tranc_id, is_aborted);
   if (!it.is_valid())
     return std::nullopt;
 
