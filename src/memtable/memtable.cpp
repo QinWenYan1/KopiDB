@@ -82,7 +82,9 @@ void MemTable::put_batch(
   }
 }
 
-SkipListIterator MemTable::cur_get_(const std::string &key, uint64_t tranc_id, const std::function<bool(uint64_t)>& is_aborted) {
+SkipListIterator
+MemTable::cur_get_(const std::string &key, uint64_t tranc_id,
+                   const std::function<bool(uint64_t)> &is_aborted) {
   // 调用 current_table->get(), 找到则返回; 未找到则返回空迭代器
   spdlog::trace("MemTable--cur_get_({}, {})", key, tranc_id);
   // 调用方已持有 cur_mtx，保护活跃表及本次查找。
@@ -98,9 +100,9 @@ SkipListIterator MemTable::cur_get_(const std::string &key, uint64_t tranc_id, c
 }
 
 // Lab2.1 从冻结跳表中查询
-SkipListIterator MemTable::frozen_get_( const std::string &key,
-                                        uint64_t tranc_id,
-                                        const std::function<bool(uint64_t)>& is_aborted) {
+SkipListIterator
+MemTable::frozen_get_(const std::string &key, uint64_t tranc_id,
+                      const std::function<bool(uint64_t)> &is_aborted) {
 
   // 保存所有冻结表中，目前找到的最大有效版本
   // 初始为空，表示还没有找到候选记录
@@ -143,10 +145,9 @@ SkipListIterator MemTable::frozen_get_( const std::string &key,
 }
 
 // Lab2.1 查询, 建议复用 cur_get_ 和 frozen_get_
-SkipListIterator MemTable::get(
-  const std::string &key, 
-  uint64_t tranc_id, 
-  const std::function<bool(uint64_t)> &is_aborted) {
+SkipListIterator
+MemTable::get(const std::string &key, uint64_t tranc_id,
+              const std::function<bool(uint64_t)> &is_aborted) {
   spdlog::trace("MemTable--get({}, {})", key, tranc_id);
 
   // 1. 按统一顺序获取读锁：先活跃表，再冻结表
@@ -173,33 +174,31 @@ SkipListIterator MemTable::get(
 }
 
 std::optional<std::pair<std::string, uint64_t>>
-MemTable::get_record(const std::string& key, uint64_t tranc_id){
+MemTable::get_record(const std::string &key, uint64_t tranc_id) {
   spdlog::trace("MemTable--get_record({}, {})", key, tranc_id);
 
   // 沿用统一加锁顺序：先活跃表，再冻结表
   // 锁的保护范围同时覆盖查找和 value 的复制
-  std::shared_lock<std::shared_mutex> cur_lock(cur_mtx); 
+  std::shared_lock<std::shared_mutex> cur_lock(cur_mtx);
   std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
 
   // 已持有锁，调用无锁版本 get_，避免重复获取同一把锁
   // get_ 已负责可见性过滤，以及活跃表、冻结表之间的版本比较
-  auto it = get_(key, tranc_id); 
+  auto it = get_(key, tranc_id);
   if (!it.is_valid())
-    return std::nullopt; 
-
+    return std::nullopt;
 
   // return 会先构造返回结果，再销毁局部锁对象
   // 因此字符串在锁内完成复制，返回后不再依赖原节点
   //
   // 墓碑也要返回，让 Engine 与 SST 中的版本比较后再决定结果
-  return std::make_pair(it.get_value(), it.get_cur_tranc_id()); 
+  return std::make_pair(it.get_value(), it.get_cur_tranc_id());
 }
 
 // Lab2.1 查询, 无锁版本
-SkipListIterator MemTable::get_(
-  const std::string &key, 
-  uint64_t tranc_id, 
-  const std::function<bool(uint64_t)> &is_aborted) {
+SkipListIterator
+MemTable::get_(const std::string &key, uint64_t tranc_id,
+               const std::function<bool(uint64_t)> &is_aborted) {
   spdlog::trace("MemTable--get_({}, {})", key, tranc_id);
 
   // 1. 调用方已经持有 cur_mtx 和 frozen_mtx
