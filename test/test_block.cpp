@@ -472,8 +472,8 @@ TEST_F(BlockTest, TrancPredicateTest) {
 }
 
 namespace {
-// 核对下标查询选中的 key、value、真实版本号，以及直接取值接口的返回值。
-// 下标构造的迭代器这里只负责读取；不表示其自身已经支持回滚过滤。
+// 核对下标查询、直接取值和按 key 构造三个入口的定位结果。
+// 这里只检查构造时的位置；后续 ++ 的回滚过滤属于另一阶段。
 void expect_block_point(
     const std::shared_ptr<Block> &block, const std::string &key,
     uint64_t read_id, const std::function<bool(uint64_t)> &is_aborted,
@@ -491,6 +491,17 @@ void expect_block_point(
   const auto actual_value = block->get_value_binary(key, read_id, is_aborted);
   ASSERT_TRUE(actual_value.has_value());
   EXPECT_EQ(*actual_value, value);
+
+  // keep_all_versions 控制后续遍历是否去重，不应改变本次点查的胜出版本。
+  for (bool keep_all_versions : {false, true}) {
+    SCOPED_TRACE(keep_all_versions);
+    BlockIterator keyed(block, key, read_id, keep_all_versions, is_aborted);
+    ASSERT_FALSE(keyed.is_end());
+    EXPECT_EQ(keyed->first, key);
+    EXPECT_EQ(keyed->second, value);
+    EXPECT_EQ(keyed.get_cur_tranc_id(), version);
+    EXPECT_EQ(*keyed, std::make_pair(key, value));
+  }
 }
 } // namespace
 
@@ -515,6 +526,7 @@ TEST_F(BlockTest, RollbackPointSkipsCancelledValuesAndTombstones) {
     }
     EXPECT_FALSE(block->get_idx_binary("k", 4, is_aborted).has_value());
     EXPECT_FALSE(block->get_value_binary("k", 4, is_aborted).has_value());
+    EXPECT_TRUE(BlockIterator(block, "k", 4, false, is_aborted).is_end());
     expect_block_point(block, "k", 0, {}, 1, newest, 9);
     EXPECT_EQ(block->encode(), encoded);
   }
@@ -543,6 +555,7 @@ TEST_F(BlockTest, RollbackPointNeverReturnsNeighbourWhenAllVersionsCancelled) {
   const auto is_aborted = [](uint64_t id) { return id == 5 || id == 3; };
   EXPECT_FALSE(block->get_idx_binary("k", 0, is_aborted).has_value());
   EXPECT_FALSE(block->get_value_binary("k", 0, is_aborted).has_value());
+  EXPECT_EQ(BlockIterator(block, "k", 0, false, is_aborted), block->end());
   ASSERT_TRUE(block->add_entry("a", "a5", 5, false));
   ASSERT_TRUE(block->add_entry("a", "a3", 3, false));
   ASSERT_TRUE(block->add_entry("b", "b1", 1, false));
@@ -557,6 +570,11 @@ TEST_F(BlockTest, RollbackPointNeverReturnsNeighbourWhenAllVersionsCancelled) {
       SCOPED_TRACE(key);
       EXPECT_FALSE(block->get_idx_binary(key, read_id, is_aborted).has_value());
       EXPECT_FALSE(block->get_value_binary(key, read_id, is_aborted).has_value());
+      for (bool keep_all_versions : {false, true}) {
+        BlockIterator keyed(block, key, read_id, keep_all_versions, is_aborted);
+        EXPECT_TRUE(keyed.is_end());
+        EXPECT_EQ(keyed, block->end());
+      }
     }
     expect_block_point(block, "b", read_id, is_aborted, 2, "b1", 1);
   }
@@ -601,6 +619,21 @@ TEST_F(BlockTest, RollbackPointSupportsDecodedBlocksAndFullWidthIds) {
   expect_block_point(block, "k", 0, cancel_both, 2, "zero", 0);
   expect_block_point(block, "k", 0, {}, 0, "max", max_id);
   EXPECT_EQ(block->encode(), encoded);
+}
+
+// 目的：空指针属于参数错误，不能在按 key 构造时解引用它。
+// 场景：未提供 Block，分别使用默认参数和非空回调。
+// 预期：抛 invalid_argument，且不调用回调；有效空块的未命中另有测试。
+TEST_F(BlockTest, KeyConstructorRejectsNullBlock) {
+  EXPECT_THROW((BlockIterator(nullptr, "k", 0)), std::invalid_argument);
+  bool callback_called = false;
+  const auto is_aborted = [&callback_called](uint64_t) {
+    callback_called = true;
+    return false;
+  };
+  EXPECT_THROW((BlockIterator(nullptr, "k", 0, false, is_aborted)),
+               std::invalid_argument);
+  EXPECT_FALSE(callback_called);
 }
 
 // 目的：点查询选择不超过读上限的最新版本。
