@@ -377,8 +377,7 @@ int Block::adjust_idx_by_tranc_id(size_t idx, uint64_t tranc_id, const std::func
   // 3. 只在目标 key 的版本组中逐条寻找
   // 例如 k@9、k@7 已回滚，k@3 有效：
   // 跳过 9 和 7 后，应该返回 3，不能直接判定 k 不存在
-  while (idx < offsets.size() && is_same_key(idx, key) &&
-         get_tranc_id_at(offsets[idx]) > tranc_id){
+  while (idx < offsets.size() && is_same_key(idx, key)){
     
     const uint64_t& entry_id = get_tranc_id_at(offsets[idx]);
     // 两个条件同时满足，才能成为查询结果：

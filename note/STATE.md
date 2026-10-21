@@ -12,7 +12,7 @@
 
 当前推进项：第②阶段已完成，之前 remove 及相关回归为 36/36 通过。第③阶段的 SkipList::get 已通过完整 test_skiplist（29/29，包含 6 个回滚测试）；MemTable 的 get/get_record/get_batch 已通过内部查询将回调传到底层跳表。2026-10-21 get_batch 检查通过，新增 3 个批量回滚测试，完整 test_memtable 41/41 通过，test_lsm 构建通过。下一步为 SST/Block 点查询链，继续逐函数推进，业务代码仍由用户手动加入。
 
-2026-10-21 已核对 SST 点查从 SST::get 经 SstIterator::seek、BlockIterator、get_idx_binary 到 adjust_idx_by_tranc_id 的调用关系，并对照作者 Block 实现。当前提供 adjust_idx_by_tranc_id 的回滚过滤草案，尚未写入业务代码；待用户加入后检查，再接通 get_idx_binary 的公开回调入口。此轮仅检查与给出草案，未新增或运行测试，已有通过结果不代表 SST 回滚过滤已经完成。
+2026-10-21 最新 Block 检查：adjust_idx_by_tranc_id 的 while 条件已修正，构建与完整 test_block 18/18 通过，之前 7 个失败均已解决。回滚分支通过代码检查，非空回调行为尚待公开入口测试。当前提供 get_idx_binary 的回调转发草案，业务代码待用户加入；第 370 行仍有一条关于上限 0 的过时注释，已提示修正。SST 回滚过滤尚未完成。
 
 当前 SkipList::get 和 MemTable::get/get_record/get_batch 在传入判断函数时会排除已取消版本，保留有效墓碑，并选出最大有效版本。get 返回的原节点迭代器不保存回调，后续 ++ 不自动筛选；get_record/get_batch 在锁内复制结果，返回后不再依赖节点。SST/Block、Engine 和 commit 调用点尚未接入回滚判断，不能据此宣称数据库回滚查询已经完成。
 
@@ -126,8 +126,10 @@
 
 ## 测试状态
 
-- 最新检查（2026-10-21）：get_batch 的签名、回调转发、锁顺序、结果复制及位置保留正确。新增 3 个批量测试：RollbackBatchPreservesOrderAndMatchesPointReads、RollbackBatchEmptyInputAndMissingKeys、RollbackBatchReturnsIndependentCopies；覆盖跨表取消值/墓碑、有效墓碑、版本上限、顺序和重复 key、逐条查询一致性、默认回调、空输入/空表/全部取消和副本稳定性。`xmake build test_memtable`、`xmake build test_lsm` 成功，独立临时目录复制配置后运行完整 test_memtable，**41/41 通过**。test_lsm 本轮只构建、未运行；未修改业务代码。
-- 本轮日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-get-batch-rollback-ae5vyu8v/result.log`。日志中的无法打开 missing/fail.sst 来自预期失败的刷盘测试，该测试通过。
+- 最新检查（2026-10-21）：用户移除 adjust_idx_by_tranc_id 的 while 残留版本条件后，`xmake build test_block` 成功；独立临时目录复制配置后运行完整 test_block，**18/18 通过**。本轮未新增测试、未修改业务代码；回滚分支依据代码检查，非空回调测试待 get_idx_binary 的公开参数接通。
+- 本轮日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-adjust-fixed-e8ntbyst/result.log`。
+- 已解决的上一轮回归：BlockTest.DecodeTest、EncodeTest、RejectsOffsetOverflowWithoutChangingExistingRecords、ForceWriteWithinEncodingLimitsStillSucceeds、MvccPointReadSelectsNewestVisibleVersion、MvccTombstoneDoesNotFallBackToOlderValue、MvccEncodingPreservesFullWidthTransactionIds 曾因同一个循环条件错误失败，本轮均通过。旧日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-adjust-review-gcsp5sbr/result.log`。
+- 前一轮 get_batch 检查（本轮 Block 修改之前）：新增 3 个批量测试，覆盖跨表取消值/墓碑、版本上限、顺序和重复 key、逐条查询一致性、空结果和副本稳定性。test_memtable、test_lsm 构建成功，完整 MemTable **41/41 通过**，test_lsm 只构建未运行。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-get-batch-rollback-ae5vyu8v/result.log`；其中 missing/fail.sst 打开失败来自预期的刷盘失败测试。
 - 前一轮 get_record 检查：扩充跨表回滚测试并新增副本与空结果测试，完整 MemTable **38/38 通过**，test_lsm 构建通过。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-get-record-rollback-vaop21p9/result.log`。
 - 前一轮公开 get 检查：新增 7 个回滚点查测试，完整 MemTable **37/37 通过**。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-memtable-get-rollback-ohi4rqe3/result.log`。
 - 前一轮 get_ 检查（2026-10-21）：test_lsm 与 test_memtable 均构建成功，MemTable **30/30**、`TranCommitTest.*` **10/10** 通过。本轮没有重跑提交测试，commit 的回滚判断仍待接入。对应日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-get-internal-memtable-942g3zya/result.log`、`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-get-internal-commit-ompvxjq9/result.log`。
