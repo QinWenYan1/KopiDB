@@ -171,7 +171,7 @@ size_t Block::get_offset_at(size_t idx) const {
 bool Block::add_entry(const std::string &key, const std::string &value,
                       uint64_t tranc_id, bool force_write) {
   // 每条 entry 格式:
-  // [key_len:uint16_t][key][value_len:uint16_t][value][tranc_id:uint64_t] 
+  // [key_len:uint16_t][key][value_len:uint16_t][value][tranc_id:uint64_t]
   // 若 force_write 且当前容量不足则返回 false
   // 成功添加后记录偏移到 offsets, 返回 true
   // 1. 本条 entry 字节数：
@@ -179,9 +179,9 @@ bool Block::add_entry(const std::string &key, const std::string &value,
 
   // 长度字段只有 16 位，必须在转换和修改 Block 前检查
   // 换一个新块也无法解决单条记录长度超限，因此直接报错
-  if(key.size() > UINT16_MAX || value.size() > UINT16_MAX)
+  if (key.size() > UINT16_MAX || value.size() > UINT16_MAX)
     throw std::length_error(
-      "Block::add_entry: key or value exceeds uint16_t length limit"); 
+        "Block::add_entry: key or value exceeds uint16_t length limit");
 
   size_t entry_size = 2 + key.size() + 2 + value.size() + 8;
 
@@ -192,17 +192,16 @@ bool Block::add_entry(const std::string &key, const std::string &value,
 
   // data.size() 是即将写入记录的起点
   // 65535 仍然可以编码，超过它才会发生截断
-  if(data.size() > UINT16_MAX)
-      throw std::length_error(
-        "Block::add_entry: entry offset exceeds uint16_t limit"); 
-  
+  if (data.size() > UINT16_MAX)
+    throw std::length_error(
+        "Block::add_entry: entry offset exceeds uint16_t limit");
+
   // 追加后条目数不能超过 65535
   // 当前已经达到上限时，必须在 push_back 之前拒绝
   if (offsets.size() >= UINT16_MAX)
-            throw std::length_error(
-              "Block::add_entry: entry count exceeds uint16_t limit"); 
+    throw std::length_error(
+        "Block::add_entry: entry count exceeds uint16_t limit");
 
-      
   if (!force_write && !offsets.empty() &&
       cur_size() + entry_size + 2 > capacity) {
     return false;
@@ -355,10 +354,12 @@ int Block::compare_key_at(size_t offset, const std::string &target) const {
 // Lab3.1: 找到 key 以后，从这个 key 的多个版本里，选出当前能读取的最新版本
 // 同一个 key 的版本连续存放，并按真实事务 ID 从大到小排列
 // 本函数只选择记录，不修改 Block，也不删除任何版本
-int Block::adjust_idx_by_tranc_id(size_t idx, uint64_t tranc_id, const std::function<bool(uint64_t)> &is_aborted) {
+int Block::adjust_idx_by_tranc_id(
+    size_t idx, uint64_t tranc_id,
+    const std::function<bool(uint64_t)> &is_aborted) {
   // 先检查下标，再访问 offsets[idx]。
   // 空块或无效下标没有可选择的记录，沿用 -1 表示失败。
-  if (idx >= offsets.size()) 
+  if (idx >= offsets.size())
     return -1;
 
   // 1. 先回退到同 key 组的最左端：组首 = 最新版本（tranc_id 最大）
@@ -367,8 +368,8 @@ int Block::adjust_idx_by_tranc_id(size_t idx, uint64_t tranc_id, const std::func
   while (idx > 0 && is_same_key(idx - 1, key))
     --idx;
 
-  // 2. tranc_id == 0, 非事务读，就直接看最新版本 = 同 key 组的最左端, 并且没有回滚回调时，直接返回组首
-  // 没有读取上限，也没有回滚判断时，直接取组首
+  // 2. tranc_id == 0, 非事务读，就直接看最新版本 = 同 key 组的最左端,
+  // 并且没有回滚回调时，直接返回组首 没有读取上限，也没有回滚判断时，直接取组首
   // 注意：上限为 0 只代表“不限制版本大小”
   // 如果传入了回滚判断，仍必须进入下面的循环检查
   if (tranc_id == 0 && !is_aborted)
@@ -377,25 +378,26 @@ int Block::adjust_idx_by_tranc_id(size_t idx, uint64_t tranc_id, const std::func
   // 3. 只在目标 key 的版本组中逐条寻找
   // 例如 k@9、k@7 已回滚，k@3 有效：
   // 跳过 9 和 7 后，应该返回 3，不能直接判定 k 不存在
-  while (idx < offsets.size() && is_same_key(idx, key)){
+  while (idx < offsets.size() && is_same_key(idx, key)) {
 
-    const uint64_t& entry_id = get_tranc_id_at(offsets[idx]);
+    const uint64_t &entry_id = get_tranc_id_at(offsets[idx]);
     // 两个条件同时满足，才能成为查询结果：
     //   ① 没有读取上限，或者版本号不超过读取上限
     //   ② 没有提供回调，或者回调确认该事务没有回滚
     //
     // && 和 || 会短路：
     // 超过上限的记录无需查询回滚状态，空回调也不会被调用
-    if ((tranc_id == 0 || entry_id <= tranc_id) && (!is_aborted || !is_aborted(entry_id)))
+    if ((tranc_id == 0 || entry_id <= tranc_id) &&
+        (!is_aborted || !is_aborted(entry_id)))
       // 按版本降序扫描，第一个符合条件的就是最大有效版本
       // 不检查 value：有效墓碑也必须保留，交给上层处理
-      return static_cast<int>(idx); 
+      return static_cast<int>(idx);
 
-     ++idx;
+    ++idx;
   }
 
   // 4. 走出小组还没有找到 = 整个小组对读者都不可见
-  return -1; 
+  return -1;
 }
 
 bool Block::is_same_key(size_t idx, const std::string &target_key) const {
@@ -418,9 +420,9 @@ std::optional<std::string> Block::get_value_binary(const std::string &key,
 }
 
 // Lab 3.1 使用二分查找获取key对应的索引
-std::optional<size_t> Block::get_idx_binary(const std::string &key,
-                                            uint64_t tranc_id,
-                                          const std::function<bool(uint64_t)> &is_aborted) {
+std::optional<size_t>
+Block::get_idx_binary(const std::string &key, uint64_t tranc_id,
+                      const std::function<bool(uint64_t)> &is_aborted) {
   // 在 offsets 数组上做二分查找, 利用 compare_key_at 比较
   // 找到后调用 adjust_idx_by_tranc_id 进行事务可见性修正
   // 在 offsets 上二分: 比较 data 里每条 entry 的 key
@@ -455,7 +457,7 @@ std::optional<size_t> Block::get_idx_binary(const std::string &key,
       right = mid;
     } else {
       // 当前 key 比目标小，排除 mid，继续查右半区
-      left = mid + 1; 
+      left = mid + 1;
     }
   }
   // 二分结束仍没有命中目标 key
