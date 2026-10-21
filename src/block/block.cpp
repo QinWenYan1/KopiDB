@@ -410,12 +410,26 @@ bool Block::is_same_key(size_t idx, const std::string &target_key) const {
 // 使用二分查找获取value
 // 要求在插入数据时有序插入
 std::optional<std::string> Block::get_value_binary(const std::string &key,
-                                                   uint64_t tranc_id) {
+                                                   uint64_t tranc_id,
+                                                  const std::function<bool(uint64_t)> &is_aborted) {
+  // 1. 将读取上限和回滚判断一起传给下标查询
+  // 例如 k@9 已回滚、k@5 有效，返回的应该是 k@5 的下标
+  // 版本选择已经由底层完成，这里不再重复筛选
   auto idx = get_idx_binary(key, tranc_id);
+
+  // 2. 没有符合条件的记录
+  // 包括 key 不存在、所有版本超过上限，或所有版本均已回滚
+  // 必须先判空，再解引用 idx
   if (!idx.has_value()) {
     return std::nullopt;
   }
 
+  // 3. idx 是记录下标，offsets[*idx] 才是记录在 data 中的字节偏移。
+  // 根据偏移解析 value，返回独立的字符串。
+  //
+  // 有效墓碑的 value 虽然为空，也必须原样返回：
+  // optional 有值且字符串为空，表示命中了删除记录；
+  // nullopt 才表示没有找到符合条件的记录。
   return get_value_at(offsets[*idx]);
 }
 

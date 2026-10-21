@@ -72,8 +72,12 @@ public:
   size_t get_offset_at(size_t idx) const;
   bool add_entry(const std::string &key, const std::string &value,
                  uint64_t tranc_id, bool force_write);
+
+  // 返回符合读取上限且未回滚的最大版本的 value
+  // 未命中返回 nullopt；有效墓碑返回有值的 optional，内部字符串为空
   std::optional<std::string> get_value_binary(const std::string &key,
-                                              uint64_t tranc_id);
+                                              uint64_t tranc_id,
+                                              const std::function<bool(uint64_t)> &is_aborted = {});
 
   size_t size() const;
   size_t cur_size() const;
