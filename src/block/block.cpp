@@ -415,7 +415,7 @@ std::optional<std::string> Block::get_value_binary(const std::string &key,
   // 1. 将读取上限和回滚判断一起传给下标查询
   // 例如 k@9 已回滚、k@5 有效，返回的应该是 k@5 的下标
   // 版本选择已经由底层完成，这里不再重复筛选
-  auto idx = get_idx_binary(key, tranc_id);
+  auto idx = get_idx_binary(key, tranc_id, is_aborted);
 
   // 2. 没有符合条件的记录
   // 包括 key 不存在、所有版本超过上限，或所有版本均已回滚

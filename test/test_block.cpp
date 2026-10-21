@@ -472,7 +472,7 @@ TEST_F(BlockTest, TrancPredicateTest) {
 }
 
 namespace {
-// 通过公开点查取得下标，再读取选中的记录，核对 key、value 和真实版本号。
+// 核对下标查询选中的 key、value、真实版本号，以及直接取值接口的返回值。
 // 下标构造的迭代器这里只负责读取；不表示其自身已经支持回滚过滤。
 void expect_block_point(
     const std::shared_ptr<Block> &block, const std::string &key,
@@ -487,6 +487,10 @@ void expect_block_point(
   EXPECT_EQ(it->first, key);
   EXPECT_EQ(it->second, value);
   EXPECT_EQ(it.get_cur_tranc_id(), version);
+
+  const auto actual_value = block->get_value_binary(key, read_id, is_aborted);
+  ASSERT_TRUE(actual_value.has_value());
+  EXPECT_EQ(*actual_value, value);
 }
 } // namespace
 
@@ -510,6 +514,7 @@ TEST_F(BlockTest, RollbackPointSkipsCancelledValuesAndTombstones) {
       expect_block_point(block, "k", read_id, is_aborted, 3, "old", 5);
     }
     EXPECT_FALSE(block->get_idx_binary("k", 4, is_aborted).has_value());
+    EXPECT_FALSE(block->get_value_binary("k", 4, is_aborted).has_value());
     expect_block_point(block, "k", 0, {}, 1, newest, 9);
     EXPECT_EQ(block->encode(), encoded);
   }
@@ -537,6 +542,7 @@ TEST_F(BlockTest, RollbackPointNeverReturnsNeighbourWhenAllVersionsCancelled) {
   auto block = std::make_shared<Block>(4096);
   const auto is_aborted = [](uint64_t id) { return id == 5 || id == 3; };
   EXPECT_FALSE(block->get_idx_binary("k", 0, is_aborted).has_value());
+  EXPECT_FALSE(block->get_value_binary("k", 0, is_aborted).has_value());
   ASSERT_TRUE(block->add_entry("a", "a5", 5, false));
   ASSERT_TRUE(block->add_entry("a", "a3", 3, false));
   ASSERT_TRUE(block->add_entry("b", "b1", 1, false));
@@ -550,6 +556,7 @@ TEST_F(BlockTest, RollbackPointNeverReturnsNeighbourWhenAllVersionsCancelled) {
     for (const std::string key : {"a", "k", "z", "missing"}) {
       SCOPED_TRACE(key);
       EXPECT_FALSE(block->get_idx_binary(key, read_id, is_aborted).has_value());
+      EXPECT_FALSE(block->get_value_binary(key, read_id, is_aborted).has_value());
     }
     expect_block_point(block, "b", read_id, is_aborted, 2, "b1", 1);
   }

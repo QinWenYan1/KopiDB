@@ -18,9 +18,9 @@
 
 ## 当前推进项
 
-**第②阶段已完成；第③阶段的 Block::get_idx_binary → adjust_idx_by_tranc_id 回滚查询链已通过测试。当前下一函数为 `Block::get_value_binary()`，草案已提供，待用户加入。**
+**第②阶段已完成；第③阶段的 Block::get_idx_binary/get_value_binary 回滚查询均已通过测试。当前下一函数为 BlockIterator 按 key 构造函数，草案待用户加入。**
 
-2026-10-22 最新检查：get_idx_binary 已将回调传给 adjust_idx_by_tranc_id，正确处理空块、二分边界和负数结果。新增 5 个回滚点查测试，xmake build test_block 成功，独立临时目录运行完整 test_block：23/23 通过。已从公开入口验证连续取消、取消墓碑、有效墓碑、全部取消不串到邻居、历史上限、二分命中中间版本、编解码后的 64 位及版本 0 查询；编码不被查询改写。
+2026-10-22 最新检查：本轮发现 get_value_binary 漏传回调，用户在检查期间补上了第三个参数。已将原有 5 个回滚测试扩展到取值入口，补上空结果断言；按最新代码重新构建并运行完整 test_block，23/23 通过，补参前的 5 个失败全部解决。下标与取值入口均已验证回滚过滤、有效墓碑和未命中行为。
 
 此前 MemTable 阶段：完整回归 41/41 通过，test_lsm 构建通过；该结果发生在本轮 Block 修改之前。Engine 回滚查询的 2 个既有失败用例仍待上层接通，本轮未重跑。
 
@@ -38,7 +38,9 @@
 
 已完成 get_idx_binary：声明增加可选回调，保留 [left, right) 二分查找；命中 key 后将回调传给 adjust_idx_by_tranc_id，将 -1 转成 nullopt，否则返回记录下标。上限 0 的注释已补充“无回调”的条件。
 
-下一函数 get_value_binary：声明增加可选回调，转发给 get_idx_binary；无下标返回 nullopt，有下标则通过 offsets 读取 value，保留有效墓碑的空字符串。本轮只修改了测试和记录，业务代码由用户加入。BlockIterator/SST、Engine 和 commit 的非空回调接入仍待完成，当前测试不代表迭代器推进已经过滤回滚版本。
+已完成 get_value_binary：回调传给 get_idx_binary，判空后通过 offsets 读取 value；有效墓碑返回有值的空字符串 optional，未命中返回 nullopt。本轮只扩展测试和更新记录，未修改业务代码。
+
+下一函数为 BlockIterator 按 key 构造函数：在现有 keep_all_versions 参数之后增加可选回调，转发给 get_idx_binary；命中后保存下标，未命中指向 block->size()。该构造要求有效 Block，空指针用 invalid_argument 明确拒绝。回调本轮仅用于构造时定位，不保存到迭代器，后续 ++ 的回滚过滤留第④阶段；保持当前点查与范围查询的阶段边界。SST 和 Engine 调用点尚未传回调。
 
 已通过的 SkipList 验收：取消值/墓碑后找到旧版本、连续取消且不改变物理记录、保留有效墓碑、同时遵守版本上限、全部取消/空表/缺失 key 边界，以及未提供回调时保持原行为。完整回归同时覆盖原有 MVCC、遍历、谓词与物理删除行为。
 
@@ -98,7 +100,8 @@
 - [x] 接通 `MemTable::get_batch`，新增 3 个测试验证批量结果、逐条查询一致性及副本稳定性；完整 MemTable 41/41 通过，上层调用构建通过。
 - [x] 修正 `Block::adjust_idx_by_tranc_id` 的循环条件；已通过 get_idx_binary 的非空回调集成测试。
 - [x] 接通 `Block::get_idx_binary`，新增 5 个回滚测试；完整 Block 23/23 通过。
-- [ ] 接通 `Block::get_value_binary`，返回筛选后的 value，区分有效墓碑与未命中（当前草案）。
+- [x] 修正 `Block::get_value_binary` 漏传回调的调用；扩展已有回滚测试到取值入口，完整 Block 23/23 通过。
+- [ ] 接通 BlockIterator 按 key 构造函数的回调，未命中定位到块尾（当前草案，仅构造时点查）。
 - [ ] 明确回滚判断如何传入点查询链，以及查询期间的管理器生命周期。
 - [ ] 接通 SST 点查询链：`sst_get_`、候选 SST 查询及 SST/Block 版本选择。
 - [ ] 在 `Engine::get/get_batch` 中使用一致的回滚判断；上限 0 仍过滤回滚版本。
