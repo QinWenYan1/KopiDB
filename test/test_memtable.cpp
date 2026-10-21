@@ -793,6 +793,111 @@ TEST(MemTableTest, MvccBatchPreservesOrderDuplicatesAndMissingKeys) {
   EXPECT_TRUE(table.get_batch({}, 0).empty());
 }
 
+// 目的：批查在回滚过滤后仍选择最大有效版本，保留顺序、重复项和有效墓碑。
+// 场景：两张冻结表和活跃表存放乱序版本，9/11 已取消；D@9 是取消的墓碑，
+//       T@7 是有效墓碑，N 的所有版本已取消。分别查询最新和历史版本。
+// 预期：逐项核对确定的值与版本，再与相同参数的 get_record 结果比较。
+TEST(MemTableTest, RollbackBatchPreservesOrderAndMatchesPointReads) {
+  MemTable table;
+  table.put("K", "old-k", 3);
+  table.put("K", "cancelled-k", 9);
+  table.put("T", "old-t", 3);
+  table.remove("T", 7);
+  table.put("N", "cancelled-n", 9);
+  table.frozen_cur_table();
+  table.put("K", "winner", 7);
+  table.put("D", "old-d", 3);
+  table.frozen_cur_table();
+  table.put("K", "active", 5);
+  table.put("T", "cancelled-t", 9);
+  table.remove("D", 9);
+  table.put("N", "cancelled-n-11", 11);
+
+  const auto is_aborted = [](uint64_t id) { return id == 9 || id == 11; };
+  const std::vector<std::string> keys{"T", "missing", "K", "D", "N", "K", "T"};
+  using Record = std::pair<std::string, uint64_t>;
+  struct ReadCase {
+    uint64_t read_id;
+    std::vector<std::optional<Record>> expected;
+  };
+  const std::vector<ReadCase> cases{
+      {0, {Record{"", 7}, std::nullopt, Record{"winner", 7}, Record{"old-d", 3},
+           std::nullopt, Record{"winner", 7}, Record{"", 7}}},
+      {6, {Record{"old-t", 3}, std::nullopt, Record{"active", 5}, Record{"old-d", 3},
+           std::nullopt, Record{"active", 5}, Record{"old-t", 3}}},
+      {2, std::vector<std::optional<Record>>(keys.size())}};
+
+  for (const auto &test_case : cases) {
+    SCOPED_TRACE(test_case.read_id);
+    const auto batch = table.get_batch(keys, test_case.read_id, is_aborted);
+    ASSERT_EQ(batch.size(), keys.size());
+    for (size_t i = 0; i < keys.size(); ++i) {
+      SCOPED_TRACE(i);
+      EXPECT_EQ(batch[i].first, keys[i]);
+      EXPECT_EQ(batch[i].second, test_case.expected[i]);
+      EXPECT_EQ(batch[i].second,
+                table.get_record(keys[i], test_case.read_id, is_aborted));
+    }
+  }
+
+  // 不传回调仍保留原行为：取消版本没有被物理删除。
+  const auto unfiltered = table.get_batch({"K", "D", "N"}, 0);
+  ASSERT_EQ(unfiltered.size(), 3u);
+  EXPECT_EQ(unfiltered[0].second, (std::optional<Record>{{"cancelled-k", 9}}));
+  EXPECT_EQ(unfiltered[1].second, (std::optional<Record>{{"", 9}}));
+  EXPECT_EQ(unfiltered[2].second, (std::optional<Record>{{"cancelled-n-11", 11}}));
+}
+
+// 目的：空输入返回空批次；非空输入即使全部未命中，也必须逐项保留 nullopt。
+// 场景：先查询空表，再加入分别位于冻结表、活跃表的 K@5/K@9，且两者均取消。
+// 预期：重复 K 和缺失 key 都保留原位置，不把“全部未命中”误当成“没有输入”。
+TEST(MemTableTest, RollbackBatchEmptyInputAndMissingKeys) {
+  MemTable table;
+  const auto is_aborted = [](uint64_t id) { return id == 5 || id == 9; };
+  const std::vector<std::string> keys{"K", "missing", "K"};
+  for (bool populated : {false, true}) {
+    SCOPED_TRACE(populated);
+    if (populated) {
+      table.put("K", "old", 5);
+      table.frozen_cur_table();
+      table.remove("K", 9);
+    }
+    EXPECT_TRUE(table.get_batch({}, 0, is_aborted).empty());
+    const auto batch = table.get_batch(keys, 0, is_aborted);
+    ASSERT_EQ(batch.size(), keys.size());
+    for (size_t i = 0; i < keys.size(); ++i) {
+      EXPECT_EQ(batch[i].first, keys[i]);
+      EXPECT_FALSE(batch[i].second.has_value());
+    }
+  }
+}
+
+// 目的：过滤回滚版本后，批量结果仍是独立副本，不受同版本覆盖和清空影响。
+// 场景：K@3 有效、K@5 取消，重复查询 K 后覆盖 K@3，再清空 MemTable。
+// 预期：新查询返回 updated@3，先前返回的两个结果始终为 old@3。
+TEST(MemTableTest, RollbackBatchReturnsIndependentCopies) {
+  MemTable table;
+  table.put("K", "old", 3);
+  table.put("K", "cancelled", 5);
+  const auto is_aborted = [](uint64_t id) { return id == 5; };
+  const auto saved = table.get_batch({"K", "K"}, 0, is_aborted);
+  ASSERT_EQ(saved.size(), 2u);
+
+  table.put("K", "updated", 3);
+  const auto updated = table.get_batch({"K"}, 0, is_aborted);
+  ASSERT_EQ(updated.size(), 1u);
+  ASSERT_TRUE(updated[0].second.has_value());
+  EXPECT_EQ(updated[0].second->first, "updated");
+  EXPECT_EQ(updated[0].second->second, 3u);
+  table.clear();
+  for (const auto &[key, record] : saved) {
+    EXPECT_EQ(key, "K");
+    ASSERT_TRUE(record.has_value());
+    EXPECT_EQ(record->first, "old");
+    EXPECT_EQ(record->second, 3u);
+  }
+}
+
 namespace {
 // 通过 get 和 get_record 验证两条公开点查入口；分别核对预期值和真实版本号。
 void expect_memtable_point(
