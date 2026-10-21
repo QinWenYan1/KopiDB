@@ -25,21 +25,23 @@ class MemTable {
 private:
   void put_(const std::string &key, const std::string &value,
             uint64_t tranc_id);
-  
+
   // 汇总活跃表和冻结表，返回符合读取上限且未回滚的最大版本
   // 调用方必须已经持有 cur_mtx 和 frozen_mtx，本函数不加锁
-  SkipListIterator get_(const std::string &key, 
-                        uint64_t tranc_id,
-                        const std::function<bool(uint64_t)> &is_aborted = {}
-                        );
+  SkipListIterator get_(const std::string &key, uint64_t tranc_id,
+                        const std::function<bool(uint64_t)> &is_aborted = {});
 
   // 查询活跃表，将读取上限和回滚判断交给底层 SkipList
   // 本函数不加锁，调用方必须持有保护活跃表的 cur_mtx
-  SkipListIterator cur_get_(const std::string &key, uint64_t tranc_id, const std::function<bool(uint64_t)>& is_aborted = {});
-  
+  SkipListIterator
+  cur_get_(const std::string &key, uint64_t tranc_id,
+           const std::function<bool(uint64_t)> &is_aborted = {});
+
   // 查询所有冻结表，选出符合读取上限、且未被回滚的最新记录
   // 本函数不加锁，调用方必须持有保护冻结表的 frozen_mtx
-  SkipListIterator frozen_get_(const std::string &key, uint64_t tranc_id, const std::function<bool(uint64_t)>& is_aborted = {});
+  SkipListIterator
+  frozen_get_(const std::string &key, uint64_t tranc_id,
+              const std::function<bool(uint64_t)> &is_aborted = {});
 
   void remove_(const std::string &key, uint64_t tranc_id);
   void frozen_cur_table_(); // _ 表示不需要锁的版本
@@ -60,17 +62,14 @@ public:
   // 加锁查询 MemTable，返回符合读取上限且未回滚的命中节点
   // 有效墓碑也返回；未命中返回空迭代器
   // 回调只用于本次查找，不保存在返回的迭代器中
-  SkipListIterator get(
-    const std::string &key, 
-    uint64_t tranc_id,
-    const std::function<bool(uint64_t)> &is_aborted = {}
-  );
+  SkipListIterator get(const std::string &key, uint64_t tranc_id,
+                       const std::function<bool(uint64_t)> &is_aborted = {});
 
   // 点查询：在读锁保护下复制记录，返回 {value, 真实版本号}。
   // 未命中返回 nullopt；墓碑保留为 {"", 版本号}。
   std::optional<std::pair<std::string, uint64_t>>
   get_record(const std::string &key, uint64_t tranc_id);
-  
+
   std::vector<
       std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
   get_batch(const std::vector<std::string> &keys, uint64_t tranc_id);

@@ -47,7 +47,7 @@ struct SkipListNode {
     }
     return key_ < other.key_;
   }
-  
+
   bool operator>(const SkipListNode &other) const {
     if (key_ == other.key_) {
       // key 相等时，trans_id 更大的优先级更高
@@ -143,8 +143,8 @@ public:
   // 本函数只在查找期间使用回调，不保存它
   //
   // 有效墓碑也要返回，供上层进行跨表比较；未找到则返回空迭代器
-  SkipListIterator get(const std::string &key, uint64_t tranc_id, 
-                        const std::function<bool(uint64_t)> &is_aborted = {});
+  SkipListIterator get(const std::string &key, uint64_t tranc_id,
+                       const std::function<bool(uint64_t)> &is_aborted = {});
 
   // 这里的 remove 是跳表本身真实的 remove,  lsm 应该使用 put 空值表示删除
   void remove(const std::string &key); // 删除键值对
