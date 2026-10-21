@@ -12,6 +12,8 @@
 
 当前推进项：第②阶段已完成，之前 remove 及相关回归为 36/36 通过。第③阶段的 SkipList::get 已通过完整 test_skiplist（29/29，包含 6 个回滚测试）；MemTable 的 get/get_record/get_batch 已通过内部查询将回调传到底层跳表。2026-10-21 get_batch 检查通过，新增 3 个批量回滚测试，完整 test_memtable 41/41 通过，test_lsm 构建通过。下一步为 SST/Block 点查询链，继续逐函数推进，业务代码仍由用户手动加入。
 
+2026-10-21 已核对 SST 点查从 SST::get 经 SstIterator::seek、BlockIterator、get_idx_binary 到 adjust_idx_by_tranc_id 的调用关系，并对照作者 Block 实现。当前提供 adjust_idx_by_tranc_id 的回滚过滤草案，尚未写入业务代码；待用户加入后检查，再接通 get_idx_binary 的公开回调入口。此轮仅检查与给出草案，未新增或运行测试，已有通过结果不代表 SST 回滚过滤已经完成。
+
 当前 SkipList::get 和 MemTable::get/get_record/get_batch 在传入判断函数时会排除已取消版本，保留有效墓碑，并选出最大有效版本。get 返回的原节点迭代器不保存回调，后续 ++ 不自动筛选；get_record/get_batch 在锁内复制结果，返回后不再依赖节点。SST/Block、Engine 和 commit 调用点尚未接入回滚判断，不能据此宣称数据库回滚查询已经完成。
 
 2026-10-20 用户纠正任务范围：撤回把 LSM 构造函数绑定作为当前下一步的安排，组件初始化整合按 Lab 5.5 推进。绑定是引擎使用管理器的依赖，但现有事务测试已显式完成绑定，可以先验证回滚逻辑；本轮不以修复 LSM 初始化入口为前置任务，也不把测试绑定视为生产入口已完成。

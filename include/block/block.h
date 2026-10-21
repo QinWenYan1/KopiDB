@@ -48,8 +48,10 @@ private:
   uint64_t get_tranc_id_at(size_t offset) const;
   int compare_key_at(size_t offset, const std::string &target) const;
 
-  // 根据id的可见性调整位置
-  int adjust_idx_by_tranc_id(size_t idx, uint64_t tranc_id);
+  // 从 idx 所属的同 key 版本组中，选择符合读取上限且未回滚的最大版本。
+  // idx 可以指向组内任意记录；成功返回记录下标，无候选返回 -1。
+  // 不传 is_aborted 时保持原有查询行为。
+  int adjust_idx_by_tranc_id(size_t idx, uint64_t tranc_id, const std::function<bool(uint64_t)> &is_aborted = {});
 
   bool is_same_key(size_t idx, const std::string &target_key) const;
 

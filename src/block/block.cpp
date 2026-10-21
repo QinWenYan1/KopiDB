@@ -353,11 +353,14 @@ int Block::compare_key_at(size_t offset, const std::string &target) const {
 }
 
 // Lab3.1: 找到 key 以后，从这个 key 的多个版本里，选出当前能读取的最新版本
-//    相同的key连续分布, 且相同的key的事务id从大到小排布
-//    这里的逻辑是找到最接近 tranc_id 的键值对的索引位置
-//    tranc_id == 0: 向前找最小索引 (最大事务id) 版本
-//    tranc_id != 0: 找满足 tranc_id_ <= tranc_id 的最新版本
-int Block::adjust_idx_by_tranc_id(size_t idx, uint64_t tranc_id) {
+// 同一个 key 的版本连续存放，并按真实事务 ID 从大到小排列
+// 本函数只选择记录，不修改 Block，也不删除任何版本
+int Block::adjust_idx_by_tranc_id(size_t idx, uint64_t tranc_id, const std::function<bool(uint64_t)> &is_aborted) {
+  // 先检查下标，再访问 offsets[idx]。
+  // 空块或无效下标没有可选择的记录，沿用 -1 表示失败。
+  if (idx >= offsets.size()) 
+    return -1;
+
   // 1. 先回退到同 key 组的最左端：组首 = 最新版本（tranc_id 最大）
   //    因为同 key 的版本降序连续存放，往左只要有同 key 就继续退
   const std::string key = get_key_at(offsets[idx]);
@@ -365,20 +368,35 @@ int Block::adjust_idx_by_tranc_id(size_t idx, uint64_t tranc_id) {
     --idx;
 
   // 2. tranc_id == 0, 非事务读，就直接看最新版本 = 同 key 组的最左端, 直接返回
-  if (tranc_id == 0)
+  // 没有读取上限，也没有回滚判断时，直接取组首
+  // 注意：上限为 0 只代表“不限制版本大小”
+  // 如果传入了回滚判断，仍必须进入下面的循环检查
+  if (tranc_id == 0 && !is_aborted)
     return static_cast<int>(idx);
 
-  // 3. 事务读：从同 key 组的最左端向右边找第一个entry_tranc_id <= tranc_id
-  //    降序排列： 组首最新 -> 越往后越旧 tranc_id越小
+  // 3. 只在目标 key 的版本组中逐条寻找
+  // 例如 k@9、k@7 已回滚，k@3 有效：
+  // 跳过 9 和 7 后，应该返回 3，不能直接判定 k 不存在
   while (idx < offsets.size() && is_same_key(idx, key) &&
-         get_tranc_id_at(offsets[idx]) > tranc_id)
-    ++idx;
+         get_tranc_id_at(offsets[idx]) > tranc_id){
+    
+    const uint64_t& entry_id = get_tranc_id_at(offsets[idx]);
+    // 两个条件同时满足，才能成为查询结果：
+    //   ① 没有读取上限，或者版本号不超过读取上限
+    //   ② 没有提供回调，或者回调确认该事务没有回滚
+    //
+    // && 和 || 会短路：
+    // 超过上限的记录无需查询回滚状态，空回调也不会被调用
+    if ((tranc_id == 0 || entry_id <= tranc_id) && (!is_aborted || !is_aborted(entry_id)))
+      // 按版本降序扫描，第一个符合条件的就是最大有效版本
+      // 不检查 value：有效墓碑也必须保留，交给上层处理
+      return static_cast<int>(idx); 
+
+     ++idx;
+  }
 
   // 4. 走出小组还没有找到 = 整个小组对读者都不可见
-  if (idx >= offsets.size() || !is_same_key(idx, key))
-    return -1;
-
-  return static_cast<int>(idx);
+  return -1; 
 }
 
 bool Block::is_same_key(size_t idx, const std::string &target_key) const {
