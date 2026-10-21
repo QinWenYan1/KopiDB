@@ -17,15 +17,31 @@ BlockIterator::BlockIterator(std::shared_ptr<Block> b, size_t index,
 }
 
 BlockIterator::BlockIterator(std::shared_ptr<Block> b, const std::string &key,
-                             uint64_t tranc_id, bool keep_all_versions)
+                             uint64_t tranc_id, bool keep_all_versions,
+                            const std::function<bool(uint64_t)> &is_aborted)
     : block(b), tranc_id_(tranc_id), cached_value(std::nullopt),
       keep_all_versions_(keep_all_versions) {
-  auto key_idx_ops = block->get_idx_binary(key, tranc_id);
-  if (key_idx_ops.has_value()) {
-    current_index = key_idx_ops.value();
-  } else {
-    current_index = block->offsets.size();
+  // 1. 按 key 定位必须有实际的 Block，先检查再访问
+  // 空指针属于调用参数错误；正常的“没有找到 key”在下面处理
+  if (!block) {
+    throw std::invalid_argument(
+        "BlockIterator: block must not be null for key lookup");
   }
+
+  // 2. 将读取上限和回滚判断交给已经验证过的下标查询
+  // 例如 k@9 已回滚、k@5 有效，这里直接定位到 k@5
+  //
+  // 不自行向后 ++ 寻找旧版本：
+  // 普通模式的 ++ 会跳过同 key 的旧版本，可能把 k@5 一起跳掉
+  auto idx = block->get_idx_binary(key, tranc_id, is_aborted);
+
+  // 3. 命中则使用返回的下标；未命中则定位到块尾
+  // value_or(x) 表示：optional 有值就取值，否则使用 x
+  // 空块的 size() 为 0，同样能正确形成块尾位置
+  current_index = idx.value_or(block->size());
+
+  // 此时没有解引用记录，cached_value 保持为空，
+  // 第一次调用 * 或 -> 时再解析 key/value。
 }
 
 // BlockIterator::BlockIterator(std::shared_ptr<Block> b, uint64_t tranc_id)
