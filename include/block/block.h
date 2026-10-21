@@ -51,13 +51,15 @@ private:
   // 从 idx 所属的同 key 版本组中，选择符合读取上限且未回滚的最大版本。
   // idx 可以指向组内任意记录；成功返回记录下标，无候选返回 -1。
   // 不传 is_aborted 时保持原有查询行为。
-  int adjust_idx_by_tranc_id(size_t idx, uint64_t tranc_id, const std::function<bool(uint64_t)> &is_aborted = {});
+  int adjust_idx_by_tranc_id(
+      size_t idx, uint64_t tranc_id,
+      const std::function<bool(uint64_t)> &is_aborted = {});
 
   bool is_same_key(size_t idx, const std::string &target_key) const;
 
   // CRC32 校验实现 (polynomial 0xEDB88320), 抄自 vlog.cpp
-  static uint32_t crc32_compute(const uint8_t *data, size_t len); 
-  
+  static uint32_t crc32_compute(const uint8_t *data, size_t len);
+
 public:
   Block() = default;
   Block(size_t capacity);
@@ -79,9 +81,9 @@ public:
 
   // 二分查找 key，返回符合读取上限且未回滚的最大版本的记录下标。
   // 未命中返回 nullopt；有效墓碑也返回其下标。
-  std::optional<size_t> get_idx_binary(const std::string &key,
-                                       uint64_t tranc_id,
-                                       const std::function<bool(uint64_t)> &is_aborted = {});
+  std::optional<size_t>
+  get_idx_binary(const std::string &key, uint64_t tranc_id,
+                 const std::function<bool(uint64_t)> &is_aborted = {});
 
   // 按照谓词返回迭代器, 左闭右开
   std::optional<
