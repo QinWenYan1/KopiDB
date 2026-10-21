@@ -253,7 +253,7 @@ MemTable::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id,
 
   // 1. 输入为空时，没有任何 key 需要查询，可以直接返回。
   // 判断的是 keys.empty()，不是尚未填充的 results.empty()。
-  if (keys.empty()) 
+  if (keys.empty())
     return results;
 
   // 每个输入 key 都会产生一个结果，提前预留对应容量
