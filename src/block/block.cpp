@@ -367,7 +367,7 @@ int Block::adjust_idx_by_tranc_id(size_t idx, uint64_t tranc_id, const std::func
   while (idx > 0 && is_same_key(idx - 1, key))
     --idx;
 
-  // 2. tranc_id == 0, 非事务读，就直接看最新版本 = 同 key 组的最左端, 直接返回
+  // 2. tranc_id == 0, 非事务读，就直接看最新版本 = 同 key 组的最左端, 并且没有回滚回调时，直接返回组首
   // 没有读取上限，也没有回滚判断时，直接取组首
   // 注意：上限为 0 只代表“不限制版本大小”
   // 如果传入了回滚判断，仍必须进入下面的循环检查
@@ -378,7 +378,7 @@ int Block::adjust_idx_by_tranc_id(size_t idx, uint64_t tranc_id, const std::func
   // 例如 k@9、k@7 已回滚，k@3 有效：
   // 跳过 9 和 7 后，应该返回 3，不能直接判定 k 不存在
   while (idx < offsets.size() && is_same_key(idx, key)){
-    
+
     const uint64_t& entry_id = get_tranc_id_at(offsets[idx]);
     // 两个条件同时满足，才能成为查询结果：
     //   ① 没有读取上限，或者版本号不超过读取上限
@@ -419,30 +419,47 @@ std::optional<std::string> Block::get_value_binary(const std::string &key,
 
 // Lab 3.1 使用二分查找获取key对应的索引
 std::optional<size_t> Block::get_idx_binary(const std::string &key,
-                                            uint64_t tranc_id) {
+                                            uint64_t tranc_id,
+                                          const std::function<bool(uint64_t)> &is_aborted) {
   // 在 offsets 数组上做二分查找, 利用 compare_key_at 比较
   // 找到后调用 adjust_idx_by_tranc_id 进行事务可见性修正
-
   // 在 offsets 上二分: 比较 data 里每条 entry 的 key
-  // [left, right) 左闭右开
+
+  // 1. 二分区间为 [left, right)，right 不属于查找范围
+  // 空块时 left == right == 0，循环不会执行，最终返回 nullopt
   size_t left = 0, right = offsets.size();
   while (left < right) {
     size_t mid = left + (right - left) / 2;
     int cmp = compare_key_at(offsets[mid], key);
+
     if (cmp == 0) {
-      // 命中 key: 但同 key 可能多个版本，交给 adjust 挑读者可见的那个
-      int adjusted = adjust_idx_by_tranc_id(mid, tranc_id);
-      // 发现所有的目标版本都太新了，视为不存在
+      // 2. 找到了 key，但 mid 可能是这个 key 的任意一个版本。
+      // 不能直接返回 mid，需要由 adjust 回到组首并选择版本。
+      //
+      // 把回滚判断一起传进去：
+      // 例如 k@9 已回滚、k@7 有效，最终应返回 k@7 的下标。
+      int adjusted = adjust_idx_by_tranc_id(mid, tranc_id, is_aborted);
+
+      // 3. adjust 已检查整个同 key 版本组。
+      // 返回 -1 表示没有符合条件的版本，无需继续二分。
+      //
+      // 必须先判断负数，再转换为 size_t，
+      // 否则 -1 会变成一个很大的无符号数。
       if (adjusted < 0)
         return std::nullopt;
+
+      // 有效墓碑也原样返回，后续交给上层参与版本比较
       return static_cast<size_t>(adjusted);
     } else if (cmp > 0) {
-      right = mid; // mid 的 key 比目标更大， 往左边找
+      // 当前 key 比目标大，目标只能在左半区
+      right = mid;
     } else {
-      left = mid + 1; // mid 的 key 比目标更小， 往右边找
+      // 当前 key 比目标小，排除 mid，继续查右半区
+      left = mid + 1; 
     }
   }
-  return std::nullopt; // key 不存在
+  // 二分结束仍没有命中目标 key
+  return std::nullopt;
 }
 
 // Lab 3.3 获取前缀匹配的区间迭代器

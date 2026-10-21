@@ -76,8 +76,12 @@ public:
   size_t size() const;
   size_t cur_size() const;
   bool is_empty() const;
+
+  // 二分查找 key，返回符合读取上限且未回滚的最大版本的记录下标。
+  // 未命中返回 nullopt；有效墓碑也返回其下标。
   std::optional<size_t> get_idx_binary(const std::string &key,
-                                       uint64_t tranc_id);
+                                       uint64_t tranc_id,
+                                       const std::function<bool(uint64_t)> &is_aborted = {});
 
   // 按照谓词返回迭代器, 左闭右开
   std::optional<
