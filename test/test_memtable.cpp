@@ -5,10 +5,12 @@
 #include "sst/sst_iterator.h"
 #include <atomic>
 #include <filesystem>
+#include <functional>
 #include <gtest/gtest.h>
 #include <iomanip>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include <chrono>
@@ -789,6 +791,193 @@ TEST(MemTableTest, MvccBatchPreservesOrderDuplicatesAndMissingKeys) {
     EXPECT_EQ(batch[i].second->first, keys[i] == "T" ? "" : "new");
   }
   EXPECT_TRUE(table.get_batch({}, 0).empty());
+}
+
+namespace {
+// 通过公开 get 验证完整查询链；先判空，再核对值和真实版本号。
+void expect_memtable_point(
+    MemTable &table, const std::string &key, uint64_t read_id,
+    const std::function<bool(uint64_t)> &is_aborted,
+    const std::string &value, uint64_t version) {
+  SCOPED_TRACE("key=" + key + ", read_id=" + std::to_string(read_id));
+  auto it = table.get(key, read_id, is_aborted);
+  ASSERT_TRUE(it.is_valid());
+  EXPECT_EQ(it.get_key(), key);
+  EXPECT_EQ(it.get_value(), value);
+  EXPECT_EQ(it.get_cur_tranc_id(), version);
+}
+} // namespace
+
+// 目的：回滚新值或删除后，点查能找回旧值，且不改写实际存储的记录。
+// 场景：K@3=old、K@5 已取消；分别放在同一活跃表、同一冻结表和两种表中。
+//       上限 0/4/5 返回 old@3，上限 2 返回空；不传回调仍可查到原始版本 5。
+TEST(MemTableTest, RollbackGetRestoresOldValueInEachPlacement) {
+  for (int placement : {0, 1, 2}) {
+    for (bool deleted : {false, true}) {
+      SCOPED_TRACE(placement);
+      SCOPED_TRACE(deleted);
+      MemTable table;
+      table.put("K", "old", 3);
+      if (placement == 2)
+        table.frozen_cur_table();
+      const std::string cancelled_value = deleted ? "" : "new";
+      table.put("K", cancelled_value, 5);
+      if (placement == 1)
+        table.frozen_cur_table();
+      const auto bytes = table.get_total_size();
+      const auto is_aborted = [](uint64_t id) { return id == 5; };
+
+      for (uint64_t read_id : {0u, 4u, 5u}) {
+        expect_memtable_point(table, "K", read_id, is_aborted, "old", 3);
+      }
+      EXPECT_TRUE(table.get("K", 2, is_aborted).is_end());
+      expect_memtable_point(table, "K", 0, {}, cancelled_value, 5);
+      EXPECT_EQ(table.get_total_size(), bytes);
+    }
+  }
+}
+
+// 目的：两侧过滤之后仍要比较真实版本号，不能只取活跃表或首个来源。
+// 场景：一侧有 K@9（取消）和 K@3，另一侧有有效 K@7；交换两侧位置验证。
+//       上限 0/8 返回 7，上限 6 返回 3。
+TEST(MemTableTest, RollbackGetComparesCandidatesAfterFiltering) {
+  for (bool cancelled_in_active : {false, true}) {
+    SCOPED_TRACE(cancelled_in_active);
+    MemTable table;
+    if (cancelled_in_active) {
+      table.put("K", "winner", 7);
+      table.frozen_cur_table();
+      table.put("K", "old", 3);
+      table.put("K", "cancelled", 9);
+    } else {
+      table.put("K", "old", 3);
+      table.put("K", "cancelled", 9);
+      table.frozen_cur_table();
+      table.put("K", "winner", 7);
+    }
+    const auto is_aborted = [](uint64_t id) { return id == 9; };
+    for (uint64_t read_id : {0u, 8u}) {
+      expect_memtable_point(table, "K", read_id, is_aborted, "winner", 7);
+    }
+    expect_memtable_point(table, "K", 6, is_aborted, "old", 3);
+  }
+}
+
+// 目的：多个来源只有取消版本时继续向后查，并比较较早冻结表中的有效高版本。
+// 场景：从旧到新三张冻结表分别存 7、3/9、11，活跃表存 13；9/11/13 已取消。
+//       最新查询返回 7；上限 6 返回 3；不能在整表无候选时提前结束。
+TEST(MemTableTest, RollbackGetContinuesAcrossFrozenTables) {
+  MemTable table;
+  table.put("K", "winner", 7);
+  table.frozen_cur_table();
+  table.put("K", "old", 3);
+  table.put("K", "cancelled-9", 9);
+  table.frozen_cur_table();
+  table.put("K", "", 11);
+  table.frozen_cur_table();
+  table.put("K", "cancelled-13", 13);
+  const std::unordered_set<uint64_t> cancelled{9, 11, 13};
+  const auto is_aborted = [&](uint64_t id) { return cancelled.contains(id); };
+
+  for (uint64_t read_id : {0u, 10u}) {
+    expect_memtable_point(table, "K", read_id, is_aborted, "winner", 7);
+  }
+  expect_memtable_point(table, "K", 6, is_aborted, "old", 3);
+  EXPECT_TRUE(table.get("K", 2, is_aborted).is_end());
+}
+
+// 目的：有效墓碑仍参与跨表比较，不能因为过滤了回滚版本就把所有墓碑跳过。
+// 场景：K@9 已取消、K@7 为有效墓碑、K@3 为旧值；墓碑分别位于活跃和冻结表。
+//       上限 0/7 返回有效墓碑@7，上限 6 返回 old@3。
+TEST(MemTableTest, RollbackGetPreservesValidTombstonesAcrossSources) {
+  for (bool tombstone_in_active : {false, true}) {
+    SCOPED_TRACE(tombstone_in_active);
+    MemTable table;
+    if (tombstone_in_active) {
+      table.put("K", "old", 3);
+      table.put("K", "cancelled", 9);
+      table.frozen_cur_table();
+      table.remove("K", 7);
+    } else {
+      table.remove("K", 7);
+      table.frozen_cur_table();
+      table.put("K", "old", 3);
+      table.put("K", "cancelled", 9);
+    }
+    const auto is_aborted = [](uint64_t id) { return id == 9; };
+    for (uint64_t read_id : {0u, 7u}) {
+      expect_memtable_point(table, "K", read_id, is_aborted, "", 7);
+    }
+    expect_memtable_point(table, "K", 6, is_aborted, "old", 3);
+  }
+}
+
+// 目的：回滚过滤后，相同版本仍优先较新来源，不由“是否墓碑”决定胜者。
+// 场景：两个来源都有 K@7，较新来源另有已取消 K@9；分别覆盖活跃表优先、
+//       较新冻结表优先，以及同版本的较新记录为普通值或墓碑。
+TEST(MemTableTest, RollbackGetEqualVersionsPreferNewerSource) {
+  for (bool newer_frozen : {false, true}) {
+    for (bool newer_tombstone : {false, true}) {
+      SCOPED_TRACE(newer_frozen);
+      SCOPED_TRACE(newer_tombstone);
+      MemTable table;
+      table.put("K", newer_tombstone ? "old" : "", 7);
+      table.frozen_cur_table();
+      const std::string expected = newer_tombstone ? "" : "new";
+      table.put("K", expected, 7);
+      table.put("K", "cancelled", 9);
+      if (newer_frozen)
+        table.frozen_cur_table();
+
+      expect_memtable_point(table, "K", 0,
+                            [](uint64_t id) { return id == 9; }, expected, 7);
+    }
+  }
+}
+
+// 目的：各来源的版本全部取消时返回空，不串到邻接 key；空表和缺失 key 也正常。
+// 场景：两张冻结表和活跃表分别有已取消 K@3/5/7，同时保存有效邻居 A、Z。
+TEST(MemTableTest, RollbackGetAllCancelledAndMissingKeysReturnEmpty) {
+  MemTable table;
+  const std::unordered_set<uint64_t> cancelled{3, 5, 7};
+  const auto is_aborted = [&](uint64_t id) { return cancelled.contains(id); };
+  EXPECT_TRUE(table.get("K", 0, is_aborted).is_end());
+  table.put("A", "left", 1);
+  table.put("K", "cancelled-3", 3);
+  table.frozen_cur_table();
+  table.put("K", "", 5);
+  table.frozen_cur_table();
+  table.put("K", "cancelled-7", 7);
+  table.put("Z", "right", 2);
+
+  for (uint64_t read_id : {0u, 6u, 8u}) {
+    for (const std::string key : {"K", "missing"}) {
+      SCOPED_TRACE(key);
+      SCOPED_TRACE(read_id);
+      EXPECT_TRUE(table.get(key, read_id, is_aborted).is_end());
+    }
+  }
+  expect_memtable_point(table, "A", 0, is_aborted, "left", 1);
+  expect_memtable_point(table, "Z", 0, is_aborted, "right", 2);
+}
+
+// 目的：独立查询之间登记了新的回滚 ID，下一次 get 应使用更新后的判断。
+// 场景：冻结表有 K@3，活跃表有 K@5；先都有效，再取消 5，最后取消 3。
+//       三次查询依次返回 5、3、空；这里不涉及查询期间的并发回滚。
+TEST(MemTableTest, RollbackGetUsesUpdatedCancellationStateBetweenQueries) {
+  MemTable table;
+  table.put("K", "old", 3);
+  table.frozen_cur_table();
+  table.put("K", "new", 5);
+  std::unordered_set<uint64_t> cancelled;
+  const auto is_aborted = [&](uint64_t id) { return cancelled.contains(id); };
+
+  expect_memtable_point(table, "K", 0, is_aborted, "new", 5);
+  cancelled.insert(5);
+  expect_memtable_point(table, "K", 0, is_aborted, "old", 3);
+  cancelled.insert(3);
+  EXPECT_TRUE(table.get("K", 0, is_aborted).is_end());
+  expect_memtable_point(table, "K", 0, {}, "new", 5);
 }
 
 // 目的：验证 get_record 返回独立副本，同 key、同版本的后续更新不会改变旧结果。
