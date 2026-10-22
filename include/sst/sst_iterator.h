@@ -44,7 +44,7 @@ public:
               bool keep_all_versions = false);
   // 创建迭代器, 并移动到第指定key
   SstIterator(std::shared_ptr<SST> sst, const std::string &key,
-              uint64_t tranc_id, bool keep_all_versions = false);
+              uint64_t tranc_id, bool keep_all_versions = false, const std::function<bool(uint64_t)> &is_aborted = {});
 
   // 创建迭代器, 并移动到第指定前缀的首端或者尾端
   static std::optional<std::pair<SstIterator, SstIterator>>

@@ -162,14 +162,15 @@ void SstIterator::seek_first() {
 }
 
 // Lab 3.6 将迭代器定位到指定key的位置
-void SstIterator::seek(const std::string &key, const std::function<bool(uint64_t)> &is_aborted) {
+void SstIterator::seek(const std::string &key,
+                       const std::function<bool(uint64_t)> &is_aborted) {
 
   // 1. seek 可以重复调用，先清除上次的位置与缓存
   // 否则这次查找失败后，可能仍然暴露上次查询的记录
   // 后续解引用时，update_current() 会从新位置重新读取
   // 提前清理，也能覆盖查找失败、提前返回的情况
   cached_value.reset();
-  m_block_it.reset(); 
+  m_block_it.reset();
 
   if (!m_sst) {
     m_block_it = nullptr;
@@ -194,8 +195,8 @@ void SstIterator::seek(const std::string &key, const std::function<bool(uint64_t
     //    → 若块中二分找不到目标 key → 返回 nullopt
     //    → 构造器把 current_index 设为 block->offsets.size() (块尾)
     auto block_ptr = m_sst->read_block(m_block_idx);
-    m_block_it = std::make_shared<BlockIterator>(block_ptr, key, max_tranc_id_,
-                                                 keep_all_versions_,is_aborted);
+    m_block_it = std::make_shared<BlockIterator>(
+        block_ptr, key, max_tranc_id_, keep_all_versions_, is_aborted);
 
     // 3. 终审: 候选块可能不包含 key，也可能没有满足条件的版本
     // 这是精确查询，不能通过 ++ 跳到另一个 key 后返回
@@ -210,12 +211,12 @@ void SstIterator::seek(const std::string &key, const std::function<bool(uint64_t
     // 让调用方知道查询失败了
     // 查询失败后，同时重置块编号和块内指针，
     // 保证 is_end() 与 == sst->end() 的结果一致
-    m_block_idx = static_cast<int64_t>(m_sst->num_blocks()); 
+    m_block_idx = static_cast<int64_t>(m_sst->num_blocks());
     m_block_it = nullptr;
 
     // 重新抛出原异常，让调用方知道查询失败
     // 不能把读盘或回滚判断失败当作“key 不存在”
-    throw; 
+    throw;
   }
 }
 
