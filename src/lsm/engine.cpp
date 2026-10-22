@@ -111,37 +111,43 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id) {
   // 与空 weak_ptr 比较所有权：
   // 只要任意一个方向的 owner_before 为 true，就说明它不是空绑定。
   const std::weak_ptr<TranManager> empty_manager;
-  if (!man && (man.owner_before(empty_manager) || empty_manager.owner_before(man))){
-    
-  }
+  if (!man && (man.owner_before(empty_manager) || empty_manager.owner_before(man)))
+    throw std::runtime_error(
+        "LSMEngine::get: transaction manager has expired");
+  
+  // 2. 构造本次查询共用的回滚判断
+  //    没有绑定管理器时，保留空回调
+  //    tranc_id == 0 只表示没有版本上限，仍然需要排除已回滚版本
+  std::function<bool(uint64_t)> is_aborted; 
+  if (man)
+    is_aborted = [man = std::move(man)](uint64_t id){ return man->is_aborted(id); }; 
 
   // best 保存目前找到的最大可见版本：
   // nullopt 表示没有候选；{"", id} 表示候选是墓碑
   std::optional<std::pair<std::string, uint64_t>> best;
 
-  // 1. MemTable 已经比较过活跃表和冻结表，
-  //    返回内存中的最大可见版本
-  // MemTable 在内部持锁期间完成查找和复制
+  // 3. 查询内存中的最大有效版本
+  //    get_record 在 MemTable 自己的锁内查找、复制结果
+  //    暂时保留墓碑，因为还需要与 SST 中的版本比较
   // best 是独立结果，后续原节点被更新不会影响它
   // nullopt 表示未命中；{"", id} 表示墓碑
-  best = memtable.get_record(key, tranc_id);
+  best = memtable.get_record(key, tranc_id, is_aborted);
 
-  // 2. 即使内存命中，也继续查询 SST
-  //    sst_get_ 不自行加锁，由这里保护 SST 集合及查询过程
+  // 4. 使用同一回滚判断查询 SST，比较内存和磁盘的真实版本号
+  //    sst_get_ 不自行加锁，由这里保护 SST 集合
   {
     std::shared_lock<std::shared_mutex> lock(ssts_mtx);
-    auto sst_ret = sst_get_(key, tranc_id);
+    auto sst_ret = sst_get_(key, tranc_id, is_aborted);
 
-    // 磁盘有候选，且内存未命中或磁盘版本更大，才替换
-    // 使用 > 而非 >=：版本相同时保留内存来源
+    // 磁盘版本更大才替换；版本相同时，保持内存来源优先
     if (sst_ret.has_value() &&
         (!best.has_value() || sst_ret->second > best->second)) {
       best = std::move(sst_ret);
     }
   }
 
-  // 3. 所有来源比较完毕，再处理最终胜出的墓碑。
-  //    例如内存是墓碑 k@5，SST 是普通值 k@7，应返回 k@7
+  // 5. 所有来源比较完，再处理最终结果。
+  //    没有有效版本，或者胜出的版本是墓碑，都向调用者返回不存在
   if (!best.has_value() || best->first.empty())
     return std::nullopt;
 
