@@ -103,11 +103,21 @@ SstIterator::SstIterator(std::shared_ptr<SST> sst, uint64_t tranc_id,
 }
 
 SstIterator::SstIterator(std::shared_ptr<SST> sst, const std::string &key,
-                         uint64_t tranc_id, bool keep_all_versions)
+                         uint64_t tranc_id, bool keep_all_versions, const std::function<bool(uint64_t)> &is_aborted)
     : m_sst(sst), m_block_idx(0), m_block_it(nullptr), max_tranc_id_(tranc_id),
       keep_all_versions_(keep_all_versions) {
+  // 1. 上面按照成员声明顺序初始化。
+  // max_tranc_id_ 保存本次读取允许的版本上限，
+  // 不是最终命中记录的真实版本号
+
+  // 2. 复用 seek 完成两级定位，并将回滚判断继续传下去。
+  // 例如读取上限为 10，块中有 k@9（已回滚）、k@5（有效），
+  // 最终应定位到 k@5
+  //
+  // seek 已经处理空 SST、未命中和异常状态，
+  // 这里直接调用，不再重复这些判断
   if (m_sst) {
-    seek(key);
+    seek(key,is_aborted);
   }
 }
 
