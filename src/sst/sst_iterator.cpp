@@ -103,7 +103,8 @@ SstIterator::SstIterator(std::shared_ptr<SST> sst, uint64_t tranc_id,
 }
 
 SstIterator::SstIterator(std::shared_ptr<SST> sst, const std::string &key,
-                         uint64_t tranc_id, bool keep_all_versions, const std::function<bool(uint64_t)> &is_aborted)
+                         uint64_t tranc_id, bool keep_all_versions,
+                         const std::function<bool(uint64_t)> &is_aborted)
     : m_sst(sst), m_block_idx(0), m_block_it(nullptr), max_tranc_id_(tranc_id),
       keep_all_versions_(keep_all_versions) {
   // 1. 上面按照成员声明顺序初始化。
@@ -117,7 +118,7 @@ SstIterator::SstIterator(std::shared_ptr<SST> sst, const std::string &key,
   // seek 已经处理空 SST、未命中和异常状态，
   // 这里直接调用，不再重复这些判断
   if (m_sst) {
-    seek(key,is_aborted);
+    seek(key, is_aborted);
   }
 }
 

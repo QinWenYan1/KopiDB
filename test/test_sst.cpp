@@ -479,7 +479,7 @@ TEST_F(SSTTest, MvccSeekRefreshesCachedValue) {
   EXPECT_EQ((*it).first, "b");
 }
 
-// 目的：seek 将回滚判断和读取上限传入块内查询，保留有效墓碑。
+// 目的：seek 和按 key 构造均将回滚判断、读取上限传入块内查询，保留有效墓碑。
 // 场景：重新打开 SST；k@11、k@7 已取消，k@9 是有效墓碑，k@5 是旧值。
 // 预期：上限 >= 9 或 0 返回墓碑@9，上限 5/8 返回 old@5；两种遍历模式一致。
 TEST_F(SSTTest, RollbackSeekSelectsVisibleVersionAndRetainsTombstone) {
@@ -510,15 +510,24 @@ TEST_F(SSTTest, RollbackSeekSelectsVisibleVersionAndRetainsTombstone) {
       EXPECT_EQ(it->first, "k");
       EXPECT_EQ(it->second, expected_value);
       EXPECT_EQ(it.get_cur_tranc_id(), expected_id);
+
+      SstIterator keyed(sst, "k", read_id, keep_all, is_aborted);
+      ASSERT_TRUE(keyed.is_valid());
+      EXPECT_EQ(keyed->first, "k");
+      EXPECT_EQ(keyed->second, expected_value);
+      EXPECT_EQ(keyed.get_cur_tranc_id(), expected_id);
     }
     SstIterator historical(sst, 4, keep_all);
     historical.seek("k", is_aborted);
     EXPECT_TRUE(historical.is_end());
     EXPECT_TRUE(historical == sst->end());
+    SstIterator keyed_historical(sst, "k", 4, keep_all, is_aborted);
+    EXPECT_TRUE(keyed_historical.is_end());
+    EXPECT_TRUE(keyed_historical == sst->end());
   }
 }
 
-// 目的：重复 seek 必须清除缓存，全部取消或缺失时不能返回相邻 key。
+// 目的：重复 seek 必须清除缓存；seek 和按 key 构造在全部取消或缺失时不能返回相邻 key。
 // 场景：先读取 k@9，再取消 9 读取 k@5，再取消整个 k；之后重新查询其他 key。
 // 预期：每次返回本次定位结果；默认回调仍能读到物理存在的 k@9；空 SST 句柄可安全返回。
 TEST_F(SSTTest, RollbackSeekRefreshesCacheAndHandlesNoMatch) {
@@ -538,6 +547,12 @@ TEST_F(SSTTest, RollbackSeekRefreshesCacheAndHandlesNoMatch) {
   ASSERT_TRUE(it.is_valid());
   EXPECT_EQ(it->second, "old");
   EXPECT_EQ(it.get_cur_tranc_id(), 5);
+  SstIterator keyed_old(sst, "k", 0, false,
+                        [](uint64_t id) { return id == 9; });
+  ASSERT_TRUE(keyed_old.is_valid());
+  EXPECT_EQ(keyed_old->first, "k");
+  EXPECT_EQ(keyed_old->second, "old");
+  EXPECT_EQ(keyed_old.get_cur_tranc_id(), 5);
 
   const auto cancel_k = [](uint64_t id) { return id == 9 || id == 5; };
   for (const std::string key : {"k", "missing", "", "zz"}) {
@@ -547,6 +562,11 @@ TEST_F(SSTTest, RollbackSeekRefreshesCacheAndHandlesNoMatch) {
     EXPECT_FALSE(it.is_valid());
     EXPECT_TRUE(it == sst->end());
     EXPECT_THROW((void)*it, std::runtime_error);
+
+    SstIterator keyed_missing(sst, key, 0, false, cancel_k);
+    EXPECT_TRUE(keyed_missing.is_end());
+    EXPECT_FALSE(keyed_missing.is_valid());
+    EXPECT_TRUE(keyed_missing == sst->end());
 
     // end 状态也可以重新 seek；跨块后不能残留之前缓存的 k。
     it.seek("z", cancel_k);
@@ -569,9 +589,17 @@ TEST_F(SSTTest, RollbackSeekRefreshesCacheAndHandlesNoMatch) {
   EXPECT_TRUE(empty.is_end());
   EXPECT_FALSE(empty.is_valid());
   EXPECT_FALSE(callback_called);
+  SstIterator keyed_empty(nullptr, "k", 0, false,
+                          [&callback_called](uint64_t) {
+                            callback_called = true;
+                            return false;
+                          });
+  EXPECT_TRUE(keyed_empty.is_end());
+  EXPECT_FALSE(keyed_empty.is_valid());
+  EXPECT_FALSE(callback_called);
 }
 
-// 目的：回滚判断异常必须上报，异常后的位置和缓存应一致地处于 end 状态。
+// 目的：seek 的回滚判断异常必须上报且留下统一 end 状态；按 key 构造也不能吞掉异常。
 // 场景：先填充缓存；定位中间块的 k 时，分别抛出标准异常和非标准异常；随后再 seek 到 z。
 // 预期：异常未被吞掉，is_end 和与 SST::end 的比较一致，后续定位可以恢复使用。
 TEST_F(SSTTest, RollbackSeekPropagatesErrorAndLeavesEndState) {
@@ -596,8 +624,11 @@ TEST_F(SSTTest, RollbackSeekPropagatesErrorAndLeavesEndState) {
 
     if (standard_exception) {
       EXPECT_THROW(it.seek("k", failing_check), std::runtime_error);
+      EXPECT_THROW((SstIterator(sst, "k", 0, false, failing_check)),
+                   std::runtime_error);
     } else {
       EXPECT_THROW(it.seek("k", failing_check), int);
+      EXPECT_THROW((SstIterator(sst, "k", 0, false, failing_check)), int);
     }
     EXPECT_TRUE(it.is_end());
     EXPECT_FALSE(it.is_valid());

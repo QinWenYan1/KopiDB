@@ -1,7 +1,7 @@
 #pragma once
 
-#include "iterator/iterator.h"
 #include "block/block_iterator.h"
+#include "iterator/iterator.h"
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -42,12 +42,13 @@ public:
   // 创建迭代器, 并移动到第一个key
   SstIterator(std::shared_ptr<SST> sst, uint64_t tranc_id,
               bool keep_all_versions = false);
-  
+
   // 创建迭代器，并定位 key 的最大有效版本。
   // SST 为空或没有有效版本时进入 end 状态。
   // 回调只用于本次定位，不保存在迭代器中。
   SstIterator(std::shared_ptr<SST> sst, const std::string &key,
-              uint64_t tranc_id, bool keep_all_versions = false, const std::function<bool(uint64_t)> &is_aborted = {});
+              uint64_t tranc_id, bool keep_all_versions = false,
+              const std::function<bool(uint64_t)> &is_aborted = {});
 
   // 创建迭代器, 并移动到第指定前缀的首端或者尾端
   static std::optional<std::pair<SstIterator, SstIterator>>
@@ -58,7 +59,8 @@ public:
 
   // 精确查找 key；没有有效版本时进入 end 状态
   // 回调只用于本次定位，不保存在迭代器中
-  void seek(const std::string &key, const std::function<bool(uint64_t)> &is_aborted = {});
+  void seek(const std::string &key,
+            const std::function<bool(uint64_t)> &is_aborted = {});
   std::string key();
   std::string value();
 
