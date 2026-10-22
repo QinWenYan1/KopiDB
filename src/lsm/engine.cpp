@@ -202,23 +202,25 @@ void LSMEngine::update_best_from_sst(
 //         所以我们需要用 best
 //         保存目前找到的最大可见版本，查完其他候选来源再返回
 std::optional<std::pair<std::string, uint64_t>>
-LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
+LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id,  const std::function<bool(uint64_t)> &is_aborted) {
   // 不加锁: 约定调用方已持有 ssts_mtx (get 的读锁 / compact 的写锁)
   // 沿用原来的锁约定：调用方已经持有 ssts_mtx
   std::optional<std::pair<std::string, uint64_t>> best;
 
-  // 1. L0: 各 SST key 范围重叠, 逐个查; 队列头部 id 最大 = 最新, 先查
+  // 1. L0 的不同 SST 可以包含相同 key，因此逐张查询
+  // 即使已经找到候选，也继续比较后面的来源
   if (level_sst_ids.find(0) != level_sst_ids.end()) {
-
     for (auto &sst_id : level_sst_ids[0]) {
       // 取出 sst 和 sst_it 一个一个查找
-      // get_cur_tranc_id()：永远返回当前 entry 的真实写入 id
+      // 回调传到底层：先在这张 SST 内排除回滚版本，
+      // 再用选出的有效版本与 best 比较
       auto &sst = ssts.at(sst_id);
-      update_best_from_sst(sst, key, tranc_id, best);
+      update_best_from_sst(sst, key, tranc_id, best, is_aborted);
     }
   }
 
-  // 2. L1+: 每层内 SST 不重叠且按 key 有序, 二分定位唯一候选文件
+  // 2. L1 及更深层：同一层的 SST 按 key 有序、范围不重叠
+  // 因此每层最多只有一张 SST 可能包含目标 key，用二分定位
   for (const auto &[lvl, ids] : level_sst_ids) {
     if (lvl == 0)
       continue;
@@ -229,11 +231,11 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
       size_t mid = (left + right) / 2;
       auto &sst = ssts.at(ids[mid]);
 
-      // 找到目标 sst
+      // key 落在当前 SST 的范围内，使用同一个回滚判断
       if (sst->get_first_key() <= key && key <= sst->get_last_key()) {
-        update_best_from_sst(sst, key, tranc_id, best);
-        // 本层只有这张表可能含有目标 key
-        // 结束本层二分，但外层循环继续检查下一层
+        update_best_from_sst(sst, key, tranc_id, best, is_aborted);
+        // 本层其他 SST 不可能再包含这个 key，因此结束本层二分
+        // 即使当前候选全部回滚，也仍要让外层循环继续检查更深层
         break;
       } else if (sst->get_last_key() < key)
         left = mid + 1;
@@ -242,13 +244,14 @@ LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
     }
   }
 
+  // 3. 所有候选来源都检查完后，再返回最终结果
   if (!best.has_value()) {
     spdlog::trace("LSMEngine::sst_get_({}, {}): key not exist", key, tranc_id);
     return std::nullopt;
   }
 
-  // 内部接口保留胜出的墓碑及版本号，供冲突检查等逻辑使用
-  // 面向用户的查询再把最终墓碑转换成“不存在”
+  // 有效墓碑也作为 {空字符串, 真实版本号} 返回
+  // 上层还需要用它参与跨 MemTable/SST 比较或提交冲突检查
   return best;
 }
 

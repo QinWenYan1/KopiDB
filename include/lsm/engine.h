@@ -43,9 +43,12 @@ public:
   std::vector<
       std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
   get_batch(const std::vector<std::string> &keys, uint64_t tranc_id);
-
+  
+  // 只查询 SST，返回最大有效版本；有效墓碑仍然保留
+  // 调用方必须持有 ssts_mtx，本函数不重复加锁
   std::optional<std::pair<std::string, uint64_t>>
-  sst_get_(const std::string &key, uint64_t tranc_id);
+  sst_get_(const std::string &key, uint64_t tranc_id,
+   const std::function<bool(uint64_t)> &is_aborted = {});
 
   // 如果触发了刷盘, 返回当前刷入sst的最大事务id
   uint64_t put(const std::string &key, const std::string &value,
