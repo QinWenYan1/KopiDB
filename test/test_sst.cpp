@@ -572,7 +572,7 @@ TEST_F(SSTTest, RollbackSeekRefreshesCacheAndHandlesNoMatch) {
 }
 
 // 目的：回滚判断异常必须上报，异常后的位置和缓存应一致地处于 end 状态。
-// 场景：先读取首块填充缓存；定位中间块的 k 时，回调抛异常；随后再 seek 到 z。
+// 场景：先填充缓存；定位中间块的 k 时，分别抛出标准异常和非标准异常；随后再 seek 到 z。
 // 预期：异常未被吞掉，is_end 和与 SST::end 的比较一致，后续定位可以恢复使用。
 TEST_F(SSTTest, RollbackSeekPropagatesErrorAndLeavesEndState) {
   SSTBuilder builder(32, true);
@@ -584,20 +584,31 @@ TEST_F(SSTTest, RollbackSeekPropagatesErrorAndLeavesEndState) {
   auto it = sst->begin(0);
   ASSERT_TRUE(it.is_valid());
   EXPECT_EQ(it->first, "a");
-  const auto failing_check = [](uint64_t) -> bool {
-    throw std::runtime_error("rollback lookup failed");
-  };
+  for (bool standard_exception : {true, false}) {
+    SCOPED_TRACE(standard_exception);
+    const auto failing_check = [standard_exception](uint64_t) -> bool {
+      if (standard_exception) {
+        throw std::runtime_error("rollback lookup failed");
+      }
+      // 模拟回调抛出不继承 std::exception 的异常，验证 catch (...) 也会清理状态。
+      throw 42;
+    };
 
-  EXPECT_THROW(it.seek("k", failing_check), std::runtime_error);
-  EXPECT_TRUE(it.is_end());
-  EXPECT_FALSE(it.is_valid());
-  EXPECT_TRUE(it == sst->end());
-  EXPECT_THROW((void)*it, std::runtime_error);
+    if (standard_exception) {
+      EXPECT_THROW(it.seek("k", failing_check), std::runtime_error);
+    } else {
+      EXPECT_THROW(it.seek("k", failing_check), int);
+    }
+    EXPECT_TRUE(it.is_end());
+    EXPECT_FALSE(it.is_valid());
+    EXPECT_TRUE(it == sst->end());
+    EXPECT_THROW((void)*it, std::runtime_error);
 
-  it.seek("z");
-  ASSERT_TRUE(it.is_valid());
-  EXPECT_EQ(it->first, "z");
-  EXPECT_EQ(it.get_cur_tranc_id(), 1);
+    it.seek("z");
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(it->first, "z");
+    EXPECT_EQ(it.get_cur_tranc_id(), 1);
+  }
 }
 
 int main(int argc, char **argv) {

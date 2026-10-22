@@ -205,10 +205,16 @@ void SstIterator::seek(const std::string &key, const std::function<bool(uint64_t
       m_block_idx = m_sst->num_blocks();
       m_block_it = nullptr;
     }
-  } catch () {
+  } catch (...) {
     // 参考实现行为: 读盘/解码异常一律按 "没找到" 处理
     // 让调用方知道查询失败了
+    // 查询失败后，同时重置块编号和块内指针，
+    // 保证 is_end() 与 == sst->end() 的结果一致
+    m_block_idx = static_cast<int64_t>(m_sst->num_blocks()); 
     m_block_it = nullptr;
+
+    // 重新抛出原异常，让调用方知道查询失败
+    // 不能把读盘或回滚判断失败当作“key 不存在”
     throw; 
   }
 }
