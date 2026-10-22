@@ -7,12 +7,12 @@
 #include "vlog/vlog.h"
 #include <cstddef>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include <functional>
 
 namespace tiny_lsm {
 
@@ -25,7 +25,8 @@ public:
   std::map<size_t, std::deque<size_t>> level_sst_ids;
   std::unordered_map<size_t, std::shared_ptr<SST>> ssts;
   // ssts_mtx 保护的是 Engine 管理的“SST 集合和层级关系”
-  // MemTable 自己管理锁，Engine 调用它的接口时，内部会加锁，Engine 不需要自己管理
+  // MemTable 自己管理锁，Engine 调用它的接口时，内部会加锁，Engine
+  // 不需要自己管理
   std::shared_mutex ssts_mtx;
   std::shared_ptr<BlockCache> block_cache;
   std::shared_ptr<VLog> vlog_;
@@ -77,8 +78,8 @@ private:
   static void
   update_best_from_sst(const std::shared_ptr<SST> &, const std::string &,
                        uint64_t,
-                       std::optional<std::pair<std::string, uint64_t>> &, 
-                      const std::function<bool(uint64_t)> &is_aborted = {});
+                       std::optional<std::pair<std::string, uint64_t>> &,
+                       const std::function<bool(uint64_t)> &is_aborted = {});
 
   void full_compact(size_t src_level);
   std::vector<std::shared_ptr<SST>>

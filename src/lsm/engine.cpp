@@ -172,8 +172,7 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
 void LSMEngine::update_best_from_sst(
     const std::shared_ptr<SST> &sst, const std::string &key, uint64_t tranc_id,
     std::optional<std::pair<std::string, uint64_t>> &best,
-    const std::function<bool(uint64_t)> &is_aborted
-  ) {
+    const std::function<bool(uint64_t)> &is_aborted) {
 
   // 1. 从这张 SST 中选出满足读取上限、且没有回滚的最大版本
   // 例如 k@9 已回滚、k@5 有效，SST::get 应返回 k@5
@@ -184,7 +183,7 @@ void LSMEngine::update_best_from_sst(
   // 这里不能清空 best，因为“这张表没有”不代表“其他表也没有”
   if (!candidate.is_valid())
     return;
-  
+
   // 3. 比较实际命中记录的写入版本，而不是本次读取的版本上限
   // 例如读取上限为 10、命中 k@5，这里取得的是 5
   const uint64_t version = candidate.get_cur_tranc_id();

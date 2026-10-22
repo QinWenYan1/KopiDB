@@ -14,9 +14,9 @@
 
 2026-10-22 最新 SST 检查：SST::get 已将回调正确传给按 key 构造的 SstIterator，范围/Bloom 检查、读取上限和有效墓碑处理正确。扩展现有测试到公开 get 入口，完整 test_sst 19/19 通过，test_lsm 构建通过但未运行。下一项为 Engine 候选 SST 查询，从 update_best_from_sst 开始；本轮只完成检查，助手未修改业务代码。
 
-2026-10-22 后续推进：已核对 update_best_from_sst 的声明和 sst_get_ 的两处调用，提供保留 static、增加可选回调并转发给 SST::get 的草案。草案待用户手动加入，当前业务代码仍未接通；本次仅更新计划和说明，未运行新的测试。已对照作者 engine.cpp：作者在 sst_get_ 中直接查询 SST，没有同名辅助函数；本项目继续保留跨来源真实版本比较、同版本来源优先级和有效墓碑，不恢复作者找到首个结果便返回的策略。
+2026-10-22 最新 Engine 检查：用户已实现 update_best_from_sst 的回调传递，代码检查正确，test_lsm 构建成功，现有点查、批查和跨 SST/层读取回归 3/3 通过。sst_get_ 尚未传入非空回调，其回滚集成路径本轮未验证；当前提供 sst_get_ 草案，待用户加入。作者 engine.cpp 没有同名辅助函数，本项目继续保留跨来源真实版本比较、同版本来源优先级和有效墓碑。未新增测试，未修改业务代码。
 
-当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator 按 key 构造函数、SstIterator::seek 及按 key 构造函数、SST::get 在传入判断函数时会排除已取消版本，保留有效墓碑，并选出最大有效版本，相关测试通过。Engine 和 commit 尚未接通；Engine 的 update_best_from_sst 当前仍调用两参数 SST::get，使用默认空回调。MemTable::get 返回的原节点迭代器、BlockIterator/SstIterator 按 key 构造函数及 seek 均不保存回调，后续 ++ 不自动沿用本次筛选；get_record/get_batch 在锁内复制结果。数据库回滚查询尚未完成。
+当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator 按 key 构造函数、SstIterator::seek 及按 key 构造函数、SST::get 在传入判断函数时会排除已取消版本，保留有效墓碑，并选出最大有效版本，相关测试通过。Engine 的 update_best_from_sst 已转发回调，但 sst_get_ 的两处调用仍使用默认空回调；Engine 查询入口和 commit 尚未接通。MemTable::get 返回的原节点迭代器、BlockIterator/SstIterator 按 key 构造函数及 seek 均不保存回调，后续 ++ 不自动沿用本次筛选；get_record/get_batch 在锁内复制结果。数据库回滚查询尚未完成。
 
 2026-10-20 用户纠正任务范围：撤回把 LSM 构造函数绑定作为当前下一步的安排，组件初始化整合按 Lab 5.5 推进。绑定是引擎使用管理器的依赖，但现有事务测试已显式完成绑定，可以先验证回滚逻辑；本轮不以修复 LSM 初始化入口为前置任务，也不把测试绑定视为生产入口已完成。
 
@@ -128,8 +128,9 @@
 
 ## 测试状态
 
-- 最新检查（2026-10-22）：扩展原有 3 个回滚测试到 SST::get，核对 key/value/真实版本，覆盖读取上限（含 0）、取消新值和取消墓碑后回退、有效墓碑、全部取消/缺失及标准/非标准异常上报；扩展 EndDoesNotReadBlocks，验证范围外查询保持 end、不调用回调且缓存仍为空。`xmake build test_sst`、`xmake build test_lsm` 成功，独立临时目录复制配置后运行完整 test_sst，**19/19 通过**。测试数量不变，未修改业务代码；test_lsm 本轮只构建未运行，未执行其他测试套件。
-- 本轮通过日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-get-rollback-r4d0s4ki/result.log`。
+- 最新检查（2026-10-22）：update_best_from_sst 实现检查通过，`xmake build test_lsm` 成功。独立临时目录复制配置，运行 LSMTest.EngineMvccPointReadComparesMemoryAndSstVersions、EngineMvccBatchReadComparesMemoryAndSstVersions、EngineMvccSstReadComparesFilesAndLevels，**3/3 通过**。这是现有空回调路径回归；非空回调集成验收待 sst_get_ 接通。本轮未新增测试、未修改业务代码、未运行完整 test_lsm 或其他套件。
+- 本轮通过日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-candidate-review-mfm7c3sa/result.log`。
+- 前一轮 SST::get 检查（2026-10-22）：扩展原有 3 个回滚测试及 EndDoesNotReadBlocks，公开入口完整 SST **19/19 通过**，test_lsm 构建通过。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-get-rollback-r4d0s4ki/result.log`。
 - 前一轮 SstIterator 按 key 构造检查（2026-10-22）：扩展原有 3 个回滚测试到构造入口，完整 SST **19/19 通过**。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-key-ctor-kggoiq63/result.log`。
 - 前一轮 seek 修正检查（2026-10-22）：catch (...) 同时重置块编号和块内指针，再重新抛出异常；标准和非标准异常测试及完整 test_sst **19/19 通过**。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-seek-fixed-k6df6mic/result.log`。
 - 前一轮 seek 检查（2026-10-22）：新增 3 个测试，覆盖重新打开 SST、回滚过滤与读取上限、两种遍历模式、有效墓碑、重复 seek 缓存更新、全部取消/缺失/空 SST 句柄、异常上报与后续再次定位。曾为 18/19，唯一失败断言是异常后的 `it == sst->end()`，现已解决。旧日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-seek-rollback-upp8ca__/result.log`。
@@ -160,7 +161,7 @@
 
 - 用户手动修改业务源码及头文件；助手在聊天中给出带中文解释的实现和准确位置。
 - 一次推进一个函数，检查完成后，等用户明确说“下一个”再继续。
-- 每完成一个函数，在聊天中展示当前阶段的 TODO；每完成一个阶段，再展示六阶段总进度，明确区分已完成、进行中和未开始，不能把单个函数通过写成整个阶段完成。
+- 每次展示计划或进度，都先列出全部六个阶段及其已完成、进行中、待开始状态，再标出当前阶段正在处理的函数；必要时补充当前阶段细项。该约定按用户 2026-10-22 最新要求更新，不再只在阶段结束时展示总进度。不能把单个函数通过写成整个阶段完成。
 - Lab 指定函数即使已有实现，也要独立推导，并对照作者参考；有差异时说明理由。
 - 助手可以直接补充测试、维护这两份文档，并执行相关检查。测试使用独立临时目录和配置，避免测试清理影响项目数据。
 - Git 写操作由用户执行；“提 issue”默认指在聊天中起草内容。
