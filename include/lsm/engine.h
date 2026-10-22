@@ -12,6 +12,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <functional>
 
 namespace tiny_lsm {
 
@@ -76,7 +77,8 @@ private:
   static void
   update_best_from_sst(const std::shared_ptr<SST> &, const std::string &,
                        uint64_t,
-                       std::optional<std::pair<std::string, uint64_t>> &);
+                       std::optional<std::pair<std::string, uint64_t>> &, 
+                      const std::function<bool(uint64_t)> &is_aborted = {});
 
   void full_compact(size_t src_level);
   std::vector<std::shared_ptr<SST>>
