@@ -108,10 +108,9 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id) {
   //   ① 从未绑定管理器：允许独立使用 Engine，保持原查询行为。
   //   ② 绑定的管理器已经销毁：无法判断哪些版本已回滚，必须报错。
   //
-  // 与空 weak_ptr 比较所有权：
-  // 只要任意一个方向的 owner_before 为 true，就说明它不是空绑定。
-  const std::weak_ptr<TranManager> empty_manager;
-  if (!man && (man.owner_before(empty_manager) || empty_manager.owner_before(man)))
+  // 查询需要使用管理器中的回滚名单
+  // 未绑定或管理器已销毁，都说明查询所需的依赖尚未准备好
+  if (!man)
     throw std::runtime_error(
         "LSMEngine::get: transaction manager has expired");
   
