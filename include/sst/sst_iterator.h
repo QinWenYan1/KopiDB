@@ -52,7 +52,10 @@ public:
                            std::function<bool(const std::string &)> predicate);
 
   void seek_first();
-  void seek(const std::string &key);
+
+  // 精确查找 key；没有有效版本时进入 end 状态
+  // 回调只用于本次定位，不保存在迭代器中
+  void seek(const std::string &key, const std::function<bool(uint64_t)> &is_aborted = {});
   std::string key();
   std::string value();
 

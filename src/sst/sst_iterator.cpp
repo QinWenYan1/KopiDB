@@ -162,12 +162,14 @@ void SstIterator::seek_first() {
 }
 
 // Lab 3.6 将迭代器定位到指定key的位置
-void SstIterator::seek(const std::string &key) {
+void SstIterator::seek(const std::string &key, const std::function<bool(uint64_t)> &is_aborted) {
 
-  // seek 会重新定位，旧位置的缓存必须作废
+  // 1. seek 可以重复调用，先清除上次的位置与缓存
+  // 否则这次查找失败后，可能仍然暴露上次查询的记录
   // 后续解引用时，update_current() 会从新位置重新读取
   // 提前清理，也能覆盖查找失败、提前返回的情况
   cached_value.reset();
+  m_block_it.reset(); 
 
   if (!m_sst) {
     m_block_it = nullptr;
@@ -186,20 +188,28 @@ void SstIterator::seek(const std::string &key) {
     }
 
     // 2. 第二级: 进块, 块内二分 (key 构造版 BlockIterator, 找不到会指到块尾)
+    //    进入候选块，传递读取上限和回滚判断。
+    //    例如 k@9 已回滚、k@5 有效，由 BlockIterator 定位到 k@5
+    //
     //    → 若块中二分找不到目标 key → 返回 nullopt
     //    → 构造器把 current_index 设为 block->offsets.size() (块尾)
     auto block_ptr = m_sst->read_block(m_block_idx);
     m_block_it = std::make_shared<BlockIterator>(block_ptr, key, max_tranc_id_,
-                                                 keep_all_versions_);
+                                                 keep_all_versions_,is_aborted);
 
-    // 3. 终审: 缝隙 key / 版本全不可见 → 块内没找到 → end 态
+    // 3. 终审: 候选块可能不包含 key，也可能没有满足条件的版本
+    // 这是精确查询，不能通过 ++ 跳到另一个 key 后返回
+    // 当前 SSTBuilder 保证同一个 key 的版本全部位于同一个块
+    // 所以无需再去后续块寻找这个 key
     if (m_block_it->is_end()) {
       m_block_idx = m_sst->num_blocks();
       m_block_it = nullptr;
     }
-  } catch (const std::exception &) {
+  } catch () {
     // 参考实现行为: 读盘/解码异常一律按 "没找到" 处理
+    // 让调用方知道查询失败了
     m_block_it = nullptr;
+    throw; 
   }
 }
 

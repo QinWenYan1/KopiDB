@@ -18,9 +18,9 @@
 
 ## 当前推进项
 
-**第②阶段已完成；第③阶段已接通并验证 BlockIterator 按 key 构造函数。当前下一函数为 SstIterator::seek，草案待用户加入。**
+**第②阶段已完成；第③阶段正在检查 SstIterator::seek。正常回滚查询已通过，异常后的 end 状态仍需补齐，暂不进入下一函数。**
 
-2026-10-22 最新检查：BlockIterator 按 key 构造函数正确转发回调、拒绝空 Block、未命中指向块尾。扩展已有 5 个回滚测试到构造入口，同时检查 keep_all_versions 的两种取值；新增空指针测试。构建成功，在各自独立临时目录运行完整 test_block（24/24）和 test_sst（16/16）均通过。SST 本轮仅验证已有功能没有回归，尚未接通回滚回调。
+2026-10-22 最新检查：SstIterator::seek 已正确转发回调，清理缓存，并重新抛出异常。新增 3 个测试后，构建成功，独立临时目录运行完整 test_sst，18/19 通过；唯一失败为 RollbackSeekPropagatesErrorAndLeavesEndState。catch 清空 m_block_it，却未将 m_block_idx 设为 num_blocks，导致 is_end() 为 true 但与 sst->end() 不相等。待用户在 catch 中补齐块编号并更新过时注释后复验。正常过滤、有效墓碑、读取上限、重新定位和原有 16 个测试均通过。
 
 此前 MemTable 阶段：完整回归 41/41 通过，test_lsm 构建通过；该结果发生在本轮 Block 修改之前。Engine 回滚查询的 2 个既有失败用例仍待上层接通，本轮未重跑。
 
@@ -40,9 +40,9 @@
 
 已完成 get_value_binary：回调传给 get_idx_binary，判空后通过 offsets 读取 value；有效墓碑返回有值的空字符串 optional，未命中返回 nullopt。
 
-已完成 BlockIterator 按 key 构造函数：在现有 keep_all_versions 参数之后增加可选回调，转发给 get_idx_binary；命中后保存下标，未命中指向 block->size()。该构造要求有效 Block，空指针用 invalid_argument 明确拒绝。回调本轮仅用于构造时定位，不保存到迭代器，后续 ++ 的回滚过滤留第④阶段；保持当前点查与范围查询的阶段边界。SST 和 Engine 调用点尚未传回调。
+已完成 BlockIterator 按 key 构造函数：在现有 keep_all_versions 参数之后增加可选回调，转发给 get_idx_binary；命中后保存下标，未命中指向 block->size()。该构造要求有效 Block，空指针用 invalid_argument 明确拒绝。回调本轮仅用于构造时定位，不保存到迭代器，后续 ++ 的回滚过滤留第④阶段；保持当前点查与范围查询的阶段边界。前一轮 Block 24/24、SST 原有回归 16/16 通过。
 
-下一函数为 SstIterator::seek：增加可选回调，先清理旧位置与缓存，再将回调传给按 key 构造的 BlockIterator。正常未命中保持统一的 SST end 状态，不能向后跨到其他 key。草案去掉将所有 std::exception 转成未命中的 catch，让读盘、解码或回调异常正常上报；新位置确认有效后再写入成员。当前仅提供草案，未修改业务代码、未验收新接口。之后再逐函数接通 SstIterator 按 key 构造函数和 SST::get。
+当前函数 SstIterator::seek：用户保留 catch 并使用 throw 重新上报异常，这种方案可以接受，但异常时必须同时重置块编号和块内指针。当前待修复的是该异常状态；不是要求照抄上一版草案。修正并通过测试后，再逐函数接通 SstIterator 按 key 构造函数和 SST::get。助手本轮只添加测试和更新记录，未修改业务代码。
 
 已通过的 SkipList 验收：取消值/墓碑后找到旧版本、连续取消且不改变物理记录、保留有效墓碑、同时遵守版本上限、全部取消/空表/缺失 key 边界，以及未提供回调时保持原行为。完整回归同时覆盖原有 MVCC、遍历、谓词与物理删除行为。
 
@@ -104,7 +104,7 @@
 - [x] 接通 `Block::get_idx_binary`，新增 5 个回滚测试；完整 Block 23/23 通过。
 - [x] 修正 `Block::get_value_binary` 漏传回调的调用；扩展已有回滚测试到取值入口，完整 Block 23/23 通过。
 - [x] 接通 BlockIterator 按 key 构造函数的回调，未命中定位到块尾；Block 24/24、SST 原有回归 16/16 通过（仅构造时点查）。
-- [ ] 接通 SstIterator::seek 的回调，统一未命中状态并保留异常上报（当前草案）。
+- [ ] 完成 SstIterator::seek 验收：正常过滤通过，catch 尚需补 m_block_idx = num_blocks 并纠正旧注释；当前 SST 18/19，异常状态测试失败。
 - [ ] 接通 SstIterator 按 key 构造函数与 SST::get，逐函数实现并验证。
 - [ ] 明确回滚判断如何传入点查询链，以及查询期间的管理器生命周期。
 - [ ] 接通 SST 点查询链：`sst_get_`、候选 SST 查询及 SST/Block 版本选择。

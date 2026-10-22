@@ -5,6 +5,7 @@
 #include "sst/sst_iterator.h"
 #include <filesystem>
 #include <gtest/gtest.h>
+#include <stdexcept>
 #include <tuple>
 
 using namespace ::tiny_lsm;
@@ -476,6 +477,127 @@ TEST_F(SSTTest, MvccSeekRefreshesCachedValue) {
   EXPECT_EQ(it->first, "b");
   EXPECT_EQ(it->second, "visible-b");
   EXPECT_EQ((*it).first, "b");
+}
+
+// 目的：seek 将回滚判断和读取上限传入块内查询，保留有效墓碑。
+// 场景：重新打开 SST；k@11、k@7 已取消，k@9 是有效墓碑，k@5 是旧值。
+// 预期：上限 >= 9 或 0 返回墓碑@9，上限 5/8 返回 old@5；两种遍历模式一致。
+TEST_F(SSTTest, RollbackSeekSelectsVisibleVersionAndRetainsTombstone) {
+  SSTBuilder builder(32, true);
+  builder.add("a", std::string(24, 'a'), 1);
+  builder.add("k", "cancelled-11", 11);
+  builder.add("k", "", 9);
+  builder.add("k", "cancelled-7", 7);
+  builder.add("k", "old", 5);
+  builder.add("z", std::string(24, 'z'), 1);
+  auto built = builder.build(1, "test_data/rollback-seek.sst",
+                            std::make_shared<BlockCache>(8, 2));
+  auto sst = SST::open(1, FileObj::open("test_data/rollback-seek.sst", false),
+                       std::make_shared<BlockCache>(8, 2));
+  ASSERT_EQ(sst->num_blocks(), 3);
+  const auto is_aborted = [](uint64_t id) { return id == 11 || id == 7; };
+  const std::vector<std::tuple<uint64_t, uint64_t, std::string>> cases = {
+      {0, 9, ""}, {5, 5, "old"}, {8, 5, "old"},
+      {9, 9, ""}, {10, 9, ""}, {11, 9, ""}};
+
+  for (bool keep_all : {false, true}) {
+    SCOPED_TRACE(keep_all);
+    for (const auto &[read_id, expected_id, expected_value] : cases) {
+      SCOPED_TRACE(read_id);
+      SstIterator it(sst, read_id, keep_all);
+      it.seek("k", is_aborted);
+      ASSERT_TRUE(it.is_valid());
+      EXPECT_EQ(it->first, "k");
+      EXPECT_EQ(it->second, expected_value);
+      EXPECT_EQ(it.get_cur_tranc_id(), expected_id);
+    }
+    SstIterator historical(sst, 4, keep_all);
+    historical.seek("k", is_aborted);
+    EXPECT_TRUE(historical.is_end());
+    EXPECT_TRUE(historical == sst->end());
+  }
+}
+
+// 目的：重复 seek 必须清除缓存，全部取消或缺失时不能返回相邻 key。
+// 场景：先读取 k@9，再取消 9 读取 k@5，再取消整个 k；之后重新查询其他 key。
+// 预期：每次返回本次定位结果；默认回调仍能读到物理存在的 k@9；空 SST 句柄可安全返回。
+TEST_F(SSTTest, RollbackSeekRefreshesCacheAndHandlesNoMatch) {
+  SSTBuilder builder(32, true);
+  builder.add("a", std::string(24, 'a'), 1);
+  builder.add("k", "new", 9);
+  builder.add("k", "old", 5);
+  builder.add("z", std::string(24, 'z'), 1);
+  auto sst = builder.build(1, "test_data/rollback-seek-cache.sst",
+                          std::make_shared<BlockCache>(8, 2));
+  auto it = sst->begin(0);
+  it.seek("k");
+  ASSERT_TRUE(it.is_valid());
+  EXPECT_EQ(it->second, "new"); // 填充缓存，后面的 seek 必须使其失效。
+
+  it.seek("k", [](uint64_t id) { return id == 9; });
+  ASSERT_TRUE(it.is_valid());
+  EXPECT_EQ(it->second, "old");
+  EXPECT_EQ(it.get_cur_tranc_id(), 5);
+
+  const auto cancel_k = [](uint64_t id) { return id == 9 || id == 5; };
+  for (const std::string key : {"k", "missing", "", "zz"}) {
+    SCOPED_TRACE(key);
+    it.seek(key, cancel_k);
+    EXPECT_TRUE(it.is_end());
+    EXPECT_FALSE(it.is_valid());
+    EXPECT_TRUE(it == sst->end());
+    EXPECT_THROW((void)*it, std::runtime_error);
+
+    // end 状态也可以重新 seek；跨块后不能残留之前缓存的 k。
+    it.seek("z", cancel_k);
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(it->first, "z");
+    EXPECT_EQ(it->second, std::string(24, 'z'));
+    EXPECT_EQ(it.get_cur_tranc_id(), 1);
+  }
+  it.seek("k");
+  ASSERT_TRUE(it.is_valid());
+  EXPECT_EQ(it->second, "new");
+  EXPECT_EQ(it.get_cur_tranc_id(), 9);
+
+  SstIterator empty(nullptr, 0);
+  bool callback_called = false;
+  empty.seek("k", [&callback_called](uint64_t) {
+    callback_called = true;
+    return false;
+  });
+  EXPECT_TRUE(empty.is_end());
+  EXPECT_FALSE(empty.is_valid());
+  EXPECT_FALSE(callback_called);
+}
+
+// 目的：回滚判断异常必须上报，异常后的位置和缓存应一致地处于 end 状态。
+// 场景：先读取首块填充缓存；定位中间块的 k 时，回调抛异常；随后再 seek 到 z。
+// 预期：异常未被吞掉，is_end 和与 SST::end 的比较一致，后续定位可以恢复使用。
+TEST_F(SSTTest, RollbackSeekPropagatesErrorAndLeavesEndState) {
+  SSTBuilder builder(32, true);
+  builder.add("a", std::string(24, 'a'), 1);
+  builder.add("k", "value", 9);
+  builder.add("z", std::string(24, 'z'), 1);
+  auto sst = builder.build(1, "test_data/rollback-seek-error.sst",
+                          std::make_shared<BlockCache>(8, 2));
+  auto it = sst->begin(0);
+  ASSERT_TRUE(it.is_valid());
+  EXPECT_EQ(it->first, "a");
+  const auto failing_check = [](uint64_t) -> bool {
+    throw std::runtime_error("rollback lookup failed");
+  };
+
+  EXPECT_THROW(it.seek("k", failing_check), std::runtime_error);
+  EXPECT_TRUE(it.is_end());
+  EXPECT_FALSE(it.is_valid());
+  EXPECT_TRUE(it == sst->end());
+  EXPECT_THROW((void)*it, std::runtime_error);
+
+  it.seek("z");
+  ASSERT_TRUE(it.is_valid());
+  EXPECT_EQ(it->first, "z");
+  EXPECT_EQ(it.get_cur_tranc_id(), 1);
 }
 
 int main(int argc, char **argv) {

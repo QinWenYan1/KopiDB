@@ -12,9 +12,9 @@
 
 当前推进项：第②阶段已完成，之前 remove 及相关回归为 36/36 通过。第③阶段的 SkipList::get 已通过完整 test_skiplist（29/29，包含 6 个回滚测试）；MemTable 的 get/get_record/get_batch 已通过内部查询将回调传到底层跳表。2026-10-21 get_batch 检查通过，新增 3 个批量回滚测试，完整 test_memtable 41/41 通过，test_lsm 构建通过。下一步为 SST/Block 点查询链，继续逐函数推进，业务代码仍由用户手动加入。
 
-2026-10-22 最新 Block 检查：BlockIterator 按 key 构造函数已正确接入回调，判空和未命中处理正确。扩展原有 5 个回滚测试到此构造入口，覆盖 keep_all_versions 两种设置，并新增空指针测试；完整 test_block 24/24、test_sst 16/16 通过。下一步为 SstIterator::seek，草案待用户加入；SST 测试本轮通过不代表其回滚链已经接通。
+2026-10-22 最新 SST 检查：SstIterator::seek 已接入回调并重新抛出异常，正常查询行为通过。新增 3 个测试后完整 test_sst 18/19 通过；唯一失败为异常后 m_block_idx 未同步到 num_blocks，使 is_end() 与和 sst->end() 比较的结果不一致。待用户补齐 catch 中的状态重置；本轮未推进下一函数，未修改业务代码。
 
-当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary 和 BlockIterator 按 key 构造函数在传入判断函数时会排除已取消版本，保留有效墓碑，并选出最大有效版本。MemTable::get 返回的原节点迭代器和 BlockIterator 按 key 构造函数均不保存回调，后续 ++ 不自动沿用本次筛选；get_record/get_batch 在锁内复制结果。SST、Engine 和 commit 调用点尚未接入回滚判断，不能据此宣称数据库回滚查询已经完成。
+当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary 和 BlockIterator 按 key 构造函数在传入判断函数时会排除已取消版本，保留有效墓碑，并选出最大有效版本。SstIterator::seek 已直接支持传入回调，但异常状态尚未验收通过；SstIterator 按 key 构造函数、SST::get、Engine 和 commit 尚未接通。MemTable::get 返回的原节点迭代器、BlockIterator 按 key 构造函数及 seek 均不保存回调，后续 ++ 不自动沿用本次筛选；get_record/get_batch 在锁内复制结果。数据库回滚查询尚未完成。
 
 2026-10-20 用户纠正任务范围：撤回把 LSM 构造函数绑定作为当前下一步的安排，组件初始化整合按 Lab 5.5 推进。绑定是引擎使用管理器的依赖，但现有事务测试已显式完成绑定，可以先验证回滚逻辑；本轮不以修复 LSM 初始化入口为前置任务，也不把测试绑定视为生产入口已完成。
 
@@ -32,7 +32,7 @@
 | `add_flushed_tranc_id()` | 会清理待刷盘状态表；该表不能充当长期回滚名单。 |
 | `write_tranc_id_file()`、`read_tranc_id_file()` | 当前均为空函数；正常重启后的状态与 ID 延续尚未完成。 |
 | [LSM 构造函数](../src/lsm/engine.cpp) | 已创建 Engine 和 TranManager，互相绑定仍为待办，按用户要求留在 Lab 5.5 初始化整合时处理；当前事务测试自行绑定。 |
-| 查询与迭代器 | SkipList、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary 和 BlockIterator 按 key 构造函数支持回滚判断并通过测试；SST、上层点查链及范围迭代器尚未接通。 |
+| 查询与迭代器 | SkipList、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary 和 BlockIterator 按 key 构造函数支持回滚判断并通过测试；SstIterator::seek 正常路径通过，异常状态待修。SST 上层点查链及范围迭代器尚未接通。 |
 
 ## 已确认的设计
 
@@ -126,8 +126,10 @@
 
 ## 测试状态
 
-- 最新检查（2026-10-22）：BlockIterator 按 key 构造函数正确转发回调，空指针抛 invalid_argument，未命中定位块尾。已有 5 个回滚用例扩展到此构造入口，核对 key/value/真实版本、两种 keep_all_versions 设置、有效墓碑、空块、缺失 key、全部取消及读取上限；新增 KeyConstructorRejectsNullBlock。`xmake build test_block` 和 `xmake build test_sst` 成功，各自独立临时目录复制配置后运行，**Block 24/24、SST 16/16 通过**。未修改业务代码，未运行 MemTable 或 LSM；未验证 ++ 的回滚过滤。
-- 本轮日志：Block `/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-key-ctor-test_block-b2izzsjo/result.log`；SST `/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-key-ctor-test_sst-pblbxc4g/result.log`。
+- 最新检查（2026-10-22）：新增 RollbackSeekSelectsVisibleVersionAndRetainsTombstone、RollbackSeekRefreshesCacheAndHandlesNoMatch、RollbackSeekPropagatesErrorAndLeavesEndState。覆盖重新打开 SST、回滚过滤与读取上限、两种遍历模式、有效墓碑、重复 seek 缓存更新、全部取消/缺失/空 SST 句柄、异常上报与后续再次定位。`xmake build test_sst` 成功，独立临时目录运行完整 test_sst，**18/19 通过**；异常测试唯一失败断言是 `it == sst->end()`，正常查询及原有 16 个测试均通过。助手未修改业务代码，本轮未运行其他测试套件。
+- 本轮失败日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-seek-rollback-upp8ca__/result.log`。问题为 catch 清空指针却保留候选块编号；异常自身已正确抛出。
+- 前一轮 BlockIterator 检查（2026-10-22）：按 key 构造正确转发回调，空指针抛 invalid_argument，未命中定位块尾。扩展已有 5 个回滚用例并新增空指针测试，**Block 24/24、SST 16/16 通过**；未验证 ++ 的回滚过滤。
+- 前一轮日志：Block `/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-key-ctor-test_block-b2izzsjo/result.log`；SST `/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-key-ctor-test_sst-pblbxc4g/result.log`。
 - 前一轮 get_value_binary 检查（2026-10-22）：用户补上漏传的回调，扩展已有 5 个回滚测试到取值入口后，完整 test_block **23/23 通过**。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-value-fixed-xk1s5jsn/result.log`。
 - 前一轮补参前，5 个 RollbackPoint 测试因取值接口忽略回调而失败，补参后全部通过。旧日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-value-review-mpuxy6o7/result.log`。
 - 前一轮 get_idx_binary 检查（2026-10-22）：新增 5 个回滚测试，完整 test_block **23/23 通过**；当时尚未测试取值入口的回滚过滤。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-index-rollback-imu5tn3s/result.log`。
