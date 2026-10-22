@@ -14,9 +14,11 @@
 
 2026-10-22 最新 SST 检查：SST::get 已将回调正确传给按 key 构造的 SstIterator，范围/Bloom 检查、读取上限和有效墓碑处理正确。扩展现有测试到公开 get 入口，完整 test_sst 19/19 通过，test_lsm 构建通过但未运行。下一项为 Engine 候选 SST 查询，从 update_best_from_sst 开始；本轮只完成检查，助手未修改业务代码。
 
-2026-10-22 最新 Engine 检查：用户已实现 update_best_from_sst 的回调传递，代码检查正确，test_lsm 构建成功，现有点查、批查和跨 SST/层读取回归 3/3 通过。sst_get_ 尚未传入非空回调，其回滚集成路径本轮未验证；当前提供 sst_get_ 草案，待用户加入。作者 engine.cpp 没有同名辅助函数，本项目继续保留跨来源真实版本比较、同版本来源优先级和有效墓碑。未新增测试，未修改业务代码。
+2026-10-22 最新 Engine 检查：sst_get_ 的 L0 和 L1+ 两处调用均正确转发回调，新增 4 个 EngineRollbackSst 测试，连同原有点查/批查/跨层 3 项回归，7/7 通过。test_lsm 构建成功，update_best_from_sst 的非空回调路径也通过集成验证。测试准备指定 SST 布局来验证查询，不代替 compaction 或重启验收。当前下一函数为 LSMEngine::get，草案待用户加入；助手未修改业务代码。
 
-当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator 按 key 构造函数、SstIterator::seek 及按 key 构造函数、SST::get 在传入判断函数时会排除已取消版本，保留有效墓碑，并选出最大有效版本，相关测试通过。Engine 的 update_best_from_sst 已转发回调，但 sst_get_ 的两处调用仍使用默认空回调；Engine 查询入口和 commit 尚未接通。MemTable::get 返回的原节点迭代器、BlockIterator/SstIterator 按 key 构造函数及 seek 均不保存回调，后续 ++ 不自动沿用本次筛选；get_record/get_batch 在锁内复制结果。数据库回滚查询尚未完成。
+当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator/SstIterator 按 key 构造、SstIterator::seek、SST::get 及 Engine::sst_get_ 在显式传入回调时会排除已取消版本，保留有效墓碑，相关测试通过。Engine 的公开 get/get_batch 和 commit 尚未创建或传入回调。MemTable::get 返回的原节点迭代器、BlockIterator/SstIterator 按 key 构造及 seek 均不保存回调，后续 ++ 不自动沿用本次筛选；get_record/get_batch 在锁内复制结果。数据库回滚查询尚未完成。
+
+当前 get 草案的生命周期处理：获取一次管理器 shared_ptr，并由回调按值持有到查询结束；从未绑定管理器时兼容独立 Engine 使用，已绑定但失效时明确报错。通过 weak_ptr 所有权比较区分空句柄和已失效的绑定，不修改 Lab 5.5 初始化入口。该方案尚未写入业务代码或通过生命周期测试，不计入已完成能力。
 
 2026-10-20 用户纠正任务范围：撤回把 LSM 构造函数绑定作为当前下一步的安排，组件初始化整合按 Lab 5.5 推进。绑定是引擎使用管理器的依赖，但现有事务测试已显式完成绑定，可以先验证回滚逻辑；本轮不以修复 LSM 初始化入口为前置任务，也不把测试绑定视为生产入口已完成。
 
@@ -34,7 +36,7 @@
 | `add_flushed_tranc_id()` | 会清理待刷盘状态表；该表不能充当长期回滚名单。 |
 | `write_tranc_id_file()`、`read_tranc_id_file()` | 当前均为空函数；正常重启后的状态与 ID 延续尚未完成。 |
 | [LSM 构造函数](../src/lsm/engine.cpp) | 已创建 Engine 和 TranManager，互相绑定仍为待办，按用户要求留在 Lab 5.5 初始化整合时处理；当前事务测试自行绑定。 |
-| 查询与迭代器 | SkipList、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator/SstIterator 按 key 构造函数、SstIterator::seek 和 SST::get 支持回滚判断并通过测试。Engine 上层点查链及范围迭代器尚未接通。 |
+| 查询与迭代器 | SkipList、MemTable 点查/批查、Block/SST 点查链及 Engine::sst_get_ 支持显式回调并通过测试。Engine 公开 get/get_batch、事务内部路径及范围迭代器尚未接通。 |
 
 ## 已确认的设计
 
@@ -128,8 +130,9 @@
 
 ## 测试状态
 
-- 最新检查（2026-10-22）：update_best_from_sst 实现检查通过，`xmake build test_lsm` 成功。独立临时目录复制配置，运行 LSMTest.EngineMvccPointReadComparesMemoryAndSstVersions、EngineMvccBatchReadComparesMemoryAndSstVersions、EngineMvccSstReadComparesFilesAndLevels，**3/3 通过**。这是现有空回调路径回归；非空回调集成验收待 sst_get_ 接通。本轮未新增测试、未修改业务代码、未运行完整 test_lsm 或其他套件。
-- 本轮通过日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-candidate-review-mfm7c3sa/result.log`。
+- 最新检查（2026-10-22）：新增 4 个 EngineRollbackSst 测试：过滤后跨 L0/L1/L2 比较及有效墓碑、候选全部取消后继续查找及不清空已有 best、同版本来源优先级、空集合/缺失/回调异常。包含读取上限 0 和历史上限、L1 二分两侧、取消墓碑、取消名单在两次查询间变化和默认空回调行为。`xmake build test_lsm` 成功，独立临时目录复制配置后运行 `LSMTest.EngineRollbackSst*` 及此前 3 个 EngineMvcc 读取回归，**7/7 通过**。未运行完整 test_lsm、真实 abort 查询测试或其他套件，未修改业务代码。
+- 本轮通过日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-engine-sst-rollback-s_no42vs/result.log`。
+- 前一轮 update_best_from_sst 检查（2026-10-22）：实现检查、构建及既有空回调读取路径 **3/3 通过**；当时非空回调尚未接通。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-candidate-review-mfm7c3sa/result.log`。
 - 前一轮 SST::get 检查（2026-10-22）：扩展原有 3 个回滚测试及 EndDoesNotReadBlocks，公开入口完整 SST **19/19 通过**，test_lsm 构建通过。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-get-rollback-r4d0s4ki/result.log`。
 - 前一轮 SstIterator 按 key 构造检查（2026-10-22）：扩展原有 3 个回滚测试到构造入口，完整 SST **19/19 通过**。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-key-ctor-kggoiq63/result.log`。
 - 前一轮 seek 修正检查（2026-10-22）：catch (...) 同时重置块编号和块内指针，再重新抛出异常；标准和非标准异常测试及完整 test_sst **19/19 通过**。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-seek-fixed-k6df6mic/result.log`。

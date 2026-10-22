@@ -3,12 +3,14 @@
 #include "lsm/engine.h"
 #include "lsm/level_iterator.h"
 #include "sst/concact_iterator.h"
+#include <algorithm>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <gtest/gtest.h>
 #include <iostream>
 #include <latch>
+#include <mutex>
 #include <set>
 #include <shared_mutex>
 #include <stdexcept>
@@ -69,6 +71,29 @@ std::shared_ptr<HeapIterator> make_mvcc_heap(
     items.emplace_back(key, value, 0, 0, id);
   return std::make_shared<HeapIterator>(std::move(items), read_id, false,
                                         keep_all);
+}
+
+// 为点查测试建立指定层的 SST，避免依赖自动 compaction 的触发条件。
+// records 按 key 升序、同 key 版本降序传入；L1+ 的文件按 key 顺序登记。
+// 这里只准备合法的查询布局，不用它验证 compaction 或重启。
+void add_sst_for_point_query(const std::shared_ptr<LSMEngine> &engine,
+                             size_t level, size_t id,
+                             const std::vector<MvccRecord> &records) {
+  SSTBuilder builder(128, true);
+  for (const auto &[key, value, version] : records) {
+    builder.add(key, value, version);
+  }
+  auto sst = builder.build(id, engine->get_sst_path(id, level),
+                           engine->block_cache);
+  std::unique_lock<std::shared_mutex> lock(engine->ssts_mtx);
+  engine->ssts.emplace(id, std::move(sst));
+  if (level == 0) {
+    engine->level_sst_ids[level].push_front(id);
+  } else {
+    engine->level_sst_ids[level].push_back(id);
+  }
+  engine->cur_max_level = std::max(engine->cur_max_level, level);
+  engine->next_sst_id = std::max(engine->next_sst_id, id + 1);
 }
 } // namespace
 
@@ -441,6 +466,124 @@ TEST_F(LSMTest, EngineMvccSstReadComparesFilesAndLevels) {
     EXPECT_EQ(engine->sst_get_("k", 6), std::make_optional(
                   std::make_pair(std::string("v5"), uint64_t{5})));
   }
+}
+
+// 目的：每张 SST 先排除回滚版本，再跨 L0/L1/L2 比较真实版本，保留有效墓碑。
+// 场景：L0 的 13、L1 的 11 取消；各层剩余版本分别为 3、5、7，L2 的 deleted@7 是墓碑。
+// 预期：上限 0/7/10/13 返回版本 7，上限 6 返回 5，上限 4 返回 3；同时检查 L1 二分两侧。
+TEST_F(LSMTest, EngineRollbackSstComparesFilteredCandidatesAcrossLevels) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  add_sst_for_point_query(engine, 2, 1,
+                          {{"deleted", "", 7}, {"k", "v7", 7}});
+  add_sst_for_point_query(engine, 1, 2, {{"a", "left", 1}});
+  add_sst_for_point_query(engine, 1, 3,
+                          {{"deleted", "cancelled", 11}, {"deleted", "v5", 5},
+                           {"k", "cancelled", 11}, {"k", "v5", 5}});
+  add_sst_for_point_query(engine, 1, 4, {{"z", "right", 1}});
+  add_sst_for_point_query(engine, 0, 5,
+                          {{"deleted", "cancelled", 13}, {"deleted", "v3", 3},
+                           {"k", "cancelled", 13}, {"k", "v3", 3}});
+  const auto is_aborted = [](uint64_t id) { return id == 11 || id == 13; };
+  std::shared_lock<std::shared_mutex> lock(engine->ssts_mtx);
+  const std::vector<std::pair<uint64_t, uint64_t>> cases = {
+      {0, 7}, {7, 7}, {10, 7}, {13, 7}, {6, 5}, {4, 3}};
+  for (const auto &[read_id, expected_id] : cases) {
+    SCOPED_TRACE(read_id);
+    for (const std::string key : {"k", "deleted"}) {
+      SCOPED_TRACE(key);
+      auto found = engine->sst_get_(key, read_id, is_aborted);
+      ASSERT_TRUE(found.has_value());
+      EXPECT_EQ(found->second, expected_id);
+      EXPECT_EQ(found->first, key == "deleted" && expected_id == 7
+                                  ? "" : "v" + std::to_string(expected_id));
+    }
+  }
+  EXPECT_FALSE(engine->sst_get_("k", 2, is_aborted).has_value());
+  EXPECT_EQ(engine->sst_get_("a", 0, is_aborted),
+            std::make_optional(std::make_pair(std::string("left"), uint64_t{1})));
+  EXPECT_EQ(engine->sst_get_("z", 0, is_aborted),
+            std::make_optional(std::make_pair(std::string("right"), uint64_t{1})));
+  // 默认回调仍保留旧行为，并没有自动连接事务管理器。
+  EXPECT_EQ(engine->sst_get_("k", 0),
+            std::make_optional(std::make_pair(std::string("cancelled"), uint64_t{13})));
+}
+
+// 目的：一张文件或一层的候选全部取消后，继续找其他来源；无候选不清空已有 best。
+// 场景：L0 有 k@9 和另一个文件的 k@3，L1 有 k@7，L2 有 k@5；先取消 9/7，再依次取消 5/3。
+// 预期：依次得到 k@5、k@3、空；上限 4 也应保留 k@3，而不是被后续无候选来源清掉。
+TEST_F(LSMTest, EngineRollbackSstContinuesAfterCancelledFiles) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  add_sst_for_point_query(engine, 2, 1, {{"k", "v5", 5}});
+  add_sst_for_point_query(engine, 1, 2, {{"k", "v7", 7}});
+  add_sst_for_point_query(engine, 0, 3, {{"k", "v3", 3}});
+  add_sst_for_point_query(engine, 0, 4, {{"k", "", 9}});
+  std::set<uint64_t> cancelled = {9, 7};
+  const auto is_aborted = [&cancelled](uint64_t id) { return cancelled.contains(id); };
+  std::shared_lock<std::shared_mutex> lock(engine->ssts_mtx);
+  EXPECT_EQ(engine->sst_get_("k", 0, is_aborted),
+            std::make_optional(std::make_pair(std::string("v5"), uint64_t{5})));
+  EXPECT_EQ(engine->sst_get_("k", 4, is_aborted),
+            std::make_optional(std::make_pair(std::string("v3"), uint64_t{3})));
+  cancelled.insert(5);
+  EXPECT_EQ(engine->sst_get_("k", 0, is_aborted),
+            std::make_optional(std::make_pair(std::string("v3"), uint64_t{3})));
+  cancelled.insert(3);
+  EXPECT_FALSE(engine->sst_get_("k", 0, is_aborted).has_value());
+  EXPECT_FALSE(engine->sst_get_("missing", 0, is_aborted).has_value());
+}
+
+// 目的：回滚过滤后同版本仍按原来源顺序决胜，不额外偏向墓碑或普通值。
+// 场景：各文件均有 k@5，但内容不同；最新 L0 还有已取消的 k@9。
+// 预期：总是保留最新 L0 的 k@5，分别验证它是值和墓碑的两种情况。
+TEST_F(LSMTest, EngineRollbackSstPreservesEqualVersionSourcePriority) {
+  for (bool winner_is_tombstone : {false, true}) {
+    SCOPED_TRACE(winner_is_tombstone);
+    auto engine = std::make_shared<LSMEngine>(
+        test_dir + (winner_is_tombstone ? "/tombstone" : "/value"));
+    add_sst_for_point_query(engine, 2, 1, {{"k", "deep", 5}});
+    add_sst_for_point_query(engine, 1, 2, {{"k", "", 5}});
+    add_sst_for_point_query(engine, 0, 3,
+                            {{"k", winner_is_tombstone ? "older" : "", 5}});
+    const std::string winner = winner_is_tombstone ? "" : "newest-source";
+    add_sst_for_point_query(engine, 0, 4,
+                            {{"k", "cancelled", 9}, {"k", winner, 5}});
+    std::shared_lock<std::shared_mutex> lock(engine->ssts_mtx);
+    for (uint64_t read_id : {0u, 5u, 9u}) {
+      auto found = engine->sst_get_("k", read_id,
+                                    [](uint64_t id) { return id == 9; });
+      ASSERT_TRUE(found.has_value());
+      EXPECT_EQ(found->first, winner);
+      EXPECT_EQ(found->second, 5);
+    }
+  }
+}
+
+// 目的：空集合、缺失 key 不调用回调；候选存在时回调异常必须传到调用方。
+// 场景：先查询空 Engine，再加入仅位于 L1 的 SST，触发异常后正常重试。
+// 预期：查询不新建 L0；异常不被当成未命中；重试仍可排除 k@9 并读到 k@5。
+TEST_F(LSMTest, EngineRollbackSstHandlesEmptyMissingAndCallbackError) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  bool callback_called = false;
+  const auto failing_check = [&callback_called](uint64_t) -> bool {
+    callback_called = true;
+    throw std::runtime_error("rollback lookup failed");
+  };
+  {
+    std::shared_lock<std::shared_mutex> lock(engine->ssts_mtx);
+    EXPECT_FALSE(engine->sst_get_("k", 0, failing_check).has_value());
+    EXPECT_TRUE(engine->level_sst_ids.empty());
+  }
+  EXPECT_FALSE(callback_called);
+  add_sst_for_point_query(engine, 1, 1,
+                          {{"k", "new", 9}, {"k", "old", 5}});
+  std::shared_lock<std::shared_mutex> lock(engine->ssts_mtx);
+  EXPECT_FALSE(engine->sst_get_("missing", 0, failing_check).has_value());
+  EXPECT_FALSE(callback_called);
+  EXPECT_THROW(engine->sst_get_("k", 0, failing_check), std::runtime_error);
+  EXPECT_TRUE(callback_called);
+  EXPECT_FALSE(engine->level_sst_ids.contains(0));
+  EXPECT_EQ(engine->sst_get_("k", 0, [](uint64_t id) { return id == 9; }),
+            std::make_optional(std::make_pair(std::string("old"), uint64_t{5})));
 }
 
 // 目的：保留 16 位偏移和同 key 不跨块的约定，超出编码范围时明确拒绝刷盘。
