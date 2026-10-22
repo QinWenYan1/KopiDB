@@ -194,21 +194,33 @@ int64_t SST::find_block_idx(const std::string &key) {
 }
 
 // Lab 3.6 根据查询 key 返回一个迭代器
-SstIterator SST::get(const std::string &key, uint64_t tranc_id) {
-  // ? 先检查 key 是否在 [first_key, last_key] 范围内, 否则返回 end()
-  // ? 再用 bloom_filter 快速排除
-  // ? 返回 SstIterator(shared_from_this(), key, tranc_id)
+// 先检查 key 是否在 [first_key, last_key] 范围内, 否则返回 end()
+// 再用 bloom_filter 快速排除
+// 返回 SstIterator(shared_from_this(), key, tranc_id)
+SstIterator SST::get(const std::string &key, uint64_t tranc_id, const std::function<bool(uint64_t)> &is_aborted) {
 
-  // 1. 文件级范围快筛: 整个 SST 的 [first_key, last_key] 不含 key, 直接 end
+  // 1. 文件级范围快筛: 整个 SST 的 [first_key, last_key] 不含 key
+  // 直接返回 end，无需读取数据块
   if (key < first_key || last_key < key)
     return end();
 
-  // 2. bloom 快筛 (find_block_idx 里还会查一次, 这里先查省掉迭代器构造)
+  // 2. Bloom 判断“不存在”时，可以直接结束查询
+  // 判断“可能存在”时，仍需进入块内检查：
+  // Bloom 不知道哪些版本已回滚，也不负责读取上限判断
   if (bloom_filter && !bloom_filter->possibly_contains(key))
     return end();
 
-  // 3. 构造 seek 迭代器: 两级定位 (find_block_idx → 块内二分) 全在构造函数里
-  return SstIterator(shared_from_this(), key, tranc_id);
+  // 3. 将读取上限和回滚判断交给按 key 构造的迭代器
+  // 调用链：SstIterator 构造 → seek → BlockIterator → 块内版本筛选
+  //
+  // 第四个参数 false 是 keep_all_versions，沿用原来的默认设置
+  // 第五个参数才是回滚判断
+  //
+  // 即使 tranc_id == 0，也必须传递回调：
+  // 0 只表示不限制版本大小，不表示允许读到已回滚版本
+  //
+  // 命中有效墓碑时保留它，上层还需要用它遮住其他来源的旧值
+  return SstIterator(shared_from_this(), key, tranc_id, false, is_aborted);
 }
 
 size_t SST::num_blocks() const { return meta_entries.size(); }

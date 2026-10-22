@@ -12,6 +12,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <functional>
 
 namespace tiny_lsm {
 
@@ -91,8 +92,9 @@ public:
   // 找到key所在的block的idx
   int64_t find_block_idx(const std::string &key);
 
-  // 根据key返回迭代器
-  SstIterator get(const std::string &key, uint64_t tranc_id);
+  // 查询 key 的最大有效版本；没有有效版本时返回 end()
+  // 有效墓碑仍然返回，交给上层参与跨来源比较
+  SstIterator get(const std::string &key, uint64_t tranc_id, const std::function<bool(uint64_t)> &is_aborted = {});
 
   // 返回sst中block的数量
   size_t num_blocks() const;

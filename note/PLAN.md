@@ -18,9 +18,9 @@
 
 ## 当前推进项
 
-**第②阶段已完成；第③阶段的 SstIterator 按 key 构造函数已通过验收。下一函数为 SST::get，草案待用户加入。**
+**第②阶段已完成；第③阶段的 SST::get 已通过验收。当前函数为 LSMEngine::update_best_from_sst，回调传递草案待用户加入。**
 
-2026-10-22 最新检查：SstIterator 按 key 构造函数已正确接收回调并交给 seek。扩展原有 3 个回滚测试，同时验证构造入口的版本上限、有效墓碑、取消值后回退、未命中/全部取消、空 SST、两种 keep_all_versions 设置和异常传递；重新构建并在独立临时目录运行完整 test_sst，19/19 通过。用户保留 if (m_sst)、shared_ptr 拷贝和 optional 默认初始化均不影响正确性。SST::get 与 Engine 调用点仍未传递回调。
+2026-10-22 最新检查：SST::get 的声明和实现正确，回调作为 SstIterator 的第五个参数传递，保留范围/Bloom 检查和有效墓碑。扩展现有 3 个回滚测试到公开 get 入口，并在 EndDoesNotReadBlocks 中检查范围外查询不调用回调、不填充块缓存。构建 test_sst、test_lsm 成功，独立临时目录运行完整 test_sst，19/19 通过；test_lsm 只构建未运行。Engine 仍使用默认空回调，尚未完成整条查询链的接入。
 
 此前 MemTable 阶段：完整回归 41/41 通过，test_lsm 构建通过；该结果发生在本轮 Block 修改之前。Engine 回滚查询的 2 个既有失败用例仍待上层接通，本轮未重跑。
 
@@ -46,7 +46,11 @@
 
 已完成 SstIterator 按 key 构造函数：在 keep_all_versions 后增加可选回调；有 SST 时调用 seek(key, is_aborted)，空 SST 保持 end 状态，原有调用兼容。回调仅用于构造时定位，不保存到迭代器。
 
-下一函数为 SST::get：声明新增第三个可选回调参数，保留 key 范围和 Bloom 快速排除，将回调作为 SstIterator 按 key 构造函数的第五个参数传入，第四个 keep_all_versions 保持原默认 false。命中的有效墓碑保留给上层比较；读取上限 0 也继续传递回调。参考作者的范围/Bloom/构造流程，新增回滚参数传递。此处只给草案，尚未实现和测试新入口。助手本轮只扩展测试和更新记录，未修改业务代码。
+已完成 SST::get：声明新增第三个可选回调参数，保留 key 范围和 Bloom 快速排除，将回调作为 SstIterator 按 key 构造函数的第五个参数传入，第四个 keep_all_versions 保持原默认 false。命中的有效墓碑保留给上层比较；读取上限 0 也继续传递回调。公开入口已验证取消普通值/墓碑后找到有效旧值、保留有效墓碑、读取上限、全部取消/缺失、范围外查询及异常传递。
+
+当前函数为 LSMEngine::update_best_from_sst：保留 private static，在 best 参数后增加可选 is_aborted 回调，并调用 sst->get(key, tranc_id, is_aborted)。未命中保持 best，命中后使用 get_cur_tranc_id 比较；仅更大版本替换，相同版本保留先遇到的来源，有效墓碑仍参与比较。本函数不获取事务管理器、不重复获取 ssts_mtx；调用方保证 SST 有效并持有集合锁。
+
+草案提供默认空回调以维持逐函数修改期间的构建兼容性，sst_get_ 的两处调用暂时仍沿用默认行为。下一轮再修改 sst_get_ 传递回调，随后处理上层创建回调和管理器生命周期。private 辅助函数的非空回调集成测试需等调用方接通后进行。本轮只核对调用关系、对照作者并给出草案；未修改业务代码，未新增测试或重新运行测试，现有通过数量来自上一轮。
 
 已通过的 SkipList 验收：取消值/墓碑后找到旧版本、连续取消且不改变物理记录、保留有效墓碑、同时遵守版本上限、全部取消/空表/缺失 key 边界，以及未提供回调时保持原行为。完整回归同时覆盖原有 MVCC、遍历、谓词与物理删除行为。
 
@@ -110,7 +114,8 @@
 - [x] 接通 BlockIterator 按 key 构造函数的回调，未命中定位到块尾；Block 24/24、SST 原有回归 16/16 通过（仅构造时点查）。
 - [x] 完成 SstIterator::seek 验收：回调传递、正常未命中及异常状态一致，标准/非标准异常均重新抛出；完整 SST 19/19 通过。
 - [x] 接通 SstIterator 按 key 构造函数的回调，扩展已有 3 个回滚测试，完整 SST 19/19 通过。
-- [ ] 接通 SST::get 的回调并验证（当前草案）。
+- [x] 接通 SST::get 的回调，扩展公开入口测试，完整 SST 19/19 通过，test_lsm 构建通过。
+- [ ] 接通 LSMEngine::update_best_from_sst 的回调（当前草案待加入；非空回调集成验证随 sst_get_ 接通进行）。
 - [ ] 明确回滚判断如何传入点查询链，以及查询期间的管理器生命周期。
 - [ ] 接通 SST 点查询链：`sst_get_`、候选 SST 查询及 SST/Block 版本选择。
 - [ ] 在 `Engine::get/get_batch` 中使用一致的回滚判断；上限 0 仍过滤回滚版本。

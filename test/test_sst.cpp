@@ -176,6 +176,21 @@ TEST_F(SSTTest, EndDoesNotReadBlocks) {
   EXPECT_FALSE(end.is_valid());
   EXPECT_EQ(cache->get(1, 0), nullptr);
 
+  // SST::get 对范围外的 key 应直接返回关联当前 SST 的 end，
+  // 不读取块，也无需调用逐版本的回滚判断。
+  bool callback_called = false;
+  const auto is_aborted = [&callback_called](uint64_t) {
+    callback_called = true;
+    return false;
+  };
+  for (const std::string key : {"", "zz"}) {
+    auto missing = sst->get(key, 0, is_aborted);
+    EXPECT_TRUE(missing.is_end());
+    EXPECT_TRUE(missing == end);
+  }
+  EXPECT_FALSE(callback_called);
+  EXPECT_EQ(cache->get(1, 0), nullptr);
+
   // 结束迭代器仍须关联当前 SST，并与正常遍历耗尽后的状态相等。
   auto it = sst->begin(0);
   ASSERT_TRUE(it.is_valid());
@@ -479,7 +494,7 @@ TEST_F(SSTTest, MvccSeekRefreshesCachedValue) {
   EXPECT_EQ((*it).first, "b");
 }
 
-// 目的：seek 和按 key 构造均将回滚判断、读取上限传入块内查询，保留有效墓碑。
+// 目的：SST::get、seek 和按 key 构造均将回滚判断、读取上限传入块内查询，保留有效墓碑。
 // 场景：重新打开 SST；k@11、k@7 已取消，k@9 是有效墓碑，k@5 是旧值。
 // 预期：上限 >= 9 或 0 返回墓碑@9，上限 5/8 返回 old@5；两种遍历模式一致。
 TEST_F(SSTTest, RollbackSeekSelectsVisibleVersionAndRetainsTombstone) {
@@ -516,6 +531,12 @@ TEST_F(SSTTest, RollbackSeekSelectsVisibleVersionAndRetainsTombstone) {
       EXPECT_EQ(keyed->first, "k");
       EXPECT_EQ(keyed->second, expected_value);
       EXPECT_EQ(keyed.get_cur_tranc_id(), expected_id);
+
+      auto queried = sst->get("k", read_id, is_aborted);
+      ASSERT_TRUE(queried.is_valid());
+      EXPECT_EQ(queried->first, "k");
+      EXPECT_EQ(queried->second, expected_value);
+      EXPECT_EQ(queried.get_cur_tranc_id(), expected_id);
     }
     SstIterator historical(sst, 4, keep_all);
     historical.seek("k", is_aborted);
@@ -524,7 +545,17 @@ TEST_F(SSTTest, RollbackSeekSelectsVisibleVersionAndRetainsTombstone) {
     SstIterator keyed_historical(sst, "k", 4, keep_all, is_aborted);
     EXPECT_TRUE(keyed_historical.is_end());
     EXPECT_TRUE(keyed_historical == sst->end());
+    EXPECT_TRUE(sst->get("k", 4, is_aborted) == sst->end());
   }
+
+  // 墓碑自身也被取消时，公开点查必须恢复更旧的有效值。
+  auto old = sst->get("k", 0, [](uint64_t id) {
+    return id == 11 || id == 9 || id == 7;
+  });
+  ASSERT_TRUE(old.is_valid());
+  EXPECT_EQ(old->first, "k");
+  EXPECT_EQ(old->second, "old");
+  EXPECT_EQ(old.get_cur_tranc_id(), 5);
 }
 
 // 目的：重复 seek 必须清除缓存；seek 和按 key 构造在全部取消或缺失时不能返回相邻 key。
@@ -553,6 +584,11 @@ TEST_F(SSTTest, RollbackSeekRefreshesCacheAndHandlesNoMatch) {
   EXPECT_EQ(keyed_old->first, "k");
   EXPECT_EQ(keyed_old->second, "old");
   EXPECT_EQ(keyed_old.get_cur_tranc_id(), 5);
+  auto queried_old = sst->get("k", 0, [](uint64_t id) { return id == 9; });
+  ASSERT_TRUE(queried_old.is_valid());
+  EXPECT_EQ(queried_old->first, "k");
+  EXPECT_EQ(queried_old->second, "old");
+  EXPECT_EQ(queried_old.get_cur_tranc_id(), 5);
 
   const auto cancel_k = [](uint64_t id) { return id == 9 || id == 5; };
   for (const std::string key : {"k", "missing", "", "zz"}) {
@@ -567,6 +603,11 @@ TEST_F(SSTTest, RollbackSeekRefreshesCacheAndHandlesNoMatch) {
     EXPECT_TRUE(keyed_missing.is_end());
     EXPECT_FALSE(keyed_missing.is_valid());
     EXPECT_TRUE(keyed_missing == sst->end());
+
+    auto queried_missing = sst->get(key, 0, cancel_k);
+    EXPECT_TRUE(queried_missing.is_end());
+    EXPECT_FALSE(queried_missing.is_valid());
+    EXPECT_TRUE(queried_missing == sst->end());
 
     // end 状态也可以重新 seek；跨块后不能残留之前缓存的 k。
     it.seek("z", cancel_k);
@@ -599,7 +640,7 @@ TEST_F(SSTTest, RollbackSeekRefreshesCacheAndHandlesNoMatch) {
   EXPECT_FALSE(callback_called);
 }
 
-// 目的：seek 的回滚判断异常必须上报且留下统一 end 状态；按 key 构造也不能吞掉异常。
+// 目的：seek 的回滚判断异常必须上报且留下统一 end 状态；构造函数和 SST::get 也不能吞掉异常。
 // 场景：先填充缓存；定位中间块的 k 时，分别抛出标准异常和非标准异常；随后再 seek 到 z。
 // 预期：异常未被吞掉，is_end 和与 SST::end 的比较一致，后续定位可以恢复使用。
 TEST_F(SSTTest, RollbackSeekPropagatesErrorAndLeavesEndState) {
@@ -626,9 +667,11 @@ TEST_F(SSTTest, RollbackSeekPropagatesErrorAndLeavesEndState) {
       EXPECT_THROW(it.seek("k", failing_check), std::runtime_error);
       EXPECT_THROW((SstIterator(sst, "k", 0, false, failing_check)),
                    std::runtime_error);
+      EXPECT_THROW(sst->get("k", 0, failing_check), std::runtime_error);
     } else {
       EXPECT_THROW(it.seek("k", failing_check), int);
       EXPECT_THROW((SstIterator(sst, "k", 0, false, failing_check)), int);
+      EXPECT_THROW(sst->get("k", 0, failing_check), int);
     }
     EXPECT_TRUE(it.is_end());
     EXPECT_FALSE(it.is_valid());

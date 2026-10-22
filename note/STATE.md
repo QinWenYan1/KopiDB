@@ -12,9 +12,11 @@
 
 当前推进项：第②阶段已完成，之前 remove 及相关回归为 36/36 通过。第③阶段的 SkipList::get 已通过完整 test_skiplist（29/29，包含 6 个回滚测试）；MemTable 的 get/get_record/get_batch 已通过内部查询将回调传到底层跳表。2026-10-21 get_batch 检查通过，新增 3 个批量回滚测试，完整 test_memtable 41/41 通过，test_lsm 构建通过。下一步为 SST/Block 点查询链，继续逐函数推进，业务代码仍由用户手动加入。
 
-2026-10-22 最新 SST 检查：SstIterator 按 key 构造函数已将回调正确传给 seek。扩展已有 3 个回滚测试到构造入口，完整 test_sst 19/19 通过；保留 if (m_sst)、shared_ptr 拷贝和 optional 默认初始化均正确。下一函数为 SST::get，草案待用户加入；助手未修改业务代码。构造函数“按成员声明顺序”“不再重复判断”的注释与现有写法不完全一致，seek 中“异常一律按没找到处理”也仍是过时注释，不影响本次功能验收。
+2026-10-22 最新 SST 检查：SST::get 已将回调正确传给按 key 构造的 SstIterator，范围/Bloom 检查、读取上限和有效墓碑处理正确。扩展现有测试到公开 get 入口，完整 test_sst 19/19 通过，test_lsm 构建通过但未运行。下一项为 Engine 候选 SST 查询，从 update_best_from_sst 开始；本轮只完成检查，助手未修改业务代码。
 
-当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator 按 key 构造函数、SstIterator::seek 及按 key 构造函数在传入判断函数时会排除已取消版本，保留有效墓碑，并选出最大有效版本，相关测试通过。SST::get、Engine 和 commit 尚未接通。MemTable::get 返回的原节点迭代器、BlockIterator/SstIterator 按 key 构造函数及 seek 均不保存回调，后续 ++ 不自动沿用本次筛选；get_record/get_batch 在锁内复制结果。数据库回滚查询尚未完成。
+2026-10-22 后续推进：已核对 update_best_from_sst 的声明和 sst_get_ 的两处调用，提供保留 static、增加可选回调并转发给 SST::get 的草案。草案待用户手动加入，当前业务代码仍未接通；本次仅更新计划和说明，未运行新的测试。已对照作者 engine.cpp：作者在 sst_get_ 中直接查询 SST，没有同名辅助函数；本项目继续保留跨来源真实版本比较、同版本来源优先级和有效墓碑，不恢复作者找到首个结果便返回的策略。
+
+当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator 按 key 构造函数、SstIterator::seek 及按 key 构造函数、SST::get 在传入判断函数时会排除已取消版本，保留有效墓碑，并选出最大有效版本，相关测试通过。Engine 和 commit 尚未接通；Engine 的 update_best_from_sst 当前仍调用两参数 SST::get，使用默认空回调。MemTable::get 返回的原节点迭代器、BlockIterator/SstIterator 按 key 构造函数及 seek 均不保存回调，后续 ++ 不自动沿用本次筛选；get_record/get_batch 在锁内复制结果。数据库回滚查询尚未完成。
 
 2026-10-20 用户纠正任务范围：撤回把 LSM 构造函数绑定作为当前下一步的安排，组件初始化整合按 Lab 5.5 推进。绑定是引擎使用管理器的依赖，但现有事务测试已显式完成绑定，可以先验证回滚逻辑；本轮不以修复 LSM 初始化入口为前置任务，也不把测试绑定视为生产入口已完成。
 
@@ -32,7 +34,7 @@
 | `add_flushed_tranc_id()` | 会清理待刷盘状态表；该表不能充当长期回滚名单。 |
 | `write_tranc_id_file()`、`read_tranc_id_file()` | 当前均为空函数；正常重启后的状态与 ID 延续尚未完成。 |
 | [LSM 构造函数](../src/lsm/engine.cpp) | 已创建 Engine 和 TranManager，互相绑定仍为待办，按用户要求留在 Lab 5.5 初始化整合时处理；当前事务测试自行绑定。 |
-| 查询与迭代器 | SkipList、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator/SstIterator 按 key 构造函数和 SstIterator::seek 支持回滚判断并通过测试。SST::get、上层点查链及范围迭代器尚未接通。 |
+| 查询与迭代器 | SkipList、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator/SstIterator 按 key 构造函数、SstIterator::seek 和 SST::get 支持回滚判断并通过测试。Engine 上层点查链及范围迭代器尚未接通。 |
 
 ## 已确认的设计
 
@@ -126,8 +128,9 @@
 
 ## 测试状态
 
-- 最新检查（2026-10-22）：扩展原有 3 个回滚测试到 SstIterator 按 key 构造入口，核对读取上限、有效墓碑、取消新值后回退旧值、两种 keep_all_versions、全部取消/缺失/空 SST 以及标准和非标准异常上报。`xmake build test_sst` 成功，独立临时目录复制配置后运行完整 test_sst，**19/19 通过**。测试数量不变，未修改业务代码，本轮未运行其他测试套件。
-- 本轮通过日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-key-ctor-kggoiq63/result.log`。
+- 最新检查（2026-10-22）：扩展原有 3 个回滚测试到 SST::get，核对 key/value/真实版本，覆盖读取上限（含 0）、取消新值和取消墓碑后回退、有效墓碑、全部取消/缺失及标准/非标准异常上报；扩展 EndDoesNotReadBlocks，验证范围外查询保持 end、不调用回调且缓存仍为空。`xmake build test_sst`、`xmake build test_lsm` 成功，独立临时目录复制配置后运行完整 test_sst，**19/19 通过**。测试数量不变，未修改业务代码；test_lsm 本轮只构建未运行，未执行其他测试套件。
+- 本轮通过日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-get-rollback-r4d0s4ki/result.log`。
+- 前一轮 SstIterator 按 key 构造检查（2026-10-22）：扩展原有 3 个回滚测试到构造入口，完整 SST **19/19 通过**。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-key-ctor-kggoiq63/result.log`。
 - 前一轮 seek 修正检查（2026-10-22）：catch (...) 同时重置块编号和块内指针，再重新抛出异常；标准和非标准异常测试及完整 test_sst **19/19 通过**。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-seek-fixed-k6df6mic/result.log`。
 - 前一轮 seek 检查（2026-10-22）：新增 3 个测试，覆盖重新打开 SST、回滚过滤与读取上限、两种遍历模式、有效墓碑、重复 seek 缓存更新、全部取消/缺失/空 SST 句柄、异常上报与后续再次定位。曾为 18/19，唯一失败断言是异常后的 `it == sst->end()`，现已解决。旧日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-seek-rollback-upp8ca__/result.log`。
 - 前一轮 BlockIterator 检查（2026-10-22）：按 key 构造正确转发回调，空指针抛 invalid_argument，未命中定位块尾。扩展已有 5 个回滚用例并新增空指针测试，**Block 24/24、SST 16/16 通过**；未验证 ++ 的回滚过滤。
