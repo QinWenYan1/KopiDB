@@ -4,6 +4,7 @@
 #include "iterator/iterator.h"
 #include "logger/logger.h"
 #include "lsm/level_iterator.h"
+#include "lsm/transaction.h"
 #include "lsm/two_merge_iterator.h"
 #include "spdlog/spdlog.h"
 #include "sst/concact_iterator.h"
@@ -98,6 +99,22 @@ LSMEngine::~LSMEngine() = default;
 // Lab 4.2 查询
 std::optional<std::pair<std::string, uint64_t>>
 LSMEngine::get(const std::string &key, uint64_t tranc_id) {
+  // 1. 从弱引用取得管理器的 shared_ptr
+  //    后面由回调持有它，保证本次查询期间回滚名单仍然可用
+  auto man = tran_manager.lock(); 
+
+
+  // lock() 返回空，有两种原因：
+  //   ① 从未绑定管理器：允许独立使用 Engine，保持原查询行为。
+  //   ② 绑定的管理器已经销毁：无法判断哪些版本已回滚，必须报错。
+  //
+  // 与空 weak_ptr 比较所有权：
+  // 只要任意一个方向的 owner_before 为 true，就说明它不是空绑定。
+  const std::weak_ptr<TranManager> empty_manager;
+  if (!man && (man.owner_before(empty_manager) || empty_manager.owner_before(man))){
+    
+  }
+
   // best 保存目前找到的最大可见版本：
   // nullopt 表示没有候选；{"", id} 表示候选是墓碑
   std::optional<std::pair<std::string, uint64_t>> best;
