@@ -51,6 +51,16 @@ protected:
 namespace {
 using MvccRecord = std::tuple<std::string, std::string, uint64_t>;
 
+// Engine 的公开查询要求有效管理器；存储层测试也显式准备这个依赖。
+// 调用方保存返回的 shared_ptr，保证测试期间回滚名单不会提前销毁。
+std::shared_ptr<TranManager>
+bind_test_manager(const std::shared_ptr<LSMEngine> &engine) {
+  auto manager = std::make_shared<TranManager>(engine->data_dir);
+  manager->set_engine(engine);
+  engine->set_tran_manager(manager);
+  return manager;
+}
+
 // 用有限的期望序列检查内容、真实版本及结束状态，避免错误实现导致测试无限遍历。
 void expect_mvcc_records(BaseIterator &it,
                          const std::vector<MvccRecord> &expected) {
@@ -379,6 +389,7 @@ TEST_F(LSMTest, MvccReadUncommittedRewriteSurvivesActualCompaction) {
 //       不能被内存中的旧值覆盖，以及旧墓碑不能遮住 SST 中的新值。
 TEST_F(LSMTest, EngineMvccPointReadComparesMemoryAndSstVersions) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
   engine->put("k", "disk7", 7);
   engine->remove("deleted", 7);
   engine->put("restored", "disk7", 7);
@@ -406,11 +417,41 @@ TEST_F(LSMTest, EngineMvccPointReadComparesMemoryAndSstVersions) {
   EXPECT_FALSE(engine->get("k", 4).has_value());
 }
 
+// 目的：公开 get 必须有有效管理器，不能把丢失的回滚名单当作空名单。
+// 场景：未绑定时拒绝查询；绑定后过滤 SST 中的取消版本；管理器销毁后再次拒绝。
+//       空库和缺失 key 也不能绕过依赖检查，正常绑定不要求先调用 begin_tran。
+TEST_F(LSMTest, EngineGetRequiresLiveManager) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  EXPECT_THROW(engine->get("missing", 0), std::runtime_error);
+  engine->put("disk", "old", 3);
+  engine->put("disk", "cancelled", 5);
+  engine->flush();
+  engine->put("memory", "current", 7);
+  for (const auto &key : {"disk", "memory", "missing"}) {
+    EXPECT_THROW(engine->get(key, 0), std::runtime_error);
+  }
+
+  auto manager = bind_test_manager(engine);
+  manager->add_ready_to_flush_tranc_id(5, TransactionState::ABORTED);
+  EXPECT_EQ(engine->get("disk", 0), std::make_optional(
+                std::make_pair(std::string("old"), uint64_t{3})));
+  EXPECT_EQ(engine->get("memory", 0), std::make_optional(
+                std::make_pair(std::string("current"), uint64_t{7})));
+  EXPECT_FALSE(engine->get("missing", 0));
+
+  manager.reset();
+  ASSERT_TRUE(engine->tran_manager.expired());
+  for (const auto &key : {"disk", "memory", "missing"}) {
+    EXPECT_THROW(engine->get(key, 0), std::runtime_error);
+  }
+}
+
 // 目的：批量查询也必须跨来源比较版本，不能只对 MemTable 未命中的 key 查 SST。
 // 场景：分别覆盖所有 key 都在内存命中、有缺失 key 触发 SST 查询两条路径；
 //       同时验证墓碑、重复 key 和返回顺序。
 TEST_F(LSMTest, EngineMvccBatchReadComparesMemoryAndSstVersions) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
   engine->put("k", "disk7", 7);
   engine->remove("deleted", 7);
   engine->flush();
@@ -592,6 +633,7 @@ TEST_F(LSMTest, EngineRollbackSstHandlesEmptyMissingAndCallbackError) {
 // 预期：flush 抛出 length_error，不登记 SST、不移除内存数据，旧版本仍可查询。
 TEST_F(LSMTest, EngineMvccOversizedVersionGroupFlushPreservesMemory) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
   const std::string value(1024, 'x');
   for (uint64_t version = 1; version <= 80; ++version) {
     engine->put("k", value, version);
@@ -813,6 +855,7 @@ TEST_F(LSMTest, QuerySkippingTransactionMarkerPreservesFlushMetadata) {
 // 预期：返回值依次为 0、5、0，仅登记一张有效 SST，数据仍然可读。
 TEST_F(LSMTest, EngineFlushEmptyAndNonemptyTables) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
   EXPECT_EQ(engine->flush(), 0u);
   EXPECT_TRUE(engine->ssts.empty());
   EXPECT_TRUE(engine->level_sst_ids.empty());
@@ -839,6 +882,7 @@ TEST_F(LSMTest, EngineFlushEmptyAndNonemptyTables) {
 //       此用例检查并发结果，不保证每次调度都进入加锁前检查的竞争窗口。
 TEST_F(LSMTest, ConcurrentFlushRegistersOnlyOneSst) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
   engine->memtable.put("K", "value", 5);
 
   constexpr size_t worker_count = 8;
@@ -1212,6 +1256,7 @@ TEST_F(LSMTest, TransactionEndRegistrationSupportsConcurrentQueries) {
 //       只检查写入暂存行为，不用尚未完成的 commit 验证隔离级别整体语义。
 TEST_F(LSMTest, TranContextPutStagesWritesAndRecordsOperations) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
   engine->put("existing", "old", 1);
 
   for (auto level : {IsolationLevel::READ_OP_COMMITTED,
@@ -1250,6 +1295,7 @@ TEST_F(LSMTest, TranContextPutStagesWritesAndRecordsOperations) {
 //       最新查询读到事务 7 的最后一次修改。此测试不调用待实现的 abort。
 TEST_F(LSMTest, TranContextPutReadUncommittedWritesOwnVersion) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
   engine->put("k", "old", 3);
   TranContext context(7, engine, nullptr, IsolationLevel::READ_UNOP_COMMITTED);
 
@@ -1275,6 +1321,7 @@ TEST_F(LSMTest, TranContextPutReadUncommittedWritesOwnVersion) {
 // 场景：直接设置公开的结束标记，单独验证 put 的状态检查，避免依赖未完成的提交/回滚。
 TEST_F(LSMTest, TranContextPutRejectsFinishedTransactions) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
   for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
                      IsolationLevel::READ_OP_COMMITTED,
                      IsolationLevel::REPEATABLE_READ,
@@ -1298,6 +1345,7 @@ TEST_F(LSMTest, TranContextPutRejectsFinishedTransactions) {
 // 场景：先读取引擎旧值，再暂存新值、空值墓碑、重写值，依次观察 get 的结果。
 TEST_F(LSMTest, TranContextGetOwnWritesOverrideReadCache) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
   engine->put("k", "old", 3);
   for (auto level : {IsolationLevel::READ_OP_COMMITTED,
                      IsolationLevel::REPEATABLE_READ,
@@ -1322,6 +1370,7 @@ TEST_F(LSMTest, TranContextGetOwnWritesOverrideReadCache) {
 //       SERIALIZABLE 这里只验证单键缓存规则，不代表验证了完整串行化。
 TEST_F(LSMTest, TranContextGetReadCacheBelongsToEachTransaction) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
   for (auto level : {IsolationLevel::REPEATABLE_READ,
                      IsolationLevel::SERIALIZABLE}) {
     const auto key = "k" + std::to_string(static_cast<int>(level));
@@ -1341,6 +1390,7 @@ TEST_F(LSMTest, TranContextGetReadCacheBelongsToEachTransaction) {
 //       原事务保持“不存在”，新事务可以读到新值，避免只缓存有值的查询。
 TEST_F(LSMTest, TranContextGetReadCachePreservesMissingResults) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
   for (auto level : {IsolationLevel::REPEATABLE_READ,
                      IsolationLevel::SERIALIZABLE}) {
     const auto suffix = std::to_string(static_cast<int>(level));
@@ -1367,6 +1417,7 @@ TEST_F(LSMTest, TranContextGetReadCachePreservesMissingResults) {
 //       这里只验证刷新行为，不验证混合隔离级别下尚未完成的提交状态过滤。
 TEST_F(LSMTest, TranContextGetRefreshesCurrentVersions) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
   for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
                      IsolationLevel::READ_OP_COMMITTED}) {
     const auto suffix = std::to_string(static_cast<int>(level));
@@ -1391,6 +1442,7 @@ TEST_F(LSMTest, TranContextGetRefreshesCurrentVersions) {
 //       版本 7、版本 3 和“不存在”，不能直接读取不受限的最新版本 12。
 TEST_F(LSMTest, TranContextGetFirstReadRespectsVersionBound) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
   engine->put("k", "v3", 3);
   engine->flush();
   engine->put("k", "v7", 7);
@@ -1458,6 +1510,124 @@ protected:
   std::shared_ptr<LSMEngine> engine;
   std::shared_ptr<TranManager> manager;
 };
+
+// 点查回滚测试显式绑定组件，不依赖 Lab 5.5 尚未接通的 LSM 构造入口。
+class EngineGetRollbackTest : public TranCommitTest {};
+
+// 目的：真实 abort 后，新增/修改/删除均不可见，有效的旧墓碑仍应阻止旧值复活。
+// 场景：同一批记录先在活跃表查询，再冻结、刷入 SST；每一步都核对值和真实版本。
+TEST_F(EngineGetRollbackTest, ValuesAndTombstonesStayFilteredAcrossFreezeAndFlush) {
+  engine->put("updated", "old", 3);
+  engine->put("restored", "keep", 3);
+  engine->put("deleted", "ancient", 1);
+  engine->remove("deleted", 3);
+  TranContext context(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  context.put("updated", "first");
+  context.put("updated", "last");
+  context.remove("restored");
+  context.put("added", "new");
+  context.put("deleted", "cancelled-resurrection");
+  ASSERT_TRUE(context.abort());
+
+  for (int phase = 0; phase < 3; ++phase) {
+    SCOPED_TRACE(phase); // 0：活跃表；1：冻结表；2：SST。
+    if (phase == 1) {
+      engine->memtable.frozen_cur_table();
+      ASSERT_EQ(engine->memtable.get_cur_size(), 0u);
+      ASSERT_GT(engine->memtable.get_frozen_size(), 0u);
+    } else if (phase == 2) {
+      engine->flush();
+      ASSERT_EQ(engine->memtable.get_total_size(), 0u);
+      ASSERT_FALSE(engine->ssts.empty());
+    }
+    for (uint64_t read_id : {uint64_t{0}, uint64_t{3}, uint64_t{5}}) {
+      SCOPED_TRACE(read_id);
+      EXPECT_EQ(engine->get("updated", read_id), std::make_optional(
+                    std::make_pair(std::string("old"), uint64_t{3})));
+      EXPECT_EQ(engine->get("restored", read_id), std::make_optional(
+                    std::make_pair(std::string("keep"), uint64_t{3})));
+      EXPECT_FALSE(engine->get("deleted", read_id));
+      EXPECT_FALSE(engine->get("added", read_id));
+      EXPECT_FALSE(engine->get("missing", read_id));
+    }
+    EXPECT_FALSE(engine->get("updated", 2));
+    EXPECT_EQ(engine->get("deleted", 2), std::make_optional(
+                  std::make_pair(std::string("ancient"), uint64_t{1})));
+  }
+}
+
+// 目的：内存与磁盘都过滤后，再按真实版本比较；同版本仍优先内存来源。
+// 场景：取消 L0 的 11 和内存的 9，L1 的 7 胜过内存的 3；另检查两个 5
+//       中内存的普通值/墓碑分别胜出，防止过滤接入改变原有来源优先级。
+TEST_F(EngineGetRollbackTest, ComparesFilteredMemoryAndDiskCandidates) {
+  add_sst_for_point_query(engine, 1, 10,
+      {{"deleted", "", 7}, {"equal_deleted", "disk5", 5},
+       {"equal_kept", "", 5}, {"k", "disk7", 7},
+       {"restored", "disk7", 7}});
+  TranContext disk_cancel(11, engine, manager,
+                          IsolationLevel::READ_UNOP_COMMITTED);
+  for (const auto &key : {"deleted", "equal_deleted", "equal_kept", "k",
+                          "restored"}) {
+    disk_cancel.put(key, "cancelled-disk");
+  }
+  engine->flush();
+  engine->put("k", "memory3", 3);
+  engine->put("deleted", "memory3", 3);
+  engine->remove("restored", 3);
+  engine->put("equal_kept", "memory5", 5);
+  engine->remove("equal_deleted", 5);
+  TranContext memory_cancel(9, engine, manager,
+                            IsolationLevel::READ_UNOP_COMMITTED);
+  for (const auto &key : {"deleted", "equal_deleted", "equal_kept", "k"}) {
+    memory_cancel.put(key, "cancelled-memory");
+  }
+  memory_cancel.remove("restored");
+  ASSERT_TRUE(disk_cancel.abort());
+  ASSERT_TRUE(memory_cancel.abort());
+
+  for (uint64_t read_id : {uint64_t{0}, uint64_t{7}, uint64_t{11}}) {
+    SCOPED_TRACE(read_id);
+    for (const auto &key : {"k", "restored"}) {
+      EXPECT_EQ(engine->get(key, read_id), std::make_optional(
+                    std::make_pair(std::string("disk7"), uint64_t{7})));
+    }
+    EXPECT_FALSE(engine->get("deleted", read_id));
+    EXPECT_FALSE(engine->get("equal_deleted", read_id));
+    EXPECT_EQ(engine->get("equal_kept", read_id), std::make_optional(
+                  std::make_pair(std::string("memory5"), uint64_t{5})));
+  }
+  EXPECT_EQ(engine->get("k", 6), std::make_optional(
+                std::make_pair(std::string("memory3"), uint64_t{3})));
+  EXPECT_FALSE(engine->get("k", 2));
+}
+
+// 目的：每次独立查询都重新检查回滚名单，连续取消后能继续向旧版本查找。
+// 场景：SST 中 k@3、冻结表中 k@5、活跃表中 k@7；依次取消 7 和 5，
+//       最新结果应按 7→5→3 变化，历史查询也必须跳过已经取消的版本。
+TEST_F(EngineGetRollbackTest, RechecksCancellationOnEachQuery) {
+  engine->put("k", "base", 3);
+  engine->flush();
+  TranContext first(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  first.put("k", "first");
+  engine->memtable.frozen_cur_table();
+  TranContext second(7, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  second.put("k", "second");
+  EXPECT_EQ(engine->get("k", 0), std::make_optional(
+                std::make_pair(std::string("second"), uint64_t{7})));
+
+  ASSERT_TRUE(second.abort());
+  EXPECT_EQ(engine->get("k", 0), std::make_optional(
+                std::make_pair(std::string("first"), uint64_t{5})));
+  ASSERT_TRUE(first.abort());
+  for (uint64_t read_id : {uint64_t{0}, uint64_t{5}, uint64_t{7}}) {
+    EXPECT_EQ(engine->get("k", read_id), std::make_optional(
+                  std::make_pair(std::string("base"), uint64_t{3})));
+  }
+  EXPECT_FALSE(engine->get("k", 2));
+  // 取消只影响可见性，未传回调的底层查询仍能看到物理版本 7。
+  EXPECT_EQ(engine->memtable.get_record("k", 0), std::make_optional(
+                std::make_pair(std::string("second"), uint64_t{7})));
+}
 
 // 删除测试复用组件绑定与容量配置，分别检查暂存删除和立即删除。
 class TranRemoveTest : public TranCommitTest {};
@@ -1691,7 +1861,9 @@ TEST_F(TranAbortTest, ExpiredManagerPreservesUnfinishedContext) {
   EXPECT_EQ(context.temp_map_, pending);
   EXPECT_EQ(context.operations.size(), operation_count);
   EXPECT_EQ(context.get("k"), std::make_optional(std::string("pending")));
-  EXPECT_FALSE(engine->get("k", 0));
+  // 公开查询不能绕过已经失效的管理器；底层检查确认暂存值没有写入。
+  EXPECT_THROW(engine->get("k", 0), std::runtime_error);
+  EXPECT_FALSE(engine->memtable.get_record("k", 0));
 }
 
 // 目的：读未提交的取消只登记 ID，不通过改写原节点或补写墓碑来模拟撤销。
