@@ -694,7 +694,7 @@ MemTable::iters_monotony_predicate(
 
         // 不在这里去重或删除有效墓碑
         // 所有表的候选必须一起比较，才能确定每个 key 的最终结果
-        items.emplace_back(std::move(it.get_key()), std::move(key), table_idx, 0,
+        items.emplace_back(std::move(key), std::move(it.get_value()), table_idx, 0,
                           version);
       }
     };

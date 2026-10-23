@@ -11,6 +11,7 @@
 #include <limits>
 #include <random>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -22,6 +23,48 @@ using namespace ::tiny_lsm;
 
 // 阅读约定：K@9 表示 key 为 K、tranc_id 为 9 的记录；读取上限 0 表示不限制版本。
 // SkipList 的 remove 是物理摘除节点；MVCC 的逻辑删除通过写入空 value（墓碑）表示。
+
+// 目的：验证真实存在的节点都能读取事务 ID，包括内部事务标记和普通墓碑。
+// 场景：跳表包含两个空 key 标记、一个普通值和一个墓碑，按原始节点顺序遍历。
+// 预期：四个节点都返回自己的 ID；标记的 is_valid 仍为 false，但 is_end 为 false。
+TEST(SkipListTest, CurrentTransactionIdIncludesMarkersAndTombstones) {
+  SkipList list;
+  list.put("", "", 5);
+  list.put("", "", 9);
+  list.put("a", "value-a", 3);
+  list.put("b", "", 7);
+  const std::vector<std::tuple<std::string, std::string, uint64_t>> expected = {
+      {"", "", 9}, {"", "", 5}, {"a", "value-a", 3}, {"b", "", 7}};
+
+  auto it = list.begin();
+  for (const auto &[key, value, version] : expected) {
+    ASSERT_FALSE(it.is_end());
+    EXPECT_EQ(it.get_key(), key);
+    EXPECT_EQ(it.get_value(), value);
+    EXPECT_EQ(it.get_cur_tranc_id(), version);
+    EXPECT_EQ(it.is_valid(), !key.empty());
+    ++it;
+  }
+  EXPECT_TRUE(it.is_end());
+}
+
+// 目的：验证 getter 放宽空 key 限制后，仍然拒绝没有当前节点的迭代器。
+// 场景：默认构造、空表 begin/end，以及遍历完最后一条记录。
+// 预期：读取版本都抛 runtime_error，不能把“没有节点”误报为事务 ID 0。
+TEST(SkipListTest, CurrentTransactionIdRejectsEmptyIterators) {
+  SkipListIterator empty;
+  EXPECT_THROW(empty.get_cur_tranc_id(), std::runtime_error);
+  SkipList list;
+  EXPECT_THROW(list.begin().get_cur_tranc_id(), std::runtime_error);
+  EXPECT_THROW(list.end().get_cur_tranc_id(), std::runtime_error);
+
+  list.put("a", "value-a", 0);
+  auto it = list.begin();
+  EXPECT_EQ(it.get_cur_tranc_id(), 0u);
+  ++it;
+  ASSERT_TRUE(it.is_end());
+  EXPECT_THROW(it.get_cur_tranc_id(), std::runtime_error);
+}
 
 // 目的：验证单个 key 的插入、同版本更新和物理删除能连续工作。
 // 场景：以版本 0 写入 key1，再覆盖它的值，最后调用 remove。

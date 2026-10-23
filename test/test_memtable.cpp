@@ -1398,6 +1398,109 @@ TEST(MemTableTest, PointReadIteratorCanAdvanceWithinSourceTable) {
   }
 }
 
+// 目的：验证谓词查询先过滤取消版本，再选择每个 key 的有效值，并保留真实 value。
+// 场景：b@9/@10 的新值取消，c@9 的墓碑取消，d@8 的墓碑有效；
+//       在活跃表、冻结表以及旧值冻结/新值活跃三种布局中查询 [b, e)。
+// 预期：b/c 返回 @5 的原值，d 按读取上限处理墓碑，左右边界外的 a/f 不出现。
+TEST(MemTableTest, PredicateRollbackFiltersBeforeDeduplication) {
+  using Record = std::tuple<std::string, std::string, uint64_t>;
+  const auto predicate = [](const std::string &key) {
+    return key < "b" ? 1 : (key >= "e" ? -1 : 0);
+  };
+  const auto is_aborted = [](uint64_t id) { return id == 9 || id == 10; };
+  for (int placement : {0, 1, 2}) {
+    SCOPED_TRACE(placement);
+    MemTable table;
+    table.put("a", "outside-left", 1);
+    table.put("b", "old-b", 5);
+    table.put("c", "old-c", 5);
+    table.put("d", "old-d", 5);
+    table.put("f", "outside-right", 1);
+    if (placement == 2) {
+      table.frozen_cur_table();
+    }
+    table.put("b", "cancelled-9", 9);
+    table.put("b", "cancelled-10", 10);
+    table.put("bb", "cancelled-only", 9);
+    table.remove("c", 9);
+    table.remove("d", 8);
+    if (placement == 1) {
+      table.frozen_cur_table();
+    }
+
+    for (uint64_t read_id : {0, 4, 7, 8, 10}) {
+      SCOPED_TRACE(read_id);
+      auto range = table.iters_monotony_predicate(read_id, predicate, is_aborted);
+      if (read_id == 4) {
+        EXPECT_FALSE(range.has_value());
+        continue;
+      }
+      ASSERT_TRUE(range.has_value());
+      EXPECT_TRUE(range->second.is_end());
+      std::vector<Record> actual;
+      for (auto it = range->first; it != range->second; ++it) {
+        const auto entry = *it;
+        actual.emplace_back(entry.first, entry.second, it.get_cur_tranc_id());
+      }
+      std::vector<Record> expected = {{"b", "old-b", 5}, {"c", "old-c", 5}};
+      if (read_id == 7) {
+        expected.emplace_back("d", "old-d", 5);
+      }
+      EXPECT_EQ(actual, expected);
+    }
+    // 区间中的所有事务都取消时，应返回 nullopt。
+    EXPECT_FALSE(table.iters_monotony_predicate(
+        0, predicate, [](uint64_t) { return true; }).has_value());
+  }
+}
+
+// 目的：验证事务标记不会传给用户谓词，而不只是从最终输出中删除。
+// 场景：表中只有事务标记；谓词记录是否见过空 key，并主动返回 1 避免后续解引用干扰检查。
+// 预期：空结果，用户谓词从未收到空 key；活跃表与冻结表均遵守此约定。
+TEST(MemTableTest, PredicateDoesNotPassMarkersToUserCallback) {
+  for (bool frozen_source : {false, true}) {
+    SCOPED_TRACE(frozen_source);
+    MemTable table;
+    table.put("", "", 5);
+    if (frozen_source) {
+      table.frozen_cur_table();
+    }
+    bool saw_marker = false;
+    const auto predicate = [&](const std::string &key) {
+      if (key.empty()) {
+        saw_marker = true;
+        return 1;
+      }
+      return 0;
+    };
+    EXPECT_FALSE(table.iters_monotony_predicate(0, predicate).has_value());
+    EXPECT_FALSE(saw_marker);
+  }
+}
+
+// 目的：验证匹配全部普通 key 的查询能安全跳过事务标记，不抛异常或将标记作为结果返回。
+// 场景：先查询只有标记的表，再冻结该表并向新活跃表添加另一个标记和 b@7。
+// 预期：两次查询都不抛异常，第一次返回 nullopt，第二次仅返回 b。
+TEST(MemTableTest, PredicateAllKeysSafelySkipsTransactionMarkers) {
+  MemTable table;
+  table.put("", "", 5);
+  const auto match_all = [](const std::string &) { return 0; };
+  EXPECT_NO_THROW({
+    EXPECT_FALSE(table.iters_monotony_predicate(0, match_all).has_value());
+  });
+  table.frozen_cur_table();
+  table.put("", "", 7);
+  table.put("b", "value-b", 7);
+  EXPECT_NO_THROW({
+    auto range = table.iters_monotony_predicate(0, match_all);
+    ASSERT_TRUE(range.has_value());
+    ASSERT_TRUE(range->first.is_valid());
+    EXPECT_EQ(range->first->first, "b");
+    ++range->first;
+    EXPECT_TRUE(range->first.is_end());
+  });
+}
+
 // 目的：验证谓词命中的 key 全部被最新可见墓碑删除时，返回真正的无结果状态。
 // 场景：K@5 位于冻结表，K@9 墓碑位于活跃表；查询只匹配 K 的谓词。
 // 预期：上限 0 返回 nullopt，上限 8 仍返回 K@5。

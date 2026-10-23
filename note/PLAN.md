@@ -23,13 +23,15 @@
 | ① | 保存并查询回滚 ID | 已完成 |
 | ② | 实现 abort，调整写入上下文 | 已完成 |
 | ③ | 接通单条与批量查询 | 功能验收通过；get 的两处旧注释待清理 |
-| ④ | 接通遍历、前缀和谓词查询 | 进行中：begin、iters_preffix 已通过；当前提供 iters_monotony_predicate 草案 |
+| ④ | 接通遍历、前缀和谓词查询 | 进行中：getter 已通过；谓词查询只剩用户回调前的标记过滤 |
 | ⑤ | 接回事务读取缓存与提交检查 | 待开始 |
 | ⑥ | 持久化状态与正常重启 | 待开始 |
 
 ## 当前推进项
 
-**第③阶段查询功能验收通过，相关回归 48/48。第④阶段的 begin、iters_preffix 已通过检查，最新完整 test_memtable 46/46 通过；当前按用户要求提供 MemTable::iters_monotony_predicate 草案，待用户手动加入后检查。get 的两处旧注释仍待清理。**
+**第③阶段查询功能验收通过，相关回归 48/48。第④阶段的 getter 修改已通过完整 test_skiplist 31/31；完整 test_memtable 48/49，唯一失败为 PredicateDoesNotPassMarkersToUserCallback。下一步只需包装用户谓词并转发包装后的函数，通过后再进入 Block/SST 迭代器。get 的两处旧注释仍待清理。**
+
+2026-10-23 最新检查：用户已修正候选 value，SkipListIterator::get_cur_tranc_id 已只检查 current，普通节点/墓碑/事务标记均能读取真实版本，空/end 仍抛异常。新增 2 个 getter 测试，完整 SkipList 31/31 通过；完整 MemTable 48/49，通过回滚值/墓碑、历史上限、全匹配查询经过标记等用例。唯一问题是 MemTable::iters_monotony_predicate 仍将原始 predicate 直接传给 SkipList，用户谓词仍收到空 key。已给出 query_predicate 包装及一处调用替换，待用户手动加入；本轮未运行其他套件，助手未修改业务代码。
 
 2026-10-23 本轮 iters_preffix 检查：声明与实现均接入可选回调，活跃表和冻结表收集正确，空 key 先于 get_cur_tranc_id 排除，入堆前筛选读取上限与回滚状态，保留有效墓碑，右边界每表只计算一次。新增 3 个前缀回滚用例，覆盖同表/跨表、取消值与墓碑、连续取消、历史上限、版本与来源优先级、空表/缺失/全部取消、空前缀及事务标记；补强原前缀测试的结果数量和索引边界断言。构建成功，完整 test_memtable 46/46 通过；未运行 test_lsm 或其他套件，助手未修改业务代码。
 
@@ -165,20 +167,22 @@
 
 - [x] 接通 MemTable::begin：活跃表与冻结表都收集，入堆前过滤事务标记、过新及已回滚版本；完整 test_memtable 43/43 通过。
 - [x] 接通 MemTable::iters_preffix：入堆前筛选标记、版本上限和回滚状态，新增 3 个用例，完整 test_memtable 46/46 通过。
-- [ ] 接通 MemTable::iters_monotony_predicate（当前草案）：新增可选回调，包装谓词使内部事务标记不传给用户谓词；命中区间内筛选版本，再统一归并并判断最终是否为空。
+- [ ] 接通 MemTable::iters_monotony_predicate（当前仅剩）：包装用户谓词并传给 SkipList，确保空 key 不传给用户回调；目前完整 MemTable 48/49。
 - [ ] 接通 Block/SST 查询迭代器，并检查 Heap、Concact、Level 等调用链的过滤位置与参数传递。
 - [ ] 接通 Engine 的 `begin` 和 `lsm_iters_monotony_predicate`。
 - [ ] 确保过滤发生在同 key 去重及墓碑删除整组记录之前，不因回滚而误丢有效旧版本。
 - [ ] 核查刷盘和 compaction 对原始版本的保留，区分查询过滤与物理清理。
 - [ ] 测试内存与 SST 的范围结果一致、回滚墓碑不遮住旧值、全部版本被取消时范围为空。
 
-已完成 MemTable::begin：第三个参数接收可选 is_aborted。collect 中先跳过空 key，再用 get_cur_tranc_id 取得真实版本，筛选读取上限与回滚状态；收集所有内存表，保留有效墓碑和来源优先级。查询不删除原节点；测试确认刷盘仍能读取事务标记并报告 ID。SkipListIterator 的 getter/is_valid 未改动，Level/SST 的现有标记过滤保留。Engine 范围入口尚未传入回调，因此本函数通过不代表完整范围回滚查询已接通。
+已完成 MemTable::begin：第三个参数接收可选 is_aborted。collect 中先跳过空 key，再用 get_cur_tranc_id 取得真实版本，筛选读取上限与回滚状态；收集所有内存表，保留有效墓碑和来源优先级。查询不删除原节点；测试确认刷盘仍能读取事务标记并报告 ID。后续 getter 已允许读取标记版本，begin 的标记过滤仍保留；is_valid 及 Level/SST 的现有过滤未改动。Engine 范围入口尚未传入回调，因此本函数通过不代表完整范围回滚查询已接通。
 
 已完成 iters_preffix：第三个参数接收可选 is_aborted，沿用 begin 的锁顺序和来源编号；每张表仅计算一次前缀右边界，在左闭右开区间收集。空 key 在 get_cur_tranc_id 前排除；收集阶段不去重、不删除有效墓碑，最终 HeapIterator 沿用默认 skip_delete=true，释放表锁后移动候选构造堆。已对照作者参考并验证本地来源优先级及统一归并方案。
 
 iters_preffix 验收：取消新值/墓碑后返回有效旧值；跨活跃表与冻结表比较真实版本，同版本按来源优先级选择；读取上限 0 与历史上限均正确；有效墓碑隐藏对应 key；缺失前缀、空表、全部取消返回 end；空前缀遍历不暴露事务标记，普通前缀不越过右边界。
 
-当前 iters_monotony_predicate 草案：保留 SkipList 定位命中区间的结构；包装用户谓词，将空 key 视作区间左侧（返回 1），避免内部事务标记传给用户谓词。区间收集使用真实版本号，先筛选读取上限与回滚状态，保留有效墓碑；释放锁后构造堆，再用 begin_iter.is_end() 决定是否返回 nullopt。已核对作者实现和本地 SkipList 调用关系，业务代码与该函数的新测试尚未加入。验收还需覆盖用户谓词不接收空 key、全部取消/全部有效墓碑返回 nullopt，以及跨表选版本和区间两侧边界。
+iters_monotony_predicate 目标方案：保留 SkipList 定位命中区间的结构；包装用户谓词，将空 key 视作区间左侧（返回 1），避免内部事务标记传给用户谓词。区间收集使用真实版本号，先筛选读取上限与回滚状态，保留有效墓碑；释放锁后构造堆，再用 begin_iter.is_end() 决定是否返回 nullopt。当前只剩包装谓词未完成，其他已测试行为通过；getter 放宽后，在跳过标记之前读取版本不再抛异常，但不能替代谓词调用前的过滤。
+
+2026-10-23 getter 调整已完成：只将判定改为 !current，允许读取实际标记节点的版本，保留 end 抛 runtime_error，保持 is_valid 与其他迭代器不变。新增测试覆盖普通值、墓碑、多版本事务标记、默认空迭代器、空表 begin/end 和遍历耗尽；完整 SkipList 31/31 通过。查询中的标记过滤仍需保留，未发现现有调用依赖空 key 抛异常来过滤记录。
 
 此处过滤只在创建迭代器的收集阶段执行，返回的 HeapIterator 持有数据副本且不保存回调；后续 abort 不会自动重建已经返回的堆。新 begin 调用重新检查名单。这描述的是 MemTable 当前副本迭代器行为，不代表 SST 惰性遍历或整个数据库的快照隔离已确定。
 
