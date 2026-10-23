@@ -395,7 +395,6 @@ TEST(MemTableTest, ConcurrentOperations) {
 // 目的：验证前缀查询能合并多张表，应用更新和墓碑，并排除其他前缀。
 // 场景：三批数据经过两次冻结，更新 abc，删除 ab、abcd，查询前缀 ab。
 // 预期：按序得到 abc、abcde、abcdef、abcdefg、abcdefgh，abc 使用更新后的值。
-// 覆盖边界：当前断言逐项检查返回内容，没有单独断言结果总数。
 TEST(MemTableTest, PreffixIter) {
   MemTable memtable;
 
@@ -434,10 +433,131 @@ TEST(MemTableTest, PreffixIter) {
                                                           {"abcdefgh", "8"}};
 
   for (auto it = memtable.iters_preffix("ab", 0); !it.is_end(); ++it) {
+    ASSERT_LT(static_cast<size_t>(id), answer.size());
     EXPECT_EQ(it->first, answer[id].first);
     EXPECT_EQ(it->second, answer[id].second);
     id++;
   }
+  EXPECT_EQ(static_cast<size_t>(id), answer.size());
+}
+
+// 目的：验证前缀查询在去重前排除取消的新值、墓碑，并继续寻找有效旧版本。
+// 场景：app@9/@10 连续取消、apple@9 的墓碑取消、apply@8 的墓碑有效；
+//       分别放在同一活跃表、同一冻结表、旧值冻结而新值活跃三种位置。
+// 预期：按读取上限返回 app/apple 的旧值，apply 的有效墓碑正常生效；不返回区间外记录。
+TEST(MemTableTest, PreffixRollbackRestoresVersionsAcrossSources) {
+  using Record = std::tuple<std::string, std::string, uint64_t>;
+  const auto is_aborted = [](uint64_t id) { return id == 9 || id == 10; };
+  for (int placement : {0, 1, 2}) {
+    SCOPED_TRACE(placement);
+    MemTable table;
+    table.put("ant", "outside-left", 1);
+    table.put("app", "old-app", 5);
+    table.put("apple", "old-apple", 5);
+    table.put("apply", "old-apply", 5);
+    table.put("apq", "outside-right", 1);
+    if (placement == 2) {
+      table.frozen_cur_table();
+    }
+    table.put("app", "cancelled-9", 9);
+    table.put("app", "cancelled-10", 10);
+    table.remove("apple", 9);
+    table.remove("apply", 8);
+    table.put("appz", "cancelled-only", 9);
+    if (placement == 1) {
+      table.frozen_cur_table();
+    }
+
+    for (uint64_t read_id : {0, 4, 7, 8, 10}) {
+      SCOPED_TRACE(read_id);
+      std::vector<Record> actual;
+      for (auto it = table.iters_preffix("app", read_id, is_aborted);
+           it.is_valid(); ++it) {
+        const auto entry = *it;
+        actual.emplace_back(entry.first, entry.second, it.get_cur_tranc_id());
+      }
+      std::vector<Record> expected;
+      if (read_id != 4) {
+        expected.emplace_back("app", "old-app", 5);
+        expected.emplace_back("apple", "old-apple", 5);
+        if (read_id == 7) {
+          expected.emplace_back("apply", "old-apply", 5);
+        }
+      }
+      EXPECT_EQ(actual, expected);
+    }
+  }
+}
+
+// 目的：验证过滤后的前缀候选仍按真实版本选值，只有同版本才由较新来源胜出。
+// 场景：两张冻结表中版本大小与来源新旧相反；同时设置冻结表之间、活跃表与冻结表的同版本记录。
+// 预期：排除活跃表中取消的 @12 后，app-high 按版本选择，两个 tie key 按来源选择。
+TEST(MemTableTest, PreffixRollbackKeepsVersionAndSourcePriority) {
+  using Record = std::tuple<std::string, std::string, uint64_t>;
+  MemTable table;
+  table.put("app-high", "high-version", 8);
+  table.put("app-tie", "oldest", 5);
+  table.put("app-frozen-tie", "oldest-frozen", 6);
+  table.frozen_cur_table();
+  table.put("app-high", "lower-version", 4);
+  table.put("app-tie", "newer-frozen", 5);
+  table.put("app-frozen-tie", "newer-frozen", 6);
+  table.frozen_cur_table();
+  table.put("app-high", "cancelled", 12);
+  table.put("app-tie", "active", 5);
+  table.put("app-frozen-tie", "cancelled", 12);
+  const auto is_aborted = [](uint64_t id) { return id == 12; };
+
+  for (uint64_t read_id : {0, 7}) {
+    SCOPED_TRACE(read_id);
+    std::vector<Record> actual;
+    for (auto it = table.iters_preffix("app", read_id, is_aborted);
+         it.is_valid(); ++it) {
+      const auto entry = *it;
+      actual.emplace_back(entry.first, entry.second, it.get_cur_tranc_id());
+    }
+    const std::vector<Record> expected = {
+        {"app-frozen-tie", "newer-frozen", 6},
+        {"app-high", read_id == 0 ? "high-version" : "lower-version",
+         read_id == 0 ? 8u : 4u},
+        {"app-tie", "active", 5}};
+    EXPECT_EQ(actual, expected);
+  }
+}
+
+// 目的：验证空表、缺失前缀、全部取消和空前缀边界；空前缀不能暴露内部事务标记。
+// 场景：冻结表与活跃表都有事务标记，app 的唯一版本被取消，区间左右另有有效记录。
+// 预期：app/缺失前缀返回 end，空前缀仅返回普通有效记录；没有回调时仍可看到 app@9。
+TEST(MemTableTest, PreffixRollbackHandlesEmptyRangesAndMarkers) {
+  MemTable table;
+  const auto is_aborted = [](uint64_t id) { return id == 9; };
+  EXPECT_TRUE(table.iters_preffix("app", 0, is_aborted).is_end());
+  EXPECT_TRUE(table.iters_preffix("", 0, is_aborted).is_end());
+  table.put("", "", 3);
+  table.put("ant", "left", 3);
+  table.put("app", "cancelled", 9);
+  table.frozen_cur_table();
+  table.put("", "", 9);
+  table.put("apq", "right", 6);
+  EXPECT_TRUE(table.iters_preffix("app", 0, is_aborted).is_end());
+  EXPECT_TRUE(table.iters_preffix("ao", 0, is_aborted).is_end());
+  EXPECT_TRUE(table.iters_preffix("z", 0, is_aborted).is_end());
+  EXPECT_TRUE(table.iters_preffix("", 0, [](uint64_t) { return true; }).is_end());
+
+  std::vector<std::pair<std::string, std::string>> actual;
+  for (auto it = table.iters_preffix("", 0, is_aborted); it.is_valid(); ++it) {
+    actual.push_back(*it);
+  }
+  const std::vector<std::pair<std::string, std::string>> expected = {
+      {"ant", "left"}, {"apq", "right"}};
+  EXPECT_EQ(actual, expected);
+
+  auto unfiltered = table.iters_preffix("app", 0);
+  ASSERT_TRUE(unfiltered.is_valid());
+  EXPECT_EQ(*unfiltered, std::make_pair(std::string("app"), std::string("cancelled")));
+  EXPECT_EQ(unfiltered.get_cur_tranc_id(), 9u);
+  ++unfiltered;
+  EXPECT_TRUE(unfiltered.is_end());
 }
 
 // 目的：验证 MemTable 能把单调谓词查询结果转换为可遍历的 HeapIterator 区间。

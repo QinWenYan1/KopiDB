@@ -60,12 +60,12 @@ void MemTable::put(const std::string &key, const std::string &value,
   }
 }
 
+// Lab2.1 有锁版本的 put_batch
+// 加 cur_mtx 写锁后遍历 kvs 依次调用 put_()
+// 结束后若超限则冻结当前表
 void MemTable::put_batch(
     const std::vector<std::pair<std::string, std::string>> &kvs,
     uint64_t tranc_id) {
-  // Lab2.1 有锁版本的 put_batch
-  // ? 加 cur_mtx 写锁后遍历 kvs 依次调用 put_()
-  // ? 结束后若超限则冻结当前表
   spdlog::trace("MemTable--put_batch with {} kvs", kvs.size());
   // 加写入锁，保护 current_table
   std::lock_guard<std::shared_mutex> put_lock(cur_mtx);

@@ -38,18 +38,20 @@ bool operator==(const SearchItem &a, const SearchItem &b) {
 }
 
 // *************************** HeapIterator ***************************
+
+// Lab2.2 实现 HeapIterator 构造函数
 HeapIterator::HeapIterator(bool skip_delete, bool keep_all_versions)
     : skip_delete_(skip_delete), keep_all_versions_(keep_all_versions) {
   // 默认构造函数
-  // Lab2.2 实现 HeapIterator 构造函数
   // 空堆，什么都不用写入，成员初始化列表是唯一要做的事情
 }
+
+// Lab2.2 实现 HeapIterator 构造函数
 HeapIterator::HeapIterator(std::vector<SearchItem> item_vec,
                            uint64_t max_tranc_id, bool skip_delete,
                            bool keep_all_versions)
     : max_tranc_id_(max_tranc_id), skip_delete_(skip_delete),
       keep_all_versions_(keep_all_versions) {
-  // Lab2.2 实现 HeapIterator 构造函数
   // 1. 全部灌入到最小堆，堆中自动按照SearchItem 的 operator< 排列好
   for (auto &item : item_vec) {
     items.push(std::move(item));
