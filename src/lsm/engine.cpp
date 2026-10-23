@@ -18,6 +18,7 @@
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -159,29 +160,48 @@ std::vector<
 LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
   // 1. 批量获取内存候选
   // 每项都保留真实版本号，包括墓碑；结果顺序与输入一致
-  auto results = memtable.get_batch(keys, tranc_id);
+  // 与单条 get 使用相同的前置要求：必须有有效管理器。
+  // 未绑定或已经销毁时，无法判断哪些版本已回滚，直接报错
+  auto man = tran_manager.lock(); 
+  if (man)
+    throw std::runtime_error("LSMEngine::get_batch: transaction manager is unavailable"); 
 
-  // results.empty() 表示没有任何待查询的 key，而不是“内存没有命中”
-  // MemTable::get_batch() 会为每个输入 key 保留一项，没找到也会放入 nullopt
-  if (results.empty())
-    return results;
+  // 空输入没有需要查询的 key，返回空数组
+  // 放在管理器检查之后，使空批次也遵守相同的初始化要求
+  if(keys.empty())
+    return {}; 
 
-  // 2. 整个批次共用一次 SST 读锁
+  // 2. 整个批次共用一个回滚判断
+  //    回调持有 shared_ptr，保证批量查询期间管理器不会销毁
+  //    tranc_id == 0 只取消版本上限，仍然需要过滤回滚版本
+  std::function<bool(uint64_t)> is_aborted = [man = std::move(man)](uint64_t id){
+    return man->is_aborted(id); 
+  }; 
+  
+  // 3. 批量获取内存候选。
+  //    MemTable 在内部持锁查找并复制结果，过滤已回滚版本。
+  //    每个输入 key 都保留一个位置；未命中为 nullopt。
+  //    有效墓碑暂时保留，随后还要与 SST 中的版本比较。
+  auto results = memtable.get_batch(keys, tranc_id, is_aborted);
+
+  // 4. 整个批次共用一次 SST 读锁
   // sst_get_ 不自行加锁，调用期间由这里保护 SST 集合
   {
     std::shared_lock<std::shared_mutex> lock(ssts_mtx);
 
     for (auto &[key, best] : results) {
-      // 即使内存命中，也要与磁盘中的最大可见版本比较
-      auto sst_ret = sst_get_(key, tranc_id);
+      // 即使内存命中，也继续查 SST：
+      // 过滤之后，磁盘仍可能存在版本号更大的有效记录
+      auto sst_ret = sst_get_(key, tranc_id, is_aborted);
 
-      // 版本相同时保留内存来源；只有磁盘版本更大才替换
+      // 只有磁盘版本更大才替换；相同版本保留内存来源
       if (sst_ret.has_value() &&
           (!best.has_value() || sst_ret->second > best->second))
         best = std::move(sst_ret);
 
-      // 当前 key 的所有来源已经比较完，可以处理胜出的墓碑
-      // reset 只清空查询结果，保留该 key 在返回数组中的位置
+      // 当前 key 的全部来源比较完，才能处理最终胜出的墓碑
+      // 例如内存 k@5 是墓碑，SST k@7 是普通值，应返回 k@7
+      // reset 只清空结果，不删除这个 key 在数组中的位置
       if (best.has_value() && best->first.empty())
         best.reset();
     }
