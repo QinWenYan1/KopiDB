@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -1295,10 +1296,81 @@ TEST(MemTableTest, PredicateAllDeletedReturnsNoRange) {
   EXPECT_EQ(old_range->first->second, "old");
 }
 
+// 目的：验证 begin 同时收集活跃表和每张冻结表，不因冻结而漏掉后来写入的数据。
+// 场景：先只写活跃表，再依次形成两张冻结表，并向新的活跃表写入一个更小的 key。
+// 预期：第一次返回活跃表的数据，第二次按 key 顺序返回三张表的数据。
+TEST(MemTableTest, BeginCollectsActiveAndFrozenSources) {
+  MemTable table;
+  auto collect = [&] {
+    std::vector<std::pair<std::string, std::string>> result;
+    for (auto it = table.begin(0); it.is_valid(); ++it) {
+      result.push_back(*it);
+    }
+    return result;
+  };
+
+  table.put("B", "oldest-table", 5);
+  const std::vector<std::pair<std::string, std::string>> active_only = {
+      {"B", "oldest-table"}};
+  EXPECT_EQ(collect(), active_only);
+
+  table.frozen_cur_table();
+  table.put("C", "newer-frozen-table", 7);
+  table.frozen_cur_table();
+  table.put("A", "active-table", 9);
+  const std::vector<std::pair<std::string, std::string>> all_sources = {
+      {"A", "active-table"}, {"B", "oldest-table"},
+      {"C", "newer-frozen-table"}};
+  EXPECT_EQ(collect(), all_sources);
+}
+
+// 目的：验证取消记录在同 key 去重、墓碑处理之前被排除，读取上限为 0 时也不能漏筛。
+// 场景：A@9 是取消的新值，B@9 是取消的墓碑，D@9 没有旧版本；C@8 是有效墓碑。
+//       分别将这些记录放在冻结表和活跃表，并组合历史上限与 skip_delete 两种模式。
+// 预期：A/B 回退到 @5，D 不出现；C 的有效墓碑按读取上限和 skip_delete 正常处理。
+TEST(MemTableTest, BeginFiltersAbortedBeforeDeduplication) {
+  using Record = std::tuple<std::string, std::string, uint64_t>;
+  const auto is_aborted = [](uint64_t id) { return id == 9; };
+  for (bool frozen_source : {true, false}) {
+    SCOPED_TRACE(frozen_source ? "frozen" : "active");
+    MemTable table;
+    table.put("A", "old-a", 5);
+    table.put("B", "old-b", 5);
+    table.put("C", "old-c", 5);
+    table.put("A", "cancelled-a", 9);
+    table.remove("B", 9);
+    table.remove("C", 8);
+    table.put("D", "cancelled-only", 9);
+    if (frozen_source) {
+      table.frozen_cur_table();
+    }
+
+    for (uint64_t read_id : {0, 7, 9}) {
+      SCOPED_TRACE(read_id);
+      for (bool skip_delete : {true, false}) {
+        SCOPED_TRACE(skip_delete);
+        std::vector<Record> actual;
+        for (auto it = table.begin(read_id, skip_delete, is_aborted);
+             it.is_valid(); ++it) {
+          const auto entry = *it;
+          actual.emplace_back(entry.first, entry.second, it.get_cur_tranc_id());
+        }
+        std::vector<Record> expected = {
+            {"A", "old-a", 5}, {"B", "old-b", 5}};
+        if (read_id == 7) {
+          expected.emplace_back("C", "old-c", 5);
+        } else if (!skip_delete) {
+          expected.emplace_back("C", "", 8);
+        }
+        EXPECT_EQ(actual, expected);
+      }
+    }
+  }
+}
+
 // 目的：验证用于跨层归并的遍历保留普通 key 的最新可见墓碑。
 // 场景：冻结表、活跃表都有空 key/空 value 标记，普通 K 则有旧值和新墓碑。
-// 预期：普通 key 只返回 K@9 墓碑；允许内部事务标记留给上层过滤。
-//       最终用户结果的顺序和标记过滤由 test_lsm 的归并测试验证。
+// 预期：skip_delete=false 时只返回 K@9 墓碑，true 时没有结果；两种模式都隐藏事务标记。
 TEST(MemTableTest, BeginRetainsTombstonesForUpperLevelFiltering) {
   MemTable table;
   table.put("K", "old", 5);
@@ -1308,10 +1380,7 @@ TEST(MemTableTest, BeginRetainsTombstonesForUpperLevelFiltering) {
   table.put("", "", 9);
   bool saw_tombstone = false;
   for (auto it = table.begin(0, false); it.is_valid(); ++it) {
-    if (it->first.empty()) {
-      EXPECT_TRUE(it->second.empty());
-      continue;
-    }
+    EXPECT_FALSE(it->first.empty());
     EXPECT_FALSE(saw_tombstone);
     saw_tombstone = true;
     EXPECT_EQ(it->first, "K");
@@ -1319,6 +1388,7 @@ TEST(MemTableTest, BeginRetainsTombstonesForUpperLevelFiltering) {
     EXPECT_EQ(it.get_cur_tranc_id(), 9u);
   }
   EXPECT_TRUE(saw_tombstone);
+  EXPECT_TRUE(table.begin(0).is_end());
 }
 
 class MemTableFlushTest : public ::testing::Test {
@@ -1347,6 +1417,12 @@ TEST_F(MemTableFlushTest, FailedFlushPreservesDataAndTransactionMarkers) {
   table.put("K", "value", 5);
   table.put("", "", 5);
   table.frozen_cur_table();
+  // 查询不暴露事务标记，但不能删除其原节点；下方成功刷盘仍必须报告事务 5。
+  auto query = table.begin(0, false);
+  ASSERT_TRUE(query.is_valid());
+  EXPECT_EQ(query->first, "K");
+  ++query;
+  EXPECT_TRUE(query.is_end());
   const size_t original_size = table.get_total_size();
   std::vector<uint64_t> flushed_ids = {99};
   auto bad_path = (directory / "missing" / "fail.sst").string();

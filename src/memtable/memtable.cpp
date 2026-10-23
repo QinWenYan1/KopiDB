@@ -526,7 +526,7 @@ HeapIterator MemTable::begin(uint64_t tranc_id, bool skip_delete, const std::fun
     auto collect = [&](SkipList &table, int table_idx){
       for (auto it = table.begin(); it != table.end(); ++it){
         auto key = it.get_key();
-        
+
         // 空 key 保留给内部事务标记，不加入查询候选。
         // 这里只跳过收集，不删除原节点；刷盘仍能读取这个标记。
         if (key.empty()) 
@@ -542,6 +542,12 @@ HeapIterator MemTable::begin(uint64_t tranc_id, bool skip_delete, const std::fun
         if (!tranc_visible(version, tranc_id))
           continue; 
 
+        // 已回滚的版本不能参与堆中的选值。
+        // 例如 K@9 已回滚，必须先排除它，后面的 K@5 才有机会被返回。
+        // 即使 tranc_id == 0 不限制版本大小，也仍然需要检查回滚状态。
+        if (is_aborted && is_aborted(version))
+          continue;
+
         // 不在收集阶段按 key 去重，也不提前删除有效墓碑
         // 例如较新表中的旧值，仍可能被较旧表中的新墓碑遮住
         // 所有候选交给堆，统一按真实版本和来源优先级决定结果
@@ -554,6 +560,7 @@ HeapIterator MemTable::begin(uint64_t tranc_id, bool skip_delete, const std::fun
     //    idx 约定： 表越新 idx 越大
     //    取现现在 frozen_tables 个数就是 现在最新的 table index
     int idx = static_cast<int>(frozen_tables.size());
+    collect(*current_table, idx); 
 
     for (const auto &table : frozen_tables){
       --idx; 
@@ -565,7 +572,7 @@ HeapIterator MemTable::begin(uint64_t tranc_id, bool skip_delete, const std::fun
   // 4. items 已经持有数据副本，可以释放表锁后构造堆
   //    堆负责排序、同 key 去重，以及按 skip_delete 处理有效墓碑
   //    移动 vector，避免再次复制整批候选记录
-  return HeapIterator(items, tranc_id, skip_delete); // skip_delete 默认为true
+  return HeapIterator(std::move(items), tranc_id, skip_delete); // skip_delete 默认为true
 }
 
 HeapIterator MemTable::end() {
