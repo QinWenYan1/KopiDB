@@ -446,6 +446,30 @@ TEST_F(LSMTest, EngineGetRequiresLiveManager) {
   }
 }
 
+// 目的：空批次和有数据的批次都遵守管理器前置要求，且有效管理器不能被误判为错误。
+// 场景：同一个 Engine 先未绑定、再绑定、最后管理器销毁；应依次拒绝、正常查询、拒绝。
+TEST_F(LSMTest, EngineBatchGetRequiresLiveManager) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  ASSERT_THROW(engine->get_batch({}, 0), std::runtime_error);
+  engine->put("k", "value", 3);
+  EXPECT_THROW(engine->get_batch({"k", "missing"}, 0), std::runtime_error);
+
+  auto manager = bind_test_manager(engine);
+  EXPECT_NO_THROW(EXPECT_TRUE(engine->get_batch({}, 0).empty()));
+  auto results = engine->get_batch({"k", "missing"}, 0);
+  ASSERT_EQ(results.size(), 2u);
+  EXPECT_EQ(results[0].first, "k");
+  EXPECT_EQ(results[0].second, std::make_optional(
+                std::make_pair(std::string("value"), uint64_t{3})));
+  EXPECT_EQ(results[1].first, "missing");
+  EXPECT_FALSE(results[1].second);
+
+  manager.reset();
+  ASSERT_TRUE(engine->tran_manager.expired());
+  EXPECT_THROW(engine->get_batch({}, 0), std::runtime_error);
+  EXPECT_THROW(engine->get_batch({"k", "missing"}, 0), std::runtime_error);
+}
+
 // 目的：批量查询也必须跨来源比较版本，不能只对 MemTable 未命中的 key 查 SST。
 // 场景：分别覆盖所有 key 都在内存命中、有缺失 key 触发 SST 查询两条路径；
 //       同时验证墓碑、重复 key 和返回顺序。
@@ -1595,6 +1619,15 @@ TEST_F(EngineGetRollbackTest, ComparesFilteredMemoryAndDiskCandidates) {
     EXPECT_FALSE(engine->get("equal_deleted", read_id));
     EXPECT_EQ(engine->get("equal_kept", read_id), std::make_optional(
                   std::make_pair(std::string("memory5"), uint64_t{5})));
+    // 批量入口也要遵守相同的跨来源版本和同版本来源优先级。
+    const std::vector<std::string> keys = {
+        "equal_kept", "deleted", "k", "equal_deleted", "restored", "k"};
+    const auto results = engine->get_batch(keys, read_id);
+    ASSERT_EQ(results.size(), keys.size());
+    for (size_t i = 0; i < keys.size(); ++i) {
+      EXPECT_EQ(results[i].first, keys[i]);
+      EXPECT_EQ(results[i].second, engine->get(keys[i], read_id));
+    }
   }
   EXPECT_EQ(engine->get("k", 6), std::make_optional(
                 std::make_pair(std::string("memory3"), uint64_t{3})));
@@ -1627,6 +1660,62 @@ TEST_F(EngineGetRollbackTest, RechecksCancellationOnEachQuery) {
   // 取消只影响可见性，未传回调的底层查询仍能看到物理版本 7。
   EXPECT_EQ(engine->memtable.get_record("k", 0), std::make_optional(
                 std::make_pair(std::string("second"), uint64_t{7})));
+}
+
+// 目的：批量查询过滤取消值/墓碑后返回有效旧版本，并保持顺序、重复 key 和缺失项。
+// 场景：有效旧版本位于 SST，内存中事务 5 和 7 连续被取消；随后冻结、刷盘，
+//       各阶段的批量结果都应符合明确预期，并与逐条 get 一致。
+TEST_F(EngineGetRollbackTest, BatchKeepsOrderDuplicatesAndHistoricalVersions) {
+  engine->put("k", "old", 3);
+  engine->put("restored", "keep", 3);
+  engine->put("deleted", "ancient", 1);
+  engine->remove("deleted", 3);
+  engine->flush();
+
+  TranContext first(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  first.put("k", "cancelled5");
+  first.remove("restored");
+  first.put("deleted", "cancelled-resurrection");
+  first.put("added", "cancelled-new");
+  ASSERT_TRUE(first.abort());
+  TranContext second(7, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  second.put("k", "cancelled7");
+  ASSERT_TRUE(second.abort());
+
+  const std::vector<std::string> keys = {
+      "restored", "k", "added", "deleted", "missing", "k"};
+  for (int phase = 0; phase < 3; ++phase) {
+    SCOPED_TRACE(phase); // 0：取消记录在活跃表；1：冻结表；2：SST。
+    if (phase == 1) {
+      engine->memtable.frozen_cur_table();
+      ASSERT_EQ(engine->memtable.get_cur_size(), 0u);
+      ASSERT_GT(engine->memtable.get_frozen_size(), 0u);
+    } else if (phase == 2) {
+      engine->flush();
+      ASSERT_EQ(engine->memtable.get_total_size(), 0u);
+    }
+    for (uint64_t read_id : {uint64_t{0}, uint64_t{2}, uint64_t{5}, uint64_t{7}}) {
+      SCOPED_TRACE(read_id);
+      auto results = engine->get_batch(keys, read_id);
+      ASSERT_EQ(results.size(), keys.size());
+      for (size_t i = 0; i < keys.size(); ++i) {
+        SCOPED_TRACE(i);
+        std::optional<std::pair<std::string, uint64_t>> expected;
+        if (read_id == 2) {
+          if (keys[i] == "deleted") {
+            expected = std::make_pair(std::string("ancient"), uint64_t{1});
+          }
+        } else if (keys[i] == "k") {
+          expected = std::make_pair(std::string("old"), uint64_t{3});
+        } else if (keys[i] == "restored") {
+          expected = std::make_pair(std::string("keep"), uint64_t{3});
+        }
+        EXPECT_EQ(results[i].first, keys[i]);
+        EXPECT_EQ(results[i].second, expected);
+        EXPECT_EQ(results[i].second, engine->get(keys[i], read_id));
+      }
+    }
+  }
 }
 
 // 删除测试复用组件绑定与容量配置，分别检查暂存删除和立即删除。

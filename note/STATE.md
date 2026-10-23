@@ -10,17 +10,19 @@
 
 当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、状态查询接口、结束登记、abort 及写入路径的旧方案清理已完成；存储查询过滤尚未完成。
 
-当前推进项：第①、②阶段已完成；第③阶段的底层点查链和 Engine::get 已接通回滚判断。2026-10-23 检查及相关回归 46/46 通过，下一函数为 Engine::get_batch。仍按单函数推进，业务代码由用户手动加入。
+当前推进项：第①、②阶段完成，第③阶段的点查与批查回滚功能于 2026-10-23 通过相关 48/48 回归；get 的两处旧注释仍待用户清理。当前进入第④阶段，下一函数为 MemTable::begin，只提供草案，尚未改动范围查询。业务代码仍由用户手动加入。
 
 2026-10-22 SST 检查：SST::get 已将回调正确传给按 key 构造的 SstIterator，范围/Bloom 检查、读取上限和有效墓碑处理正确。扩展现有测试到公开 get 入口，完整 test_sst 19/19 通过。随后已接通 Engine 候选 SST 查询及 get。
 
-2026-10-23 最新 Engine 检查：get 使用严格的管理器前置检查，由回调持有 shared_ptr，并向内存、SST 同时传递回滚判断。新增 4 个测试，相关回归 46/46 通过；此前两个真实 abort 点查失败均已解决。13 个已有测试补充显式绑定，旧管理器失效用例按新约定检查 get 报错并保留底层无写入断言。当前 get 尚留两处过时的未绑定兼容注释，已提醒用户清理；执行逻辑正确。助手未修改业务代码。
+2026-10-23 最新 Engine 检查：get_batch 在用户修正 if (man) 为 if (!man) 后，管理器前置检查及回调传递正确。新增 2 个批量测试，扩展既有跨来源比较到批量入口；构建成功，相关 48/48 通过。覆盖空/非空输入依赖检查、实际取消新增/修改/删除、活跃表/冻结表/SST、连续取消、历史上限、顺序/重复/缺失、墓碑及同版本来源优先级。上一轮 get 的 46 个回归也包含在本轮中。助手未修改业务代码。
 
-当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator/SstIterator 按 key 构造、SstIterator::seek、SST::get 及 Engine::sst_get_ 在显式传入回调时会排除已取消版本，保留有效墓碑，相关测试通过。Engine 的公开 get 已从管理器取得并传入回调；get_batch 和 commit 尚未接通。MemTable::get 返回的原节点迭代器、BlockIterator/SstIterator 按 key 构造及 seek 均不保存回调，后续 ++ 不自动沿用本次筛选；get_record/get_batch 在锁内复制结果。数据库回滚查询尚未完成。
+当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator/SstIterator 按 key 构造、SstIterator::seek、SST::get 及 Engine::sst_get_ 在显式传入回调时会排除已取消版本，保留有效墓碑，相关测试通过。Engine 的公开 get/get_batch 已从管理器取得并传入回调；commit 的内部候选查询尚未接通。MemTable::get 返回的原节点迭代器、BlockIterator/SstIterator 按 key 构造及 seek 均不保存回调，后续 ++ 不自动沿用本次筛选；get_record/get_batch 在锁内复制结果。数据库回滚查询尚未完成。
 
-2026-10-23 已确认管理器约定：Engine 公开查询必须有有效的管理器，未绑定和已销毁均报错；不再保留未绑定兼容分支，不需要 owner_before。get 已按此实现并通过缺失/失效测试，回调持有 shared_ptr 到查询结束；查询期间的持有关系经过代码检查，未添加生命周期并发压力测试。get_batch 草案沿用此约定，即使空输入也先检查依赖。Lab 5.5 的生产入口绑定仍按原计划延期，当前测试显式绑定，不以此降低业务查询的要求。
+2026-10-23 已确认管理器约定：Engine 公开查询必须有有效的管理器，未绑定和已销毁均报错；不再保留未绑定兼容分支，不需要 owner_before。get 已按此实现并通过缺失/失效测试，回调持有 shared_ptr 到查询结束；查询期间的持有关系经过代码检查，未添加生命周期并发压力测试。get_batch 已沿用此约定并通过测试，即使空输入也先检查依赖。Lab 5.5 的生产入口绑定仍按原计划延期，当前测试显式绑定，不以此降低业务查询的要求。
 
 2026-10-20 用户纠正任务范围：撤回把 LSM 构造函数绑定作为当前下一步的安排，组件初始化整合按 Lab 5.5 推进。绑定是引擎使用管理器的依赖，但现有事务测试已显式完成绑定，可以先验证回滚逻辑；本轮不以修复 LSM 初始化入口为前置任务，也不把测试绑定视为生产入口已完成。
+
+当前 MemTable::begin 草案：增加第三个可选回调，在收集所有表的原始版本时先过滤回滚记录，再由 HeapIterator 去重和处理有效墓碑。使用收集阶段的数据副本，不在后续 ++ 保存或调用回调；迭代器返回后发生 abort 不自动重建现有堆，新 begin 重新检查。业务代码尚未加入，Engine 范围入口也尚未传回调，不计为已完成。SST 惰性迭代的状态语义仍需在第④阶段核对。
 
 当前排期约束：项目时间紧，优先沿现有结构完成回滚。迭代器职责重构已经讨论，但列为后续事项，本轮只做必要的判断接入与参数传递。
 
@@ -29,14 +31,14 @@
 | [TranContext 构造、get、commit](../src/lsm/transation.cpp) | 已按此前讨论实现；接入回滚状态后还需调整有关调用。 |
 | `TranContext::put()` | 已删除旧值查询和备份，更新函数说明，代码检查、构建及对应回归通过。 |
 | `TranContext::remove()` | 已独立实现结束状态检查、DELETE 记录、立即/暂存墓碑；新增 4 个测试通过，覆盖重复删除、历史版本、与 put 交替及结束后拒绝删除。 |
-| `TranContext::abort()` | 已实现状态检查、回滚登记及上下文清理；删除旧容器清理后，5 个当前阶段的回滚测试再次通过。Engine 点查询已接入回滚名单，批量与范围路径仍待接入。 |
+| `TranContext::abort()` | 已实现状态检查、回滚登记及上下文清理；删除旧容器清理后，5 个当前阶段的回滚测试再次通过。Engine 点查与批查已接入回滚名单，范围路径仍待接入。 |
 | `TranManager::getNextTransactionId()`、`new_tranc()` | 已实现 ID 分配、上下文创建和活跃事务登记。 |
 | [TranManager 成员](../include/lsm/transaction.h) | 已新增 `aborted_tranc_ids_` 和加锁的 const 查询接口 `is_aborted()`；回滚登记已接入并通过对应测试。 |
 | `add_ready_to_flush_tranc_id()` | 同锁更新待刷盘状态与回滚集合；map 更新失败时撤销本次新增的回滚 ID。正常、重复、清理后保留及并发登记测试通过，分配失败分支通过代码检查。 |
 | `add_flushed_tranc_id()` | 会清理待刷盘状态表；该表不能充当长期回滚名单。 |
 | `write_tranc_id_file()`、`read_tranc_id_file()` | 当前均为空函数；正常重启后的状态与 ID 延续尚未完成。 |
 | [LSM 构造函数](../src/lsm/engine.cpp) | 已创建 Engine 和 TranManager，互相绑定仍为待办，按用户要求留在 Lab 5.5 初始化整合时处理；当前事务测试自行绑定。 |
-| 查询与迭代器 | SkipList、MemTable 点查/批查、Block/SST 点查链及 Engine::sst_get_ 支持显式回调并通过测试。Engine 公开 get 已接通；get_batch、事务缓存与提交检查、范围迭代器仍待接通。 |
+| 查询与迭代器 | SkipList、MemTable 点查/批查、Block/SST 点查链及 Engine::sst_get_ 支持显式回调并通过测试。Engine 公开 get/get_batch 已接通；事务缓存与提交检查、范围迭代器仍待接通。 |
 
 ## 已确认的设计
 
@@ -130,8 +132,10 @@
 
 ## 测试状态
 
-- 最新检查（2026-10-23）：`xmake build test_lsm` 成功，独立临时目录运行相关测试 **46/46 通过**。新增 `LSMTest.EngineGetRequiresLiveManager` 和 3 个 `EngineGetRollbackTest`，覆盖严格依赖检查、取消值/墓碑、活跃表/冻结表/SST、真实版本与同版本来源优先级、连续回滚、历史读取。复查原有点查/批查基础回归、SST 回滚、刷盘及事务创建/读写/提交/删除/取消测试。旧批查回归没有取消版本，因此不代表批量回滚已完成。未运行完整 test_lsm、其他存储套件或 Lab 5.5 入口。
-- 最新日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-engine-get-rollback-0eu767bl/result.log`；同目录 `filter.txt` 保存本轮完整 gtest 过滤器。
+- 最新检查（2026-10-23，get_batch）：`xmake build test_lsm` 成功，相关 **48/48 通过**。新增 `LSMTest.EngineBatchGetRequiresLiveManager` 与 `EngineGetRollbackTest.BatchKeepsOrderDuplicatesAndHistoricalVersions`，扩展 `ComparesFilteredMemoryAndDiskCandidates` 到批量入口。最初反向条件由代码检查发现，用户自行修正后才运行本轮测试；未运行错误版本，也未修改业务代码。未运行完整 test_lsm 或其他存储测试套件。
+- 最新日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-engine-batch-rollback-76p8g7bl/result.log`；同目录 `filter.txt` 保存完整过滤器。
+- 前一轮检查（2026-10-23，get）：`xmake build test_lsm` 成功，独立临时目录运行相关测试 **46/46 通过**。新增 `LSMTest.EngineGetRequiresLiveManager` 和 3 个 `EngineGetRollbackTest`，覆盖严格依赖检查、取消值/墓碑、活跃表/冻结表/SST、真实版本与同版本来源优先级、连续回滚、历史读取。复查原有点查/批查基础回归、SST 回滚、刷盘及事务创建/读写/提交/删除/取消测试。旧批查回归没有取消版本，因此不代表批量回滚已完成。未运行完整 test_lsm、其他存储套件或 Lab 5.5 入口。
+- 前一轮日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-engine-get-rollback-0eu767bl/result.log`；同目录 `filter.txt` 保存该轮完整 gtest 过滤器。
 - 前一轮检查（2026-10-22）：新增 4 个 EngineRollbackSst 测试：过滤后跨 L0/L1/L2 比较及有效墓碑、候选全部取消后继续查找及不清空已有 best、同版本来源优先级、空集合/缺失/回调异常。包含读取上限 0 和历史上限、L1 二分两侧、取消墓碑、取消名单在两次查询间变化和默认空回调行为。`xmake build test_lsm` 成功，独立临时目录复制配置后运行 `LSMTest.EngineRollbackSst*` 及此前 3 个 EngineMvcc 读取回归，**7/7 通过**。未运行完整 test_lsm、真实 abort 查询测试或其他套件，未修改业务代码。
 - 前一轮日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-engine-sst-rollback-s_no42vs/result.log`。
 - 前一轮 update_best_from_sst 检查（2026-10-22）：实现检查、构建及既有空回调读取路径 **3/3 通过**；当时非空回调尚未接通。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-candidate-review-mfm7c3sa/result.log`。
@@ -159,7 +163,7 @@
 - 前一轮较宽范围验证：在独立临时目录复制配置后运行 `test_lsm --gtest_filter='LSMTest.TranContext*:LSMTest.NewTransaction*:LSMTest.TransactionEndRegistration*:TranCommitTest.*:TranAbortTest.*'`，**35 个测试：32 个通过，3 个失败**。其中两个回滚点查失败已于 2026-10-23 解决并通过；LSM 初始化入口仍留在 Lab 5.5，本轮未重跑该入口用例。
 - 失败一：`LSMTest.TranContextTest` 抛出 `TranManager::new_tranc: engine is not initialized`；LSM 构造中的组件绑定尚未实现，按用户要求留到 Lab 5.5 初始化整合，不列为当前回滚阶段的修复项。
 - 已解决的失败二、三：`TranAbortTest.ReadUncommittedRestoresPreviousVersionInMemoryAndSst`、`TranAbortTest.KeepsNewerCommitButHidesAbortedVersionFromOlderSnapshot` 于 2026-10-23 接通 Engine::get 后通过，保持原断言。历史验证日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-abort-context-review-738zvtgk/result.log`。
-- 验证边界：本轮未运行完整 test_lsm；未注入内存分配故障，未启用 ThreadSanitizer。批量、范围、事务缓存/提交的回滚判断以及状态持久化仍待验收。
+- 验证边界：本轮未运行完整 test_lsm；未注入内存分配故障，未启用 ThreadSanitizer。范围、事务缓存/提交的回滚判断以及状态持久化仍待验收。
 
 ## 协作方式
 

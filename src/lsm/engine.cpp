@@ -163,7 +163,7 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
   // 与单条 get 使用相同的前置要求：必须有有效管理器。
   // 未绑定或已经销毁时，无法判断哪些版本已回滚，直接报错
   auto man = tran_manager.lock(); 
-  if (man)
+  if (!man)
     throw std::runtime_error("LSMEngine::get_batch: transaction manager is unavailable"); 
 
   // 空输入没有需要查询的 key，返回空数组
