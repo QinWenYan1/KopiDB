@@ -585,8 +585,9 @@ HeapIterator MemTable::end() {
 // Lab2.3 MemTable 的前缀迭代器
 // 它就是 begin() 的区间版——锁、idx 约定、tranc 过滤、收集进堆全套复用
 // 唯一变化是每张表从全量 [begin, end) 换成前缀区间 [begin_preffix, end_preffix)
-HeapIterator MemTable::iters_preffix(const std::string &preffix,
-                                     uint64_t tranc_id, const std::function<bool(uint64_t)> &is_aborted) {
+HeapIterator
+MemTable::iters_preffix(const std::string &preffix, uint64_t tranc_id,
+                        const std::function<bool(uint64_t)> &is_aborted) {
   // 加读锁, 对所有表调用 begin_preffix/end_preffix 遍历前缀范围
   // 过滤事务可见性, 同 key 只保留最新版本
   std::vector<SearchItem> items;
@@ -598,44 +599,48 @@ HeapIterator MemTable::iters_preffix(const std::string &preffix,
     std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
 
     // 2. 每张表只收集匹配前缀的记录，其他筛选规则与 begin() 相同
-    auto collect = [&](SkipList &table, int table_idx){
+    auto collect = [&](SkipList &table, int table_idx) {
       // 前缀区间是左闭右开：[begin_preffix, end_preffix)
       // 例如查询 "app"，可以包含 "app"、"apple"，但不能包含 "apq"
       // 右边界只查找一次，避免每轮循环都重新在跳表中定位
-      const auto range_end = table.end_preffix(preffix); 
+      const auto range_end = table.end_preffix(preffix);
 
-      for (auto it = table.begin_preffix(preffix); it != range_end; ++it){
-        auto key = it.get_key(); 
+      for (auto it = table.begin_preffix(preffix); it != range_end; ++it) {
+        auto key = it.get_key();
 
         // 空前缀会匹配所有 key，因此也可能遇到内部事务标记
         // 先跳过空 key，再读取真实版本号；不删除原节点，刷盘仍可读取
-        if (key.empty()) continue; 
+        if (key.empty())
+          continue;
 
-        const uint64_t version = it.get_cur_tranc_id(); 
+        const uint64_t version = it.get_cur_tranc_id();
 
         // 超过读取上限的版本不可见；tranc_id == 0 表示不限制版本大小
-        if (!tranc_visible(version, tranc_id)) continue; 
+        if (!tranc_visible(version, tranc_id))
+          continue;
 
         // 已回滚版本必须在去重和墓碑处理之前排除
         // 例如 apple@9 的墓碑已回滚，就应继续保留 apple@5 的旧值
         // 读取上限为 0 时，也必须执行这项检查
-        if (is_aborted && is_aborted(version)) continue; 
+        if (is_aborted && is_aborted(version))
+          continue;
 
         // 暂不按 key 去重，也不删除有效墓碑
         // 不同表的版本还需要一起比较，才能确定每个 key 最终该返回什么
-        items.emplace_back(std::move(key), it.get_value(), table_idx, 0, version);
+        items.emplace_back(std::move(key), it.get_value(), table_idx, 0,
+                           version);
       }
-    }; 
+    };
 
     // 3. 来源编号与 begin() 保持一致：活跃表最大，冻结表由新到旧递减
     //    只有 key 和真实版本号都相同时，才用这个编号决定优先级
     //    idx 约定同 begin(): 表越新 idx 越大，current 最大
     int idx = static_cast<int>(frozen_tables.size());
-    collect(*current_table, idx); 
+    collect(*current_table, idx);
 
-    for (const auto &table : frozen_tables){
-      --idx; 
-      collect(*table, idx); 
+    for (const auto &table : frozen_tables) {
+      --idx;
+      collect(*table, idx);
     }
   }
 
