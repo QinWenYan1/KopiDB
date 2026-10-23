@@ -508,43 +508,63 @@ size_t MemTable::get_total_size() {
 
 // Lab2.2 MemTable 的迭代器 begin
 // 需要进一步判断这里的 HeapIterator 能否跳过删除元素
-HeapIterator MemTable::begin(uint64_t tranc_id, bool skip_delete) {
+HeapIterator MemTable::begin(uint64_t tranc_id, bool skip_delete, const std::function<bool(uint64_t)> &is_aborted) {
   // 加 cur_mtx 和 frozen_mtx 读锁, 遍历所有表收集 SearchItem
   // 每个 item 包含 key, value, table_idx, 0, tranc_id
   // 过滤 tranc_id 不可见的记录 (tranc_id != 0 && iter.get_tranc_id() >
   // tranc_id) 返回 HeapIterator(item_vec, tranc_id)
   std::vector<SearchItem> items;
-  // 先 curr 后 frozen mtx，都是读锁
-  std::shared_lock<std::shared_mutex> cur_lock(cur_mtx);
-  std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
 
-  // idx 约定： 表越新 idx 越大
-  //  取现现在 frozen_tables 个数就是 现在最新的 table index
-  int idx = static_cast<int>(frozen_tables.size());
+  {
+    // 1. 收集期间同时保护活跃表和冻结表。
+    //    按既定顺序加锁，保证读取节点和复制 key/value 时没有并发修改。
+    // 先 curr 后 frozen mtx，都是读锁
+    std::shared_lock<std::shared_mutex> cur_lock(cur_mtx);
+    std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
 
-  // 1. 取活跃表中的元素放入到heap中
-  //  tranc_id 过滤：tranc_id != 0 && 条目tranc_id > tranc_id 才跳过
-  //  tranc_id == 0 表示"非事务读"，
-  //  事务读只滤掉比自己新的版本。注意这个过滤是"收集时"做的，比灌进堆再滤便宜
-  for (auto it = current_table->begin(); it != current_table->end(); ++it) {
-    // 事务太新，对现版本不可见，跳过
-    if (!tranc_visible(it.get_tranc_id(), tranc_id))
-      continue;
-    items.emplace_back(it.get_key(), it.get_value(), idx, 0, it.get_tranc_id());
-  }
+    // 2. 活跃表和冻结表使用同一套收集规则
+    auto collect = [&](SkipList &table, int table_idx){
+      for (auto it = table.begin(); it != table.end(); ++it){
+        auto key = it.get_key();
+        
+        // 空 key 保留给内部事务标记，不加入查询候选。
+        // 这里只跳过收集，不删除原节点；刷盘仍能读取这个标记。
+        if (key.empty()) 
+          continue;
+        
+        // 这里是 SkipListIterator，其 get_cur_tranc_id()
+        // 直接返回当前节点的真实版本号
+        // 循环已经排除 end，当前节点不会为空
+        const uint64_t version = it.get_cur_tranc_id(); 
 
-  // 2. 从冻结表取元素放到heap中: front 新 back 旧, idx 从大到小递减
-  for (const auto &table : frozen_tables) {
-    --idx;
-    for (auto it = table->begin(); it != table->end(); ++it) {
-      // 事务太新，对现版本不可见，跳过
-      if (!tranc_visible(it.get_tranc_id(), tranc_id))
-        continue;
-      items.emplace_back(it.get_key(), it.get_value(), idx, 0,
-                         it.get_tranc_id());
+        // 超过读取上限的版本不可见
+        // tranc_id == 0 时，这一步不限制版本大小
+        if (!tranc_visible(version, tranc_id))
+          continue; 
+
+        // 不在收集阶段按 key 去重，也不提前删除有效墓碑
+        // 例如较新表中的旧值，仍可能被较旧表中的新墓碑遮住
+        // 所有候选交给堆，统一按真实版本和来源优先级决定结果
+        items.emplace_back(it.get_key(), it.get_value(), table_idx, 0, version); 
+      }
+    }; 
+
+    // 3. 同 key、同版本时，idx 越大，来源越优先
+    //    活跃表最大；冻结表从 front 到 back 依次由新到旧
+    //    idx 约定： 表越新 idx 越大
+    //    取现现在 frozen_tables 个数就是 现在最新的 table index
+    int idx = static_cast<int>(frozen_tables.size());
+
+    for (const auto &table : frozen_tables){
+      --idx; 
+      collect(*table, idx); 
     }
+
   }
 
+  // 4. items 已经持有数据副本，可以释放表锁后构造堆
+  //    堆负责排序、同 key 去重，以及按 skip_delete 处理有效墓碑
+  //    移动 vector，避免再次复制整批候选记录
   return HeapIterator(items, tranc_id, skip_delete); // skip_delete 默认为true
 }
 

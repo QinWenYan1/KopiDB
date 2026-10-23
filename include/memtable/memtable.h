@@ -92,7 +92,9 @@ public:
   size_t get_cur_size();
   size_t get_frozen_size();
   size_t get_total_size();
-  HeapIterator begin(uint64_t tranc_id, bool skip_delete = true);
+  // 收集满足版本上限且未回滚的记录，再由 HeapIterator 归并
+  // skip_delete=false 时保留有效墓碑，供上层跨来源比较
+  HeapIterator begin(uint64_t tranc_id, bool skip_delete = true, const std::function<bool(uint64_t)> &is_aborted = {});
   HeapIterator iters_preffix(const std::string &preffix, uint64_t tranc_id);
 
   std::optional<std::pair<HeapIterator, HeapIterator>>
