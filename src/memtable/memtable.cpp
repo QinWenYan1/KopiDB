@@ -656,50 +656,71 @@ MemTable::iters_preffix(const std::string &preffix, uint64_t tranc_id,
 // 否则返回 make_pair(HeapIterator(item_vec,ctranc_id, true), HeapIterator{})
 std::optional<std::pair<HeapIterator, HeapIterator>>
 MemTable::iters_monotony_predicate(
-    uint64_t tranc_id, std::function<int(const std::string &)> predicate) {
+    uint64_t tranc_id, std::function<int(const std::string &)> predicate,
+    const std::function<bool(uint64_t)> &is_aborted) {
   // 加读锁, 对所有表调用 iters_monotony_predicate 获取结果
-
   std::vector<SearchItem> items;
-  // 加curr 和 frozen 读锁
-  std::shared_lock<std::shared_mutex> cur_lock(cur_mtx);
-  std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
 
-  int idx = static_cast<int>(frozen_tables.size());
+  {
+    std::shared_lock<std::shared_mutex> cur_lock(cur_mtx);
+    std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
 
-  // 1. 收集一张表谓词命中区间（单调谓词 -> 命中集连续 -> 每表一段）
-  auto collect = [&](SkipList &table, const int &table_idx) {
-    auto range = table.iters_monotony_predicate(predicate);
-    // 本表没命中不算错误，别的表可能有
-    if (!range.has_value())
-      return;
+    int idx = static_cast<int>(frozen_tables.size());
 
-    for (auto it = range->first; it != range->second; ++it) {
-      // 事务不可见，跳过
-      if (!tranc_visible(it.get_tranc_id(), tranc_id))
-        continue;
-      items.emplace_back(it.get_key(), it.get_value(), table_idx, 0,
-                         it.get_tranc_id());
+    // 1. 收集一张表谓词命中区间（单调谓词 -> 命中集连续 -> 每表一段）
+    auto collect = [&](SkipList &table, const int &table_idx) {
+      auto range = table.iters_monotony_predicate(predicate);
+      // 本表没命中不算错误，别的表可能有
+      if (!range.has_value())
+        return;
+
+      for (auto it = range->first; it != range->second; ++it) {
+    
+        const auto &version = it.get_cur_tranc_id(); 
+        const auto &key = it.get_key(); 
+
+        if (key.empty())
+          continue; 
+
+        // 先排除超过读取上限的版本。
+        // tranc_id == 0 只表示不限制版本大小，不代表跳过回滚检查
+        if (!tranc_visible(version, tranc_id))
+          continue;
+        
+        // 已回滚的新值或墓碑都不能进入堆
+        // 例如 K@9 已回滚，跳过它后，K@5 仍有机会成为查询结果
+        if (is_aborted && is_aborted(version)) 
+          continue;
+
+        // 不在这里去重或删除有效墓碑
+        // 所有表的候选必须一起比较，才能确定每个 key 的最终结果
+        items.emplace_back(std::move(it.get_key()), std::move(key), table_idx, 0,
+                          version);
+      }
+    };
+  
+
+    // 2. 收集全部内存表
+    //    同 key、同版本时，活跃表优先，其次按冻结表由新到旧选择
+    collect(*current_table, idx);
+    for (const auto &table : frozen_tables) {
+      --idx;
+      collect(*table, idx);
     }
-  };
-
-  // 现在在curr, frozen tables 里面都收集
-  collect(*current_table, idx);
-  for (const auto &table : frozen_tables) {
-    --idx;
-    collect(*table, idx);
   }
-
   // 新版本：先完成去重和墓碑过滤，再判断最终有没有结果
   // 老版本会由于有墓碑的情况显示items非空，然后返回“假”Heapiterator
   // 所以我们先利用heapiterator过滤判断之后再返回
   HeapIterator begin_iter(std::move(items), tranc_id);
 
-  // 所有表都没命中, 整体无结果
+  // 必须检查堆处理后的结果，不能只检查原始 items 是否为空
+  // 例如候选里只有 K@9 的有效墓碑，items 有记录
+  // 但处理墓碑后没有任何可返回的 key，应返回 nullopt
   if (begin_iter.is_end()) {
     return std::nullopt;
   }
 
-  // 命中: (归并迭代器, 空哨兵), 与 begin()/end() 同款的用法
+  // 空 HeapIterator 作为结束迭代器，与现有遍历方式保持一致
   return std::make_pair(std::move(begin_iter), HeapIterator{});
 }
 

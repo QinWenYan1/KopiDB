@@ -99,10 +99,13 @@ public:
   // 返回匹配前缀的最新有效记录，隐藏事务标记和被有效墓碑删除的 key
   // 不传回滚检查函数时，仍按原有的版本上限进行筛选
   HeapIterator iters_preffix(const std::string &preffix, uint64_t tranc_id, const std::function<bool(uint64_t)> &is_aborted = {});
-
+  
+  // 返回谓词命中范围中的最新有效记录
+  // 过滤、去重和墓碑处理后没有记录时，返回 nullopt
   std::optional<std::pair<HeapIterator, HeapIterator>>
   iters_monotony_predicate(uint64_t tranc_id,
-                           std::function<int(const std::string &)> predicate);
+                           std::function<int(const std::string &)> predicate, 
+                          const std::function<bool(uint64_t)> &is_aborted = {});
 
   HeapIterator end();
 
