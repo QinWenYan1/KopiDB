@@ -508,7 +508,8 @@ size_t MemTable::get_total_size() {
 
 // Lab2.2 MemTable 的迭代器 begin
 // 需要进一步判断这里的 HeapIterator 能否跳过删除元素
-HeapIterator MemTable::begin(uint64_t tranc_id, bool skip_delete, const std::function<bool(uint64_t)> &is_aborted) {
+HeapIterator MemTable::begin(uint64_t tranc_id, bool skip_delete,
+                             const std::function<bool(uint64_t)> &is_aborted) {
   // 加 cur_mtx 和 frozen_mtx 读锁, 遍历所有表收集 SearchItem
   // 每个 item 包含 key, value, table_idx, 0, tranc_id
   // 过滤 tranc_id 不可见的记录 (tranc_id != 0 && iter.get_tranc_id() >
@@ -523,24 +524,24 @@ HeapIterator MemTable::begin(uint64_t tranc_id, bool skip_delete, const std::fun
     std::shared_lock<std::shared_mutex> frozen_lock(frozen_mtx);
 
     // 2. 活跃表和冻结表使用同一套收集规则
-    auto collect = [&](SkipList &table, int table_idx){
-      for (auto it = table.begin(); it != table.end(); ++it){
+    auto collect = [&](SkipList &table, int table_idx) {
+      for (auto it = table.begin(); it != table.end(); ++it) {
         auto key = it.get_key();
 
         // 空 key 保留给内部事务标记，不加入查询候选。
         // 这里只跳过收集，不删除原节点；刷盘仍能读取这个标记。
-        if (key.empty()) 
+        if (key.empty())
           continue;
-        
+
         // 这里是 SkipListIterator，其 get_cur_tranc_id()
         // 直接返回当前节点的真实版本号
         // 循环已经排除 end，当前节点不会为空
-        const uint64_t version = it.get_cur_tranc_id(); 
+        const uint64_t version = it.get_cur_tranc_id();
 
         // 超过读取上限的版本不可见
         // tranc_id == 0 时，这一步不限制版本大小
         if (!tranc_visible(version, tranc_id))
-          continue; 
+          continue;
 
         // 已回滚的版本不能参与堆中的选值。
         // 例如 K@9 已回滚，必须先排除它，后面的 K@5 才有机会被返回。
@@ -551,28 +552,28 @@ HeapIterator MemTable::begin(uint64_t tranc_id, bool skip_delete, const std::fun
         // 不在收集阶段按 key 去重，也不提前删除有效墓碑
         // 例如较新表中的旧值，仍可能被较旧表中的新墓碑遮住
         // 所有候选交给堆，统一按真实版本和来源优先级决定结果
-        items.emplace_back(it.get_key(), it.get_value(), table_idx, 0, version); 
+        items.emplace_back(it.get_key(), it.get_value(), table_idx, 0, version);
       }
-    }; 
+    };
 
     // 3. 同 key、同版本时，idx 越大，来源越优先
     //    活跃表最大；冻结表从 front 到 back 依次由新到旧
     //    idx 约定： 表越新 idx 越大
     //    取现现在 frozen_tables 个数就是 现在最新的 table index
     int idx = static_cast<int>(frozen_tables.size());
-    collect(*current_table, idx); 
+    collect(*current_table, idx);
 
-    for (const auto &table : frozen_tables){
-      --idx; 
-      collect(*table, idx); 
+    for (const auto &table : frozen_tables) {
+      --idx;
+      collect(*table, idx);
     }
-
   }
 
   // 4. items 已经持有数据副本，可以释放表锁后构造堆
   //    堆负责排序、同 key 去重，以及按 skip_delete 处理有效墓碑
   //    移动 vector，避免再次复制整批候选记录
-  return HeapIterator(std::move(items), tranc_id, skip_delete); // skip_delete 默认为true
+  return HeapIterator(std::move(items), tranc_id,
+                      skip_delete); // skip_delete 默认为true
 }
 
 HeapIterator MemTable::end() {

@@ -10,7 +10,7 @@
 
 当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、状态查询接口、结束登记、abort 及写入路径的旧方案清理已完成；存储查询过滤尚未完成。
 
-当前推进项：第①、②阶段完成，第③阶段的点查与批查回滚功能于 2026-10-23 通过相关 48/48 回归；get 的两处旧注释仍待用户清理。当前第④阶段的 MemTable::begin 验收未通过：缺少活跃表收集和 is_aborted 判断，本轮选跑 4 个用例，1 个通过、3 个失败，暂不推进下一函数。业务代码仍由用户手动加入。
+当前推进项：第①、②阶段完成，第③阶段的点查与批查回滚功能于 2026-10-23 通过相关 48/48 回归；get 的两处旧注释仍待用户清理。第④阶段的 MemTable::begin 已补齐活跃表收集和 is_aborted 判断，完整 test_memtable 43/43 通过；用户已要求继续，当前提供 iters_preffix 草案，待手动实现后检查。该函数的回滚过滤尚未验收；业务代码仍由用户手动加入。
 
 2026-10-22 SST 检查：SST::get 已将回调正确传给按 key 构造的 SstIterator，范围/Bloom 检查、读取上限和有效墓碑处理正确。扩展现有测试到公开 get 入口，完整 test_sst 19/19 通过。随后已接通 Engine 候选 SST 查询及 get。
 
@@ -22,7 +22,7 @@
 
 2026-10-20 用户纠正任务范围：撤回把 LSM 构造函数绑定作为当前下一步的安排，组件初始化整合按 Lab 5.5 推进。绑定是引擎使用管理器的依赖，但现有事务测试已显式完成绑定，可以先验证回滚逻辑；本轮不以修复 LSM 初始化入口为前置任务，也不把测试绑定视为生产入口已完成。
 
-当前 MemTable::begin 方案（按本轮讨论调整）：第三个参数接收可选 is_aborted。collect 中先读取 key，空 key 直接跳过，再用 SkipListIterator::get_cur_tranc_id 取得真实版本并过滤过新/已取消记录；保留普通 key 的有效墓碑及跨表来源优先级。查询只复制记录，不删除跳表节点。已核对 flush_last 直接调用 SkipList::flush，后者遍历原始节点，因此查询跳过标记不会丢失刷盘通知。不再需要修改 SkipListIterator::get_cur_tranc_id 或 is_valid；Level/SST 的现有标记过滤仍保留。用户正在实现 MemTable::begin，尚未完成验收；Engine 范围入口也尚未传回调。过滤只在收集阶段执行，返回堆持有数据副本，不随之后的 abort 自动重建。
+已完成 MemTable::begin：第三个参数接收可选 is_aborted。collect 中先跳过空 key，再用 get_cur_tranc_id 取得真实版本，筛选读取上限与回滚状态；收集所有内存表，保留有效墓碑和来源优先级。查询不删除原节点；测试确认刷盘仍能读取事务标记并报告 ID。SkipListIterator 的 getter/is_valid 未改动，Level/SST 的现有标记过滤保留。Engine 范围入口尚未传入回调，因此本函数通过不代表完整范围回滚查询已接通。过滤只在收集阶段执行，返回堆持有数据副本，不随之后的 abort 自动重建。
 
 当前排期约束：项目时间紧，优先沿现有结构完成回滚。迭代器职责重构已经讨论，但列为后续事项，本轮只做必要的判断接入与参数传递。
 
@@ -132,7 +132,7 @@
 
 ## 测试状态
 
-- 最新检查（2026-10-23，MemTable::begin）：`xmake build test_memtable` 成功，选跑 4 个用例，**1 个通过、3 个失败**。新增 `BeginCollectsActiveAndFrozenSources`、`BeginFiltersAbortedBeforeDeduplication`，并强化 `BeginRetainsTombstonesForUpperLevelFiltering`，这三个用例失败，分别确认活跃表漏读、回滚记录未过滤及有效墓碑漏读。扩展的 `FailedFlushPreservesDataAndTransactionMarkers` 通过，确认查询隐藏标记后刷盘仍能报告对应 ID。未运行完整套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-memtable-begin-review-ubqitnsm/result.log`。
+- 最新检查（2026-10-23，MemTable::begin）：`xmake build test_memtable` 成功，独立临时目录运行完整套件，**43/43 通过**。用户补齐活跃表收集和回滚筛选后，上一轮失败的 `BeginCollectsActiveAndFrozenSources`、`BeginFiltersAbortedBeforeDeduplication`、`BeginRetainsTombstonesForUpperLevelFiltering` 均通过。覆盖取消值/墓碑、读取上限 0 与历史上限、有效墓碑、全部来源收集；`FailedFlushPreservesDataAndTransactionMarkers` 确认查询隐藏标记后刷盘仍报告对应 ID。本轮未运行 test_lsm 或其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-memtable-begin-fixed-i_ic5jod/result.log`。
 - 最新检查（2026-10-23，get_batch）：`xmake build test_lsm` 成功，相关 **48/48 通过**。新增 `LSMTest.EngineBatchGetRequiresLiveManager` 与 `EngineGetRollbackTest.BatchKeepsOrderDuplicatesAndHistoricalVersions`，扩展 `ComparesFilteredMemoryAndDiskCandidates` 到批量入口。最初反向条件由代码检查发现，用户自行修正后才运行本轮测试；未运行错误版本，也未修改业务代码。未运行完整 test_lsm 或其他存储测试套件。
 - 最新日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-engine-batch-rollback-76p8g7bl/result.log`；同目录 `filter.txt` 保存完整过滤器。
 - 前一轮检查（2026-10-23，get）：`xmake build test_lsm` 成功，独立临时目录运行相关测试 **46/46 通过**。新增 `LSMTest.EngineGetRequiresLiveManager` 和 3 个 `EngineGetRollbackTest`，覆盖严格依赖检查、取消值/墓碑、活跃表/冻结表/SST、真实版本与同版本来源优先级、连续回滚、历史读取。复查原有点查/批查基础回归、SST 回滚、刷盘及事务创建/读写/提交/删除/取消测试。旧批查回归没有取消版本，因此不代表批量回滚已完成。未运行完整 test_lsm、其他存储套件或 Lab 5.5 入口。
