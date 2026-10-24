@@ -146,8 +146,14 @@ void BlockIterator::update_current() const {
 
 // Lab3.2 * 跳过不可见事务ID
 void BlockIterator::skip_by_tranc_id() {
-  // ? 只是进行标记以供你在后续Lab实现事务功能后修改
-  // ? 现在你不需要考虑这个函数
+  // 调用方可能刚刚移动了 current_index
+  // 上一次解引用缓存的 key/value 已经不能继续使用
+  // 提前清理，也保证下面直接返回时不会留下旧缓存
+  cached_value.reset(); 
+
+  // 空迭代器没有记录可检查。
+  if (!block)
+    return;
 
   if (tranc_id_ == 0) {
     // 非事务读：不过滤，但缓存必须失败（调用方刚移动过位置）

@@ -23,13 +23,15 @@
 | ① | 保存并查询回滚 ID | 已完成 |
 | ② | 实现 abort，调整写入上下文 | 已完成 |
 | ③ | 接通单条与批量查询 | 功能验收通过；get 的两处旧注释待清理 |
-| ④ | 接通遍历、前缀和谓词查询 | 进行中：MemTable 三个范围入口通过，下一步 Block/SST |
+| ④ | 接通遍历、前缀和谓词查询 | 进行中：MemTable 已通过；当前准备 BlockIterator::skip_by_tranc_id |
 | ⑤ | 接回事务读取缓存与提交检查 | 待开始 |
 | ⑥ | 持久化状态与正常重启 | 待开始 |
 
 ## 当前推进项
 
-**第③阶段查询功能验收通过，相关回归 48/48。第④阶段 MemTable 的 begin、iters_preffix、iters_monotony_predicate 已通过；2026-10-24 完整 test_memtable 49/49。getter 上轮完整 test_skiplist 31/31，本轮未重跑。下一步进入 Block/SST 迭代器；get 的两处旧注释仍待清理。**
+**2026-10-24 已完成项复核通过：完整 SkipList 31/31、MemTable 49/49、Block 24/24、SST 19/19，LSM 相关选跑 54/54，共 177/177。当前开始第④阶段的 BlockIterator::skip_by_tranc_id：先增加保存回调的成员并修改共用筛选函数，随后逐函数接通构造与 SST 调用。此步骤尚未实现，不计入通过项；get 的两处旧注释仍待清理。**
+
+本轮复核：回滚登记与 abort、点查/批查回调传递、MemTable 三个范围入口与计划一致；没有发现新的阻塞问题。测试覆盖已完成阶段，未运行完整 test_lsm、WAL/恢复和其他未完成路径；未修改业务代码或测试断言。构建日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-plan-check-build-cl3hsb4p`；测试日志与 LSM 过滤器：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-plan-completed-review-gi26m8_i`。
 
 2026-10-24 谓词约定复核：作者参考直接传递 predicate，本地接口与已核对的 Lab 5.2 均未要求谓词不能收到空 key。撤回额外 query_predicate 包装要求；保留收集结果时的标记过滤，谓词须能处理空字符串并满足单调性。上轮 48/49 中失败的 PredicateDoesNotPassMarkersToUserCallback 检查了助手额外引入的接口约束，不能据此认定当前查询结果有错；将其替换为 PredicateRangeResultsExcludeTransactionMarkers，验证含标记的活跃表/冻结表查询 [b, d) 只返回正确记录。构建成功，完整 MemTable 49/49；其他回滚、墓碑和 getter 测试断言未改，业务代码未改。
 
@@ -173,6 +175,10 @@
 - [ ] 确保过滤发生在同 key 去重及墓碑删除整组记录之前，不因回滚而误丢有效旧版本。
 - [ ] 核查刷盘和 compaction 对原始版本的保留，区分查询过滤与物理清理。
 - [ ] 测试内存与 SST 的范围结果一致、回滚墓碑不遮住旧值、全部版本被取消时范围为空。
+
+当前函数：BlockIterator::skip_by_tranc_id。先在类中保存一个默认空的 is_aborted_ 回调，再使该函数同时检查读取上限与取消状态；逐条移动索引，保留同 key 的有效旧版本以及有效墓碑，并清理缓存。读取上限 0 只有在回调为空时才能直接返回。已对照作者参考：作者仅做版本上限过滤，取消状态检查是本项目已确认的逻辑回滚方案所需。
+
+本步边界：只提供上述函数及成员的草案；构造函数尚未保存调用方的回调。因此不能仅凭添加成员和修改函数就宣称遍历回滚已接通。后续分别处理按下标、按 key 构造函数，再接通 SST。接通后的验收包含首次定位和 ++ 都跳过取消值/墓碑，连续取消后找到有效旧版本、上限 0 仍过滤、空回调保留原有行为及缓存随位置更新。
 
 已完成 MemTable::begin：第三个参数接收可选 is_aborted。collect 中先跳过空 key，再用 get_cur_tranc_id 取得真实版本，筛选读取上限与回滚状态；收集所有内存表，保留有效墓碑和来源优先级。查询不删除原节点；测试确认刷盘仍能读取事务标记并报告 ID。后续 getter 已允许读取标记版本，begin 的标记过滤仍保留；is_valid 及 Level/SST 的现有过滤未改动。Engine 范围入口尚未传入回调，因此本函数通过不代表完整范围回滚查询已接通。
 

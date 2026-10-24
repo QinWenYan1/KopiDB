@@ -94,18 +94,20 @@ public:
   size_t get_total_size();
   // 收集满足版本上限且未回滚的记录，再由 HeapIterator 归并
   // skip_delete=false 时保留有效墓碑，供上层跨来源比较
-  HeapIterator begin(uint64_t tranc_id, bool skip_delete = true, const std::function<bool(uint64_t)> &is_aborted = {});
+  HeapIterator begin(uint64_t tranc_id, bool skip_delete = true,
+                     const std::function<bool(uint64_t)> &is_aborted = {});
 
   // 返回匹配前缀的最新有效记录，隐藏事务标记和被有效墓碑删除的 key
   // 不传回滚检查函数时，仍按原有的版本上限进行筛选
-  HeapIterator iters_preffix(const std::string &preffix, uint64_t tranc_id, const std::function<bool(uint64_t)> &is_aborted = {});
-  
+  HeapIterator
+  iters_preffix(const std::string &preffix, uint64_t tranc_id,
+                const std::function<bool(uint64_t)> &is_aborted = {});
+
   // 返回谓词命中范围中的最新有效记录
   // 过滤、去重和墓碑处理后没有记录时，返回 nullopt
-  std::optional<std::pair<HeapIterator, HeapIterator>>
-  iters_monotony_predicate(uint64_t tranc_id,
-                           std::function<int(const std::string &)> predicate, 
-                          const std::function<bool(uint64_t)> &is_aborted = {});
+  std::optional<std::pair<HeapIterator, HeapIterator>> iters_monotony_predicate(
+      uint64_t tranc_id, std::function<int(const std::string &)> predicate,
+      const std::function<bool(uint64_t)> &is_aborted = {});
 
   HeapIterator end();
 

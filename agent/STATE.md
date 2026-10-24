@@ -12,7 +12,7 @@
 
 当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、状态查询接口、结束登记、abort 及写入路径的旧方案清理已完成；存储查询过滤尚未完成。
 
-当前推进项：第①、②阶段完成，第③阶段点查与批查回滚功能已通过相关 48/48 回归；get 的两处旧注释仍待用户清理。第④阶段 MemTable 的 begin、iters_preffix、iters_monotony_predicate 已通过，2026-10-24 完整 MemTable 49/49；上轮 SkipList 31/31，getter 已允许读取事务标记版本。撤回额外谓词包装要求并修正相应测试，下一步 Block/SST。Engine 范围入口的回滚过滤仍未接通；业务代码由用户手动加入。
+当前推进项：第①、②阶段完成，第③阶段点查与批查回滚功能通过；get 的两处旧注释仍待用户清理。第④阶段 MemTable 的 begin、iters_preffix、iters_monotony_predicate 已通过。2026-10-24 复核已完成项，完整 SkipList 31/31、MemTable 49/49、Block 24/24、SST 19/19，LSM 相关选跑 54/54，共 177/177。当前给出 BlockIterator::skip_by_tranc_id 与保存回调成员的草案，等待用户手动实现；构造函数和 SST 遍历的回调保存/传递尚未接通。Engine 范围入口的回滚过滤仍未接通。
 
 2026-10-22 SST 检查：SST::get 已将回调正确传给按 key 构造的 SstIterator，范围/Bloom 检查、读取上限和有效墓碑处理正确。扩展现有测试到公开 get 入口，完整 test_sst 19/19 通过。随后已接通 Engine 候选 SST 查询及 get。
 
@@ -142,6 +142,7 @@
 
 ## 测试状态
 
+- 最新检查（2026-10-24，PLAN 已完成项复核）：五个目标构建成功；各自独立临时目录复制配置后运行，完整 **SkipList 31/31、MemTable 49/49、Block 24/24、SST 19/19**，**LSM 相关选跑 54/54**，共 **177/177 通过**。LSM 沿用上一轮点查/批查、事务创建/读写/提交/回滚等 48 项过滤器，另加入 NewTransaction 和 TransactionEndRegistration 共 6 项，验证阶段①的登记与查询。未运行完整 test_lsm、WAL/恢复或未完成的范围回滚路径；未修改业务代码及测试断言。日志与 `lsm-filter.txt`：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-plan-completed-review-gi26m8_i`；构建日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-plan-check-build-cl3hsb4p`。
 - 最新检查（2026-10-24，谓词接口约定纠正）：`xmake build test_memtable` 成功，独立临时目录运行完整 **test_memtable 49/49 通过**。将额外约束回调输入的 `PredicateDoesNotPassMarkersToUserCallback` 替换为 `PredicateRangeResultsExcludeTransactionMarkers`，验证只有标记时无结果，以及含标记的活跃/冻结表查询 [b, d) 返回正确的 key/value/版本。原有全匹配标记过滤、回滚、墓碑等断言保留；业务代码未改，未重跑其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-memtable-predicate-contract-o2wecet6/result.log`。以下保留原始测试记录；其中“回调收到空 key”不再被认定为本接口的正确性缺陷。
 - 最新检查（2026-10-23，getter 与谓词复测）：两目标构建成功，完整 **test_skiplist 31/31、test_memtable 48/49**。新增 `CurrentTransactionIdIncludesMarkersAndTombstones` 和 `CurrentTransactionIdRejectsEmptyIterators`；验证真实记录、墓碑、多版本标记和空/end 边界。MemTable 唯一失败为 `PredicateDoesNotPassMarkersToUserCallback`，其他原失败项已通过。未运行其他套件。SkipList 日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-skiplist-current-id-k3hf0nan/result.log`；MemTable 日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-memtable-predicate-getter-fixed-1smwz9eo/result.log`。
 - 最新检查（2026-10-23，谓词查询）：构建成功，选跑 **4 个用例，全部失败**。新增 `PredicateRollbackFiltersBeforeDeduplication`、`PredicateDoesNotPassMarkersToUserCallback`、`PredicateAllKeysSafelySkipsTransactionMarkers`，并选跑原有 `PredicateAllDeletedReturnsNoRange`。确认返回 value 错误、墓碑失效、用户谓词收到空 key、空 key 上调用 get_cur_tranc_id 抛异常。本轮未运行完整 test_memtable 或其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-memtable-predicate-review-a_w_3olo/result.log`。

@@ -675,30 +675,29 @@ MemTable::iters_monotony_predicate(
         return;
 
       for (auto it = range->first; it != range->second; ++it) {
-    
-        const auto &version = it.get_cur_tranc_id(); 
-        const auto &key = it.get_key(); 
+
+        const auto &version = it.get_cur_tranc_id();
+        const auto &key = it.get_key();
 
         if (key.empty())
-          continue; 
+          continue;
 
         // 先排除超过读取上限的版本。
         // tranc_id == 0 只表示不限制版本大小，不代表跳过回滚检查
         if (!tranc_visible(version, tranc_id))
           continue;
-        
+
         // 已回滚的新值或墓碑都不能进入堆
         // 例如 K@9 已回滚，跳过它后，K@5 仍有机会成为查询结果
-        if (is_aborted && is_aborted(version)) 
+        if (is_aborted && is_aborted(version))
           continue;
 
         // 不在这里去重或删除有效墓碑
         // 所有表的候选必须一起比较，才能确定每个 key 的最终结果
-        items.emplace_back(std::move(key), std::move(it.get_value()), table_idx, 0,
-                          version);
+        items.emplace_back(std::move(key), std::move(it.get_value()), table_idx,
+                           0, version);
       }
     };
-  
 
     // 2. 收集全部内存表
     //    同 key、同版本时，活跃表优先，其次按冻结表由新到旧选择

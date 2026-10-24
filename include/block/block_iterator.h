@@ -54,5 +54,9 @@ private:
   uint64_t tranc_id_;                             // 当前事务 id
   mutable std::optional<value_type> cached_value; // 缓存当前值
   bool keep_all_versions_ = false;
+  // 保存回滚判断，后续 ++ 也需要使用。
+  // 默认空回调表示没有提供回滚筛选。
+  // 保存函数对象本身，避免引用构造函数中已经结束生命周期的参数对象。
+  std::function<bool(uint64_t)> is_aborted_;
 };
 } // namespace tiny_lsm
