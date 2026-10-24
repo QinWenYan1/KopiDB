@@ -271,11 +271,11 @@ BaseIterator &SstIterator::operator++() {
 
     auto next_block = m_sst->read_block(m_block_idx);
 
-    // 从新块的第一条记录开始，构造时自动过滤不可见版本 (下标构造, 自动
-    // skip_by_tranc_id) 沿用原实现，复用已有的 BlockIterator 对象 复用同一个
-    // shared_ptr，把新迭代器放入到原对象内部
-    (*m_block_it) =
-        BlockIterator(next_block, 0, max_tranc_id_, keep_all_versions_);
+    // 从新块的第一条记录开始，构造时自动过滤不可见版本
+    // (下标构造, 自动 skip_by_tranc_id) 沿用原实现，复用已有的 BlockIterator
+    // 对象 复用同一个 shared_ptr，把新迭代器放入到原对象内部
+    (*m_block_it) = BlockIterator(next_block, 0, max_tranc_id_,
+                                  keep_all_versions_, is_aborted_);
 
     // 如果新块过滤后也耗尽，while 会继续寻找下一块；
     // 如果找到了可见记录，while 自然退出。
