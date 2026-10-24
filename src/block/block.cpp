@@ -486,13 +486,20 @@ Block::iters_preffix(uint64_t tranc_id, const std::string &preffix,
   // 将前缀匹配转化为单调谓词, 调用 get_monotony_predicate_iters
   // 谓词: -key.compare(0, preffix.size(), preffix)
   // 前缀匹配转单调谓词: compare 比的是 key 的前 preffix.size() 个字符
-  //   相等(有此前缀) ->  0 -> -0 = 0  命中
-  //   key 前缀较小  -> 负 -> 取负得正 -> >0 往右
-  //   key 前缀较大  -> 正 -> 取负得负 -> <0 往左
+  // compare < 0：当前 key 在目标前缀范围左侧，取负后为正。
+  // compare == 0：key 以该前缀开头，命中。
+  // compare > 0：当前 key 在目标前缀范围右侧，取负后为负。
+  //
+  // 例如前缀为 "ab"：
+  // "aa" → 正数，"ab1" → 0，"ac" → 负数
+  // 
+  // 将回滚判断继续传下去：
+  // 谓词函数负责寻找区间，BlockIterator 负责筛选版本。
+  // 返回的两个迭代器会各自保存回调，后续 ++ 继续使用。
   return get_monotony_predicate_iters(
       tranc_id, [&preffix](const std::string &key) {
         return -key.compare(0, preffix.size(), preffix);
-      });
+      }, is_aborted);
 }
 
 // Lab 3.3 使用二分查找获取满足谓词的区间迭代器
