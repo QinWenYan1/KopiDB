@@ -144,33 +144,45 @@ void BlockIterator::update_current() const {
   }
 }
 
-// Lab3.2 * 跳过不可见事务ID
+// Lab3.2: 跳过不可见事务ID
 void BlockIterator::skip_by_tranc_id() {
   // 调用方可能刚刚移动了 current_index
   // 上一次解引用缓存的 key/value 已经不能继续使用
   // 提前清理，也保证下面直接返回时不会留下旧缓存
   cached_value.reset(); 
 
-  // 空迭代器没有记录可检查。
+  // 空迭代器没有记录可检查
   if (!block)
     return;
 
-  if (tranc_id_ == 0) {
-    // 非事务读：不过滤，但缓存必须失败（调用方刚移动过位置）
-    cached_value = std::nullopt;
+  // 上限为 0 只表示“不限制版本号大小”。
+  // 只有同时没有回滚回调时，才可以完全跳过筛选
+  if (tranc_id_ == 0 && !is_aborted_) 
     return;
-  }
+  
 
   // 逐条跳过最新的版本，知道第一个 entry_tranc_id <= tranc_id_ (或者耗尽)
   // 注意：弹单个不弹整组，同key 旧版本可能可见，与 Heapiterator 闸 2 同规则
   while (current_index < block->size()) {
     size_t offset = block->get_offset_at(current_index);
-    if (block->get_tranc_id_at(offset) <= tranc_id_)
+    const auto& version = block->get_tranc_id_at(offset); 
+
+    // 两个条件都满足，当前位置才可以交给调用方：
+    // 1. 没有读取上限，或者版本没有超过上限
+    // 2. 没有回滚回调，或者该版本所属事务没有回滚
+    //
+    // && 和 || 会短路：
+    // 超过上限时不用查回滚名单，空回调也不会被调用
+    if ((tranc_id_ == 0 || version <= tranc_id_) &&
+        (!is_aborted_ || !is_aborted_(version)))
       break; // 位置合法
+
+    // 每次只跳过一条记录，不能直接跳过整个 key
+    // 例如 K@9 已回滚，后面的 K@5 仍可能有效
     ++current_index;
   }
 
-  // 位置变了，缓存作废
-  cached_value = std::nullopt;
+  // 不检查 value：有效墓碑必须继续交给上层归并
+  // 这里只移动迭代位置，不删除块中的任何记录
 }
 } // namespace tiny_lsm
