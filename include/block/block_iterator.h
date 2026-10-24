@@ -1,12 +1,12 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
-#include <functional>
 
 namespace tiny_lsm {
 class Block;
@@ -22,13 +22,14 @@ public:
 
   // 构造函数
   BlockIterator(std::shared_ptr<Block> b, size_t index, uint64_t tranc_id,
-                bool keep_all_versions = false);
-  
+                bool keep_all_versions = false,
+                const std::function<bool(uint64_t)> &is_aborted = {});
+
   // 在指定 Block 中定位 key 的最大有效版本，未命中指向块尾
   // b 必须非空；回调只用于本次定位，不保存在迭代器中
   BlockIterator(std::shared_ptr<Block> b, const std::string &key,
-                uint64_t tranc_id, bool keep_all_versions = false, 
-              const std::function<bool(uint64_t)> &is_aborted = {});
+                uint64_t tranc_id, bool keep_all_versions = false,
+                const std::function<bool(uint64_t)> &is_aborted = {});
   // BlockIterator(std::shared_ptr<Block> b, uint64_t tranc_id);
   BlockIterator()
       : block(nullptr), current_index(0), tranc_id_(0) {} // end iterator

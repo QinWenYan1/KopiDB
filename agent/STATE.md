@@ -12,7 +12,7 @@
 
 当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、状态查询接口、结束登记、abort 及写入路径的旧方案清理已完成；存储查询过滤尚未完成。
 
-当前推进项：第①、②阶段完成，第③阶段点查与批查回滚功能通过；get 的两处旧注释仍待用户清理。第④阶段 MemTable 的 begin、iters_preffix、iters_monotony_predicate 已通过。2026-10-24 复核已完成项，完整 SkipList 31/31、MemTable 49/49、Block 24/24、SST 19/19，LSM 相关选跑 54/54，共 177/177。当前给出 BlockIterator::skip_by_tranc_id 与保存回调成员的草案，等待用户手动实现；构造函数和 SST 遍历的回调保存/传递尚未接通。Engine 范围入口的回滚过滤仍未接通。
+当前推进项：第①、②阶段完成，第③阶段点查与批查回滚功能通过；get 的两处旧注释仍待用户清理。第④阶段 MemTable 的 begin、iters_preffix、iters_monotony_predicate 已通过。2026-10-24 此前已完成项回归共 177/177；本轮检查 BlockIterator::skip_by_tranc_id 与按值保存的回调成员，完整 Block 24/24、SST 19/19 通过。函数条件、逐条推进和缓存清理正确；构造函数尚未保存回调，新增回滚分支只有代码检查，尚未运行验证。下一步由用户实现按下标构造函数；按 key 构造、SST 遍历及 Engine 范围入口的接入仍待完成。
 
 2026-10-22 SST 检查：SST::get 已将回调正确传给按 key 构造的 SstIterator，范围/Bloom 检查、读取上限和有效墓碑处理正确。扩展现有测试到公开 get 入口，完整 test_sst 19/19 通过。随后已接通 Engine 候选 SST 查询及 get。
 
@@ -142,6 +142,7 @@
 
 ## 测试状态
 
+- 最新检查（2026-10-24，BlockIterator 筛选函数）：构建成功，独立临时目录复制配置后运行完整 **Block 24/24、SST 19/19 通过**。新增成员与筛选函数的读取上限、取消状态、单条推进、空块处理和缓存清理通过代码检查；公开构造函数尚未赋值 is_aborted_，本轮测试不能覆盖该函数的非空回调分支，留待构造接通后补集成测试。未改业务代码或测试断言，未运行其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-skip-review-hi7r7063`；构建日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-skip-build-hsvpnl3d`。
 - 最新检查（2026-10-24，PLAN 已完成项复核）：五个目标构建成功；各自独立临时目录复制配置后运行，完整 **SkipList 31/31、MemTable 49/49、Block 24/24、SST 19/19**，**LSM 相关选跑 54/54**，共 **177/177 通过**。LSM 沿用上一轮点查/批查、事务创建/读写/提交/回滚等 48 项过滤器，另加入 NewTransaction 和 TransactionEndRegistration 共 6 项，验证阶段①的登记与查询。未运行完整 test_lsm、WAL/恢复或未完成的范围回滚路径；未修改业务代码及测试断言。日志与 `lsm-filter.txt`：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-plan-completed-review-gi26m8_i`；构建日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-plan-check-build-cl3hsb4p`。
 - 最新检查（2026-10-24，谓词接口约定纠正）：`xmake build test_memtable` 成功，独立临时目录运行完整 **test_memtable 49/49 通过**。将额外约束回调输入的 `PredicateDoesNotPassMarkersToUserCallback` 替换为 `PredicateRangeResultsExcludeTransactionMarkers`，验证只有标记时无结果，以及含标记的活跃/冻结表查询 [b, d) 返回正确的 key/value/版本。原有全匹配标记过滤、回滚、墓碑等断言保留；业务代码未改，未重跑其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-memtable-predicate-contract-o2wecet6/result.log`。以下保留原始测试记录；其中“回调收到空 key”不再被认定为本接口的正确性缺陷。
 - 最新检查（2026-10-23，getter 与谓词复测）：两目标构建成功，完整 **test_skiplist 31/31、test_memtable 48/49**。新增 `CurrentTransactionIdIncludesMarkersAndTombstones` 和 `CurrentTransactionIdRejectsEmptyIterators`；验证真实记录、墓碑、多版本标记和空/end 边界。MemTable 唯一失败为 `PredicateDoesNotPassMarkersToUserCallback`，其他原失败项已通过。未运行其他套件。SkipList 日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-skiplist-current-id-k3hf0nan/result.log`；MemTable 日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-memtable-predicate-getter-fixed-1smwz9eo/result.log`。

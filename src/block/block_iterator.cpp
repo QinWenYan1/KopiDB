@@ -10,7 +10,8 @@ class Block;
 
 namespace tiny_lsm {
 BlockIterator::BlockIterator(std::shared_ptr<Block> b, size_t index,
-                             uint64_t tranc_id, bool keep_all_versions)
+                             uint64_t tranc_id, bool keep_all_versions,
+                             const std::function<bool(uint64_t)> &is_aborted)
     : block(b), current_index(index), tranc_id_(tranc_id),
       cached_value(std::nullopt), keep_all_versions_(keep_all_versions) {
   skip_by_tranc_id();
@@ -18,7 +19,7 @@ BlockIterator::BlockIterator(std::shared_ptr<Block> b, size_t index,
 
 BlockIterator::BlockIterator(std::shared_ptr<Block> b, const std::string &key,
                              uint64_t tranc_id, bool keep_all_versions,
-                            const std::function<bool(uint64_t)> &is_aborted)
+                             const std::function<bool(uint64_t)> &is_aborted)
     : block(b), tranc_id_(tranc_id), cached_value(std::nullopt),
       keep_all_versions_(keep_all_versions) {
   // 1. 按 key 定位必须有实际的 Block，先检查再访问
@@ -149,7 +150,7 @@ void BlockIterator::skip_by_tranc_id() {
   // 调用方可能刚刚移动了 current_index
   // 上一次解引用缓存的 key/value 已经不能继续使用
   // 提前清理，也保证下面直接返回时不会留下旧缓存
-  cached_value.reset(); 
+  cached_value.reset();
 
   // 空迭代器没有记录可检查
   if (!block)
@@ -157,15 +158,14 @@ void BlockIterator::skip_by_tranc_id() {
 
   // 上限为 0 只表示“不限制版本号大小”。
   // 只有同时没有回滚回调时，才可以完全跳过筛选
-  if (tranc_id_ == 0 && !is_aborted_) 
+  if (tranc_id_ == 0 && !is_aborted_)
     return;
-  
 
   // 逐条跳过最新的版本，知道第一个 entry_tranc_id <= tranc_id_ (或者耗尽)
   // 注意：弹单个不弹整组，同key 旧版本可能可见，与 Heapiterator 闸 2 同规则
   while (current_index < block->size()) {
     size_t offset = block->get_offset_at(current_index);
-    const auto& version = block->get_tranc_id_at(offset); 
+    const auto &version = block->get_tranc_id_at(offset);
 
     // 两个条件都满足，当前位置才可以交给调用方：
     // 1. 没有读取上限，或者版本没有超过上限
