@@ -25,13 +25,15 @@
 | ① | 保存并查询回滚 ID | 已完成 |
 | ② | 实现 abort，调整写入上下文 | 已完成 |
 | ③ | 接通单条与批量查询 | 功能验收通过；get 的两处旧注释待清理 |
-| ④ | 接通遍历、前缀和谓词查询 | 进行中：Block 谓词区间已通过；下一步接通 Block::iters_preffix |
+| ④ | 接通遍历、前缀和谓词查询 | 进行中：Block 谓词与前缀入口已通过；下一步接通 Block::begin |
 | ⑤ | 接回事务读取缓存与提交检查 | 待开始 |
 | ⑥ | 持久化状态与正常重启 | 待开始 |
 
 ## 当前推进项
 
-**2026-10-24 Block::get_monotony_predicate_iters 已补齐两处 false 实参，声明、二分与左右边界回调传递正确；重新构建后，完整 Block 32/32、SST 19/19 通过，包含上一轮新增的 2 个区间回滚测试。下一步处理直接复用该函数的 Block::iters_preffix，仅接通回调转发，再继续 SST 调用链。本轮未运行其他套件；此前已完成项 177/177 保留为历史结果。**
+**2026-10-24 Block::iters_preffix 已正确接收回调，并转发给 get_monotony_predicate_iters。新增 2 个前缀回滚测试，重新构建后完整 Block 34/34、SST 19/19 通过。下一步处理 Block::begin 的回调传递，随后继续 SST 调用链。本轮未运行其他套件；此前已完成项 177/177 保留为历史结果。**
+
+本轮前缀测试覆盖连续取消值/墓碑、保留有效旧墓碑、首尾边界、读取上限 0 与历史上限、空前缀、空块、无匹配及全取消区间，原两参数调用保持兼容。业务源码及头文件由用户修改，未降低既有测试断言。构建与测试日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-prefix-rollback-368dh7bl`。
 
 已解决：src/block/block.cpp 中两处 make_shared 调用补为 (shared_from_this(), first/end_idx, tranc_id, false, is_aborted)，函数前的区间说明已改为左闭右开。本轮测试验证右边界过滤后仍可到达、连续取消、有效墓碑、读取上限、空块/无匹配/全取消及默认空回调。成功构建与测试日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-predicate-fixed-ju3dbvki`；上一轮失败日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-predicate-build-rz0dsng4/build.log`。业务源码由用户修改，测试断言未降低。
 
@@ -180,7 +182,8 @@
 - [x] 接通 MemTable::iters_monotony_predicate：直接传递支持空字符串的单调谓词，收集时排除标记及不可见/已回滚版本，堆归并后判断空结果；完整 MemTable 49/49。
 - [x] 接通 BlockIterator 筛选函数及两种构造的回调保存；首次定位、后续 ++ 与两种遍历模式通过测试，完整 Block 30/30、SST 19/19。
 - [x] 接通 Block::get_monotony_predicate_iters 的回调，让区间两端采用相同的版本筛选规则；完整 Block 32/32、SST 19/19 通过。
-- [ ] 接通 Block::iters_preffix 的回调，复用已经验收的谓词区间查询。
+- [x] 接通 Block::iters_preffix 的回调，复用已经验收的谓词区间查询；新增 2 个测试，完整 Block 34/34、SST 19/19 通过。
+- [ ] 接通 Block::begin 的回调，复用按下标构造的首次定位和后续 ++ 筛选。
 - [ ] 接通 Block/SST 查询迭代器，并检查 Heap、Concact、Level 等调用链的过滤位置与参数传递。
 - [ ] 接通 Engine 的 `begin` 和 `lsm_iters_monotony_predicate`。
 - [ ] 确保过滤发生在同 key 去重及墓碑删除整组记录之前，不因回滚而误丢有效旧版本。
@@ -195,9 +198,11 @@
 
 已完成 Block::get_monotony_predicate_iters：声明提供默认空回调，左右两个 BlockIterator 都传入 false 和 is_aborted；保留原二分逻辑，不额外包装用户谓词。2 个新增用例通过：筛选后的右边界与 ++ 一致，全部取消可返回 begin == end，未匹配 key 返回 nullopt，有效墓碑保留。完整 Block 32/32、SST 19/19 通过。
 
-当前函数：Block::iters_preffix。在现有参数后增加默认空的 is_aborted，将其作为第三个参数传给 get_monotony_predicate_iters；保留前缀转单调谓词，不重复二分或版本筛选。已核对作者也是复用谓词函数，回调传递属于本地回滚方案的接入。该函数由用户实现后再验收。
+已完成 Block::iters_preffix：声明的第三个参数提供默认空回调，实现正确转发给 get_monotony_predicate_iters；保留前缀转单调谓词，不重复二分或版本筛选。新增 2 个前缀测试通过，完整 Block 34/34、SST 19/19 通过。
 
-验证边界：两种构造后的块内遍历及 Block 谓词区间已通过公开接口验证；Block 的其他范围入口、SST 跨块传递及 Engine 范围入口尚未接通。SstIterator::seek 创建的当前块迭代器已经保存回调，但跨块时仍会丢失回调，不能宣称整个范围查询回滚已完成。
+当前函数：Block::begin。在 tranc_id 后增加默认空的 is_aborted，构造 BlockIterator(shared_from_this(), 0, tranc_id, false, is_aborted)；保持普通遍历模式，首次定位和后续 ++ 均复用底层筛选。已对照作者从下标 0 构造的结构。Block::end 只构造块尾位置，无需回调。该函数由用户实现后再验收。
+
+验证边界：两种构造后的块内遍历、Block 谓词及前缀区间已通过公开接口验证；Block::begin、SST 跨块传递及 Engine 范围入口尚未接通。SstIterator::seek 创建的当前块迭代器已经保存回调，但跨块时仍会丢失回调，不能宣称整个范围查询回滚已完成。
 
 已完成 MemTable::begin：第三个参数接收可选 is_aborted。collect 中先跳过空 key，再用 get_cur_tranc_id 取得真实版本，筛选读取上限与回滚状态；收集所有内存表，保留有效墓碑和来源优先级。查询不删除原节点；测试确认刷盘仍能读取事务标记并报告 ID。后续 getter 已允许读取标记版本，begin 的标记过滤仍保留；is_valid 及 Level/SST 的现有过滤未改动。Engine 范围入口尚未传入回调，因此本函数通过不代表完整范围回滚查询已接通。
 

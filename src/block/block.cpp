@@ -593,14 +593,22 @@ size_t Block::cur_size() const {
 bool Block::is_empty() const { return offsets.empty(); }
 
 // Lab 3.2 获取begin迭代器
-BlockIterator Block::begin(uint64_t tranc_id) {
-  // ? 返回指向第 0 个 entry 的迭代器: BlockIterator(shared_from_this(), 0,
-  // tranc_id)
-  return BlockIterator(shared_from_this(), 0, tranc_id);
+// 返回指向第 0 个 entry 的迭代器: BlockIterator(shared_from_this(), 0, tranc_id)
+BlockIterator Block::begin(uint64_t tranc_id, const std::function<bool(uint64_t)> &is_aborted) {
+  // 从物理下标 0 开始寻找第一条有效记录
+  // 下标 0 不一定可读：
+  // 例如第一条是已回滚的 a@9，构造函数会继续找到有效的 a@5x
+  //
+  // 第四个参数 false 表示普通遍历，每个 key 只输出一个有效版本
+  // 第五个参数传入回滚判断；BlockIterator 会保存它，
+  // 让首次定位和后续 ++ 都使用相同的筛选规则
+  //
+  // 空块或所有记录均不可读时，构造结果自然停在块尾
+  return BlockIterator(shared_from_this(), 0, tranc_id,false, is_aborted);
 }
 
 // Lab 3.2 获取end迭代器
-BlockIterator Block::end() {
+BlockIterator Block::end() { 
   // ? 返回指向末尾 (offsets.size()) 的迭代器
   return BlockIterator(shared_from_this(), offsets.size(), 0);
 }

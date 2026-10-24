@@ -1007,6 +1007,77 @@ TEST_F(BlockTest, MvccIteratorFiltersBeforeDeduplicating) {
   }
 }
 
+// 目的：前缀入口正确转发回滚判断，首尾边界与后续 ++ 使用同一规则。
+// 场景：ab0 整组取消，ab1 新值取消，ab2 新墓碑取消但旧墓碑有效，ac 在范围外。
+// 预期：只返回 ab1@5 和有效墓碑 ab2@5；终点定位到 ac@1，遍历不会返回 ac。
+TEST_F(BlockTest, RollbackPrefixFiltersVersionsAndBoundaries) {
+  auto block = std::make_shared<Block>(4096);
+  using Record = std::tuple<std::string, std::string, uint64_t>;
+  const std::vector<Record> records = {
+      {"aa", "before", 1}, {"ab0", "cancelled", 9},
+      {"ab1", "cancelled", 9}, {"ab1", "also-cancelled", 7},
+      {"ab1", "old", 5}, {"ab2", "", 9}, {"ab2", "", 5},
+      {"ab2", "older", 3}, {"ac", "cancelled", 9}, {"ac", "after", 1}};
+  for (const auto &[key, value, version] : records)
+    ASSERT_TRUE(block->add_entry(key, value, version, false));
+  const auto encoded = block->encode();
+  const auto is_aborted = [](uint64_t id) { return id == 9 || id == 7; };
+  const std::vector<Record> expected = {{"ab1", "old", 5}, {"ab2", "", 5}};
+  for (uint64_t read_id : {0u, 8u, 10u}) {
+    SCOPED_TRACE(read_id);
+    auto range = block->iters_preffix(read_id, "ab", is_aborted);
+    ASSERT_TRUE(range.has_value());
+    auto &it = *range->first;
+    const auto &end = *range->second;
+    ASSERT_NE(end, block->end());
+    EXPECT_EQ(end->first, "ac");
+    EXPECT_EQ(end.get_cur_tranc_id(), 1);
+    for (const auto &[key, value, version] : expected) {
+      ASSERT_NE(it, end);
+      ASSERT_NE(it, block->end());
+      EXPECT_EQ(*it, std::make_pair(key, value));
+      EXPECT_EQ(it.get_cur_tranc_id(), version);
+      ++it;
+    }
+    EXPECT_EQ(it, end);
+  }
+  EXPECT_EQ(block->encode(), encoded);
+}
+
+// 目的：验证空前缀、缺失前缀、空块和全取消情况，避免扩大或漏掉查询范围。
+// 场景：a@9 取消而 a@5 有效，b@1 有效；空前缀匹配全部 key。
+// 预期：空前缀返回 a@5、b@1；全取消时为空区间，空块及无匹配时返回 nullopt。
+TEST_F(BlockTest, RollbackPrefixHandlesEmptyPrefixAndNoResults) {
+  auto block = std::make_shared<Block>(4096);
+  const auto is_aborted = [](uint64_t id) { return id == 9; };
+  EXPECT_FALSE(block->iters_preffix(0, "", is_aborted));
+  ASSERT_TRUE(block->add_entry("a", "cancelled", 9, false));
+  ASSERT_TRUE(block->add_entry("a", "old", 5, false));
+  ASSERT_TRUE(block->add_entry("b", "b1", 1, false));
+  auto range = block->iters_preffix(0, "", is_aborted);
+  ASSERT_TRUE(range.has_value());
+  auto &it = *range->first;
+  const auto &end = *range->second;
+  EXPECT_EQ(end, block->end());
+  ASSERT_NE(it, end);
+  EXPECT_EQ(*it, std::make_pair(std::string("a"), std::string("old")));
+  EXPECT_EQ(it.get_cur_tranc_id(), 5);
+  ++it;
+  ASSERT_NE(it, end);
+  EXPECT_EQ(*it, std::make_pair(std::string("b"), std::string("b1")));
+  EXPECT_EQ(++it, end);
+  EXPECT_FALSE(block->iters_preffix(0, "missing", is_aborted));
+  auto cancelled = block->iters_preffix(0, "a", [](uint64_t) { return true; });
+  ASSERT_TRUE(cancelled.has_value());
+  EXPECT_EQ(*cancelled->first, *cancelled->second);
+
+  // 原来的两参数调用保持可用；没有回调时仍能读到 a@9。
+  auto unfiltered = block->iters_preffix(0, "a");
+  ASSERT_TRUE(unfiltered.has_value());
+  ASSERT_NE(*unfiltered->first, *unfiltered->second);
+  EXPECT_EQ(unfiltered->first->get_cur_tranc_id(), 9);
+}
+
 // 目的：范围起点和终点附近的不可见记录，不应让结果越过范围边界。
 // 场景：前缀 p 的首 key 全部不可见，末尾及范围外的 q 也不可见。
 // 全部匹配记录不可见时，允许返回空区间或 nullopt，两者都不能产生记录。

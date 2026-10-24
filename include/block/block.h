@@ -97,7 +97,8 @@ public:
       uint64_t tranc_id, std::function<int(const std::string &)> predicate,
       const std::function<bool(uint64_t)> &is_aborted = {});
 
-  BlockIterator begin(uint64_t tranc_id = 0);
+  BlockIterator begin(uint64_t tranc_id = 0,
+  const std::function<bool(uint64_t)> &is_aborted = {});
 
   std::optional<
       std::pair<std::shared_ptr<BlockIterator>, std::shared_ptr<BlockIterator>>>
