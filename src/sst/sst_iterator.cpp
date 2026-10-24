@@ -106,7 +106,7 @@ SstIterator::SstIterator(std::shared_ptr<SST> sst, const std::string &key,
                          uint64_t tranc_id, bool keep_all_versions,
                          const std::function<bool(uint64_t)> &is_aborted)
     : m_sst(sst), m_block_idx(0), m_block_it(nullptr), max_tranc_id_(tranc_id),
-      keep_all_versions_(keep_all_versions) {
+      keep_all_versions_(keep_all_versions), is_aborted_(is_aborted) {
   // 1. 上面按照成员声明顺序初始化。
   // max_tranc_id_ 保存本次读取允许的版本上限，
   // 不是最终命中记录的真实版本号
@@ -118,7 +118,7 @@ SstIterator::SstIterator(std::shared_ptr<SST> sst, const std::string &key,
   // seek 已经处理空 SST、未命中和异常状态，
   // 这里直接调用，不再重复这些判断
   if (m_sst) {
-    seek(key, is_aborted);
+    seek(key);
   }
 }
 
@@ -173,8 +173,7 @@ void SstIterator::seek_first() {
 }
 
 // Lab 3.6 将迭代器定位到指定key的位置
-void SstIterator::seek(const std::string &key,
-                       const std::function<bool(uint64_t)> &is_aborted) {
+void SstIterator::seek(const std::string &key) {
 
   // 1. seek 可以重复调用，先清除上次的位置与缓存
   // 否则这次查找失败后，可能仍然暴露上次查询的记录
@@ -207,7 +206,7 @@ void SstIterator::seek(const std::string &key,
     //    → 构造器把 current_index 设为 block->offsets.size() (块尾)
     auto block_ptr = m_sst->read_block(m_block_idx);
     m_block_it = std::make_shared<BlockIterator>(
-        block_ptr, key, max_tranc_id_, keep_all_versions_, is_aborted);
+        block_ptr, key, max_tranc_id_, keep_all_versions_, is_aborted_);
 
     // 3. 终审: 候选块可能不包含 key，也可能没有满足条件的版本
     // 这是精确查询，不能通过 ++ 跳到另一个 key 后返回

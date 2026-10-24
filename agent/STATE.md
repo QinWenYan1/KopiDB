@@ -12,13 +12,13 @@
 
 当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、状态查询接口、结束登记、abort 及写入路径的旧方案清理已完成；存储查询过滤尚未完成。
 
-当前推进项：第①、②阶段完成，第③阶段点查与批查回滚功能通过；get 的两处旧注释仍待用户清理。按已验收功能阶段计为 **50%（3/6）**，不代表工时比例。第④阶段 MemTable 三个范围入口、BlockIterator 两种构造、Block 谓词及前缀入口已通过。Block::iters_preffix 正确传入回调，新增 2 个测试后，完整 Block 34/34、SST 19/19 通过；业务源码由用户修改。下一步接通 Block::begin 的回调，SST 和 Engine 范围入口继续待办。此前已完成项 177/177 保留为历史结果，本轮未运行其他套件。
+当前推进项：第①、②阶段完成，第③阶段点查与批查回滚功能通过；get 的两处旧注释仍待用户清理。按已验收功能阶段计为 **50%（3/6）**，不代表工时比例。第④阶段 MemTable 三个范围入口、BlockIterator 两种构造及 Block 三个范围入口已通过；上轮完整 Block 35/35、SST 19/19 通过。SST 回调成员已由用户加入，当前 seek 负责赋值，构造初始化和跨块传递尚未接通。2026-10-24 用户进一步明确 seek 应沿用成员；现建议构造时保存回调，将 seek 改为单参数。撤回保留 seek 更换回调职责的建议，迁移相关测试，不能以助手此前的测试设计阻碍职责调整。BlockIterator 已在构造时保存并在推进时复用，未发现同类重复配置。最新仅核对调用关系，未修改业务源码或运行测试。Engine 范围入口继续待办，177/177 保留为此前历史结果。
 
 2026-10-22 SST 检查：SST::get 已将回调正确传给按 key 构造的 SstIterator，范围/Bloom 检查、读取上限和有效墓碑处理正确。扩展现有测试到公开 get 入口，完整 test_sst 19/19 通过。随后已接通 Engine 候选 SST 查询及 get。
 
 2026-10-23 最新 Engine 检查：get_batch 在用户修正 if (man) 为 if (!man) 后，管理器前置检查及回调传递正确。新增 2 个批量测试，扩展既有跨来源比较到批量入口；构建成功，相关 48/48 通过。覆盖空/非空输入依赖检查、实际取消新增/修改/删除、活跃表/冻结表/SST、连续取消、历史上限、顺序/重复/缺失、墓碑及同版本来源优先级。上一轮 get 的 46 个回归也包含在本轮中。助手未修改业务代码。
 
-当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator/SstIterator 按 key 构造、SstIterator::seek、SST::get 及 Engine::sst_get_ 在显式传入回调时会排除已取消版本，保留有效墓碑，相关测试通过。Engine 的公开 get/get_batch 已从管理器取得并传入回调；commit 的内部候选查询尚未接通。MemTable::get 返回的原节点迭代器不保存回调；get_record/get_batch 在锁内复制结果。BlockIterator 两种构造现已保存回调，块内 ++ 自动沿用筛选；SstIterator 自身尚未保存回调，其 seek 创建的当前块已经接通，但 ++ 跨块后仍会丢失筛选，留在第④阶段继续处理。数据库回滚查询尚未完成。
+当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator/SstIterator 按 key 构造、SstIterator::seek、SST::get 及 Engine::sst_get_ 在显式传入回调时会排除已取消版本，保留有效墓碑，相关测试通过。Engine 的公开 get/get_batch 已从管理器取得并传入回调；commit 的内部候选查询尚未接通。MemTable::get 返回的原节点迭代器不保存回调；get_record/get_batch 在锁内复制结果。BlockIterator 两种构造现已保存回调，块内 ++ 自动沿用筛选；SstIterator 当前由 seek 保存回调，其创建的当前块已经接通，但 seek_first 和 ++ 跨块尚未传递成员回调，留在第④阶段继续处理。数据库回滚查询尚未完成。
 
 2026-10-23 已确认管理器约定：Engine 公开查询必须有有效的管理器，未绑定和已销毁均报错；不再保留未绑定兼容分支，不需要 owner_before。get 已按此实现并通过缺失/失效测试，回调持有 shared_ptr 到查询结束；查询期间的持有关系经过代码检查，未添加生命周期并发压力测试。get_batch 已沿用此约定并通过测试，即使空输入也先检查依赖。Lab 5.5 的生产入口绑定仍按原计划延期，当前测试显式绑定，不以此降低业务查询的要求。
 
@@ -142,6 +142,7 @@
 
 ## 测试状态
 
+- 最新检查（2026-10-24，Block 全量遍历入口）：新增 `RollbackBeginFiltersInitialAndFollowingRecords`，验证首次定位和后续 ++ 筛选取消值/墓碑、保留有效墓碑、读取上限 0/历史上限、回调独立保存、空块、全部取消及默认调用兼容。重新构建并在独立临时目录运行完整 **Block 35/35、SST 19/19 通过**。业务源码由用户修改，既有测试断言未降低，本轮未运行其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-begin-rollback-efcgymdy`。
 - 最新检查（2026-10-24，Block 前缀入口）：新增 `RollbackPrefixFiltersVersionsAndBoundaries`、`RollbackPrefixHandlesEmptyPrefixAndNoResults`，验证连续取消值/墓碑、有效墓碑保留、范围两端筛选、读取上限 0/历史上限、空前缀、缺失前缀、空块、全取消及旧接口兼容。重新构建并在独立临时目录运行完整 **Block 34/34、SST 19/19 通过**。未改业务源码、未降低既有断言，本轮未运行其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-prefix-rollback-368dh7bl`。
 - 最新检查（2026-10-24，Block 谓词区间修正后）：用户已补齐两个构造调用的 false 并修正左闭右开说明；重新构建 test_block/test_sst，在独立临时目录运行完整 **Block 32/32、SST 19/19 通过**。上一轮新增的 2 个谓词回滚测试通过，验证右边界与 ++ 一致、连续取消、有效墓碑、读取上限 0/历史上限、无匹配及全取消区间。业务代码由用户修改，本轮未改测试断言或运行其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-predicate-fixed-ju3dbvki`。
 - 最新检查（2026-10-24，Block 谓词区间入口）：`xmake build test_block` 失败，错误定位 src/block/block.cpp:566；两处构造将 std::function 作为第④个 bool 参数，缺少 false。新增 `RollbackPredicateFiltersRecordsAndRightBoundary`、`RollbackPredicateHandlesEmptyAndCancelledRanges`，覆盖两端一致筛选、有效墓碑、读取上限、连续取消及空结果等，尚未运行。本轮没有使用旧测试二进制宣称当前通过，未修改业务源码。构建日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-predicate-build-rz0dsng4/build.log`。

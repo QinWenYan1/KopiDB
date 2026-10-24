@@ -29,7 +29,7 @@ KopiDB 是类 RocksDB 的教学级 LSM-tree KV 存储引擎（C++20），沿 [ti
 
 ## 判断问题与提出修改
 
-评估疑似 bug、检查实现或判断修复是否必要时，读取并遵循 [verify-before-fix：先验证，再修复](agent/skills/verify-before-fix/SKILL.md)。
+评估疑似 bug、检查实现、判断修复是否必要，或设计涉及状态与参数传递的改动时，读取并遵循 [verify-before-fix：先验证，再修复](agent/skills/verify-before-fix/SKILL.md)。
 
 - 先检查实际调用链及已有保障，再判断是否缺少处理。
 - 用具体触发场景和代码位置区分必修 bug、可选防护与后续优化；不能把额外要求自动加入当前任务。

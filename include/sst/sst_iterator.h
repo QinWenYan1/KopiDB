@@ -33,6 +33,10 @@ private:
   std::shared_ptr<BlockIterator> m_block_it;
   mutable std::optional<value_type> cached_value; // 缓存当前值
   bool keep_all_versions_ = false;
+  // SST 会创建和替换块迭代器，因此自己也需要保存回滚判断，
+  // 以便进入其他块时，将同一判断继续传给新的 BlockIterator
+  // 按值保存函数对象，默认空回调表示没有提供回滚筛选
+  std::function<bool(uint64_t)> is_aborted_;
 
   void update_current() const;
   void set_block_idx(size_t idx);
@@ -58,9 +62,8 @@ public:
   void seek_first();
 
   // 精确查找 key；没有有效版本时进入 end 状态
-  // 回调只用于本次定位，不保存在迭代器中
-  void seek(const std::string &key,
-            const std::function<bool(uint64_t)> &is_aborted = {});
+  // 定位时由 seek 保存回调，并传给当前块迭代器
+  void seek(const std::string &key);
   std::string key();
   std::string value();
 

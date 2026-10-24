@@ -1007,6 +1007,45 @@ TEST_F(BlockTest, MvccIteratorFiltersBeforeDeduplicating) {
   }
 }
 
+// 目的：公开 begin 入口从首条起过滤回滚版本，后续 ++ 继续使用保存的回调。
+// 场景：a 的新值、b 的新墓碑取消；c 的有效墓碑保留；d 整组取消。
+// 预期：普通遍历只返回 a@5、b@5、c@7，空块或全部取消时直接等于 end。
+TEST_F(BlockTest, RollbackBeginFiltersInitialAndFollowingRecords) {
+  auto block = std::make_shared<Block>(4096);
+  const auto cancel_nine = [](uint64_t id) { return id == 9; };
+  EXPECT_EQ(block->begin(0, cancel_nine), block->end());
+  using Record = std::tuple<std::string, std::string, uint64_t>;
+  const std::vector<Record> records = {
+      {"a", "cancelled", 9}, {"a", "a5", 5}, {"a", "a3", 3},
+      {"b", "", 9}, {"b", "b5", 5}, {"c", "", 7},
+      {"c", "c2", 2}, {"d", "cancelled", 9}};
+  for (const auto &[key, value, version] : records)
+    ASSERT_TRUE(block->add_entry(key, value, version, false));
+  const auto encoded = block->encode();
+  for (uint64_t read_id : {0u, 4u, 8u, 10u}) {
+    SCOPED_TRACE(read_id);
+    const std::vector<Record> expected = read_id == 4
+        ? std::vector<Record>{{"a", "a3", 3}, {"c", "c2", 2}}
+        : std::vector<Record>{{"a", "a5", 5}, {"b", "b5", 5}, {"c", "", 7}};
+    std::function<bool(uint64_t)> is_aborted = cancel_nine;
+    auto it = block->begin(read_id, is_aborted);
+    // 返回的迭代器应独立保存回调，不再依赖调用方的函数变量。
+    is_aborted = {};
+    for (const auto &[key, value, version] : expected) {
+      ASSERT_NE(it, block->end());
+      EXPECT_EQ(*it, std::make_pair(key, value));
+      EXPECT_EQ(it.get_cur_tranc_id(), version);
+      ++it;
+    }
+    EXPECT_EQ(it, block->end());
+  }
+  EXPECT_EQ(block->begin(0, [](uint64_t) { return true; }), block->end());
+  auto unfiltered = block->begin();
+  ASSERT_NE(unfiltered, block->end());
+  EXPECT_EQ(unfiltered.get_cur_tranc_id(), 9);
+  EXPECT_EQ(block->encode(), encoded);
+}
+
 // 目的：前缀入口正确转发回滚判断，首尾边界与后续 ++ 使用同一规则。
 // 场景：ab0 整组取消，ab1 新值取消，ab2 新墓碑取消但旧墓碑有效，ac 在范围外。
 // 预期：只返回 ab1@5 和有效墓碑 ab2@5；终点定位到 ac@1，遍历不会返回 ac。
