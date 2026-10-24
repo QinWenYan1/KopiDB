@@ -43,9 +43,11 @@ private:
   void set_block_it(std::shared_ptr<BlockIterator> it);
 
 public:
-  // 创建迭代器, 并移动到第一个key
+  // 保存读取条件，并定位到第一条可见记录
+  // 默认空回调保持原有调用方式兼容
   SstIterator(std::shared_ptr<SST> sst, uint64_t tranc_id,
-              bool keep_all_versions = false);
+              bool keep_all_versions = false,
+            const std::function<bool(uint64_t)> &is_aborted = {});
 
   // 创建迭代器，并定位 key 的最大有效版本
   // SST 为空或没有有效版本时进入 end 状态

@@ -94,9 +94,9 @@ std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
 }
 
 SstIterator::SstIterator(std::shared_ptr<SST> sst, uint64_t tranc_id,
-                         bool keep_all_versions)
+                         bool keep_all_versions, const std::function<bool(uint64_t)> &is_aborted)
     : m_sst(sst), m_block_idx(0), m_block_it(nullptr), max_tranc_id_(tranc_id),
-      keep_all_versions_(keep_all_versions) {
+      keep_all_versions_(keep_all_versions), is_aborted_(is_aborted) {
   if (m_sst) {
     seek_first();
   }
@@ -158,7 +158,7 @@ void SstIterator::seek_first() {
     // BlockIterator 构造时会自动跳过不可见版本
     // BlockIterator 的下标构造: 定位到 idx，构造内部自动 skip_by_tranc_id
     m_block_it = std::make_shared<BlockIterator>(block, 0, max_tranc_id_,
-                                                 keep_all_versions_);
+                                                 keep_all_versions_, is_aborted_);
 
     // 过滤后仍有记录，就找到了整张 SST 的第一条可见记录
     if (!m_block_it->is_end())

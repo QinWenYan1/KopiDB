@@ -735,6 +735,194 @@ TEST_F(SSTTest, RollbackSeekRetainsCallbackAfterCallerReset) {
   EXPECT_EQ(it.get_cur_tranc_id(), 5);
 }
 
+// 目的：跨块 ++ 必须沿用构造时的回滚判断，连续不可见块也应跳过。
+// 场景：a 起步；b 的新墓碑取消，c/d 整块取消；e 有有效墓碑，f 有多个有效版本，g 取消。
+// 同时验证普通/全版本模式、读取上限、解引用缓存和最终 end 状态。
+TEST_F(SSTTest, RollbackIncrementPreservesFilterAcrossBlocks) {
+  SSTBuilder builder(32, true);
+  const std::string a(24, 'a'), b(24, 'b'), older_b(24, 'B');
+  const std::string older_e(24, 'e'), f(24, 'f'), older_f(24, 'F');
+  builder.add("a", a, 1);
+  builder.add("b", "", 9);
+  builder.add("b", b, 5);
+  builder.add("b", older_b, 3);
+  builder.add("c", std::string(24, 'c'), 9);
+  builder.add("d", "", 9);
+  builder.add("d", std::string(24, 'd'), 8);
+  builder.add("e", "", 7);
+  builder.add("e", older_e, 2);
+  builder.add("f", f, 10);
+  builder.add("f", older_f, 4);
+  builder.add("g", std::string(24, 'g'), 9);
+  auto sst = builder.build(1, "test_data/increment-rollback.sst",
+                          std::make_shared<BlockCache>(8, 2));
+  // 每个 key 单独占块，确保 b 及后续记录必须经由跨块分支访问。
+  ASSERT_EQ(sst->num_blocks(), 7);
+
+  using Row = std::tuple<std::string, std::string, uint64_t>;
+  const std::vector<Row> latest = {
+      {"a", a, 1}, {"b", b, 5}, {"e", "", 7}, {"f", f, 10}};
+  const std::vector<Row> historical = {
+      {"a", a, 1}, {"b", b, 5}, {"e", older_e, 2}, {"f", older_f, 4}};
+  const std::vector<Row> latest_all = {
+      {"a", a, 1}, {"b", b, 5}, {"b", older_b, 3}, {"e", "", 7},
+      {"e", older_e, 2}, {"f", f, 10}, {"f", older_f, 4}};
+  const std::vector<Row> historical_all = {
+      {"a", a, 1}, {"b", b, 5}, {"b", older_b, 3},
+      {"e", older_e, 2}, {"f", older_f, 4}};
+
+  for (bool keep_all : {false, true}) {
+    SCOPED_TRACE(keep_all);
+    for (uint64_t read_id : {0, 5, 10}) {
+      SCOPED_TRACE(read_id);
+      std::function<bool(uint64_t)> is_aborted =
+          [](uint64_t id) { return id == 9 || id == 8; };
+      SstIterator it(sst, "a", read_id, keep_all, is_aborted);
+      // 调用方不再保存回调，后续跨块仍须使用迭代器自己的副本。
+      is_aborted = {};
+      const auto &expected = keep_all
+          ? (read_id == 5 ? historical_all : latest_all)
+          : (read_id == 5 ? historical : latest);
+      for (const auto &[key, value, version] : expected) {
+        ASSERT_TRUE(it.is_valid());
+        EXPECT_EQ(it->first, key);
+        EXPECT_EQ(it->second, value); // 填充缓存，下一次 ++ 必须更新。
+        EXPECT_EQ(it.get_cur_tranc_id(), version);
+        EXPECT_EQ((*it).first, key);
+        ++it;
+      }
+      EXPECT_TRUE(it.is_end());
+      EXPECT_TRUE(it == sst->end());
+      EXPECT_THROW((void)*it, std::runtime_error);
+      ++it;
+      EXPECT_TRUE(it == sst->end());
+    }
+  }
+}
+
+// 目的：后续块全部取消时，一次 ++ 应直接到 end；无回调的迭代器保持原行为。
+// 场景：a 有效，b 为取消值、c 为取消墓碑；两个迭代器共享同一 SST 和块缓存。
+TEST_F(SSTTest, RollbackIncrementSkipsCancelledTailWithoutAffectingOtherReader) {
+  SSTBuilder builder(32, true);
+  builder.add("a", std::string(24, 'a'), 1);
+  builder.add("b", std::string(24, 'b'), 9);
+  builder.add("c", "", 9);
+  auto sst = builder.build(1, "test_data/increment-cancelled-tail.sst",
+                          std::make_shared<BlockCache>(8, 2));
+  ASSERT_EQ(sst->num_blocks(), 3);
+  SstIterator filtered(sst, "a", 0, false,
+                       [](uint64_t id) { return id == 9; });
+  SstIterator unfiltered(sst, "a", 0);
+  ASSERT_TRUE(filtered.is_valid());
+  EXPECT_EQ(filtered->first, "a");
+  ++filtered;
+  EXPECT_TRUE(filtered == sst->end());
+
+  ++unfiltered;
+  ASSERT_TRUE(unfiltered.is_valid());
+  EXPECT_EQ(unfiltered->first, "b");
+  EXPECT_EQ(unfiltered.get_cur_tranc_id(), 9);
+  ++unfiltered;
+  ASSERT_TRUE(unfiltered.is_valid());
+  EXPECT_EQ(unfiltered->first, "c");
+  EXPECT_TRUE(unfiltered->second.empty());
+  ++unfiltered;
+  EXPECT_TRUE(unfiltered == sst->end());
+}
+
+// 目的：seek_first 重新定位时沿用已保存的回调，跳过连续不可见的起始块。
+// 场景：a/b 整块取消，c 的 @9 取消、@7 为有效墓碑；先定位 z 填充缓存再回到开头。
+// 验证读取上限、普通/全版本模式、回调副本与重复定位后的缓存刷新。
+TEST_F(SSTTest, RollbackSeekFirstSkipsCancelledPrefixAndRefreshesCache) {
+  SSTBuilder builder(32, true);
+  const std::string old_c(24, 'c'), older_c(24, 'C');
+  builder.add("a", std::string(24, 'a'), 9);
+  builder.add("b", "", 9);
+  builder.add("b", std::string(24, 'b'), 8);
+  builder.add("c", "", 9);
+  builder.add("c", "", 7);
+  builder.add("c", old_c, 5);
+  builder.add("c", older_c, 3);
+  builder.add("d", std::string(24, 'd'), 10);
+  builder.add("d", std::string(24, 'D'), 4);
+  builder.add("z", std::string(24, 'z'), 1);
+  auto sst = builder.build(1, "test_data/seek-first-rollback.sst",
+                          std::make_shared<BlockCache>(8, 2));
+  ASSERT_EQ(sst->num_blocks(), 5);
+
+  for (bool keep_all : {false, true}) {
+    SCOPED_TRACE(keep_all);
+    for (uint64_t read_id : {0, 6, 10}) {
+      SCOPED_TRACE(read_id);
+      std::function<bool(uint64_t)> is_aborted =
+          [](uint64_t id) { return id == 9 || id == 8; };
+      SstIterator it(sst, "z", read_id, keep_all, is_aborted);
+      is_aborted = {};
+      for (int repeat = 0; repeat < 2; ++repeat) {
+        ASSERT_TRUE(it.is_valid());
+        EXPECT_EQ(it->first, "z"); // 填充旧缓存。
+        it.seek_first();
+        ASSERT_TRUE(it.is_valid());
+        EXPECT_EQ(it->first, "c");
+        EXPECT_EQ(it->second, read_id == 6 ? old_c : "");
+        EXPECT_EQ(it.get_cur_tranc_id(), read_id == 6 ? 5 : 7);
+        EXPECT_EQ((*it).first, "c");
+
+        // 新块迭代器也须保留原来的遍历模式和回滚判断。
+        ++it;
+        ASSERT_TRUE(it.is_valid());
+        EXPECT_EQ(it->first, keep_all ? "c" : "d");
+        EXPECT_EQ(it.get_cur_tranc_id(), keep_all
+            ? (read_id == 6 ? 3 : 5)
+            : (read_id == 6 ? 4 : 10));
+        it.seek("z");
+      }
+    }
+  }
+}
+
+// 目的：已读取的版本全部取消后，seek_first 应清理旧缓存并进入统一 end 状态。
+// 场景：a@9 为普通值、b@9 为墓碑；改变回调查询的状态后重新定位。
+// 同时验证没有回调的读取仍可见原始记录，以及空 SST 句柄不会调用回调。
+TEST_F(SSTTest, RollbackSeekFirstHandlesAllCancelledAndNullSst) {
+  SSTBuilder builder(32, true);
+  builder.add("a", std::string(24, 'a'), 9);
+  builder.add("b", "", 9);
+  auto sst = builder.build(1, "test_data/seek-first-all-cancelled.sst",
+                          std::make_shared<BlockCache>(8, 2));
+  ASSERT_EQ(sst->num_blocks(), 2);
+  bool cancelled = false;
+  SstIterator it(sst, "a", 0, false, [&cancelled](uint64_t id) {
+    return cancelled && id == 9;
+  });
+  ASSERT_TRUE(it.is_valid());
+  EXPECT_EQ(it->first, "a");
+  cancelled = true;
+  for (int repeat = 0; repeat < 2; ++repeat) {
+    it.seek_first();
+    EXPECT_TRUE(it.is_end());
+    EXPECT_FALSE(it.is_valid());
+    EXPECT_TRUE(it == sst->end());
+    EXPECT_THROW((void)*it, std::runtime_error);
+  }
+
+  auto unfiltered = sst->begin(0);
+  unfiltered.seek_first();
+  ASSERT_TRUE(unfiltered.is_valid());
+  EXPECT_EQ(unfiltered->first, "a");
+  EXPECT_EQ(unfiltered.get_cur_tranc_id(), 9);
+
+  bool callback_called = false;
+  SstIterator empty(nullptr, "a", 0, false, [&callback_called](uint64_t) {
+    callback_called = true;
+    return true;
+  });
+  empty.seek_first();
+  EXPECT_TRUE(empty.is_end());
+  EXPECT_FALSE(empty.is_valid());
+  EXPECT_FALSE(callback_called);
+}
+
 int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
   init_spdlog_file();

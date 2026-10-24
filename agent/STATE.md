@@ -12,13 +12,13 @@
 
 当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、状态查询接口、结束登记、abort 及写入路径的旧方案清理已完成；存储查询过滤尚未完成。
 
-当前推进项：第①、②阶段完成，第③阶段点查与批查回滚功能通过；get 的两处旧注释仍待用户清理。按已验收功能阶段计为 **50%（3/6）**，不代表工时比例。第④阶段 MemTable 三个范围入口、BlockIterator 两种构造、Block 三个范围入口，以及 SST 按 key 构造与单参数 seek 已通过。2026-10-24 用户已将回调保存移到构造初始化列表，seek 直接沿用成员；迁移 3 个旧测试并新增回调独立保存测试，重新构建后完整 SST 20/20 通过，未运行其他套件。用户已同步头文件两处旧注释；现给出 ++ 跨块沿用成员回调的草案，等待用户实现和验收，seek_first、普通构造及后续范围入口仍待接通。助手未修改业务代码。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-constructor-seek-82t_mbe9`。Block 35/35 和早先 177/177 为历史结果。
+当前推进项：第①、②阶段完成，第③阶段点查与批查回滚功能通过；get 的两处旧注释仍待用户清理。按已验收功能阶段计为 **50%（3/6）**，不代表工时比例。第④阶段 MemTable、Block 已验收项保持不变，SST 按 key 构造、单参数 seek、跨块 ++ 及 seek_first 已通过。2026-10-24 用户已为 seek_first 创建的块传入成员回调，新增 2 个测试后完整 SST 24/24 通过；未运行其他套件。现给出普通构造函数接收并保存回调的草案，声明与定义需同步；后续接通 SST::begin 和范围入口。助手未修改业务代码。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-seek-first-rollback-k8s3u3g7`。此前 Block 35/35、SST 22/22 及 177/177 均为历史结果。
 
 2026-10-22 SST 检查：SST::get 已将回调正确传给按 key 构造的 SstIterator，范围/Bloom 检查、读取上限和有效墓碑处理正确。扩展现有测试到公开 get 入口，完整 test_sst 19/19 通过。随后已接通 Engine 候选 SST 查询及 get。
 
 2026-10-23 最新 Engine 检查：get_batch 在用户修正 if (man) 为 if (!man) 后，管理器前置检查及回调传递正确。新增 2 个批量测试，扩展既有跨来源比较到批量入口；构建成功，相关 48/48 通过。覆盖空/非空输入依赖检查、实际取消新增/修改/删除、活跃表/冻结表/SST、连续取消、历史上限、顺序/重复/缺失、墓碑及同版本来源优先级。上一轮 get 的 46 个回归也包含在本轮中。助手未修改业务代码。
 
-当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator/SstIterator 按 key 构造、SstIterator::seek、SST::get 及 Engine::sst_get_ 在显式传入回调时会排除已取消版本，保留有效墓碑，相关测试通过。Engine 的公开 get/get_batch 已从管理器取得并传入回调；commit 的内部候选查询尚未接通。MemTable::get 返回的原节点迭代器不保存回调；get_record/get_batch 在锁内复制结果。BlockIterator 两种构造现已保存回调，块内 ++ 自动沿用筛选；SstIterator 按 key 构造已保存回调，seek 沿用成员并传给当前块，但 seek_first 和 ++ 跨块尚未传递成员回调，留在第④阶段继续处理。数据库回滚查询尚未完成。
+当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator/SstIterator 按 key 构造、SstIterator::seek、SST::get 及 Engine::sst_get_ 在显式传入回调时会排除已取消版本，保留有效墓碑，相关测试通过。Engine 的公开 get/get_batch 已从管理器取得并传入回调；commit 的内部候选查询尚未接通。MemTable::get 返回的原节点迭代器不保存回调；get_record/get_batch 在锁内复制结果。BlockIterator 两种构造现已保存回调，块内 ++ 自动沿用筛选；SstIterator 按 key 构造已保存回调，seek 沿用成员并传给当前块，++ 跨块与 seek_first 也已正确传递成员回调，但普通构造和公开遍历入口仍待接通，留在第④阶段继续处理。数据库回滚查询尚未完成。
 
 2026-10-23 已确认管理器约定：Engine 公开查询必须有有效的管理器，未绑定和已销毁均报错；不再保留未绑定兼容分支，不需要 owner_before。get 已按此实现并通过缺失/失效测试，回调持有 shared_ptr 到查询结束；查询期间的持有关系经过代码检查，未添加生命周期并发压力测试。get_batch 已沿用此约定并通过测试，即使空输入也先检查依赖。Lab 5.5 的生产入口绑定仍按原计划延期，当前测试显式绑定，不以此降低业务查询的要求。
 
@@ -62,7 +62,7 @@
 8. **迭代器重构不作为本轮前置任务。** 保留现有迭代器组合与推进逻辑，在去重之前接入必要的回滚判断；不要求每个迭代器各新增一套过滤。此前讨论的统一 MVCC 迭代器仍是延期的重构方向。
 
 
-2026-10-24 回调归属审计：当前 include/src 中未发现除已修正的 SstIterator::seek 外，其他普通操作重新配置对象已保存的 is_aborted_。这不表示所有范围入口已经接通。Block 当前不长期保存回调，由调用方提供查询条件；BlockIterator 保存供后续操作复用。用户提出让 Block 也保存，技术上可行，但属于依赖归属调整，不是缺失成员即有 bug。若直接保存当前捕获 shared_ptr<TranManager> 的回调，在管理器已绑定引擎且块仍在缓存中时，会形成 Engine → BlockCache → Block → 回调 → TranManager → Engine 的强引用环；需另外设计弱引用或独立状态对象及初始化路径。固定绑定回滚查询器并不天然导致并发冲突，也不要求改变 Block 磁盘编码。当前建议维持已有归属，先完成必要的回调传递；未代改业务代码。
+2026-10-24 回调归属审计：当前 include/src 中未发现除已修正的 SstIterator::seek 外，其他普通操作重新配置对象已保存的 is_aborted_。这不表示所有范围入口已经接通。Block 当前不长期保存回调，由调用方提供查询条件；BlockIterator 保存供后续操作复用。用户提出让 Block 也保存，技术上可行，但属于依赖归属调整，不是缺失成员即有 bug。若直接保存当前捕获 shared_ptr<TranManager> 的回调，在管理器已绑定引擎且块仍在缓存中时，会形成 Engine → BlockCache → Block → 回调 → TranManager → Engine 的强引用环；需另外设计弱引用或独立状态对象及初始化路径。固定绑定回滚查询器并不天然导致并发冲突，也不要求改变 Block 磁盘编码。进一步核对：当前 Engine/缓存/Block/SST 不以成员持有返回的 BlockIterator/SstIterator；创建或返回对象并不自动建立长期持有关系。迭代器持有 Block，Block 没有反向持有该迭代器，因此当前回调不会沿这条路径形成闭环。此结论来自成员与调用关系检查，未新增生命周期测试。当前建议维持已有归属，先完成必要的回调传递；未代改业务代码。
 
 不采用“重新写入旧值/旧版本”作为回滚方案：它不能可靠消除已经写入的较新版本。`rollback_map_` 成员及所有业务引用已删除，相关旧值备份说明已清理。
 
