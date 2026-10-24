@@ -636,6 +636,113 @@ TEST_F(BlockTest, KeyConstructorRejectsNullBlock) {
   EXPECT_FALSE(callback_called);
 }
 
+// 目的：按下标构造时，先排除取消版本，再把首条有效记录交给调用方。
+// 场景：k@9/@7 已取消，k@5 有效；@9 分别为普通值和墓碑。
+// 预期：上限 0/7/9 都定位到 k@5；上限 4 则继续走到下一个 key z@1。
+TEST_F(BlockTest, RollbackIndexConstructorFiltersInitialPosition) {
+  const auto is_aborted = [](uint64_t id) { return id == 9 || id == 7; };
+  for (bool tombstone : {false, true}) {
+    SCOPED_TRACE(tombstone);
+    auto block = std::make_shared<Block>(4096);
+    ASSERT_TRUE(block->add_entry("k", tombstone ? "" : "cancelled-9", 9, false));
+    ASSERT_TRUE(block->add_entry("k", "cancelled-7", 7, false));
+    ASSERT_TRUE(block->add_entry("k", "old", 5, false));
+    ASSERT_TRUE(block->add_entry("z", "z1", 1, false));
+    for (uint64_t read_id : {0u, 7u, 9u}) {
+      SCOPED_TRACE(read_id);
+      BlockIterator it(block, size_t{0}, read_id, false, is_aborted);
+      ASSERT_NE(it, block->end());
+      EXPECT_EQ(*it, std::make_pair(std::string("k"), std::string("old")));
+      EXPECT_EQ(it.get_cur_tranc_id(), 5);
+    }
+    BlockIterator next_key(block, size_t{0}, 4, false, is_aborted);
+    ASSERT_NE(next_key, block->end());
+    EXPECT_EQ(next_key->first, "z");
+    EXPECT_EQ(next_key.get_cur_tranc_id(), 1);
+  }
+}
+
+// 目的：验证 ++ 沿用回滚判断，且缓存随位置更新；有效墓碑仍然保留。
+// 场景：b@12 超过读取上限，b@9 墓碑与 c@9 普通值取消；d@8 是有效墓碑。
+// 预期：跳过 b@12/@9 后返回 b@5，整组 c 不出现；全版本模式额外保留有效旧版本。
+TEST_F(BlockTest, RollbackIndexIteratorFiltersOnIncrementAndUpdatesCache) {
+  auto block = std::make_shared<Block>(4096);
+  ASSERT_TRUE(block->add_entry("a", "a1", 1, false));
+  ASSERT_TRUE(block->add_entry("b", "future", 12, false));
+  ASSERT_TRUE(block->add_entry("b", "", 9, false));
+  ASSERT_TRUE(block->add_entry("b", "b5", 5, false));
+  ASSERT_TRUE(block->add_entry("b", "b3", 3, false));
+  ASSERT_TRUE(block->add_entry("c", "cancelled", 9, false));
+  ASSERT_TRUE(block->add_entry("d", "", 8, false));
+  ASSERT_TRUE(block->add_entry("d", "d2", 2, false));
+  ASSERT_TRUE(block->add_entry("e", "e0", 0, false));
+  const auto encoded = block->encode();
+  const auto is_aborted = [](uint64_t id) { return id == 9; };
+  using Record = std::tuple<std::string, std::string, uint64_t>;
+  for (bool keep_all : {false, true}) {
+    SCOPED_TRACE(keep_all);
+    const std::vector<Record> expected = keep_all
+        ? std::vector<Record>{{"a", "a1", 1}, {"b", "b5", 5}, {"b", "b3", 3},
+                              {"d", "", 8}, {"d", "d2", 2}, {"e", "e0", 0}}
+        : std::vector<Record>{{"a", "a1", 1}, {"b", "b5", 5},
+                              {"d", "", 8}, {"e", "e0", 0}};
+    BlockIterator it(block, size_t{0}, 10, keep_all, is_aborted);
+    for (const auto &[key, value, version] : expected) {
+      ASSERT_NE(it, block->end());
+      // 每个位置都解引用，确保下一次 ++ 后不会继续读到旧缓存。
+      EXPECT_EQ(it->first, key);
+      EXPECT_EQ(it->second, value);
+      EXPECT_EQ(*it, std::make_pair(key, value));
+      EXPECT_EQ(it.get_cur_tranc_id(), version);
+      ++it;
+    }
+    EXPECT_EQ(it, block->end());
+  }
+  EXPECT_EQ(block->encode(), encoded);
+}
+
+// 目的：验证迭代器自己保存回调对象，后续遍历不依赖调用方的函数变量。
+// 场景：先定位到 a@1，然后清空传入的 std::function；b@9 已取消，b@5 有效。
+// 预期：++ 仍然返回 b@5，上限 0 不会关闭回滚筛选。
+TEST_F(BlockTest, RollbackIndexIteratorOwnsCallback) {
+  auto block = std::make_shared<Block>(4096);
+  ASSERT_TRUE(block->add_entry("a", "a1", 1, false));
+  ASSERT_TRUE(block->add_entry("b", "cancelled", 9, false));
+  ASSERT_TRUE(block->add_entry("b", "old", 5, false));
+  std::function<bool(uint64_t)> is_aborted =
+      [cancelled_id = uint64_t{9}](uint64_t id) { return id == cancelled_id; };
+  BlockIterator it(block, size_t{0}, 0, false, is_aborted);
+  ASSERT_NE(it, block->end());
+  EXPECT_EQ(it->first, "a");
+  is_aborted = {};
+  ++it;
+  ASSERT_NE(it, block->end());
+  EXPECT_EQ(*it, std::make_pair(std::string("b"), std::string("old")));
+  EXPECT_EQ(it.get_cur_tranc_id(), 5);
+}
+
+// 目的：验证空块、尾后位置和全部取消都能形成结束迭代器，并兼容原来的空回调行为。
+// 场景：先查询空块，再写入 k@9/@5；回调取消所有记录，或不提供回调。
+// 预期：前者直接到块尾，后者仍能读到 k@9。
+TEST_F(BlockTest, RollbackIndexConstructorHandlesEmptyAndCancelledRanges) {
+  auto block = std::make_shared<Block>(4096);
+  const auto cancel_all = [](uint64_t) { return true; };
+  EXPECT_EQ(BlockIterator(block, size_t{0}, 0, false, cancel_all), block->end());
+  ASSERT_TRUE(block->add_entry("k", "new", 9, false));
+  ASSERT_TRUE(block->add_entry("k", "old", 5, false));
+  for (bool keep_all : {false, true}) {
+    SCOPED_TRACE(keep_all);
+    EXPECT_EQ(BlockIterator(block, size_t{0}, 0, keep_all, cancel_all),
+              block->end());
+    EXPECT_EQ(BlockIterator(block, block->size(), 0, keep_all, cancel_all),
+              block->end());
+  }
+  BlockIterator unfiltered(block, size_t{0}, 0);
+  ASSERT_NE(unfiltered, block->end());
+  EXPECT_EQ(unfiltered->second, "new");
+  EXPECT_EQ(unfiltered.get_cur_tranc_id(), 9);
+}
+
 // 目的：点查询选择不超过读上限的最新版本。
 // 场景：k 的多个版本夹在相邻 key 之间；k 全部不可见时不能误返回邻居。
 TEST_F(BlockTest, MvccPointReadSelectsNewestVisibleVersion) {

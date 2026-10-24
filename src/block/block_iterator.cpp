@@ -13,7 +13,8 @@ BlockIterator::BlockIterator(std::shared_ptr<Block> b, size_t index,
                              uint64_t tranc_id, bool keep_all_versions,
                              const std::function<bool(uint64_t)> &is_aborted)
     : block(b), current_index(index), tranc_id_(tranc_id),
-      cached_value(std::nullopt), keep_all_versions_(keep_all_versions) {
+      cached_value(std::nullopt), keep_all_versions_(keep_all_versions),
+      is_aborted_(is_aborted) {
   // 初始化列表已经把回调复制到 is_aborted_
   // 构造函数返回后，迭代器仍持有自己的函数对象，
   // 后续 operator++() 调用筛选函数时，也能检查回滚状态
