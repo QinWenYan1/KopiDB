@@ -12,13 +12,13 @@
 
 当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、状态查询接口、结束登记、abort 及写入路径的旧方案清理已完成；存储查询过滤尚未完成。
 
-当前推进项：第①、②阶段完成，第③阶段点查与批查回滚功能通过；get 的两处旧注释仍待用户清理。按功能验收阶段计为 **50%（3/6）**，不代表工时比例。第④阶段 MemTable 的 begin、iters_preffix、iters_monotony_predicate 已通过。2026-10-24 BlockIterator 按下标构造已保存 is_aborted_；首次定位和后续 ++ 的回滚筛选通过新增 4 个测试，完整 Block 28/28、SST 19/19 通过。下一步让按 key 构造函数也保存回调；SST 跨块遍历及 Engine 范围入口仍待接通。此前已完成项回归 177/177 保留为历史结果，本轮未重跑 SkipList、MemTable 或 LSM。
+当前推进项：第①、②阶段完成，第③阶段点查与批查回滚功能通过；get 的两处旧注释仍待用户清理。按已验收功能阶段计为 **50%（3/6）**，不代表工时比例。第④阶段 MemTable 三个范围入口及 BlockIterator 两种构造此前已通过；当前 Block::get_monotony_predicate_iters 的两处构造调用漏传 keep_all_versions=false，xmake build test_block 构建失败。已通知用户补齐，新加 2 个区间测试待运行，本轮未执行测试程序。此前 Block 30/30、SST 19/19 及已完成项 177/177 是本次修改前的结果；当前函数未验收，SST 和 Engine 范围入口继续待办。
 
 2026-10-22 SST 检查：SST::get 已将回调正确传给按 key 构造的 SstIterator，范围/Bloom 检查、读取上限和有效墓碑处理正确。扩展现有测试到公开 get 入口，完整 test_sst 19/19 通过。随后已接通 Engine 候选 SST 查询及 get。
 
 2026-10-23 最新 Engine 检查：get_batch 在用户修正 if (man) 为 if (!man) 后，管理器前置检查及回调传递正确。新增 2 个批量测试，扩展既有跨来源比较到批量入口；构建成功，相关 48/48 通过。覆盖空/非空输入依赖检查、实际取消新增/修改/删除、活跃表/冻结表/SST、连续取消、历史上限、顺序/重复/缺失、墓碑及同版本来源优先级。上一轮 get 的 46 个回归也包含在本轮中。助手未修改业务代码。
 
-当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator/SstIterator 按 key 构造、SstIterator::seek、SST::get 及 Engine::sst_get_ 在显式传入回调时会排除已取消版本，保留有效墓碑，相关测试通过。Engine 的公开 get/get_batch 已从管理器取得并传入回调；commit 的内部候选查询尚未接通。MemTable::get 返回的原节点迭代器、BlockIterator/SstIterator 按 key 构造及 seek 均不保存回调，后续 ++ 不自动沿用本次筛选；get_record/get_batch 在锁内复制结果。数据库回滚查询尚未完成。
+当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator/SstIterator 按 key 构造、SstIterator::seek、SST::get 及 Engine::sst_get_ 在显式传入回调时会排除已取消版本，保留有效墓碑，相关测试通过。Engine 的公开 get/get_batch 已从管理器取得并传入回调；commit 的内部候选查询尚未接通。MemTable::get 返回的原节点迭代器不保存回调；get_record/get_batch 在锁内复制结果。BlockIterator 两种构造现已保存回调，块内 ++ 自动沿用筛选；SstIterator 自身尚未保存回调，其 seek 创建的当前块已经接通，但 ++ 跨块后仍会丢失筛选，留在第④阶段继续处理。数据库回滚查询尚未完成。
 
 2026-10-23 已确认管理器约定：Engine 公开查询必须有有效的管理器，未绑定和已销毁均报错；不再保留未绑定兼容分支，不需要 owner_before。get 已按此实现并通过缺失/失效测试，回调持有 shared_ptr 到查询结束；查询期间的持有关系经过代码检查，未添加生命周期并发压力测试。get_batch 已沿用此约定并通过测试，即使空输入也先检查依赖。Lab 5.5 的生产入口绑定仍按原计划延期，当前测试显式绑定，不以此降低业务查询的要求。
 
@@ -142,6 +142,8 @@
 
 ## 测试状态
 
+- 最新检查（2026-10-24，Block 谓词区间入口）：`xmake build test_block` 失败，错误定位 src/block/block.cpp:566；两处构造将 std::function 作为第④个 bool 参数，缺少 false。新增 `RollbackPredicateFiltersRecordsAndRightBoundary`、`RollbackPredicateHandlesEmptyAndCancelledRanges`，覆盖两端一致筛选、有效墓碑、读取上限、连续取消及空结果等，尚未运行。本轮没有使用旧测试二进制宣称当前通过，未修改业务源码。构建日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-predicate-build-rz0dsng4/build.log`。
+- 最新检查（2026-10-24，BlockIterator 按 key 构造）：新增 `RollbackKeyIteratorFiltersThroughoutTraversal` 和 `RollbackKeyIteratorOwnsCallback`，验证普通/全版本模式、读取上限 0 与历史上限、连续取消值和墓碑、有效墓碑保留、缓存、精确查找全部取消时不误返回邻居，以及调用方清空回调后继续 ++。重新构建并在独立临时目录运行完整 **Block 30/30、SST 19/19 通过**。业务源码及头文件由用户修改，其他套件本轮未运行。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-key-callback-review-zjcug46y`。
 - 最新检查（2026-10-24，BlockIterator 按下标构造）：用户补齐初始化列表的 is_aborted_(is_aborted) 后重新构建，独立临时目录运行完整 **Block 28/28、SST 19/19 通过**。4 个新增测试覆盖首条定位、++ 后筛选与缓存、复制保存回调、空块/尾后/全部取消；包含连续取消值/墓碑、读取上限 0、全版本模式及有效墓碑保留。补齐前 4 个新增测试全部失败，补齐后全部通过，未降低断言。业务代码由用户修改；本轮未运行其他测试套件。最新日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-index-verified-huwzqk31`；补齐前失败日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-index-callback-review-ueo3rju4/result.log`。
 - 最新检查（2026-10-24，BlockIterator 筛选函数）：构建成功，独立临时目录复制配置后运行完整 **Block 24/24、SST 19/19 通过**。新增成员与筛选函数的读取上限、取消状态、单条推进、空块处理和缓存清理通过代码检查；公开构造函数尚未赋值 is_aborted_，本轮测试不能覆盖该函数的非空回调分支，留待构造接通后补集成测试。未改业务代码或测试断言，未运行其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-skip-review-hi7r7063`；构建日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-skip-build-hsvpnl3d`。
 - 最新检查（2026-10-24，PLAN 已完成项复核）：五个目标构建成功；各自独立临时目录复制配置后运行，完整 **SkipList 31/31、MemTable 49/49、Block 24/24、SST 19/19**，**LSM 相关选跑 54/54**，共 **177/177 通过**。LSM 沿用上一轮点查/批查、事务创建/读写/提交/回滚等 48 项过滤器，另加入 NewTransaction 和 TransactionEndRegistration 共 6 项，验证阶段①的登记与查询。未运行完整 test_lsm、WAL/恢复或未完成的范围回滚路径；未修改业务代码及测试断言。日志与 `lsm-filter.txt`：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-plan-completed-review-gi26m8_i`；构建日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-plan-check-build-cl3hsb4p`。

@@ -743,6 +743,156 @@ TEST_F(BlockTest, RollbackIndexConstructorHandlesEmptyAndCancelledRanges) {
   EXPECT_EQ(unfiltered.get_cur_tranc_id(), 9);
 }
 
+// 目的：谓词区间先排除取消版本，再按 key 输出；右边界也必须使用同一筛选规则。
+// 场景：查询 [b, e)，b 的新值与 c 的新墓碑取消，d 整组取消；e 是区间外的终点。
+// 预期：只输出 b@5 和有效墓碑 c@5；++ 到筛选后的 e 即与 end 相等，不返回 e。
+TEST_F(BlockTest, RollbackPredicateFiltersRecordsAndRightBoundary) {
+  auto block = std::make_shared<Block>(4096);
+  ASSERT_TRUE(block->add_entry("a", "before", 1, false));
+  ASSERT_TRUE(block->add_entry("b", "cancelled", 9, false));
+  ASSERT_TRUE(block->add_entry("b", "also-cancelled", 7, false));
+  ASSERT_TRUE(block->add_entry("b", "b5", 5, false));
+  ASSERT_TRUE(block->add_entry("b", "b3", 3, false));
+  ASSERT_TRUE(block->add_entry("c", "", 9, false));
+  ASSERT_TRUE(block->add_entry("c", "", 5, false));
+  ASSERT_TRUE(block->add_entry("c", "c2", 2, false));
+  ASSERT_TRUE(block->add_entry("d", "cancelled", 9, false));
+  ASSERT_TRUE(block->add_entry("e", "e12", 12, false));
+  ASSERT_TRUE(block->add_entry("e", "cancelled", 9, false));
+  ASSERT_TRUE(block->add_entry("e", "e5", 5, false));
+  ASSERT_TRUE(block->add_entry("z", "after", 1, false));
+  const auto encoded = block->encode();
+  const auto is_aborted = [](uint64_t id) { return id == 9 || id == 7; };
+  const auto predicate = [](const std::string &key) {
+    return key < "b" ? 1 : (key >= "e" ? -1 : 0);
+  };
+  using Record = std::tuple<std::string, std::string, uint64_t>;
+  const std::vector<Record> expected = {{"b", "b5", 5}, {"c", "", 5}};
+  for (uint64_t read_id : {0u, 8u, 10u}) {
+    SCOPED_TRACE(read_id);
+    auto range = block->get_monotony_predicate_iters(read_id, predicate, is_aborted);
+    ASSERT_TRUE(range.has_value());
+    auto &it = *range->first;
+    const auto &end = *range->second;
+    ASSERT_NE(end, block->end());
+    EXPECT_EQ(end->first, "e");
+    EXPECT_EQ(end.get_cur_tranc_id(), read_id == 0 ? 12 : 5);
+    for (const auto &[key, value, version] : expected) {
+      ASSERT_NE(it, end);
+      ASSERT_NE(it, block->end());
+      EXPECT_EQ(*it, std::make_pair(key, value));
+      EXPECT_EQ(it.get_cur_tranc_id(), version);
+      ++it;
+    }
+    EXPECT_EQ(it, end);
+  }
+  EXPECT_EQ(block->encode(), encoded);
+}
+
+// 目的：区间内全部取消时返回空区间；筛选不能把区间外的邻居当作结果。
+// 场景：只查 b，b@9 取消，后面有 c@9 和 c@5；另测空块、无匹配和全块取消。
+// 预期：begin == end，可同指 c@5 或块尾；没有匹配 key 时返回 nullopt。
+TEST_F(BlockTest, RollbackPredicateHandlesEmptyAndCancelledRanges) {
+  auto block = std::make_shared<Block>(4096);
+  const auto only_b = [](const std::string &key) {
+    return key < "b" ? 1 : (key > "b" ? -1 : 0);
+  };
+  const auto is_aborted = [](uint64_t id) { return id == 9; };
+  EXPECT_FALSE(block->get_monotony_predicate_iters(0, only_b, is_aborted));
+  ASSERT_TRUE(block->add_entry("b", "cancelled", 9, false));
+  ASSERT_TRUE(block->add_entry("c", "cancelled", 9, false));
+  ASSERT_TRUE(block->add_entry("c", "old", 5, false));
+  auto range = block->get_monotony_predicate_iters(0, only_b, is_aborted);
+  ASSERT_TRUE(range.has_value());
+  EXPECT_EQ(*range->first, *range->second);
+  ASSERT_NE(*range->second, block->end());
+  EXPECT_EQ((*range->second)->first, "c");
+  EXPECT_EQ(range->second->get_cur_tranc_id(), 5);
+
+  auto all_cancelled = block->get_monotony_predicate_iters(
+      0, only_b, [](uint64_t) { return true; });
+  ASSERT_TRUE(all_cancelled.has_value());
+  EXPECT_EQ(*all_cancelled->first, block->end());
+  EXPECT_EQ(*all_cancelled->second, block->end());
+  EXPECT_FALSE(block->get_monotony_predicate_iters(
+      0, [](const std::string &) { return 1; }, is_aborted));
+
+  // 不提供回调时保留旧接口行为，b@9 仍是命中的记录。
+  auto unfiltered = block->get_monotony_predicate_iters(0, only_b);
+  ASSERT_TRUE(unfiltered.has_value());
+  ASSERT_NE(*unfiltered->first, *unfiltered->second);
+  EXPECT_EQ((*unfiltered->first)->first, "b");
+  EXPECT_EQ(unfiltered->first->get_cur_tranc_id(), 9);
+  EXPECT_EQ(++(*unfiltered->first), *unfiltered->second);
+}
+
+// 目的：按 key 构造后，首次定位与后续 ++ 都沿用回滚判断。
+// 场景：b@9、c@9 是已取消墓碑，d 的两个版本均取消；c@5 是有效墓碑。
+// 预期：普通模式返回 b@5、c@5、z@1；全版本模式额外保留 b@3、c@2。
+TEST_F(BlockTest, RollbackKeyIteratorFiltersThroughoutTraversal) {
+  auto block = std::make_shared<Block>(4096);
+  ASSERT_TRUE(block->add_entry("a", "before", 1, false));
+  ASSERT_TRUE(block->add_entry("b", "", 9, false));
+  ASSERT_TRUE(block->add_entry("b", "b5", 5, false));
+  ASSERT_TRUE(block->add_entry("b", "b3", 3, false));
+  ASSERT_TRUE(block->add_entry("c", "", 9, false));
+  ASSERT_TRUE(block->add_entry("c", "", 5, false));
+  ASSERT_TRUE(block->add_entry("c", "c2", 2, false));
+  ASSERT_TRUE(block->add_entry("d", "cancelled-9", 9, false));
+  ASSERT_TRUE(block->add_entry("d", "cancelled-7", 7, false));
+  ASSERT_TRUE(block->add_entry("z", "z1", 1, false));
+  const auto encoded = block->encode();
+  const auto is_aborted = [](uint64_t id) { return id == 9 || id == 7; };
+  using Record = std::tuple<std::string, std::string, uint64_t>;
+  for (uint64_t read_id : {0u, 8u, 10u}) {
+    SCOPED_TRACE(read_id);
+    for (bool keep_all : {false, true}) {
+      SCOPED_TRACE(keep_all);
+      const std::vector<Record> expected = keep_all
+          ? std::vector<Record>{{"b", "b5", 5}, {"b", "b3", 3},
+                                {"c", "", 5}, {"c", "c2", 2}, {"z", "z1", 1}}
+          : std::vector<Record>{{"b", "b5", 5}, {"c", "", 5}, {"z", "z1", 1}};
+      BlockIterator it(block, "b", read_id, keep_all, is_aborted);
+      for (const auto &[key, value, version] : expected) {
+        ASSERT_NE(it, block->end());
+        EXPECT_EQ(it->first, key);
+        EXPECT_EQ(it->second, value);
+        EXPECT_EQ(*it, std::make_pair(key, value));
+        EXPECT_EQ(it.get_cur_tranc_id(), version);
+        ++it;
+      }
+      EXPECT_EQ(it, block->end());
+
+      // 精确查找 d 失败，不能把后面的 z 当作 d 的查询结果。
+      BlockIterator cancelled(block, "d", read_id, keep_all, is_aborted);
+      EXPECT_EQ(cancelled, block->end());
+      EXPECT_EQ(++cancelled, block->end());
+    }
+  }
+  EXPECT_EQ(block->encode(), encoded);
+}
+
+// 目的：按 key 构造也必须独立保存回调，不能只在首次定位时使用参数。
+// 场景：定位到 a 后清空调用方的回调变量，再移动到含已取消版本的 b。
+// 预期：上限 0 时 ++ 仍跳过 b@9，读取 b@5，并正确走到块尾。
+TEST_F(BlockTest, RollbackKeyIteratorOwnsCallback) {
+  auto block = std::make_shared<Block>(4096);
+  ASSERT_TRUE(block->add_entry("a", "a1", 1, false));
+  ASSERT_TRUE(block->add_entry("b", "cancelled", 9, false));
+  ASSERT_TRUE(block->add_entry("b", "old", 5, false));
+  std::function<bool(uint64_t)> is_aborted =
+      [cancelled_id = uint64_t{9}](uint64_t id) { return id == cancelled_id; };
+  BlockIterator it(block, "a", 0, false, is_aborted);
+  ASSERT_NE(it, block->end());
+  EXPECT_EQ(it->first, "a");
+  is_aborted = {};
+  ++it;
+  ASSERT_NE(it, block->end());
+  EXPECT_EQ(*it, std::make_pair(std::string("b"), std::string("old")));
+  EXPECT_EQ(it.get_cur_tranc_id(), 5);
+  EXPECT_EQ(++it, block->end());
+}
+
 // 目的：点查询选择不超过读上限的最新版本。
 // 场景：k 的多个版本夹在相邻 key 之间；k 全部不可见时不能误返回邻居。
 TEST_F(BlockTest, MvccPointReadSelectsNewestVisibleVersion) {

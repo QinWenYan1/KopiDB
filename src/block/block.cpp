@@ -498,27 +498,30 @@ Block::iters_preffix(uint64_t tranc_id, const std::string &preffix) {
 // 返回第一个满足谓词的位置和最后一个满足谓词的位置
 // 如果不存在, 返回nullopt
 // 谓词作用于key, 且保证满足谓词的结果只在一段连续的区间内, 例如前缀匹配的谓词
-// 返回的区间是闭区间, 开区间需要手动对返回值自增
-// predicate返回值:
-//   0: 满足谓词
-//   >0: 不满足谓词, 需要向右移动
-//   <0: 不满足谓词, 需要向左移动
+// 返回左闭右开区间 [begin, end)，end 已是终点，不需要额外自增
 std::optional<
     std::pair<std::shared_ptr<BlockIterator>, std::shared_ptr<BlockIterator>>>
 Block::get_monotony_predicate_iters(
-    uint64_t tranc_id, std::function<int(const std::string &)> predicate) {
-  // ? 第一次二分: 找到 first (满足谓词的最左边索引)
-  // ? 第二次二分: 找到 last  (满足谓词的最右边索引)
-  // ? 返回 [BlockIterator(first), BlockIterator(last+1)]
+    uint64_t tranc_id, std::function<int(const std::string &)> predicate,
+  const std::function<bool(uint64_t)> &is_aborted) {
+  // 第一次二分: 找到 first (满足谓词的最左边索引)
+  // 第二次二分: 找到 last  (满足谓词的最右边索引)
+  // 返回 [BlockIterator(first), BlockIterator(last+1)]
   if (offsets.empty())
     return std::nullopt;
 
   // 1. 第一次二分：找最左命中 first
   //    命中区连续 ——> 命中不能停，收缩右边界继续往左边逼
+  // predicate返回值:
+  //   0: 满足谓词
+  //   >0: 不满足谓词, 需要向右移动
+  //   <0: 不满足谓词, 需要向左移动
   size_t left = 0, right = offsets.size(); // [left,right)
+
   while (left < right) {
     size_t mid = left + (right - left) / 2;
     int p = predicate(get_key_at(offsets[mid]));
+
     if (p == 0)
       right = mid; // 命中但左边可能还有，继续收缩
     else if (p > 0)
@@ -550,10 +553,18 @@ Block::get_monotony_predicate_iters(
   // last命中元素 + 1，天然左闭右开
   size_t end_idx = left;
 
-  // 3. 造迭代器对; 构造里的 skip_by_tranc_id 自动处理版本可见性
+
+  // 3. 由 BlockIterator 的构造里的 skip_by_tranc_id 自动处理版本可见性筛选和回滚状态
+  // false 表示普通遍历：每个 key 返回一个有效版本。
+  // 有效墓碑仍保留，交给上层归并处理。
+
+  // 两端必须传入同一回调。
+  // 例如只查询 b，右边界原本是 c@9，但事务 9 已回滚：
+  // 从 b 执行 ++ 会跳过 c@9，因此 end 也必须跳到相同位置，
+  // 否则遍历会跨过 end，无法按预期停止。
   return std::make_pair(
-      std::make_shared<BlockIterator>(shared_from_this(), first, tranc_id),
-      std::make_shared<BlockIterator>(shared_from_this(), end_idx, tranc_id));
+      std::make_shared<BlockIterator>(shared_from_this(), first, tranc_id, false, is_aborted),
+      std::make_shared<BlockIterator>(shared_from_this(), end_idx, tranc_id, false, is_aborted));
 }
 
 Block::Entry Block::get_entry_at(size_t offset) const {

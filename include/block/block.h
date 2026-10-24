@@ -89,11 +89,13 @@ public:
   get_idx_binary(const std::string &key, uint64_t tranc_id,
                  const std::function<bool(uint64_t)> &is_aborted = {});
 
-  // 按照谓词返回迭代器, 左闭右开
+  // 返回满足谓词的左闭右开区间
+  // 两端使用相同的读取上限和回滚判断
   std::optional<
       std::pair<std::shared_ptr<BlockIterator>, std::shared_ptr<BlockIterator>>>
   get_monotony_predicate_iters(uint64_t tranc_id,
-                               std::function<int(const std::string &)> func);
+                               std::function<int(const std::string &)> predicate,
+                              const std::function<bool(uint64_t)> &is_aborted = {});
 
   BlockIterator begin(uint64_t tranc_id = 0);
 
