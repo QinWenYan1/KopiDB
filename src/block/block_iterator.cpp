@@ -14,6 +14,16 @@ BlockIterator::BlockIterator(std::shared_ptr<Block> b, size_t index,
                              const std::function<bool(uint64_t)> &is_aborted)
     : block(b), current_index(index), tranc_id_(tranc_id),
       cached_value(std::nullopt), keep_all_versions_(keep_all_versions) {
+  // 初始化列表已经把回调复制到 is_aborted_
+  // 构造函数返回后，迭代器仍持有自己的函数对象，
+  // 后续 operator++() 调用筛选函数时，也能检查回滚状态
+
+  // index 只是开始查找的位置，不保证该记录可以读取
+  // 例如 index 指向 K@9，而事务 9 已回滚：
+  // 这里应跳过 K@9，继续寻找后面的有效 K@5
+  //
+  // 如果后面的记录全部不满足条件，就停在块尾
+  // tranc_id == 0 时也会执行回滚检查，具体规则由筛选函数负责
   skip_by_tranc_id();
 }
 
