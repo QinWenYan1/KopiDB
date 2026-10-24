@@ -32,7 +32,7 @@ BlockIterator::BlockIterator(std::shared_ptr<Block> b, const std::string &key,
                              uint64_t tranc_id, bool keep_all_versions,
                              const std::function<bool(uint64_t)> &is_aborted)
     : block(b), tranc_id_(tranc_id), cached_value(std::nullopt),
-      keep_all_versions_(keep_all_versions) {
+      keep_all_versions_(keep_all_versions), is_aborted_(is_aborted){
   // 1. 按 key 定位必须有实际的 Block，先检查再访问
   // 空指针属于调用参数错误；正常的“没有找到 key”在下面处理
   if (!block) {

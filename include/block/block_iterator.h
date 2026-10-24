@@ -26,7 +26,7 @@ public:
                 const std::function<bool(uint64_t)> &is_aborted = {});
 
   // 在指定 Block 中定位 key 的最大有效版本，未命中指向块尾
-  // b 必须非空；回调只用于本次定位，不保存在迭代器中
+  // b 必须非空；回调保存在迭代器中，用于首次定位和后续 ++ 的回滚筛选
   BlockIterator(std::shared_ptr<Block> b, const std::string &key,
                 uint64_t tranc_id, bool keep_all_versions = false,
                 const std::function<bool(uint64_t)> &is_aborted = {});

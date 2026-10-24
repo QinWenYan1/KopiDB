@@ -12,7 +12,7 @@
 
 当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、状态查询接口、结束登记、abort 及写入路径的旧方案清理已完成；存储查询过滤尚未完成。
 
-当前推进项：第①、②阶段完成，第③阶段点查与批查回滚功能通过；get 的两处旧注释仍待用户清理。第④阶段 MemTable 的 begin、iters_preffix、iters_monotony_predicate 已通过。2026-10-24 此前已完成项回归共 177/177；本轮检查 BlockIterator::skip_by_tranc_id 与按值保存的回调成员，完整 Block 24/24、SST 19/19 通过。函数条件、逐条推进和缓存清理正确；构造函数尚未保存回调，新增回滚分支只有代码检查，尚未运行验证。下一步由用户实现按下标构造函数；按 key 构造、SST 遍历及 Engine 范围入口的接入仍待完成。
+当前推进项：第①、②阶段完成，第③阶段点查与批查回滚功能通过；get 的两处旧注释仍待用户清理。按功能验收阶段计为 **50%（3/6）**，不代表工时比例。第④阶段 MemTable 的 begin、iters_preffix、iters_monotony_predicate 已通过。2026-10-24 BlockIterator 按下标构造已保存 is_aborted_；首次定位和后续 ++ 的回滚筛选通过新增 4 个测试，完整 Block 28/28、SST 19/19 通过。下一步让按 key 构造函数也保存回调；SST 跨块遍历及 Engine 范围入口仍待接通。此前已完成项回归 177/177 保留为历史结果，本轮未重跑 SkipList、MemTable 或 LSM。
 
 2026-10-22 SST 检查：SST::get 已将回调正确传给按 key 构造的 SstIterator，范围/Bloom 检查、读取上限和有效墓碑处理正确。扩展现有测试到公开 get 入口，完整 test_sst 19/19 通过。随后已接通 Engine 候选 SST 查询及 get。
 
@@ -142,6 +142,7 @@
 
 ## 测试状态
 
+- 最新检查（2026-10-24，BlockIterator 按下标构造）：用户补齐初始化列表的 is_aborted_(is_aborted) 后重新构建，独立临时目录运行完整 **Block 28/28、SST 19/19 通过**。4 个新增测试覆盖首条定位、++ 后筛选与缓存、复制保存回调、空块/尾后/全部取消；包含连续取消值/墓碑、读取上限 0、全版本模式及有效墓碑保留。补齐前 4 个新增测试全部失败，补齐后全部通过，未降低断言。业务代码由用户修改；本轮未运行其他测试套件。最新日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-index-verified-huwzqk31`；补齐前失败日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-index-callback-review-ueo3rju4/result.log`。
 - 最新检查（2026-10-24，BlockIterator 筛选函数）：构建成功，独立临时目录复制配置后运行完整 **Block 24/24、SST 19/19 通过**。新增成员与筛选函数的读取上限、取消状态、单条推进、空块处理和缓存清理通过代码检查；公开构造函数尚未赋值 is_aborted_，本轮测试不能覆盖该函数的非空回调分支，留待构造接通后补集成测试。未改业务代码或测试断言，未运行其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-skip-review-hi7r7063`；构建日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-skip-build-hsvpnl3d`。
 - 最新检查（2026-10-24，PLAN 已完成项复核）：五个目标构建成功；各自独立临时目录复制配置后运行，完整 **SkipList 31/31、MemTable 49/49、Block 24/24、SST 19/19**，**LSM 相关选跑 54/54**，共 **177/177 通过**。LSM 沿用上一轮点查/批查、事务创建/读写/提交/回滚等 48 项过滤器，另加入 NewTransaction 和 TransactionEndRegistration 共 6 项，验证阶段①的登记与查询。未运行完整 test_lsm、WAL/恢复或未完成的范围回滚路径；未修改业务代码及测试断言。日志与 `lsm-filter.txt`：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-plan-completed-review-gi26m8_i`；构建日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-plan-check-build-cl3hsb4p`。
 - 最新检查（2026-10-24，谓词接口约定纠正）：`xmake build test_memtable` 成功，独立临时目录运行完整 **test_memtable 49/49 通过**。将额外约束回调输入的 `PredicateDoesNotPassMarkersToUserCallback` 替换为 `PredicateRangeResultsExcludeTransactionMarkers`，验证只有标记时无结果，以及含标记的活跃/冻结表查询 [b, d) 返回正确的 key/value/版本。原有全匹配标记过滤、回滚、墓碑等断言保留；业务代码未改，未重跑其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-memtable-predicate-contract-o2wecet6/result.log`。以下保留原始测试记录；其中“回调收到空 key”不再被认定为本接口的正确性缺陷。
@@ -186,7 +187,7 @@
 
 - 用户手动修改业务源码及头文件；助手在聊天中给出带中文解释的实现和准确位置。
 - 一次推进一个函数，检查完成后，等用户明确说“下一个”再继续。
-- 每次展示计划或进度，都先列出全部六个阶段及其已完成、进行中、待开始状态，再标出当前阶段正在处理的函数；必要时补充当前阶段细项。该约定按用户 2026-10-22 最新要求更新，不再只在阶段结束时展示总进度。不能把单个函数通过写成整个阶段完成。
+- 每次展示计划或进度，都先列出全部六个阶段及其已完成、进行中、待开始状态，再标出当前阶段正在处理的函数；必要时补充当前阶段细项。按用户 2026-10-24 要求，同时标注完成百分比：默认按“功能验收通过的阶段数 ÷ 总阶段数”计算，说明口径，不代表工作量或剩余时间；阶段内部分完成暂不折算。旧注释等收尾事项仍明确列出，不能把单个函数通过写成整个阶段完成。
 - Lab 指定函数即使已有实现，也要独立推导，并对照作者参考；有差异时说明理由。
 - 提出修复前先确认职责、输入输出及实际调用链，检查已有过滤能否保证结果；区分“内部候选包含记录”“回调收到记录”和“最终向用户返回记录”，不能将三者混为一谈。
 - 独立分析后再用作者参考与对应 Lab 校正，明确哪些是文档要求、参考实现行为、本地约定或可选增强；参考存在遗漏时用具体代码路径说明，不把参考本身视为正确性证明。
