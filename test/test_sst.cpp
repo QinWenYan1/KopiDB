@@ -4,6 +4,7 @@
 #include "sst/sst.h"
 #include "sst/sst_iterator.h"
 #include <filesystem>
+#include <functional>
 #include <gtest/gtest.h>
 #include <stdexcept>
 #include <tuple>
@@ -519,8 +520,8 @@ TEST_F(SSTTest, RollbackSeekSelectsVisibleVersionAndRetainsTombstone) {
     SCOPED_TRACE(keep_all);
     for (const auto &[read_id, expected_id, expected_value] : cases) {
       SCOPED_TRACE(read_id);
-      SstIterator it(sst, read_id, keep_all);
-      it.seek("k", is_aborted);
+      SstIterator it(sst, "a", read_id, keep_all, is_aborted);
+      it.seek("k");
       ASSERT_TRUE(it.is_valid());
       EXPECT_EQ(it->first, "k");
       EXPECT_EQ(it->second, expected_value);
@@ -538,8 +539,8 @@ TEST_F(SSTTest, RollbackSeekSelectsVisibleVersionAndRetainsTombstone) {
       EXPECT_EQ(queried->second, expected_value);
       EXPECT_EQ(queried.get_cur_tranc_id(), expected_id);
     }
-    SstIterator historical(sst, 4, keep_all);
-    historical.seek("k", is_aborted);
+    SstIterator historical(sst, "a", 4, keep_all, is_aborted);
+    historical.seek("k");
     EXPECT_TRUE(historical.is_end());
     EXPECT_TRUE(historical == sst->end());
     SstIterator keyed_historical(sst, "k", 4, keep_all, is_aborted);
@@ -559,8 +560,9 @@ TEST_F(SSTTest, RollbackSeekSelectsVisibleVersionAndRetainsTombstone) {
 }
 
 // 目的：重复 seek 必须清除缓存；seek 和按 key 构造在全部取消或缺失时不能返回相邻 key。
-// 场景：先读取 k@9，再取消 9 读取 k@5，再取消整个 k；之后重新查询其他 key。
-// 预期：每次返回本次定位结果；默认回调仍能读到物理存在的 k@9；空 SST 句柄可安全返回。
+// 场景：构造时保存状态查询回调，读取 k@9 后登记取消 9，再 seek 应读到 k@5。
+// 使用另一迭代器验证整个 k 被取消的情况；seek 始终沿用各自构造时的回调。
+// 预期：缓存刷新、end 后可重新定位；未配置回调的独立迭代器仍能读到 k@9。
 TEST_F(SSTTest, RollbackSeekRefreshesCacheAndHandlesNoMatch) {
   SSTBuilder builder(32, true);
   builder.add("a", std::string(24, 'a'), 1);
@@ -569,12 +571,16 @@ TEST_F(SSTTest, RollbackSeekRefreshesCacheAndHandlesNoMatch) {
   builder.add("z", std::string(24, 'z'), 1);
   auto sst = builder.build(1, "test_data/rollback-seek-cache.sst",
                           std::make_shared<BlockCache>(8, 2));
-  auto it = sst->begin(0);
-  it.seek("k");
+  bool cancel_latest = false;
+  SstIterator it(sst, "k", 0, false, [&cancel_latest](uint64_t id) {
+    return cancel_latest && id == 9;
+  });
   ASSERT_TRUE(it.is_valid());
   EXPECT_EQ(it->second, "new"); // 填充缓存，后面的 seek 必须使其失效。
 
-  it.seek("k", [](uint64_t id) { return id == 9; });
+  // 回调没有更换；它查询的取消状态变了，重新定位必须读取最新状态。
+  cancel_latest = true;
+  it.seek("k");
   ASSERT_TRUE(it.is_valid());
   EXPECT_EQ(it->second, "old");
   EXPECT_EQ(it.get_cur_tranc_id(), 5);
@@ -591,13 +597,14 @@ TEST_F(SSTTest, RollbackSeekRefreshesCacheAndHandlesNoMatch) {
   EXPECT_EQ(queried_old.get_cur_tranc_id(), 5);
 
   const auto cancel_k = [](uint64_t id) { return id == 9 || id == 5; };
+  SstIterator all_cancelled(sst, "a", 0, false, cancel_k);
   for (const std::string key : {"k", "missing", "", "zz"}) {
     SCOPED_TRACE(key);
-    it.seek(key, cancel_k);
-    EXPECT_TRUE(it.is_end());
-    EXPECT_FALSE(it.is_valid());
-    EXPECT_TRUE(it == sst->end());
-    EXPECT_THROW((void)*it, std::runtime_error);
+    all_cancelled.seek(key);
+    EXPECT_TRUE(all_cancelled.is_end());
+    EXPECT_FALSE(all_cancelled.is_valid());
+    EXPECT_TRUE(all_cancelled == sst->end());
+    EXPECT_THROW((void)*all_cancelled, std::runtime_error);
 
     SstIterator keyed_missing(sst, key, 0, false, cancel_k);
     EXPECT_TRUE(keyed_missing.is_end());
@@ -610,23 +617,30 @@ TEST_F(SSTTest, RollbackSeekRefreshesCacheAndHandlesNoMatch) {
     EXPECT_TRUE(queried_missing == sst->end());
 
     // end 状态也可以重新 seek；跨块后不能残留之前缓存的 k。
-    it.seek("z", cancel_k);
-    ASSERT_TRUE(it.is_valid());
-    EXPECT_EQ(it->first, "z");
-    EXPECT_EQ(it->second, std::string(24, 'z'));
-    EXPECT_EQ(it.get_cur_tranc_id(), 1);
+    all_cancelled.seek("z");
+    ASSERT_TRUE(all_cancelled.is_valid());
+    EXPECT_EQ(all_cancelled->first, "z");
+    EXPECT_EQ(all_cancelled->second, std::string(24, 'z'));
+    EXPECT_EQ(all_cancelled.get_cur_tranc_id(), 1);
   }
+  all_cancelled.seek("k");
+  EXPECT_TRUE(all_cancelled.is_end());
+  // 另一个迭代器的规则不会覆盖本对象构造时保存的规则。
   it.seek("k");
   ASSERT_TRUE(it.is_valid());
-  EXPECT_EQ(it->second, "new");
-  EXPECT_EQ(it.get_cur_tranc_id(), 9);
+  EXPECT_EQ(it->second, "old");
+  EXPECT_EQ(it.get_cur_tranc_id(), 5);
+  SstIterator unfiltered(sst, "k", 0);
+  ASSERT_TRUE(unfiltered.is_valid());
+  EXPECT_EQ(unfiltered->second, "new");
+  EXPECT_EQ(unfiltered.get_cur_tranc_id(), 9);
 
-  SstIterator empty(nullptr, 0);
   bool callback_called = false;
-  empty.seek("k", [&callback_called](uint64_t) {
+  SstIterator empty(nullptr, "k", 0, false, [&callback_called](uint64_t) {
     callback_called = true;
     return false;
   });
+  empty.seek("k");
   EXPECT_TRUE(empty.is_end());
   EXPECT_FALSE(empty.is_valid());
   EXPECT_FALSE(callback_called);
@@ -650,26 +664,30 @@ TEST_F(SSTTest, RollbackSeekPropagatesErrorAndLeavesEndState) {
   builder.add("z", std::string(24, 'z'), 1);
   auto sst = builder.build(1, "test_data/rollback-seek-error.sst",
                           std::make_shared<BlockCache>(8, 2));
-  auto it = sst->begin(0);
-  ASSERT_TRUE(it.is_valid());
-  EXPECT_EQ(it->first, "a");
   for (bool standard_exception : {true, false}) {
     SCOPED_TRACE(standard_exception);
-    const auto failing_check = [standard_exception](uint64_t) -> bool {
+    const auto failing_check = [standard_exception](uint64_t id) -> bool {
+      // a/z 的版本为 1，可以正常定位；只有查询 k@9 的状态时抛异常。
+      if (id != 9) {
+        return false;
+      }
       if (standard_exception) {
         throw std::runtime_error("rollback lookup failed");
       }
       // 模拟回调抛出不继承 std::exception 的异常，验证 catch (...) 也会清理状态。
       throw 42;
     };
+    SstIterator it(sst, "a", 0, false, failing_check);
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(it->first, "a"); // 填充缓存，后续失败定位应清理它。
 
     if (standard_exception) {
-      EXPECT_THROW(it.seek("k", failing_check), std::runtime_error);
+      EXPECT_THROW(it.seek("k"), std::runtime_error);
       EXPECT_THROW((SstIterator(sst, "k", 0, false, failing_check)),
                    std::runtime_error);
       EXPECT_THROW(sst->get("k", 0, failing_check), std::runtime_error);
     } else {
-      EXPECT_THROW(it.seek("k", failing_check), int);
+      EXPECT_THROW(it.seek("k"), int);
       EXPECT_THROW((SstIterator(sst, "k", 0, false, failing_check)), int);
       EXPECT_THROW(sst->get("k", 0, failing_check), int);
     }
@@ -683,6 +701,38 @@ TEST_F(SSTTest, RollbackSeekPropagatesErrorAndLeavesEndState) {
     EXPECT_EQ(it->first, "z");
     EXPECT_EQ(it.get_cur_tranc_id(), 1);
   }
+}
+
+// 目的：回调由迭代器独立保存，调用方清空函数对象后，重复 seek 仍按原规则过滤。
+// 场景：a/b 各有取消的 @9 和有效的 @5；跨 key、查询缺失后再次定位都应读到 @5。
+TEST_F(SSTTest, RollbackSeekRetainsCallbackAfterCallerReset) {
+  SSTBuilder builder(32, true);
+  builder.add("a", "cancelled-a", 9);
+  builder.add("a", "old-a", 5);
+  builder.add("b", "cancelled-b", 9);
+  builder.add("b", "old-b", 5);
+  auto sst = builder.build(1, "test_data/seek-owned-callback.sst",
+                          std::make_shared<BlockCache>(8, 2));
+  std::function<bool(uint64_t)> is_aborted =
+      [](uint64_t id) { return id == 9; };
+  SstIterator it(sst, "a", 0, false, is_aborted);
+  ASSERT_TRUE(it.is_valid());
+  EXPECT_EQ(it->second, "old-a");
+  is_aborted = {};
+
+  for (const std::string key : {"b", "a"}) {
+    SCOPED_TRACE(key);
+    it.seek(key);
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(it->first, key);
+    EXPECT_EQ(it->second, "old-" + key);
+    EXPECT_EQ(it.get_cur_tranc_id(), 5);
+    it.seek("missing");
+    EXPECT_TRUE(it == sst->end());
+  }
+  it.seek("a");
+  ASSERT_TRUE(it.is_valid());
+  EXPECT_EQ(it.get_cur_tranc_id(), 5);
 }
 
 int main(int argc, char **argv) {

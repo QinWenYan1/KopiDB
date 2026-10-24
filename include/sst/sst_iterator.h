@@ -47,9 +47,9 @@ public:
   SstIterator(std::shared_ptr<SST> sst, uint64_t tranc_id,
               bool keep_all_versions = false);
 
-  // 创建迭代器，并定位 key 的最大有效版本。
-  // SST 为空或没有有效版本时进入 end 状态。
-  // 回调只用于本次定位，不保存在迭代器中。
+  // 创建迭代器，并定位 key 的最大有效版本
+  // SST 为空或没有有效版本时进入 end 状态
+  // 构造时保存回滚判断，后续定位沿用该回调
   SstIterator(std::shared_ptr<SST> sst, const std::string &key,
               uint64_t tranc_id, bool keep_all_versions = false,
               const std::function<bool(uint64_t)> &is_aborted = {});
@@ -62,7 +62,7 @@ public:
   void seek_first();
 
   // 精确查找 key；没有有效版本时进入 end 状态
-  // 定位时由 seek 保存回调，并传给当前块迭代器
+  // 沿用构造时保存的回调，并传给当前块迭代器
   void seek(const std::string &key);
   std::string key();
   std::string value();
