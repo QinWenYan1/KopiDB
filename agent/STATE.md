@@ -12,7 +12,7 @@
 
 当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、状态查询接口、结束登记、abort 及写入路径的旧方案清理已完成；存储查询过滤尚未完成。
 
-当前推进项：第①、②阶段完成，第③阶段点查与批查回滚功能通过；get 的两处旧注释仍待用户清理。按已验收功能阶段计为 **50%（3/6）**，不代表工时比例。第④阶段 MemTable 三个范围入口及 BlockIterator 两种构造此前已通过；当前 Block::get_monotony_predicate_iters 的两处构造调用漏传 keep_all_versions=false，xmake build test_block 构建失败。已通知用户补齐，新加 2 个区间测试待运行，本轮未执行测试程序。此前 Block 30/30、SST 19/19 及已完成项 177/177 是本次修改前的结果；当前函数未验收，SST 和 Engine 范围入口继续待办。
+当前推进项：第①、②阶段完成，第③阶段点查与批查回滚功能通过；get 的两处旧注释仍待用户清理。按已验收功能阶段计为 **50%（3/6）**，不代表工时比例。第④阶段 MemTable 三个范围入口、BlockIterator 两种构造及 Block::get_monotony_predicate_iters 已通过。用户补齐两处 false 实参后重新构建，本轮完整 Block 32/32、SST 19/19 通过，包含 2 个谓词区间回滚测试；未修改业务代码或测试断言。下一步接通 Block::iters_preffix 的回调转发，SST 和 Engine 范围入口继续待办。此前已完成项 177/177 保留为历史结果，本轮未运行其他套件。
 
 2026-10-22 SST 检查：SST::get 已将回调正确传给按 key 构造的 SstIterator，范围/Bloom 检查、读取上限和有效墓碑处理正确。扩展现有测试到公开 get 入口，完整 test_sst 19/19 通过。随后已接通 Engine 候选 SST 查询及 get。
 
@@ -142,6 +142,7 @@
 
 ## 测试状态
 
+- 最新检查（2026-10-24，Block 谓词区间修正后）：用户已补齐两个构造调用的 false 并修正左闭右开说明；重新构建 test_block/test_sst，在独立临时目录运行完整 **Block 32/32、SST 19/19 通过**。上一轮新增的 2 个谓词回滚测试通过，验证右边界与 ++ 一致、连续取消、有效墓碑、读取上限 0/历史上限、无匹配及全取消区间。业务代码由用户修改，本轮未改测试断言或运行其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-predicate-fixed-ju3dbvki`。
 - 最新检查（2026-10-24，Block 谓词区间入口）：`xmake build test_block` 失败，错误定位 src/block/block.cpp:566；两处构造将 std::function 作为第④个 bool 参数，缺少 false。新增 `RollbackPredicateFiltersRecordsAndRightBoundary`、`RollbackPredicateHandlesEmptyAndCancelledRanges`，覆盖两端一致筛选、有效墓碑、读取上限、连续取消及空结果等，尚未运行。本轮没有使用旧测试二进制宣称当前通过，未修改业务源码。构建日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-predicate-build-rz0dsng4/build.log`。
 - 最新检查（2026-10-24，BlockIterator 按 key 构造）：新增 `RollbackKeyIteratorFiltersThroughoutTraversal` 和 `RollbackKeyIteratorOwnsCallback`，验证普通/全版本模式、读取上限 0 与历史上限、连续取消值和墓碑、有效墓碑保留、缓存、精确查找全部取消时不误返回邻居，以及调用方清空回调后继续 ++。重新构建并在独立临时目录运行完整 **Block 30/30、SST 19/19 通过**。业务源码及头文件由用户修改，其他套件本轮未运行。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-key-callback-review-zjcug46y`。
 - 最新检查（2026-10-24，BlockIterator 按下标构造）：用户补齐初始化列表的 is_aborted_(is_aborted) 后重新构建，独立临时目录运行完整 **Block 28/28、SST 19/19 通过**。4 个新增测试覆盖首条定位、++ 后筛选与缓存、复制保存回调、空块/尾后/全部取消；包含连续取消值/墓碑、读取上限 0、全版本模式及有效墓碑保留。补齐前 4 个新增测试全部失败，补齐后全部通过，未降低断言。业务代码由用户修改；本轮未运行其他测试套件。最新日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-index-verified-huwzqk31`；补齐前失败日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-index-callback-review-ueo3rju4/result.log`。

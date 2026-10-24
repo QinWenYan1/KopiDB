@@ -63,9 +63,9 @@ private:
 public:
   Block() = default;
   Block(size_t capacity);
-  // ! 这里的编码函数不包括 hash
+  // 这里的编码函数不包括 hash
   std::vector<uint8_t> encode(bool with_hash = true);
-  // ! 这里的解码函数可指定切片是否包括 hash
+  // 这里的解码函数可指定切片是否包括 hash
   static std::shared_ptr<Block> decode(const std::vector<uint8_t> &encoded,
                                        bool with_hash = true);
   std::string get_first_key();
@@ -75,9 +75,9 @@ public:
 
   // 返回符合读取上限且未回滚的最大版本的 value
   // 未命中返回 nullopt；有效墓碑返回有值的 optional，内部字符串为空
-  std::optional<std::string> get_value_binary(const std::string &key,
-                                              uint64_t tranc_id,
-                                              const std::function<bool(uint64_t)> &is_aborted = {});
+  std::optional<std::string>
+  get_value_binary(const std::string &key, uint64_t tranc_id,
+                   const std::function<bool(uint64_t)> &is_aborted = {});
 
   size_t size() const;
   size_t cur_size() const;
@@ -93,15 +93,16 @@ public:
   // 两端使用相同的读取上限和回滚判断
   std::optional<
       std::pair<std::shared_ptr<BlockIterator>, std::shared_ptr<BlockIterator>>>
-  get_monotony_predicate_iters(uint64_t tranc_id,
-                               std::function<int(const std::string &)> predicate,
-                              const std::function<bool(uint64_t)> &is_aborted = {});
+  get_monotony_predicate_iters(
+      uint64_t tranc_id, std::function<int(const std::string &)> predicate,
+      const std::function<bool(uint64_t)> &is_aborted = {});
 
   BlockIterator begin(uint64_t tranc_id = 0);
 
   std::optional<
       std::pair<std::shared_ptr<BlockIterator>, std::shared_ptr<BlockIterator>>>
-  iters_preffix(uint64_t tranc_id, const std::string &preffix);
+  iters_preffix(uint64_t tranc_id, const std::string &preffix,
+                const std::function<bool(uint64_t)> &is_aborted = {});
 
   BlockIterator end();
 };

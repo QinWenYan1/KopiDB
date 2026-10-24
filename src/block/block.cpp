@@ -409,9 +409,9 @@ bool Block::is_same_key(size_t idx, const std::string &target_key) const {
 
 // 使用二分查找获取value
 // 要求在插入数据时有序插入
-std::optional<std::string> Block::get_value_binary(const std::string &key,
-                                                   uint64_t tranc_id,
-                                                  const std::function<bool(uint64_t)> &is_aborted) {
+std::optional<std::string>
+Block::get_value_binary(const std::string &key, uint64_t tranc_id,
+                        const std::function<bool(uint64_t)> &is_aborted) {
   // 1. 将读取上限和回滚判断一起传给下标查询
   // 例如 k@9 已回滚、k@5 有效，返回的应该是 k@5 的下标
   // 版本选择已经由底层完成，这里不再重复筛选
@@ -481,9 +481,10 @@ Block::get_idx_binary(const std::string &key, uint64_t tranc_id,
 // Lab 3.3 获取前缀匹配的区间迭代器
 std::optional<
     std::pair<std::shared_ptr<BlockIterator>, std::shared_ptr<BlockIterator>>>
-Block::iters_preffix(uint64_t tranc_id, const std::string &preffix) {
-  // ? 将前缀匹配转化为单调谓词, 调用 get_monotony_predicate_iters
-  // ? 谓词: -key.compare(0, preffix.size(), preffix)
+Block::iters_preffix(uint64_t tranc_id, const std::string &preffix,
+                     const std::function<bool(uint64_t)> &is_aborted) {
+  // 将前缀匹配转化为单调谓词, 调用 get_monotony_predicate_iters
+  // 谓词: -key.compare(0, preffix.size(), preffix)
   // 前缀匹配转单调谓词: compare 比的是 key 的前 preffix.size() 个字符
   //   相等(有此前缀) ->  0 -> -0 = 0  命中
   //   key 前缀较小  -> 负 -> 取负得正 -> >0 往右
@@ -503,7 +504,7 @@ std::optional<
     std::pair<std::shared_ptr<BlockIterator>, std::shared_ptr<BlockIterator>>>
 Block::get_monotony_predicate_iters(
     uint64_t tranc_id, std::function<int(const std::string &)> predicate,
-  const std::function<bool(uint64_t)> &is_aborted) {
+    const std::function<bool(uint64_t)> &is_aborted) {
   // 第一次二分: 找到 first (满足谓词的最左边索引)
   // 第二次二分: 找到 last  (满足谓词的最右边索引)
   // 返回 [BlockIterator(first), BlockIterator(last+1)]
@@ -553,18 +554,19 @@ Block::get_monotony_predicate_iters(
   // last命中元素 + 1，天然左闭右开
   size_t end_idx = left;
 
-
-  // 3. 由 BlockIterator 的构造里的 skip_by_tranc_id 自动处理版本可见性筛选和回滚状态
-  // false 表示普通遍历：每个 key 返回一个有效版本。
-  // 有效墓碑仍保留，交给上层归并处理。
+  // 3. 由 BlockIterator 的构造里的 skip_by_tranc_id
+  // 自动处理版本可见性筛选和回滚状态 false 表示普通遍历：每个 key
+  // 返回一个有效版本。 有效墓碑仍保留，交给上层归并处理。
 
   // 两端必须传入同一回调。
   // 例如只查询 b，右边界原本是 c@9，但事务 9 已回滚：
   // 从 b 执行 ++ 会跳过 c@9，因此 end 也必须跳到相同位置，
   // 否则遍历会跨过 end，无法按预期停止。
   return std::make_pair(
-      std::make_shared<BlockIterator>(shared_from_this(), first, tranc_id, false, is_aborted),
-      std::make_shared<BlockIterator>(shared_from_this(), end_idx, tranc_id, false, is_aborted));
+      std::make_shared<BlockIterator>(shared_from_this(), first, tranc_id,
+                                      false, is_aborted),
+      std::make_shared<BlockIterator>(shared_from_this(), end_idx, tranc_id,
+                                      false, is_aborted));
 }
 
 Block::Entry Block::get_entry_at(size_t offset) const {
