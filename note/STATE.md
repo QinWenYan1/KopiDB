@@ -1,6 +1,6 @@
 # KopiDB 项目状态
 
-最后核对：2026-10-23。下一步与待办见 [PLAN.md](PLAN.md)。
+最后核对：2026-10-24。下一步与待办见 [PLAN.md](PLAN.md)。
 
 本文件记录当前事实、已确认的设计、全局约定、验收边界和延期事项。代码与记录不一致时，先检查代码，再更新记录；不能把讨论通过的方案当作已经实现。[PLAN.md](PLAN.md) 只记录本轮任务、执行顺序、TODO 与具体的验收场景。
 
@@ -10,7 +10,7 @@
 
 当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、状态查询接口、结束登记、abort 及写入路径的旧方案清理已完成；存储查询过滤尚未完成。
 
-当前推进项：第①、②阶段完成，第③阶段点查与批查回滚功能已通过相关 48/48 回归；get 的两处旧注释仍待用户清理。第④阶段最新完整 SkipList 31/31 通过，getter 已允许读取事务标记版本；完整 MemTable 48/49，唯一失败是 PredicateDoesNotPassMarkersToUserCallback。候选 value 和原先标记上的版本读取异常已修复；谓词包装仍待完成，暂不进入 Block/SST。Engine 范围入口的回滚过滤仍未接通；业务代码由用户手动加入。
+当前推进项：第①、②阶段完成，第③阶段点查与批查回滚功能已通过相关 48/48 回归；get 的两处旧注释仍待用户清理。第④阶段 MemTable 的 begin、iters_preffix、iters_monotony_predicate 已通过，2026-10-24 完整 MemTable 49/49；上轮 SkipList 31/31，getter 已允许读取事务标记版本。撤回额外谓词包装要求并修正相应测试，下一步 Block/SST。Engine 范围入口的回滚过滤仍未接通；业务代码由用户手动加入。
 
 2026-10-22 SST 检查：SST::get 已将回调正确传给按 key 构造的 SstIterator，范围/Bloom 检查、读取上限和有效墓碑处理正确。扩展现有测试到公开 get 入口，完整 test_sst 19/19 通过。随后已接通 Engine 候选 SST 查询及 get。
 
@@ -24,9 +24,13 @@
 
 已完成 MemTable::begin：第三个参数接收可选 is_aborted。collect 中先跳过空 key，再用 get_cur_tranc_id 取得真实版本，筛选读取上限与回滚状态；收集所有内存表，保留有效墓碑和来源优先级。查询不删除原节点；测试确认刷盘仍能读取事务标记并报告 ID。后续 getter 已允许读取标记版本，begin 的标记过滤仍保留；is_valid 及 Level/SST 的现有过滤未改动。Engine 范围入口尚未传入回调，因此本函数通过不代表完整范围回滚查询已接通。过滤只在收集阶段执行，返回堆持有数据副本，不随之后的 abort 自动重建。
 
-已完成 MemTable::iters_preffix：沿用 begin 的筛选与来源规则，在每张表的前缀区间收集有效候选；空前缀不暴露事务标记，最终由堆去重并隐藏有效墓碑。当前谓词查询已接入回滚回调且修正 value，最新测试只剩用户谓词收到空 key 的问题；尚未完成整个范围查询验收。
+已完成 MemTable::iters_preffix：沿用 begin 的筛选与来源规则，在每张表的前缀区间收集有效候选；空前缀不暴露事务标记，最终由堆去重并隐藏有效墓碑。iters_monotony_predicate 同样已接通回滚筛选并通过测试；尚未完成整个范围查询验收。
 
-2026-10-23 getter 调整已验证：SkipListIterator::get_cur_tranc_id 只检查 !current，允许读取普通记录、墓碑和实际事务标记的版本，空/end 仍抛 runtime_error。is_valid 保持原样；其他迭代器 getter 未改动。新增 2 个测试，完整 SkipList 31/31 通过；MemTable 回归只剩用户谓词收到标记的一个失败项。查询仍须自行隐藏标记，并在调用用户谓词前排除它；getter 不承担记录过滤职责。
+2026-10-23 getter 调整已验证：SkipListIterator::get_cur_tranc_id 只检查 !current，允许读取普通记录、墓碑和实际事务标记的版本，空/end 仍抛 runtime_error。is_valid 保持原样；其他迭代器 getter 未改动。新增 2 个测试，完整 SkipList 31/31 通过。查询仍须从结果中隐藏标记；getter 不承担记录过滤职责。
+
+2026-10-24 谓词约定纠正：作者 MemTable 参考直接把 predicate 传给 SkipList；已核对的 Lab 5.2 与本地接口没有“谓词永远收不到空 key”的要求。MemTable 保留直接调用，谓词应对空字符串有定义且满足单调性；空 key 即使命中，也在收集时跳过。此前助手把回调输入防护作为必须修复的 bug 并写入测试，要求过强，现撤回。测试改为验证含事务标记时的实际范围结果，不再限制谓词是否收到标记。Engine 现有入口包装本轮未改；其作用是额外保护上层谓词输入，不要求各下层重复增加包装。
+
+2026-10-24 进一步核对过滤必要性：SkipList 的谓词函数返回原始命中区间，不必单独排除事务标记；MemTable 的谓词函数最后构造的 HeapIterator 默认 skip_delete=true，现有事务标记的 value 为空，也会被堆过滤。因此，就该函数当前的最终结果而言，收集阶段的 key.empty() 判断并非唯一保障，不应列为缺失即错误的必修项；现有判断可保留，减少无用候选入堆。作者参考也未在该函数收集阶段显式过滤空 key。该结论基于当前标记格式、getter 已允许标记节点、回滚判断回调按 ID 查询且可处理标记，以及堆过滤开启；不能推广为所有 MemTable 入口都可依赖墓碑过滤，例如 begin(..., false) 会关闭该过滤。本轮仅核对代码与参考，未改业务代码，也未运行删除该判断后的测试。
 
 当前排期约束：项目时间紧，优先沿现有结构完成回滚。迭代器职责重构已经讨论，但列为后续事项，本轮只做必要的判断接入与参数传递。
 
@@ -136,6 +140,7 @@
 
 ## 测试状态
 
+- 最新检查（2026-10-24，谓词接口约定纠正）：`xmake build test_memtable` 成功，独立临时目录运行完整 **test_memtable 49/49 通过**。将额外约束回调输入的 `PredicateDoesNotPassMarkersToUserCallback` 替换为 `PredicateRangeResultsExcludeTransactionMarkers`，验证只有标记时无结果，以及含标记的活跃/冻结表查询 [b, d) 返回正确的 key/value/版本。原有全匹配标记过滤、回滚、墓碑等断言保留；业务代码未改，未重跑其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-memtable-predicate-contract-o2wecet6/result.log`。以下保留原始测试记录；其中“回调收到空 key”不再被认定为本接口的正确性缺陷。
 - 最新检查（2026-10-23，getter 与谓词复测）：两目标构建成功，完整 **test_skiplist 31/31、test_memtable 48/49**。新增 `CurrentTransactionIdIncludesMarkersAndTombstones` 和 `CurrentTransactionIdRejectsEmptyIterators`；验证真实记录、墓碑、多版本标记和空/end 边界。MemTable 唯一失败为 `PredicateDoesNotPassMarkersToUserCallback`，其他原失败项已通过。未运行其他套件。SkipList 日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-skiplist-current-id-k3hf0nan/result.log`；MemTable 日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-memtable-predicate-getter-fixed-1smwz9eo/result.log`。
 - 最新检查（2026-10-23，谓词查询）：构建成功，选跑 **4 个用例，全部失败**。新增 `PredicateRollbackFiltersBeforeDeduplication`、`PredicateDoesNotPassMarkersToUserCallback`、`PredicateAllKeysSafelySkipsTransactionMarkers`，并选跑原有 `PredicateAllDeletedReturnsNoRange`。确认返回 value 错误、墓碑失效、用户谓词收到空 key、空 key 上调用 get_cur_tranc_id 抛异常。本轮未运行完整 test_memtable 或其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-memtable-predicate-review-a_w_3olo/result.log`。
 - 最新检查（2026-10-23，MemTable::iters_preffix）：构建成功，完整 **test_memtable 46/46 通过**。新增 `PreffixRollbackRestoresVersionsAcrossSources`、`PreffixRollbackKeepsVersionAndSourcePriority`、`PreffixRollbackHandlesEmptyRangesAndMarkers`；原 `PreffixIter` 增加结果数量与索引边界检查。本轮未运行 test_lsm 或其他套件；谓词查询的新增回滚逻辑尚未实现或验证。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-memtable-prefix-rollback-f1tq6065/result.log`。
@@ -179,6 +184,10 @@
 - 一次推进一个函数，检查完成后，等用户明确说“下一个”再继续。
 - 每次展示计划或进度，都先列出全部六个阶段及其已完成、进行中、待开始状态，再标出当前阶段正在处理的函数；必要时补充当前阶段细项。该约定按用户 2026-10-22 最新要求更新，不再只在阶段结束时展示总进度。不能把单个函数通过写成整个阶段完成。
 - Lab 指定函数即使已有实现，也要独立推导，并对照作者参考；有差异时说明理由。
+- 提出修复前先确认职责、输入输出及实际调用链，检查已有过滤能否保证结果；区分“内部候选包含记录”“回调收到记录”和“最终向用户返回记录”，不能将三者混为一谈。
+- 独立分析后再用作者参考与对应 Lab 校正，明确哪些是文档要求、参考实现行为、本地约定或可选增强；参考存在遗漏时用具体代码路径说明，不把参考本身视为正确性证明。
+- 必修 bug 应提供当前约定内可到达的触发场景、准确位置及实际错误结果；缺少证据时标为待确认。可选防护和重构不自动加入本轮修复清单，不因假设调用方违反约定而扩大任务。
+- 测试先依据接口承诺确定预期，再检查实现；不能用助手自行添加的更强要求制造失败并反过来证明存在 bug。若发现测试预期错误，明确解释并记录原因，再修正测试。
 - 助手可以直接补充测试、维护这两份文档，并执行相关检查。测试使用独立临时目录和配置，避免测试清理影响项目数据。
 - Git 写操作由用户执行；“提 issue”默认指在聊天中起草内容。
 

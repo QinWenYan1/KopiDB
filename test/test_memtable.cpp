@@ -1454,27 +1454,39 @@ TEST(MemTableTest, PredicateRollbackFiltersBeforeDeduplication) {
   }
 }
 
-// 目的：验证事务标记不会传给用户谓词，而不只是从最终输出中删除。
-// 场景：表中只有事务标记；谓词记录是否见过空 key，并主动返回 1 避免后续解引用干扰检查。
-// 预期：空结果，用户谓词从未收到空 key；活跃表与冻结表均遵守此约定。
-TEST(MemTableTest, PredicateDoesNotPassMarkersToUserCallback) {
+// 目的：验证事务标记不影响普通 key 的谓词查询结果。
+// 场景：用对空字符串也有定义的单调谓词查询 [b, d)，分别检查活跃表和冻结表。
+// 预期：只有标记时没有结果；加入普通记录后仅返回 b/c，标记与边界外记录不返回。
+//       此接口允许谓词接收空 key，不约束定位过程中谓词的调用次数或具体输入。
+TEST(MemTableTest, PredicateRangeResultsExcludeTransactionMarkers) {
+  using Record = std::tuple<std::string, std::string, uint64_t>;
+  const auto predicate = [](const std::string &key) {
+    return key < "b" ? 1 : (key >= "d" ? -1 : 0);
+  };
   for (bool frozen_source : {false, true}) {
     SCOPED_TRACE(frozen_source);
     MemTable table;
     table.put("", "", 5);
+    EXPECT_FALSE(table.iters_monotony_predicate(0, predicate).has_value());
+
+    table.put("a", "outside-left", 5);
+    table.put("b", "value-b", 5);
+    table.put("c", "value-c", 7);
+    table.put("d", "outside-right", 7);
+    table.put("", "", 7);
     if (frozen_source) {
       table.frozen_cur_table();
     }
-    bool saw_marker = false;
-    const auto predicate = [&](const std::string &key) {
-      if (key.empty()) {
-        saw_marker = true;
-        return 1;
-      }
-      return 0;
-    };
-    EXPECT_FALSE(table.iters_monotony_predicate(0, predicate).has_value());
-    EXPECT_FALSE(saw_marker);
+    auto range = table.iters_monotony_predicate(0, predicate);
+    ASSERT_TRUE(range.has_value());
+    std::vector<Record> actual;
+    for (auto it = range->first; it != range->second; ++it) {
+      const auto entry = *it;
+      actual.emplace_back(entry.first, entry.second, it.get_cur_tranc_id());
+    }
+    const std::vector<Record> expected = {
+        {"b", "value-b", 5}, {"c", "value-c", 7}};
+    EXPECT_EQ(actual, expected);
   }
 }
 
