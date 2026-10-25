@@ -434,6 +434,85 @@ TEST_F(LSMTest, MvccLevelMergesSnapshotsAcrossSources) {
   }
 }
 
+// 目的：Level 的三路来源都要先过滤回滚版本，再跨来源比较真实版本号。
+// 场景：MemTable/L0/L1 都含取消值或取消墓碑，k 的最大有效版本在 L2，
+// m 被有效墓碑遮住，t 同版本优先内存；L1 中途有整张取消的表，后面仍有结果。
+// 直接传入回调验证 Level，Engine::begin 获取管理器的接入留给下一步。
+TEST_F(LSMTest, LevelRollbackFiltersAllSourcesBeforeMerge) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  add_sst_for_point_query(engine, 0, 1,
+      {{"b", "b5", 5}, {"k", "l0-k6", 6}, {"t", "l0-t5", 5}});
+  add_sst_for_point_query(engine, 0, 2,
+      {{"b", "", 9}, {"k", "cancelled-k9", 9}});
+  add_sst_for_point_query(engine, 1, 3,
+      {{"c", "cancelled-c9", 9}, {"c", "c4", 4}, {"d", "d5", 5},
+       {"k", "l1-k7", 7}, {"m", "m3", 3}, {"t", "l1-t5", 5}});
+  add_sst_for_point_query(engine, 1, 4, {{"x", "cancelled-x9", 9}});
+  add_sst_for_point_query(engine, 1, 5,
+      {{"y", "", 9}, {"y", "y2", 2}, {"z", "cancelled-z9", 9}, {"z", "z2", 2}});
+  add_sst_for_point_query(engine, 2, 6, {{"k", "l2-k8", 8}});
+  engine->memtable.put("", "", 9); // 内部标记不得作为用户结果返回。
+  engine->memtable.put("a", "a3", 3);
+  engine->memtable.put("a", "cancelled-a9", 9);
+  engine->memtable.put("d", "", 9);
+  engine->memtable.put("k", "mem-k4", 4);
+  engine->memtable.put("m", "", 7);
+  engine->memtable.put("t", "mem-t5", 5);
+
+  for (uint64_t read_id : {0, 6, 8}) {
+    SCOPED_TRACE(read_id);
+    std::function<bool(uint64_t)> is_aborted =
+        [](uint64_t id) { return id == 9; };
+    Level_Iterator it(engine, read_id, is_aborted);
+    is_aborted = {}; // 后续跨 SST 仍由子迭代器保存的回调过滤。
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(it->first, "a");
+    EXPECT_EQ(it->second, "a3");
+    std::vector<MvccRecord> expected = {
+        {"a", "a3", 3}, {"b", "b5", 5}, {"c", "c4", 4}, {"d", "d5", 5},
+        {"k", read_id == 6 ? "l0-k6" : "l2-k8", read_id == 6 ? 6 : 8}};
+    if (read_id == 6) expected.emplace_back("m", "m3", 3);
+    expected.emplace_back("t", "mem-t5", 5);
+    expected.emplace_back("y", "y2", 2);
+    expected.emplace_back("z", "z2", 2);
+    expect_mvcc_records(it, expected);
+    EXPECT_TRUE(it == Level_Iterator{});
+  }
+}
+
+// 目的：空库、全部版本取消、剩余候选只有有效墓碑时，Level 都应返回结束态。
+// 场景：内存/L0/L1/L2 各有取消记录，内存 e@7 墓碑遮住 L2 的 e@3；
+// f@12 超过读取上限 8。验证 end 比较和无效结果状态，避免暴露墓碑或事务标记。
+TEST_F(LSMTest, LevelRollbackHandlesEmptyAndDeletedResults) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto is_aborted = [](uint64_t id) { return id == 9; };
+  {
+    Level_Iterator empty(engine, 0, is_aborted);
+    EXPECT_TRUE(empty.is_end());
+    EXPECT_FALSE(empty.is_valid());
+    EXPECT_TRUE(empty == Level_Iterator{});
+  } // 释放 Level 持有的 SST 读锁，再添加测试数据。
+  add_sst_for_point_query(engine, 0, 1, {{"b", "", 9}});
+  add_sst_for_point_query(engine, 1, 2, {{"c", "c9", 9}});
+  add_sst_for_point_query(engine, 2, 3,
+      {{"d", "", 9}, {"e", "e3", 3}});
+  engine->memtable.put("", "", 7);
+  engine->memtable.put("a", "a9", 9);
+  engine->memtable.put("e", "", 7);
+  engine->memtable.put("f", "f12", 12);
+  {
+    Level_Iterator deleted(engine, 8, is_aborted);
+    EXPECT_TRUE(deleted.is_end());
+    EXPECT_FALSE(deleted.is_valid());
+    EXPECT_TRUE(deleted == Level_Iterator{});
+  }
+  {
+    Level_Iterator all_cancelled(engine, 0, [](uint64_t) { return true; });
+    EXPECT_TRUE(all_cancelled.is_end());
+    EXPECT_TRUE(all_cancelled == Level_Iterator{});
+  }
+}
+
 // 目的：compaction 中同 key、同版本冲突时，应延续较新来源 A 的优先级。
 // 场景：A 中 k 是墓碑，B 中 k 是旧值；若 B 先写入新 SST，点查询会复活旧值。
 //       读上限 0、两路及外层全部 keep_all=true，与当前 compaction 调用一致。

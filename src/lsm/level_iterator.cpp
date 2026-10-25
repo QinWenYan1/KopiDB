@@ -12,17 +12,17 @@
 // Lab 4.6 Level_Iterator 初始化
 namespace tiny_lsm {
 Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
-                               uint64_t max_tranc_id, 
-                              const std::function<bool(uint64_t)> &is_aborted)
-    : engine_(engine), max_tranc_id_(max_tranc_id), rlock_(engine_->ssts_mtx){
-  // 初始化列表最后一项 rlock_(engine_->ssts_mtx): 
+                               uint64_t max_tranc_id,
+                               const std::function<bool(uint64_t)> &is_aborted)
+    : engine_(engine), max_tranc_id_(max_tranc_id), rlock_(engine_->ssts_mtx) {
+  // 初始化列表最后一项 rlock_(engine_->ssts_mtx):
   // 这个迭代器从生到死一直持有引擎的读锁。为什么需要它?
-  // 
+  //
   // 我们的 SST 迭代器是"惰性"的: 不是构造时把数据全读进内存,
   // 而是边迭代边从磁盘文件里读。如果迭代到一半, 后台 compact
   // 把正在读的旧 SST 文件删了, 后续读取就会对着一个已删除的文件
   // -> 读到垃圾数据或直接崩溃。
-  // 
+  //
   //  读锁就是告诉 flush/compact: "我在读, 这些文件先别动。"
   //  代价也很直白: 迭代器活得越久, flush/compact 被堵得越久。
   //  教学项目接受这个代价, 换取实现简单。
@@ -52,7 +52,7 @@ Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
     for (size_t sst_id : l0->second) {
       const auto &sst = engine_->ssts.at(sst_id);
       // 按当前快照读取，保留可见的删除标记
-      // 
+      //
       // 先让每张 SST 排除回滚版本，再参与归并
       // 例如 k@9 已回滚、k@5 有效，应把 k@5 交给堆
       // false 是 keep_all_versions=false，每个 key 取最大有效版本
@@ -73,7 +73,7 @@ Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
   // ===== 第 3 路来源: L1 及更深层, 每层一个 ConcactIterator =====
   // L1+ 经过 compact 整理: 同层各 SST 的 key 范围有序且不重叠,
   // 所以每层只要一个 ConcactIterator 把各张表首尾相接串起来, 不用堆。
-  // 
+  //
   // 有几层就装几个 —— 这也是教程"Compact 之后才有 Level"的代码体现:
   // compact 之前 level_sst_ids 里只有第 0 层, 这个循环一次都不会执行。
   for (auto &[level, sst_id_list] : engine_->level_sst_ids) {
@@ -86,7 +86,8 @@ Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
 
     // ConcactIterator 保存回调，首次定位和后续换表都会继续过滤
     // false 表示每个 key 只保留最大有效版本
-    iter_vec.push_back(std::make_shared<ConcactIterator>(ssts, max_tranc_id_, false, is_aborted));
+    iter_vec.push_back(std::make_shared<ConcactIterator>(ssts, max_tranc_id_,
+                                                         false, is_aborted));
   }
 
   // ===== 收尾: 把迭代器停到第一个"活着的" key 上 =====

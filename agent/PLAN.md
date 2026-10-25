@@ -25,13 +25,13 @@
 | ① | 保存并查询回滚 ID | 已完成 |
 | ② | 实现 abort，调整写入上下文 | 已完成 |
 | ③ | 接通单条与批量查询 | 功能验收通过；get 的两处旧注释待清理 |
-| ④ | 接通遍历、前缀和谓词查询 | 进行中：Level 构造的 Concact 调用漏传 false，构建待通过 |
+| ④ | 接通遍历、前缀和谓词查询 | 进行中：Level 构造已通过；当前接通 LSMEngine::begin |
 | ⑤ | 接回事务读取缓存与提交检查 | 待开始 |
 | ⑥ | 持久化状态与正常重启 | 待开始 |
 
 ## 当前推进项
 
-**2026-10-25 检查 Level_Iterator 构造：声明/定义已接收回调，MemTable 与 L0 传递正确；src/lsm/level_iterator.cpp:89 创建 ConcactIterator 时漏了第三个参数 false，回调误放到 keep_all_versions 的位置。xmake build test_lsm 失败，构建结束后再次读取该行，仍为三参数调用。等待用户补为 (ssts, max_tranc_id_, false, is_aborted)；本轮未新增或运行测试，未修改业务代码。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-level-constructor-review-d182z7d3/build.log`。**
+**2026-10-25 Level_Iterator 构造已验收：用户补齐 ConcactIterator 的 false 参数，三路回调传递正确。新增 LevelRollbackFiltersAllSourcesBeforeMerge 和 LevelRollbackHandlesEmptyAndDeletedResults，test_lsm 构建成功，选跑 Level/Concact 相关测试 8/8 通过；未运行完整 test_lsm 或其他套件。当前给出 LSMEngine::begin 草案：取得有效管理器，创建持有 shared_ptr 的回调，传给 Level 构造。头文件与 end 无需修改；下一轮测试补齐直接调用 Engine::begin 的存储用例所需管理器绑定，保留原有结果断言。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-level-constructor-fixed-s33rf702`。**
 
 上轮 begin 测试覆盖首条与后续 key 的取消值/墓碑、有效墓碑、读取上限 0 与历史上限、回调独立保存、空块、全部取消及默认参数兼容。业务源码及头文件由用户修改，未降低既有断言。构建与测试日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-begin-rollback-efcgymdy`。
 
@@ -210,7 +210,7 @@
 
 构建与测试日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-constructor-seek-82t_mbe9`。本轮只修改测试和协作文档。
 
-SST 后续按函数推进：operator++、seek_first 与普通构造均已通过；SST::begin 和 sst_iters_monotony_predicate 也已通过，ConcactIterator 构造和 operator++ 也已通过，当前处理 Level_Iterator 构造。BlockIterator 两种构造已保存回调，后续操作沿用成员，无需重复配置。
+SST 后续按函数推进：operator++、seek_first 与普通构造均已通过；SST::begin 和 sst_iters_monotony_predicate 也已通过，ConcactIterator 构造和 operator++ 也已通过，Level_Iterator 构造已通过，当前处理 LSMEngine::begin。BlockIterator 两种构造已保存回调，后续操作沿用成员，无需重复配置。
 
 已完成 operator++：用户在新块构造参数末尾传入 is_aborted_。新增 2 个测试验证跨块取消值/墓碑、连续全取消块、有效墓碑保留、普通/全版本模式、读取上限 0/5/10、缓存刷新、尾部全取消到 end、调用方清空回调以及共享块缓存的不同读取规则互不覆盖。完整 SST 22/22 通过，未运行其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-increment-rollback-bbsk_a_o`。
 
@@ -226,11 +226,13 @@ SST 后续按函数推进：operator++、seek_first 与普通构造均已通过�
 
 已完成 ConcactIterator::operator++：每次进入新 SST 都调用 begin(max_tranc_id_, keep_all_versions_, is_aborted_)；连续跳过无有效记录的表，全部耗尽后保留原结束态。复读当前代码确认只传三个参数；上一轮构建错误已解决。新增 ConcactRollbackIncrementPreservesFilterAcrossSsts、ConcactRollbackIncrementKeepsUnfilteredHistory，加上此前三个测试共 5/5 通过，默认无回调的全版本读取仍保留原始记录。
 
-当前 Level_Iterator 构造草案：增加默认空的回调参数，将它分别传给 memtable.begin(max_tranc_id_, false, is_aborted)、L0 的 sst->begin(max_tranc_id_, false, is_aborted)、L1+ 的 ConcactIterator(ssts, max_tranc_id_, false, is_aborted)。保留现有读锁、真实版本比较、同版本来源优先级、事务标记和最终墓碑过滤。Level 只在构造时创建子迭代器，后续 ++ 直接推进它们，因此不增加自己的回调成员；MemTable/L0 已收集副本，Concact/SST 已自行保存回调。头文件同步声明并直接包含 functional；Engine::begin 的管理器取用和传递仍在下一步骤，默认参数维持旧调用兼容。已对照本地 reference-impl 的 Level 构造和推进路径。用户已修改，但 Concact 调用漏传 false 导致构建失败，修正后再补充三路回滚归并测试并验收。
+已完成 Level_Iterator 构造：可选回调分别传给 MemTable::begin、L0 的 SST::begin 和 L1+ 的 ConcactIterator；用户补齐第三个 false 后构建与相关测试 8/8 通过。新增测试覆盖三路取消值/墓碑、跨 L0/L1/L2 真实版本比较、同版本内存优先、有效墓碑遮住旧值、事务标记、读取上限 0/6/8、跨全取消 SST 后继续读取、回调独立保存，以及空库/全取消/仅有效墓碑返回 end。Level 后续只推进已有子迭代器，无需自己的回调成员；保留用户的 MemTable 堆复制写法，属于性能选择，不影响当前正确性。
+
+当前 LSMEngine::begin 草案：沿用 get/get_batch 已确认的有效管理器要求，lock 弱引用失败时抛 runtime_error；回调捕获 shared_ptr 并调用 is_aborted，作为第三参数传给 Level_Iterator(shared_from_this(), tranc_id, is_aborted)。不在 Engine 重复获取 ssts_mtx，Level 构造自行持有读锁；不改 end。原参考在 begin 处仍是桩，提示构造 Level；本地增加回滚依赖传递。现有 Engine::begin 存储测试下一轮补管理器绑定，断言保持；生产 LSM 的组件绑定仍留 Lab 5.5。等待用户手写与公开入口验收。
 
 2026-10-24 同类问题审计：检索 include/src 中全部 is_aborted 声明、赋值和调用，并核对各迭代器接口及查询转发路径。当前只有 BlockIterator 与 SstIterator 保存该回调，均在已有回调参数的构造中初始化，未发现其他普通操作重复接收并覆盖成员。BlockIterator 按 key 构造向 Block 查询传递构造参数，与当前成员规则一致，不构成重复配置。其余查询参数用于当次筛选或创建新对象。审计时发现的 ++ 跨块和 seek_first 漏传现均已通过验证，普通构造也已接通；公开遍历、范围入口及上层接通尚未完成。审计只针对该设计问题，未运行新测试，不宣称完整回滚链已完成。
 
-验证边界：两种构造、重复 seek、++ 跨块、seek_first 和公开 SST::begin 均已通过；SST 谓词范围入口也已通过；Concact 构造和跨 SST ++ 已通过；Level 和 Engine 的回调传递仍待接通。以上是既定后续任务，不能把本次测试通过视为 SST、Engine 的完整范围回滚查询已完成。
+验证边界：两种构造、重复 seek、++ 跨块、seek_first 和公开 SST::begin 均已通过；SST 谓词范围入口也已通过；Concact 构造和跨 SST ++ 已通过；Level 构造也已通过；Engine 的公开范围入口仍待接通。以上是既定后续任务，不能把本次测试通过视为 SST、Engine 的完整范围回滚查询已完成。
 
 已完成 MemTable::begin：第三个参数接收可选 is_aborted。collect 中先跳过空 key，再用 get_cur_tranc_id 取得真实版本，筛选读取上限与回滚状态；收集所有内存表，保留有效墓碑和来源优先级。查询不删除原节点；测试确认刷盘仍能读取事务标记并报告 ID。后续 getter 已允许读取标记版本，begin 的标记过滤仍保留；is_valid 及 Level/SST 的现有过滤未改动。Engine 范围入口尚未传入回调，因此本函数通过不代表完整范围回滚查询已接通。
 
