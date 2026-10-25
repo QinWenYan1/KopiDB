@@ -239,6 +239,14 @@ bool TranContext::commit(bool test_fail) {
   std::unique_lock<std::shared_mutex> frozen_lock(mem.frozen_mtx);
 
   using VersionValue = std::optional<std::pair<std::string, uint64_t>>;
+  // 同一次提交中的所有冲突查询，共用这个回滚判断
+  // 复制 shared_ptr 即可：后面还要用 manager 登记提交或取消
+  // 因此这里不能把 manager move 走
+  std::function<bool(uint64_t)> is_aborted =
+      [manager](uint64_t id) {
+        return manager->is_aborted(id);
+      };
+
   // 3. 查询某个 key 当前真实的最新版本，保留墓碑
   //    0 表示不限制版本上限，才能发现比当前事务更新的记录
   //
@@ -248,14 +256,16 @@ bool TranContext::commit(bool test_fail) {
   //
   //    例如库里存在 k@12 的墓碑，事务 10 想写 k：
   //    删除也是一次更新，必须识别出 12 > 10，拒绝旧事务写入
+  //    但已回滚版本必须排除，不能让它们造成错误冲突
   auto latest_record = [&](const std::string &key) -> VersionValue {
-    auto latest = engine_->sst_get_(key, 0);
-    auto memory = mem.get_(key, 0);
+    auto latest = engine_->sst_get_(key, 0, is_aborted);
+    auto memory = mem.get_(key, 0, is_aborted);
 
     if (memory.is_valid() &&
         (!latest || memory.get_cur_tranc_id() >= latest->second)) {
       latest = std::make_pair(memory.get_value(), memory.get_cur_tranc_id());
     }
+
     return latest;
   };
 
