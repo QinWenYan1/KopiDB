@@ -2491,6 +2491,130 @@ TEST_F(TranCommitTest, AppliesWritesAndEndsOnlyOnce) {
   }
 }
 
+// 目的：已取消的较新值或墓碑不能阻止旧事务提交；两路内部查询均应过滤。
+// 场景：有效 k@3，旧事务暂存写 k，随后较新 RU 事务写值/墓碑并取消；
+// 取消版本分别在活跃表、冻结表和 SST，覆盖三个暂存型隔离级别。
+TEST_F(TranCommitTest, IgnoresAbortedNewerVersionsAcrossStorage) {
+  uint64_t id = 10;
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ, IsolationLevel::SERIALIZABLE}) {
+    for (int storage = 0; storage < 3; ++storage) {
+      for (bool tombstone : {false, true}) {
+        SCOPED_TRACE(static_cast<int>(level));
+        SCOPED_TRACE(storage);
+        SCOPED_TRACE(tombstone);
+        const auto key = "commit-cancelled-" + std::to_string(id);
+        engine->put(key, "old", 3);
+        TranContext older(id, engine, manager, level);
+        older.put(key, "accepted");
+        TranContext newer(id + 1, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+        if (tombstone) newer.remove(key);
+        else newer.put(key, "cancelled");
+        if (storage == 1) engine->memtable.frozen_cur_table();
+        if (storage == 2) {
+          while (engine->memtable.get_total_size() != 0) engine->flush();
+        }
+        ASSERT_TRUE(newer.abort());
+        ASSERT_TRUE(older.commit());
+        EXPECT_TRUE(older.isCommited);
+        EXPECT_FALSE(manager->is_aborted(id));
+        EXPECT_EQ(engine->get(key, 0),
+                  std::make_optional(std::make_pair(std::string("accepted"), id)));
+        id += 2;
+      }
+    }
+  }
+}
+
+// 目的：跳过取消版本后，仍须发现下面的有效新版本，不能误放行或部分应用写入。
+// 场景：旧事务 id 暂存 k 和另一 key；id+1 已提交值/墓碑，id+2 的遮盖版本被取消。
+TEST_F(TranCommitTest, StillRejectsValidConflictBelowAbortedVersion) {
+  uint64_t id = 10;
+  for (bool disk : {false, true}) {
+    for (bool tombstone : {false, true}) {
+      SCOPED_TRACE(disk);
+      SCOPED_TRACE(tombstone);
+      const auto key = "conflict-" + std::to_string(id);
+      const auto other = "unwritten-" + std::to_string(id);
+      TranContext older(id, engine, manager, IsolationLevel::REPEATABLE_READ);
+      older.put(key, "must-not-apply");
+      older.put(other, "must-not-apply");
+      TranContext committed(id + 1, engine, manager, IsolationLevel::READ_OP_COMMITTED);
+      if (tombstone) committed.remove(key);
+      else committed.put(key, "committed");
+      ASSERT_TRUE(committed.commit());
+      TranContext cancelled(id + 2, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+      cancelled.put(key, "cancelled");
+      if (disk) engine->flush();
+      ASSERT_TRUE(cancelled.abort());
+      EXPECT_FALSE(older.commit());
+      EXPECT_TRUE(manager->is_aborted(id));
+      EXPECT_FALSE(engine->get(other, 0));
+      if (tombstone) EXPECT_FALSE(engine->get(key, 0));
+      else EXPECT_EQ(engine->get(key, 0), std::make_optional(
+          std::make_pair(std::string("committed"), id + 1)));
+      id += 3;
+    }
+  }
+}
+
+// 目的：SERIALIZABLE 的读集校验也使用过滤后的版本，取消的更新不造成虚假冲突。
+// 场景：先缓存有效旧值和不存在；后来 RU 更新/删除旧值并新增缺失 key，再刷盘取消。
+TEST_F(TranCommitTest, SerialReadValidationIgnoresAbortedChanges) {
+  uint64_t id = 10;
+  for (bool tombstone : {false, true}) {
+    const auto key = "read-" + std::to_string(id);
+    const auto missing = "missing-" + std::to_string(id);
+    const auto written = "written-" + std::to_string(id);
+    engine->put(key, "old", 3);
+    TranContext reader(id, engine, manager, IsolationLevel::SERIALIZABLE);
+    ASSERT_EQ(reader.get(key), std::make_optional(std::string("old")));
+    ASSERT_FALSE(reader.get(missing));
+    TranContext cancelled(id + 1, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+    if (tombstone) cancelled.remove(key);
+    else cancelled.put(key, "cancelled");
+    cancelled.put(missing, "cancelled");
+    engine->flush();
+    ASSERT_TRUE(cancelled.abort());
+    reader.put(written, "accepted");
+    ASSERT_TRUE(reader.commit());
+    EXPECT_EQ(engine->get(written, 0),
+              std::make_optional(std::make_pair(std::string("accepted"), id)));
+    id += 2;
+  }
+}
+
+// 下一项验收：检查首次读取是否已经读脏，再检查可重复读缓存是否残留脏结果。
+class TranReadVisibilityTest : public TranCommitTest {};
+
+// 目的：RC/RR/SERIALIZABLE 不应读取其他 RU 事务尚未提交的值或墓碑。
+// 场景：通过 new_tranc 创建全部事务，先提交 old，再启动 RU 写入和较晚的读事务；
+// 在 RU 取消前后都应读到 old。该测试同时捕获缓存脏值和缓存错误“不存在”的问题。
+TEST_F(TranReadVisibilityTest, RejectsDirtyValuesAndTombstonesBeforeCaching) {
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ, IsolationLevel::SERIALIZABLE}) {
+    for (bool tombstone : {false, true}) {
+      SCOPED_TRACE(static_cast<int>(level));
+      SCOPED_TRACE(tombstone);
+      const auto key = "visibility-" + std::to_string(static_cast<int>(level)) +
+                       (tombstone ? "-deleted" : "-updated");
+      auto base = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+      base->put(key, "old");
+      ASSERT_TRUE(base->commit());
+      auto writer = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+      if (tombstone) writer->remove(key);
+      else writer->put(key, "dirty");
+      auto reader = manager->new_tranc(level);
+      EXPECT_EQ(reader->get(key), std::make_optional(std::string("old")))
+          << "First read must exclude the other transaction's uncommitted record";
+      ASSERT_TRUE(writer->abort());
+      EXPECT_EQ(reader->get(key), std::make_optional(std::string("old")))
+          << "A cached dirty value or false absence must not survive abort";
+      ASSERT_TRUE(reader->abort());
+    }
+  }
+}
+
 // 目的：内存/SST 中的新值和新墓碑都拒绝旧事务，且整个暂存集合零写入。
 // 场景：三个暂存型级别各测四种冲突来源；另放一个无冲突 key，防止部分提交。
 TEST_F(TranCommitTest, ConflictCancelsWithoutApplyingAnyPendingWrite) {

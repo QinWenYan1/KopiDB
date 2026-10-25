@@ -301,7 +301,7 @@ bool TranContext::commit(bool test_fail) {
   //    这里检查的是 read_map_ 中的单键记录，不涵盖范围查询的幻读
   //    read_map_ 是当前事务自己的“读取记录表”，保存第一次查询某个 key
   //    时看到的结果
-  //    1. 实现可重复读, 2. 给 SERIALIZABLE 的提交检查提供依据。
+  //    1. 实现可重复读, 2. 给 SERIALIZABLE 的提交检查提供依据
   if (!conflict && isolation_level_ == IsolationLevel::SERIALIZABLE) {
     for (const auto &[key, expected] : read_map_) {
       auto current = latest_record(key);
@@ -481,8 +481,12 @@ void TranManager::set_engine(std::shared_ptr<LSMEngine> engine) {
 
 TranManager::~TranManager() { write_tranc_id_file(); }
 
-void TranManager::write_tranc_id_file() {}
+// TODO: Lab 5.2 持久化事务状态信息
+void TranManager::write_tranc_id_file() {
 
+}
+
+// TODO: Lab 5.2 读取持久化的事务状态信息
 void TranManager::read_tranc_id_file() {}
 
 bool TranManager::is_aborted(uint64_t tranc_id) const {
@@ -495,59 +499,13 @@ bool TranManager::is_aborted(uint64_t tranc_id) const {
   return aborted_tranc_ids_.contains(tranc_id); 
 }
 
+// TODO: Lab 5.2 更新持久化的事务状态信息
 // 负责登记事务的结束状态（已提交或已回滚），供后续刷盘时处理
 // 如果是回滚，还会把事务 ID 加入回滚名单
-void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id,
-                                              TransactionState state) {
-  // 两份状态共用同一把锁
-  // 其他线程不能在登记进行到一半时，查询到不完整的更新
-  std::lock_guard<std::mutex> lock(mutex_); 
-  // 记录这个 ID 是否由本次调用首次加入回滚名单
-  // 后面若登记失败，只能撤销本次新增的项
-  // 不能删除之前已经成功登记的回滚 ID
-  bool added_abort_id = false; 
+void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id, TransactionState state) {}
 
-  if (state == TransactionState::ABORTED){
-    // insert 返回值的 second 表示是否真的插入了新元素：
-    // 首次登记为 true，重复登记为 false
-    added_abort_id = aborted_tranc_ids_.insert(tranc_id).second; 
-  }
-
-  try {
-    // 正常提交和回滚，都需要登记事务结束状态
-    // ID 不存在时插入，已经存在时更新状态
-    readyToFlushTrancIds_.insert_or_assign(tranc_id, state); 
-  } catch (...){
-    // map 插入新节点时可能因内存分配失败而抛异常
-    // 此时撤销本次新增的回滚名单项，使两份登记保持一致
-    // 这里只撤销未完成的状态登记，不操作数据库里的 key/value
-    if (added_abort_id)
-      aborted_tranc_ids_.erase(tranc_id); 
-
-    // 把失败传给调用方，不能让 commit/abort 误认为登记成功
-    throw;
-  }
-}
-
-void TranManager::add_flushed_tranc_id(uint64_t tranc_id) {
-  std::unique_lock lock(mutex_);
-  std::vector<uint64_t> needRemove;
-  for (auto &[readyId, state] : readyToFlushTrancIds_) {
-    if (readyId < tranc_id && state == TransactionState::ABORTED) {
-      flushedTrancIds_.insert(readyId);
-      needRemove.push_back(readyId);
-    } else if (readyId == tranc_id) {
-      flushedTrancIds_.insert(readyId);
-      needRemove.push_back(readyId);
-      break;
-    }
-  }
-  for (auto id : needRemove) {
-    readyToFlushTrancIds_.erase(id);
-  }
-
-  flushedTrancIds_ = compressSet<uint64_t>(flushedTrancIds_);
-}
+// TODO: Lab 5.2 更新持久化的事务状态信息
+void TranManager::add_flushed_tranc_id(uint64_t tranc_id) {}
 
 uint64_t TranManager::getNextTransactionId() {
   return nextTransactionId_.fetch_add(1);

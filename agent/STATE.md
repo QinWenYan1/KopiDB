@@ -10,15 +10,15 @@
 
 正在进行 **Lab 5.2：事务上下文与事务管理器**。此前已经推进过 SkipList、MemTable、Block、SST、迭代器和 Engine 的 MVCC 改造，当前继续接入事务状态判断，整个数据库的事务功能尚未验收完成。
 
-当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、结束登记、abort 及存储查询的回滚过滤已通过相应验收；事务读缓存、提交冲突查询与状态持久化仍未完成。
+当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、结束登记、abort 及存储查询的回滚过滤已通过相应验收；提交候选查询的回滚过滤也已通过；事务读缓存的隔离语义与状态持久化仍未完成。
 
-当前推进项：第①～④阶段功能验收通过，进度 **66.7%（4/6）**，不代表工时比例；第③阶段的两处旧注释待清理。2026-10-25 Engine 谓词查询两路回调接通，新增两个谓词用例和一个实际 compaction 用例，并扩展真实回滚的活跃表/冻结表/SST 范围验证。构建成功，相关 **19/19 通过**；未运行完整 test_lsm 或其他套件。实际 L0→L1 后仍可找回旧值，物理取消版本仍保留；第④阶段按查询前回滚状态已经确定的场景验收，并发范围快照语义另见现有边界说明。现在进入第⑤阶段，先给出 commit::latest_record 的回滚过滤草案；read_map_ 与提交状态仍待独立处理，未宣称整个事务模块完成。助手只修改测试和文档。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-engine-predicate-rollback-oulglnui`。
+当前推进项：第①～④阶段功能验收通过，进度 **66.7%（4/6）**；第③阶段两处旧注释待清理。2026-10-25 第⑤阶段的 commit 候选查询已传入回滚判断，新增 3 个测试，完整 **TranCommitTest 13/13 通过**。下一项混合隔离测试 **0/1 通过**：RC/RR/SERIALIZABLE 首次可能读取其他 RU 事务的未提交值或墓碑，RR/SERIALIZABLE 还会在写者取消后复用错误缓存。该场景全部通过 new_tranc 创建事务，不依赖并发或越界调用。用户已确认正式显式事务统一通过 begin_tran/new_tranc 创建，直接构造仅用于底层测试。当前先补结束登记时退出 activeTrans_，再提供原子状态判断并接通首次读取过滤；未把缓存重查视为完整修复。助手只修改测试与文档，未运行完整 test_lsm。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-commit-rollback-review-w6qs1_4r`。
 
 2026-10-22 SST 检查：SST::get 已将回调正确传给按 key 构造的 SstIterator，范围/Bloom 检查、读取上限和有效墓碑处理正确。扩展现有测试到公开 get 入口，完整 test_sst 19/19 通过。随后已接通 Engine 候选 SST 查询及 get。
 
 2026-10-23 最新 Engine 检查：get_batch 在用户修正 if (man) 为 if (!man) 后，管理器前置检查及回调传递正确。新增 2 个批量测试，扩展既有跨来源比较到批量入口；构建成功，相关 48/48 通过。覆盖空/非空输入依赖检查、实际取消新增/修改/删除、活跃表/冻结表/SST、连续取消、历史上限、顺序/重复/缺失、墓碑及同版本来源优先级。上一轮 get 的 46 个回归也包含在本轮中。助手未修改业务代码。
 
-当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator/SstIterator 按 key 构造、SstIterator::seek、SST::get 及 Engine::sst_get_ 在显式传入回调时会排除已取消版本，保留有效墓碑，相关测试通过。Engine 的公开 get/get_batch 已从管理器取得并传入回调；commit 的内部候选查询尚未接通。MemTable::get 返回的原节点迭代器不保存回调；get_record/get_batch 在锁内复制结果。BlockIterator 两种构造现已保存回调，块内 ++ 自动沿用筛选；SstIterator 按 key 构造已保存回调，seek 沿用成员并传给当前块，++ 跨块与 seek_first 也已正确传递成员回调，普通构造也已保存回调，公开 SST::begin 已通过；SST 谓词范围入口也已通过；Concact 构造及 ++ 跨 SST 也已通过；Level 构造的三路传递也已通过，Engine::begin 的公开遍历也已通过；Engine 谓词查询也已通过。存储读取的回滚过滤已接通；事务内部缓存和提交候选查询仍待处理。
+当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator/SstIterator 按 key 构造、SstIterator::seek、SST::get 及 Engine::sst_get_ 在显式传入回调时会排除已取消版本，保留有效墓碑，相关测试通过。Engine 的公开 get/get_batch 已从管理器取得并传入回调；commit 的内部候选查询也已接通并通过相关测试。MemTable::get 返回的原节点迭代器不保存回调；get_record/get_batch 在锁内复制结果。BlockIterator 两种构造现已保存回调，块内 ++ 自动沿用筛选；SstIterator 按 key 构造已保存回调，seek 沿用成员并传给当前块，++ 跨块与 seek_first 也已正确传递成员回调，普通构造也已保存回调，公开 SST::begin 已通过；SST 谓词范围入口也已通过；Concact 构造及 ++ 跨 SST 也已通过；Level 构造的三路传递也已通过，Engine::begin 的公开遍历也已通过；Engine 谓词查询也已通过。存储读取的回滚过滤已接通；事务内部读缓存和混合隔离的提交状态过滤仍待处理。
 
 2026-10-23 已确认管理器约定：Engine 公开查询必须有有效的管理器，未绑定和已销毁均报错；不再保留未绑定兼容分支，不需要 owner_before。get 已按此实现并通过缺失/失效测试，回调持有 shared_ptr 到查询结束；查询期间的持有关系经过代码检查，未添加生命周期并发压力测试。get_batch 已沿用此约定并通过测试，即使空输入也先检查依赖。Lab 5.5 的生产入口绑定仍按原计划延期，当前测试显式绑定，不以此降低业务查询的要求。
 
@@ -60,6 +60,7 @@
 6. **Block/SST 记录编码保持现状。** 回滚 ID 随事务状态文件保存。刷盘登记完成不代表旧记录已被物理删除，因此不能顺便清掉回滚名单。
 7. **读未提交 put 的冲突检查暂缓。** 当前先完成回滚主线；后续再讨论是否增加这项约束。
 8. **迭代器重构不作为本轮前置任务。** 保留现有迭代器组合与推进逻辑，在去重之前接入必要的回滚判断；不要求每个迭代器各新增一套过滤。此前讨论的统一 MVCC 迭代器仍是延期的重构方向。
+9. **正式显式事务统一由 begin_tran/new_tranc 创建。** 用户于 2026-10-25 确认；直接构造 TranContext 保留给底层测试，不用于验证正式事务的跨事务可见性。构造函数暂不改访问权限，不要求改写所有底层测试；需要验证混合隔离的测试通过工厂创建并登记事务。
 
 
 2026-10-24 回调归属审计：当前 include/src 中未发现除已修正的 SstIterator::seek 外，其他普通操作重新配置对象已保存的 is_aborted_。这不表示所有范围入口已经接通。Block 当前不长期保存回调，由调用方提供查询条件；BlockIterator 保存供后续操作复用。用户提出让 Block 也保存，技术上可行，但属于依赖归属调整，不是缺失成员即有 bug。若直接保存当前捕获 shared_ptr<TranManager> 的回调，在管理器已绑定引擎且块仍在缓存中时，会形成 Engine → BlockCache → Block → 回调 → TranManager → Engine 的强引用环；需另外设计弱引用或独立状态对象及初始化路径。固定绑定回滚查询器并不天然导致并发冲突，也不要求改变 Block 磁盘编码。进一步核对：当前 Engine/缓存/Block/SST 不以成员持有返回的 BlockIterator/SstIterator；创建或返回对象并不自动建立长期持有关系。迭代器持有 Block，Block 没有反向持有该迭代器，因此当前回调不会沿这条路径形成闭环。此结论来自成员与调用关系检查，未新增生命周期测试。当前建议维持已有归属，先完成必要的回调传递；未代改业务代码。
@@ -76,6 +77,7 @@
 - 只添加集合或实现 `abort()`，还不能宣称回滚完成；点查、批量查询、范围遍历和提交冲突检查都需要接通。
 - `TranContext::get()` 的 `read_map_` 可能绕过存储层查询，需要检查缓存值和缓存的“不存在”结果如何与事务状态配合。
 - 混合隔离级别下，读已提交、可重复读对其他事务未提交数据的可见性仍需处理。仅排除 ABORTED 不等于已经实现“只读已提交”。
+- 2026-10-25 混合隔离失败测试已确认。用户已接受统一工厂入口。当前 activeTrans_ 仍只增不删，不能直接用 contains 判断仍活跃；拟在结束状态登记成功后、同一 mutex_ 内移出，异常时保留活跃登记。后续回滚/活跃联合判断也应在一次锁内完成，不能无锁读取其他上下文的 isCommited/isAborted。未登记的任意 ID 不因此获得“已提交”证明；正式读取依赖已确认的事务入口及普通单次写入约定，恢复一致性仍按后续章节验收。
 - 当前 `SERIALIZABLE` 有单键读记录校验，不代表已经实现完整串行化或范围幻读保护。
 - 当前提交路径跳过 WAL 持久化；WAL 和崩溃恢复按后续 Lab 推进。
 - Block 编码超限沿用已确认的抛异常方案，长期容量设计另行讨论。
