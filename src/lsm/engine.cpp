@@ -104,18 +104,14 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id) {
   //    后面由回调持有它，保证本次查询期间回滚名单仍然可用
   auto man = tran_manager.lock();
 
-  // lock() 返回空，有两种原因：
-  //   ① 从未绑定管理器：允许独立使用 Engine，保持原查询行为。
-  //   ② 绑定的管理器已经销毁：无法判断哪些版本已回滚，必须报错。
-  //
-  // 查询需要使用管理器中的回滚名单
-  // 未绑定或管理器已销毁，都说明查询所需的依赖尚未准备好
+  // 查询需要有效的事务管理器来检查回滚状态
+  // 从未绑定或管理器已经销毁时，lock() 返回空，下面直接报错
   if (!man)
     throw std::runtime_error("LSMEngine::get: transaction manager has expired");
 
   // 2. 构造本次查询共用的回滚判断
-  //    没有绑定管理器时，保留空回调
-  //    tranc_id == 0 只表示没有版本上限，仍然需要排除已回滚版本
+  //    回调持有管理器，供内存和 SST 查询共同使用
+  //    tranc_id == 0 只表示没有版本上限，仍须排除回滚版本
   std::function<bool(uint64_t)> is_aborted;
   if (man)
     is_aborted = [man = std::move(man)](uint64_t id) {
@@ -617,8 +613,7 @@ LSMEngine::lsm_iters_monotony_predicate(
   //    这里用“结果流 + 空流”适配返回类型
   return std::make_pair(
       TwoMergeIterator(results, std::make_shared<HeapIterator>(), tranc_id),
-      TwoMergeIterator{}
-  );
+      TwoMergeIterator{});
 }
 
 // Lab 4.7: 返回 Level_Iterator(shared_from_this(), tranc_id)
