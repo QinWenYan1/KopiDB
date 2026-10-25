@@ -4,6 +4,7 @@
 #include "sst_iterator.h"
 #include <memory>
 #include <vector>
+#include <functional>
 
 namespace tiny_lsm {
 class ConcactIterator : public BaseIterator {
@@ -13,10 +14,15 @@ private:
   std::vector<std::shared_ptr<SST>> ssts;
   uint64_t max_tranc_id_;
   bool keep_all_versions_ = false;
+  // 当前 SST 的迭代器只负责自己的表。
+  // ConcactIterator 切换到下一张 SST 时，还需要提供同样的回滚规则，
+  // 所以这里保存一份，供构造和后续 ++ 复用。
+  std::function<bool(uint64_t)> is_aborted_;
 
 public:
   ConcactIterator(std::vector<std::shared_ptr<SST>> ssts, uint64_t tranc_id,
-                  bool keep_all_versions = false);
+                  bool keep_all_versions = false,
+                const std::function<bool(uint64_t)> &is_aborted = {});
 
   std::string key();
   std::string value();

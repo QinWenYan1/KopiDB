@@ -1028,6 +1028,105 @@ TEST_F(SSTTest, RollbackBeginPassesFilterToIterator) {
   EXPECT_TRUE(all_cancelled == sst->end());
 }
 
+// 目的：谓词区间先排除回滚版本，再选同 key 的有效版本；有效墓碑仍交给上层。
+// 场景：a 整组取消，b 的新值和新墓碑取消，c 的墓碑有效，d 有可见旧值；
+// 查询 [a, e] 时，取消的 e 被跳过，终点必须与正常 ++ 一样落到范围外的 f。
+// 同时覆盖单块/跨块、历史读取上限，以及调用方清空回调后的持续遍历。
+TEST_F(SSTTest, RollbackPredicatePreservesVersionsAndReachableBoundary) {
+  using Row = std::tuple<std::string, std::string, uint64_t>;
+  const std::string old_b(24, 'b'), old_c(24, 'c'), old_d(24, 'd');
+  for (size_t block_size : {32, 1024}) {
+    SCOPED_TRACE(block_size);
+    SSTBuilder builder(block_size, true);
+    builder.add("a", std::string(24, 'a'), 9);
+    builder.add("b", "", 9);
+    builder.add("b", std::string(24, 'B'), 8);
+    builder.add("b", old_b, 5);
+    builder.add("c", "", 7);
+    builder.add("c", old_c, 3);
+    builder.add("d", std::string(24, 'D'), 9);
+    builder.add("d", old_d, 4);
+    builder.add("e", std::string(24, 'e'), 9);
+    builder.add("f", std::string(24, 'f'), 4);
+    auto sst = builder.build(
+        block_size, "test_data/predicate-rollback-" +
+                        std::to_string(block_size) + ".sst",
+        std::make_shared<BlockCache>(16, 2));
+    ASSERT_EQ(sst->num_blocks(), block_size == 32 ? 6 : 1);
+
+    for (uint64_t read_id : {0, 6, 10}) {
+      SCOPED_TRACE(read_id);
+      std::function<bool(uint64_t)> is_aborted =
+          [](uint64_t id) { return id == 9 || id == 8; };
+      auto range = sst_iters_monotony_predicate(
+          sst, read_id, [](const std::string &key) {
+            if (key < "a") return 1;
+            if (key > "e") return -1;
+            return 0;
+          }, is_aborted);
+      ASSERT_TRUE(range.has_value());
+      is_aborted = {};
+      auto &[it, end] = *range;
+      ASSERT_TRUE(end.is_valid());
+      EXPECT_EQ(end->first, "f");
+      const std::vector<Row> expected = {
+          {"b", old_b, 5},
+          {"c", read_id == 6 ? old_c : "", read_id == 6 ? 3 : 7},
+          {"d", old_d, 4}};
+      // 按明确的预期条数推进，终点错误时直接失败，避免测试本身死循环。
+      for (const auto &[key, value, version] : expected) {
+        ASSERT_TRUE(it != end);
+        ASSERT_TRUE(it.is_valid());
+        EXPECT_EQ(it->first, key);
+        EXPECT_EQ(it->second, value);
+        EXPECT_EQ(it.get_cur_tranc_id(), version);
+        ++it;
+      }
+      EXPECT_TRUE(it == end);
+    }
+  }
+}
+
+// 目的：没有有效命中时返回空结果；查询覆盖到 SST 尾部时能到达统一 end。
+// 场景：a/c 只有已取消版本，b@9 取消后剩 b@3；只查 a、全部取消、
+// 历史上限过低及缺失区间均无结果，默认不传回调仍兼容原来的读取方式。
+TEST_F(SSTTest, RollbackPredicateHandlesEmptyRangesAndCancelledTail) {
+  SSTBuilder builder(32, true);
+  builder.add("a", std::string(24, 'a'), 9);
+  builder.add("b", "", 9);
+  builder.add("b", std::string(24, 'b'), 3);
+  builder.add("c", std::string(24, 'c'), 9);
+  auto sst = builder.build(1, "test_data/predicate-rollback-empty.sst",
+                          std::make_shared<BlockCache>(8, 2));
+  auto all = [](const std::string &) { return 0; };
+  auto is_aborted = [](uint64_t id) { return id == 9; };
+  auto range = sst_iters_monotony_predicate(sst, 0, all, is_aborted);
+  ASSERT_TRUE(range.has_value());
+  auto &[it, end] = *range;
+  ASSERT_TRUE(it.is_valid());
+  EXPECT_EQ(it->first, "b");
+  EXPECT_EQ(it.get_cur_tranc_id(), 3);
+  EXPECT_TRUE(end == sst->end());
+  ++it;
+  EXPECT_TRUE(it == end);
+
+  EXPECT_FALSE(sst_iters_monotony_predicate(
+      sst, 0, [](const std::string &key) { return -key.compare("a"); },
+      is_aborted).has_value());
+  EXPECT_FALSE(sst_iters_monotony_predicate(
+      sst, 0, all, [](uint64_t) { return true; }).has_value());
+  EXPECT_FALSE(sst_iters_monotony_predicate(sst, 2, all, is_aborted).has_value());
+  EXPECT_FALSE(sst_iters_monotony_predicate(
+      sst, 0, [](const std::string &key) { return -key.compare("z"); },
+      is_aborted).has_value());
+  EXPECT_FALSE(sst_iters_monotony_predicate(nullptr, 0, all, is_aborted).has_value());
+  auto unfiltered = sst_iters_monotony_predicate(sst, 0, all);
+  ASSERT_TRUE(unfiltered.has_value());
+  ASSERT_TRUE(unfiltered->first.is_valid());
+  EXPECT_EQ(unfiltered->first->first, "a");
+  EXPECT_EQ(unfiltered->first.get_cur_tranc_id(), 9);
+}
+
 int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
   init_spdlog_file();

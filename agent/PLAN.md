@@ -25,13 +25,13 @@
 | ① | 保存并查询回滚 ID | 已完成 |
 | ② | 实现 abort，调整写入上下文 | 已完成 |
 | ③ | 接通单条与批量查询 | 功能验收通过；get 的两处旧注释待清理 |
-| ④ | 接通遍历、前缀和谓词查询 | 进行中：SST::begin 已通过；当前接通 SST 谓词范围查询 |
+| ④ | 接通遍历、前缀和谓词查询 | 进行中：SST 谓词范围查询已通过；当前接通 ConcactIterator 构造 |
 | ⑤ | 接回事务读取缓存与提交检查 | 待开始 |
 | ⑥ | 持久化状态与正常重启 | 待开始 |
 
 ## 当前推进项
 
-**2026-10-25 SST::begin 已验收：用户补齐 SstIterator 构造的第四个参数 is_aborted，重新构建后完整 test_sst 26/26 通过，上一轮公开入口测试失败已解决，断言未改。当前给出 sst_iters_monotony_predicate 的回调转发草案：块内范围查询传回调，两端 SST 迭代器在构造时保存；普通声明和两处 friend 声明同步。等待用户手写，尚未验收该范围入口。助手未修改业务代码，未运行其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-begin-fixed-pc1k5ds0`。**
+**2026-10-25 sst_iters_monotony_predicate 已验收：块内范围查询传入回调，两端 SstIterator 在构造时保存；普通声明及两处 friend 均已同步。新增 2 个测试，重新构建后完整 test_sst 28/28 通过，未运行其他套件。当前给出 ConcactIterator 构造函数的成员保存与首次定位草案；随后单独处理 operator++ 的跨 SST 回调传递。助手只修改测试和协作文档。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-predicate-rollback-xcl2kajy`。**
 
 上轮 begin 测试覆盖首条与后续 key 的取消值/墓碑、有效墓碑、读取上限 0 与历史上限、回调独立保存、空块、全部取消及默认参数兼容。业务源码及头文件由用户修改，未降低既有断言。构建与测试日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-begin-rollback-efcgymdy`。
 
@@ -210,7 +210,7 @@
 
 构建与测试日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-constructor-seek-82t_mbe9`。本轮只修改测试和协作文档。
 
-SST 后续按函数推进：operator++、seek_first 与普通构造均已通过；SST::begin 也已通过，当前处理 sst_iters_monotony_predicate。BlockIterator 两种构造已保存回调，后续操作沿用成员，无需重复配置。
+SST 后续按函数推进：operator++、seek_first 与普通构造均已通过；SST::begin 和 sst_iters_monotony_predicate 也已通过，当前处理 ConcactIterator 构造。BlockIterator 两种构造已保存回调，后续操作沿用成员，无需重复配置。
 
 已完成 operator++：用户在新块构造参数末尾传入 is_aborted_。新增 2 个测试验证跨块取消值/墓碑、连续全取消块、有效墓碑保留、普通/全版本模式、读取上限 0/5/10、缓存刷新、尾部全取消到 end、调用方清空回调以及共享块缓存的不同读取规则互不覆盖。完整 SST 22/22 通过，未运行其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-increment-rollback-bbsk_a_o`。
 
@@ -220,11 +220,13 @@ SST 后续按函数推进：operator++、seek_first 与普通构造均已通过�
 
 已完成 SST::begin：声明在 keep_all_versions 后增加默认空回调，定义将三项读取条件传入普通 SstIterator 构造。用户补齐漏传的第四个参数后，完整 SST 26/26 通过。公开入口测试覆盖取消首块、取消墓碑后的旧值、保留有效墓碑、跨过全取消块、普通/全版本遍历、调用方清空回调及整表取消；保留原有默认参数测试。SST 本身不保存回调；上层显式传递仍在后续既定任务内。
 
-当前 sst_iters_monotony_predicate 草案：保留元数据剪枝、跳过空区间和右边界跨块归一化，仅将 is_aborted 传给 Block::get_monotony_predicate_iters，并在 final_begin/final_end.emplace(nullptr, tranc_id, false, is_aborted) 时保存到新对象。同步 include/sst/sst_iterator.h 的普通声明及 friend 声明、include/sst/sst.h 的 friend 声明；只有普通声明提供默认参数。现有 Engine 三参数调用暂时兼容，Engine 回调接入仍在后续阶段内。已重新阅读 Lab 5.2 并对照本地 reference-impl；回滚名单与回调属于本项目已确认方案，参考未提供该参数。等待用户修改后验证，尚未标记范围入口完成。
+已完成 sst_iters_monotony_predicate：保留元数据剪枝、跳过空区间和右边界跨块归一化，将 is_aborted 传给 Block::get_monotony_predicate_iters，并在 final_begin/final_end.emplace(nullptr, tranc_id, false, is_aborted) 时保存。普通声明和两处 friend 已同步，默认参数只在普通声明提供。新增 2 个测试覆盖单块/跨块、连续取消值与墓碑、有效墓碑、读取上限 0/6/10、回调独立保存、右边界过滤后可到达、取消尾块至全局 end、全取消/无匹配/空句柄及默认调用兼容。完整 SST 28/28 通过；Engine 传递回调仍待后续接通。
+
+当前 ConcactIterator 构造草案：增加按值保存的 is_aborted_，构造参数末尾提供默认空回调，创建每张 SST 的起点时传入成员。保留已有逐 SST 寻找首条有效记录的循环和有效墓碑，不另写版本过滤。初始/最终空 SST 迭代器仅作占位，不读取记录，无需携带回调。必要后续是 operator++ 换 SST 时复用同一成员；两处按逐函数节奏分轮实现，未宣称完整 Concact 回滚遍历已完成。已对照 reference-impl 的构造与 ++；Level 查询和 compaction 调用暂不改，默认空回调维持旧接口和 compaction 原始版本读取。等待用户手写。
 
 2026-10-24 同类问题审计：检索 include/src 中全部 is_aborted 声明、赋值和调用，并核对各迭代器接口及查询转发路径。当前只有 BlockIterator 与 SstIterator 保存该回调，均在已有回调参数的构造中初始化，未发现其他普通操作重复接收并覆盖成员。BlockIterator 按 key 构造向 Block 查询传递构造参数，与当前成员规则一致，不构成重复配置。其余查询参数用于当次筛选或创建新对象。审计时发现的 ++ 跨块和 seek_first 漏传现均已通过验证，普通构造也已接通；公开遍历、范围入口及上层接通尚未完成。审计只针对该设计问题，未运行新测试，不宣称完整回滚链已完成。
 
-验证边界：两种构造、重复 seek、++ 跨块、seek_first 和公开 SST::begin 均已通过；SST 谓词范围入口及上层回调传递仍待接通。以上是既定后续任务，不能把本次测试通过视为 SST、Engine 的完整范围回滚查询已完成。
+验证边界：两种构造、重复 seek、++ 跨块、seek_first 和公开 SST::begin 均已通过；SST 谓词范围入口也已通过；Concact/Level 和 Engine 的回调传递仍待接通。以上是既定后续任务，不能把本次测试通过视为 SST、Engine 的完整范围回滚查询已完成。
 
 已完成 MemTable::begin：第三个参数接收可选 is_aborted。collect 中先跳过空 key，再用 get_cur_tranc_id 取得真实版本，筛选读取上限与回滚状态；收集所有内存表，保留有效墓碑和来源优先级。查询不删除原节点；测试确认刷盘仍能读取事务标记并报告 ID。后续 getter 已允许读取标记版本，begin 的标记过滤仍保留；is_valid 及 Level/SST 的现有过滤未改动。Engine 范围入口尚未传入回调，因此本函数通过不代表完整范围回滚查询已接通。
 

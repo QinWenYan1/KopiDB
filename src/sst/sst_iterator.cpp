@@ -15,10 +15,10 @@ namespace tiny_lsm {
 //    0: 谓词
 //   >0: 不满足谓词, 需要向右移动
 //   <0: 不满足谓词, 需要向左移动
-std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
-    std::shared_ptr<SST> sst, uint64_t tranc_id,
-    std::function<int(const std::string &)> predicate,
-  const std::function<bool(uint64_t)> &is_aborted) {
+std::optional<std::pair<SstIterator, SstIterator>>
+sst_iters_monotony_predicate(std::shared_ptr<SST> sst, uint64_t tranc_id,
+                             std::function<int(const std::string &)> predicate,
+                             const std::function<bool(uint64_t)> &is_aborted) {
 
   if (!sst)
     return std::nullopt;
@@ -42,7 +42,8 @@ std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
 
     // 2. 落到范围中 → 读块精找 (块内两次二分, 返回 [first, last+1) 迭代器对)
     auto block = sst->read_block(block_idx);
-    auto range = block->get_monotony_predicate_iters(tranc_id, predicate, is_aborted);
+    auto range =
+        block->get_monotony_predicate_iters(tranc_id, predicate, is_aborted);
     if (!range.has_value())
       // 范围命中但可见性过滤后无命中 (tranc 太旧)
       continue;
@@ -62,7 +63,7 @@ std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
     if (!final_begin.has_value()) {
       // 先构造空迭代器，再装入已找到的位置
       // 避免正常构造函数调用 seek_first()，重复读取 SST 开头
-      final_begin.emplace(nullptr, tranc_id,false, is_aborted);
+      final_begin.emplace(nullptr, tranc_id, false, is_aborted);
       final_begin->m_sst = sst;
       final_begin->set_block_idx(block_idx);
       final_begin->set_block_it(std::move(i_begin));
@@ -95,7 +96,8 @@ std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
 }
 
 SstIterator::SstIterator(std::shared_ptr<SST> sst, uint64_t tranc_id,
-                         bool keep_all_versions, const std::function<bool(uint64_t)> &is_aborted)
+                         bool keep_all_versions,
+                         const std::function<bool(uint64_t)> &is_aborted)
     : m_sst(sst), m_block_idx(0), m_block_it(nullptr), max_tranc_id_(tranc_id),
       keep_all_versions_(keep_all_versions), is_aborted_(is_aborted) {
   if (m_sst) {
@@ -158,8 +160,8 @@ void SstIterator::seek_first() {
     // 从当前块的第一条记录开始
     // BlockIterator 构造时会自动跳过不可见版本
     // BlockIterator 的下标构造: 定位到 idx，构造内部自动 skip_by_tranc_id
-    m_block_it = std::make_shared<BlockIterator>(block, 0, max_tranc_id_,
-                                                 keep_all_versions_, is_aborted_);
+    m_block_it = std::make_shared<BlockIterator>(
+        block, 0, max_tranc_id_, keep_all_versions_, is_aborted_);
 
     // 过滤后仍有记录，就找到了整张 SST 的第一条可见记录
     if (!m_block_it->is_end())

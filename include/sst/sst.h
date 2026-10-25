@@ -61,8 +61,7 @@ class SST : public std::enable_shared_from_this<SST> {
   sst_iters_monotony_predicate(
       std::shared_ptr<SST> sst, uint64_t tranc_id,
       std::function<int(const std::string &)> predicate,
-    const std::function<bool(uint64_t)> &is_aborted
-  );
+      const std::function<bool(uint64_t)> &is_aborted);
 
 private:
   FileObj file;
