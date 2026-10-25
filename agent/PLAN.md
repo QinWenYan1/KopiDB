@@ -18,20 +18,20 @@
 
 ## 六阶段总进度
 
-**功能阶段进度：50%（3/6）。** 按功能验收通过的阶段数计算，不代表工作量或剩余时间；第③阶段还有两处旧注释待清理，第④阶段的局部完成暂不折算。
+**功能阶段进度：66.7%（4/6）。** 按功能验收通过的阶段数计算，不代表工作量或剩余时间；第③阶段仍有两处旧注释待清理。第④阶段按查询前回滚状态已确定的场景验收，不代表完整并发快照隔离。
 
 | 阶段 | 任务 | 状态 |
 | --- | --- | --- |
 | ① | 保存并查询回滚 ID | 已完成 |
 | ② | 实现 abort，调整写入上下文 | 已完成 |
 | ③ | 接通单条与批量查询 | 功能验收通过；get 的两处旧注释待清理 |
-| ④ | 接通遍历、前缀和谓词查询 | 进行中：Engine::begin 已通过；当前接通 Engine 谓词查询 |
-| ⑤ | 接回事务读取缓存与提交检查 | 待开始 |
+| ④ | 接通遍历、前缀和谓词查询 | 功能验收通过；包含刷盘及 L0→L1 compaction 回归 |
+| ⑤ | 接回事务读取缓存与提交检查 | 进行中：先接通 commit 内部候选查询的回滚过滤 |
 | ⑥ | 持久化状态与正常重启 | 待开始 |
 
 ## 当前推进项
 
-**2026-10-25 LSMEngine::begin 已验收：必须取得有效管理器，回调按值捕获 shared_ptr 并传入 Level 构造。新增 EngineBeginRequiresLiveManager、EngineBeginKeepsManagerForLazySstReads；扩展两项真实 abort 回归到公开 begin，并为三个原存储测试补齐管理器绑定，保留原断言。构建成功，相关 15/15 通过，未运行完整 test_lsm 或其他套件。当前给出 lsm_iters_monotony_predicate 草案：取得同样的回调并传入 MemTable/SST 查询，保留现有范围收集、标记处理和统一墓碑归并。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-engine-begin-rollback-3sko7xtn`。**
+**2026-10-25 Engine 谓词查询已验收：管理器依赖、MemTable 与 SST 两路回调传递正确。新增两项谓词测试和一项实际 compaction 回归，扩展真实 abort 用例到活跃表/冻结表/SST 谓词查询，旧标记用例只补管理器绑定。构建成功，相关 19/19 通过；未运行完整 test_lsm 或其他套件。核对 compaction 两条路径仍为上限 0、全版本、无回滚回调；实际 L0→L1 后有效旧值可读、已取消物理版本仍保留。第④阶段功能验收完成。第⑤阶段先处理已明确的 commit::latest_record 漏传回调，再处理 read_map_ 与提交状态的设计依赖。业务代码由用户手写；当前仅给出该 lambda 及共用回调的替换草案，尚未验收提交修复。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-engine-predicate-rollback-oulglnui`。**
 
 上轮 begin 测试覆盖首条与后续 key 的取消值/墓碑、有效墓碑、读取上限 0 与历史上限、回调独立保存、空块、全部取消及默认参数兼容。业务源码及头文件由用户修改，未降低既有断言。构建与测试日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-begin-rollback-efcgymdy`。
 
@@ -188,10 +188,10 @@
 - [x] 接通 Block::begin 的回调，复用按下标构造的首次定位和后续 ++ 筛选；新增 1 个测试，完整 Block 35/35、SST 19/19 通过。
 - [x] 接通 Block/SST 查询迭代器，并检查 Heap、Concact、Level 等调用链的过滤位置与参数传递；SST 28/28、Level/Concact 8/8，以及 Engine::begin 的相关回归通过。
 - [x] 接通 Engine::begin：有效管理器检查、回调捕获与三路遍历已通过，相关 15/15。
-- [ ] 接通 Engine::lsm_iters_monotony_predicate。
-- [ ] 确保过滤发生在同 key 去重及墓碑删除整组记录之前，不因回滚而误丢有效旧版本。
-- [ ] 核查刷盘和 compaction 对原始版本的保留，区分查询过滤与物理清理。
-- [ ] 测试内存与 SST 的范围结果一致、回滚墓碑不遮住旧值、全部版本被取消时范围为空。
+- [x] 接通 Engine::lsm_iters_monotony_predicate：管理器与两路回调已验证，相关 19/19。
+- [x] 过滤发生在同 key 去重及最终墓碑处理之前；取消值/墓碑与有效旧版本的跨来源回归通过。
+- [x] 核查刷盘和 compaction：整理路径使用全版本、空回调；实际 L0→L1 回归验证取消后仍可读取旧值，并保留物理版本 3、5。
+- [x] 内存/冻结表/SST 范围一致性、取消墓碑、有效墓碑、范围外记录及空结果测试通过。
 
 已检查 BlockIterator::skip_by_tranc_id：类中按值保存默认空的 is_aborted_；函数先清理缓存、处理空块，再判断是否可以直接返回。读取上限与回滚状态条件正确，逐条移动索引并保留有效墓碑。用户的 const auto& version 绑定返回的 uint64_t 临时值，生命周期覆盖当前循环体，不构成悬空引用。完整 Block 24/24、SST 19/19 通过；本轮没有改业务代码或测试断言。
 
@@ -211,7 +211,7 @@
 
 构建与测试日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-constructor-seek-82t_mbe9`。本轮只修改测试和协作文档。
 
-SST 后续按函数推进：operator++、seek_first 与普通构造均已通过；SST::begin 和 sst_iters_monotony_predicate 也已通过，ConcactIterator 构造和 operator++ 也已通过，Level_Iterator 构造已通过，LSMEngine::begin 已通过，当前处理 Engine 谓词查询。BlockIterator 两种构造已保存回调，后续操作沿用成员，无需重复配置。
+SST 后续按函数推进：operator++、seek_first 与普通构造均已通过；SST::begin 和 sst_iters_monotony_predicate 也已通过，ConcactIterator 构造和 operator++ 也已通过，Level_Iterator 构造已通过，LSMEngine::begin 和谓词查询也已通过，当前转入第⑤阶段。BlockIterator 两种构造已保存回调，后续操作沿用成员，无需重复配置。
 
 已完成 operator++：用户在新块构造参数末尾传入 is_aborted_。新增 2 个测试验证跨块取消值/墓碑、连续全取消块、有效墓碑保留、普通/全版本模式、读取上限 0/5/10、缓存刷新、尾部全取消到 end、调用方清空回调以及共享块缓存的不同读取规则互不覆盖。完整 SST 22/22 通过，未运行其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-increment-rollback-bbsk_a_o`。
 
@@ -231,11 +231,11 @@ SST 后续按函数推进：operator++、seek_first 与普通构造均已通过�
 
 已完成 LSMEngine::begin：沿用 get/get_batch 的有效管理器要求，lock 失败时抛 runtime_error；回调捕获 shared_ptr 并传给 Level 构造，不重复获取 SST 锁。新增两项测试验证未绑定/失效拒绝、正常空库/内存读取、L1 惰性跨 SST 时保留管理器及迭代器销毁后释放引用。扩展 EngineGetRollbackTest 的两项真实回滚用例，验证活跃表→冻结表→SST、取消值/墓碑、历史上限和跨 L0/L1 的公开遍历。三个旧存储测试仅增加管理器绑定，保留原断言；相关 15/15 通过。生产 LSM 的组件绑定仍留 Lab 5.5。
 
-当前 LSMEngine::lsm_iters_monotony_predicate 草案：先取得有效管理器、构造捕获 shared_ptr 的回调，再传给 memtable.begin(tranc_id, false, is_aborted) 和 sst_iters_monotony_predicate(sst, tranc_id, predicate, is_aborted)。保持当前 Engine 的空 key 谓词包装和范围检查；先过滤回滚候选，再按真实版本及来源优先级归并，最终处理有效墓碑。MemTable 收集仍用 begin(..., false) 保留墓碑；不将回调再加入 Heap/TwoMerge，二者消费已筛选的数据副本。已对照 reference-impl 的 Lab 4.7 桩说明；这是本地既定回滚方案的接入，未改业务代码，等待用户手写与验收。
+已完成 LSMEngine::lsm_iters_monotony_predicate：有效管理器检查和两路回调传递正确，保留现有空 key 包装、范围检查、真实版本比较和最终墓碑处理。新增 EnginePredicateRequiresLiveManagerAndHandlesEmptyRanges、EnginePredicateRollbackMergesBoundedRange、RangeRollbackSurvivesActualCompaction，扩展真实 abort 的活跃/冻结/SST 一致性用例。相关 19/19 通过；实际 L0→L1 整理后旧值和物理全版本仍保留。全版本整理不使用用户回滚过滤；此次没有修改 compaction 业务代码。
 
 2026-10-24 同类问题审计：检索 include/src 中全部 is_aborted 声明、赋值和调用，并核对各迭代器接口及查询转发路径。当前只有 BlockIterator 与 SstIterator 保存该回调，均在已有回调参数的构造中初始化，未发现其他普通操作重复接收并覆盖成员。BlockIterator 按 key 构造向 Block 查询传递构造参数，与当前成员规则一致，不构成重复配置。其余查询参数用于当次筛选或创建新对象。审计时发现的 ++ 跨块和 seek_first 漏传现均已通过验证，普通构造也已接通；公开遍历、范围入口及上层接通尚未完成。审计只针对该设计问题，未运行新测试，不宣称完整回滚链已完成。
 
-验证边界：两种构造、重复 seek、++ 跨块、seek_first 和公开 SST::begin 均已通过；SST 谓词范围入口也已通过；Concact 构造和跨 SST ++ 已通过；Level 构造也已通过；Engine::begin 已通过；Engine 谓词查询仍待接通。以上是既定后续任务，不能把本次测试通过视为 SST、Engine 的完整范围回滚查询已完成。
+验证边界：两种构造、重复 seek、++ 跨块、seek_first 和公开 SST::begin 均已通过；SST 谓词范围入口也已通过；Concact 构造和跨 SST ++ 已通过；Level 构造也已通过；Engine::begin 和谓词查询均已通过；事务缓存、提交检查及持久化仍待验收。以上是既定后续任务，不能把本次测试通过视为 SST、Engine 的完整范围回滚查询已完成。
 
 已完成 MemTable::begin：第三个参数接收可选 is_aborted。collect 中先跳过空 key，再用 get_cur_tranc_id 取得真实版本，筛选读取上限与回滚状态；收集所有内存表，保留有效墓碑和来源优先级。查询不删除原节点；测试确认刷盘仍能读取事务标记并报告 ID。后续 getter 已允许读取标记版本，begin 的标记过滤仍保留；is_valid 及 Level/SST 的现有过滤未改动。Engine 范围入口尚未传入回调，因此本函数通过不代表完整范围回滚查询已接通。
 
@@ -265,6 +265,8 @@ iters_preffix 验收：取消新值/墓碑后返回有效旧值；跨活跃表�
 代码检查确认回滚判断在去重之前生效。并发边界另行明确：迭代器创建后才发生回滚时，是否沿用创建时视图不能靠猜测；确定规则后补对应测试，不能把本阶段测试当作完整范围快照隔离的证明。
 
 ## ⑤ 接回事务读取缓存与提交检查
+
+当前先修复 `commit()` 的内部候选查询：现有 `latest_record` 调用 sst_get_/mem.get_ 时未传回调，可能以已回滚的较新版本错误阻止提交。草案在 lambda 之前创建一次 `[manager]` 捕获的回调，两路复用；保留锁顺序、有效墓碑和同版本内存优先。此处不 move manager，后续提交/回滚登记还要使用它。修改位置为 src/lsm/transation.cpp:241–260，业务代码由用户修改，尚未运行修改后的提交测试。缓存及混合隔离仍保留下面的独立验收要求，不以此替代提交状态设计。
 
 - [ ] 检查 `TranContext::get()` 的 `read_map_` 路径，包括缓存值、缓存不存在及混合隔离级别场景。
 - [ ] 明确上述场景的可见性语义；不能仅在缓存返回前检查有值结果，就宣称缓存问题全部解决。

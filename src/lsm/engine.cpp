@@ -102,8 +102,7 @@ std::optional<std::pair<std::string, uint64_t>>
 LSMEngine::get(const std::string &key, uint64_t tranc_id) {
   // 1. 从弱引用取得管理器的 shared_ptr
   //    后面由回调持有它，保证本次查询期间回滚名单仍然可用
-  auto man = tran_manager.lock(); 
-
+  auto man = tran_manager.lock();
 
   // lock() 返回空，有两种原因：
   //   ① 从未绑定管理器：允许独立使用 Engine，保持原查询行为。
@@ -112,15 +111,16 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id) {
   // 查询需要使用管理器中的回滚名单
   // 未绑定或管理器已销毁，都说明查询所需的依赖尚未准备好
   if (!man)
-    throw std::runtime_error(
-        "LSMEngine::get: transaction manager has expired");
-  
+    throw std::runtime_error("LSMEngine::get: transaction manager has expired");
+
   // 2. 构造本次查询共用的回滚判断
   //    没有绑定管理器时，保留空回调
   //    tranc_id == 0 只表示没有版本上限，仍然需要排除已回滚版本
-  std::function<bool(uint64_t)> is_aborted; 
+  std::function<bool(uint64_t)> is_aborted;
   if (man)
-    is_aborted = [man = std::move(man)](uint64_t id){ return man->is_aborted(id); }; 
+    is_aborted = [man = std::move(man)](uint64_t id) {
+      return man->is_aborted(id);
+    };
 
   // best 保存目前找到的最大可见版本：
   // nullopt 表示没有候选；{"", id} 表示候选是墓碑
@@ -162,22 +162,22 @@ LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
   // 每项都保留真实版本号，包括墓碑；结果顺序与输入一致
   // 与单条 get 使用相同的前置要求：必须有有效管理器。
   // 未绑定或已经销毁时，无法判断哪些版本已回滚，直接报错
-  auto man = tran_manager.lock(); 
+  auto man = tran_manager.lock();
   if (!man)
-    throw std::runtime_error("LSMEngine::get_batch: transaction manager is unavailable"); 
+    throw std::runtime_error(
+        "LSMEngine::get_batch: transaction manager is unavailable");
 
   // 空输入没有需要查询的 key，返回空数组
   // 放在管理器检查之后，使空批次也遵守相同的初始化要求
-  if(keys.empty())
-    return {}; 
+  if (keys.empty())
+    return {};
 
   // 2. 整个批次共用一个回滚判断
   //    回调持有 shared_ptr，保证批量查询期间管理器不会销毁
   //    tranc_id == 0 只取消版本上限，仍然需要过滤回滚版本
-  std::function<bool(uint64_t)> is_aborted = [man = std::move(man)](uint64_t id){
-    return man->is_aborted(id); 
-  }; 
-  
+  std::function<bool(uint64_t)> is_aborted =
+      [man = std::move(man)](uint64_t id) { return man->is_aborted(id); };
+
   // 3. 批量获取内存候选。
   //    MemTable 在内部持锁查找并复制结果，过滤已回滚版本。
   //    每个输入 key 都保留一个位置；未命中为 nullopt。
@@ -244,7 +244,8 @@ void LSMEngine::update_best_from_sst(
 //         所以我们需要用 best
 //         保存目前找到的最大可见版本，查完其他候选来源再返回
 std::optional<std::pair<std::string, uint64_t>>
-LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id,  const std::function<bool(uint64_t)> &is_aborted) {
+LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id,
+                    const std::function<bool(uint64_t)> &is_aborted) {
   // 不加锁: 约定调用方已持有 ssts_mtx (get 的读锁 / compact 的写锁)
   // 沿用原来的锁约定：调用方已经持有 ssts_mtx
   std::optional<std::pair<std::string, uint64_t>> best;
@@ -471,9 +472,8 @@ LSMEngine::lsm_iters_monotony_predicate(
   // 无法查询回滚名单时，应报错，不能当作“没有事务被回滚”。
   auto manager = tran_manager.lock();
   if (!manager) {
-    throw std::runtime_error(
-        "LSMEngine::lsm_iters_monotony_predicate: "
-        "transaction manager is unavailable");
+    throw std::runtime_error("LSMEngine::lsm_iters_monotony_predicate: "
+                             "transaction manager is unavailable");
   }
 
   // 本次查询的所有来源使用同一回滚判断。
@@ -517,8 +517,9 @@ LSMEngine::lsm_iters_monotony_predicate(
     size_t priority = ssts.size();
 
     // 1. 收集 MemTable 中满足谓词的记录
-    //    从 memtable 查询: memtable.iters_monotony_predicate(tranc_id, predicate)
-    // 
+    //    从 memtable 查询: memtable.iters_monotony_predicate(tranc_id,
+    //    predicate)
+    //
     // false 是 skip_delete=false：有效墓碑必须保留，
     // 否则磁盘中的旧值可能在后面的归并中重新出现。
     //
@@ -549,8 +550,8 @@ LSMEngine::lsm_iters_monotony_predicate(
     for (const auto &[level, ids] : level_sst_ids) {
       for (size_t id : ids) {
         --priority;
-        auto range =
-            sst_iters_monotony_predicate(ssts.at(id), tranc_id, predicate, is_aborted);
+        auto range = sst_iters_monotony_predicate(ssts.at(id), tranc_id,
+                                                  predicate, is_aborted);
         if (!range.has_value())
           continue;
 
@@ -559,7 +560,7 @@ LSMEngine::lsm_iters_monotony_predicate(
           //  可见性过滤可能让区间起点落在某个块的末尾
           //  此时不能解引用，让循环的 ++ 推进到后续块
           //  为什么？
-          // 
+          //
           //  你当前的范围查询在 sst_iterator.cpp 会把这个块迭代器直接装入 SST
           //  迭代器 因此可能出现： it.is_valid() == false  //
           //  当前没有可读取的记录 it.is_end()   == false  //
@@ -616,7 +617,8 @@ LSMEngine::lsm_iters_monotony_predicate(
   //    这里用“结果流 + 空流”适配返回类型
   return std::make_pair(
       TwoMergeIterator(results, std::make_shared<HeapIterator>(), tranc_id),
-      TwoMergeIterator{});
+      TwoMergeIterator{}
+  );
 }
 
 // Lab 4.7: 返回 Level_Iterator(shared_from_this(), tranc_id)
@@ -625,11 +627,10 @@ Level_Iterator LSMEngine::begin(uint64_t tranc_id) {
   // 1. 从弱引用取得事务管理器
   // 与 get/get_batch 的约定一致：公开查询需要有效管理器
   // 才能判断哪些版本已经回滚
-  auto manager = tran_manager.lock(); 
-  if (!manager){
+  auto manager = tran_manager.lock();
+  if (!manager) {
     throw std::runtime_error(
-       "LSMEngine::begin: transaction manager is unavailable"
-    ); 
+        "LSMEngine::begin: transaction manager is unavailable");
   }
 
   // 2. 创建本次遍历共用的回滚判断
@@ -637,8 +638,10 @@ Level_Iterator LSMEngine::begin(uint64_t tranc_id) {
   // 这样 begin 返回后，后续跨块、跨 SST 读取仍能查询回滚状态
   //
   // tranc_id == 0 只表示没有版本上限，仍然要过滤已回滚版本
-  std::function<bool(uint64_t)> is_aborted = 
-    [manager = std::move(manager)](uint64_t id){return manager->is_aborted(id); }; 
+  std::function<bool(uint64_t)> is_aborted =
+      [manager = std::move(manager)](uint64_t id) {
+        return manager->is_aborted(id);
+      };
 
   // 3. shared_from_this() 获取当前引擎的共享指针，
   // 让迭代器持有引擎，保证遍历期间引擎仍然存在。

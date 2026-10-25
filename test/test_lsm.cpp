@@ -1084,6 +1084,7 @@ TEST_F(LSMTest, TransactionMarkerDoesNotReorderMergedIteration) {
 // 回归：Engine 在查询入口包装谓词后，所有来源都应拦截空 key。
 TEST_F(LSMTest, PredicateDoesNotExposeTransactionMarkersToCallback) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
   SSTBuilder builder(256, false);
   builder.add("", "", 3);
   builder.add("Z", "disk-value", 3);
@@ -1108,6 +1109,64 @@ TEST_F(LSMTest, PredicateDoesNotExposeTransactionMarkersToCallback) {
   expect_mvcc_records(range->first,
                       {{"A", "memory-value", 5}, {"Z", "disk-value", 3}});
   EXPECT_TRUE(range->first == range->second);
+}
+
+// 目的：公开谓词查询需要有效管理器，并能区分空库、有效删除和全部取消的范围。
+// 场景：k@9 已取消、k@6 为有效墓碑、k@3 为旧值；上限 0 无结果，上限 5 可见旧值。
+TEST_F(LSMTest, EnginePredicateRequiresLiveManagerAndHandlesEmptyRanges) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto all = [](const std::string &) { return 0; };
+  EXPECT_THROW((void)engine->lsm_iters_monotony_predicate(0, all), std::runtime_error);
+  auto manager = bind_test_manager(engine);
+  EXPECT_FALSE(engine->lsm_iters_monotony_predicate(0, all));
+  engine->memtable.put("k", "old", 3);
+  engine->memtable.put("k", "", 6);
+  engine->memtable.put("k", "cancelled", 9);
+  engine->memtable.put("x", "cancelled", 9);
+  manager->add_ready_to_flush_tranc_id(9, TransactionState::ABORTED);
+  EXPECT_FALSE(engine->lsm_iters_monotony_predicate(0, all));
+  auto historical = engine->lsm_iters_monotony_predicate(5, all);
+  ASSERT_TRUE(historical);
+  expect_mvcc_records(historical->first, {{"k", "old", 3}});
+  EXPECT_FALSE(engine->lsm_iters_monotony_predicate(
+      0, [](const std::string &key) { return -key.compare("x"); }));
+  EXPECT_FALSE(engine->lsm_iters_monotony_predicate(
+      0, [](const std::string &key) { return -key.compare("missing"); }));
+  manager.reset();
+  EXPECT_THROW((void)engine->lsm_iters_monotony_predicate(0, all), std::runtime_error);
+}
+
+// 目的：前缀范围跨 MemTable/L0/L1 过滤回滚版本，并保留有效墓碑参与归并。
+// 场景：p/a 的内存新值取消，p/b 的 L0 墓碑取消，p/c 的 L1 墓碑取消；
+// p/k 的有效 L0 墓碑必须遮住 L1 旧值，取消的 p/z 之后的 q/d 不能越界进入结果。
+TEST_F(LSMTest, EnginePredicateRollbackMergesBoundedRange) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
+  manager->add_ready_to_flush_tranc_id(9, TransactionState::ABORTED);
+  add_sst_for_point_query(engine, 0, 1, {{"p/b", "b5", 5}, {"p/k", "k5", 5}});
+  add_sst_for_point_query(engine, 0, 2, {{"p/b", "", 9}, {"p/k", "", 7}});
+  add_sst_for_point_query(engine, 1, 3,
+      {{"p/c", "", 9}, {"p/c", "c4", 4}, {"p/k", "k3", 3},
+       {"p/z", "cancelled", 9}, {"q/d", "outside", 4}});
+  engine->memtable.put("", "", 9);
+  engine->memtable.put("a-before", "outside", 3);
+  engine->memtable.put("p/a", "a3", 3);
+  engine->memtable.put("p/a", "cancelled", 9);
+  engine->memtable.put("z-after", "outside", 3);
+  for (uint64_t read_id : {0, 6, 10}) {
+    SCOPED_TRACE(read_id);
+    auto range = engine->lsm_iters_monotony_predicate(
+        read_id, [](const std::string &key) { return -key.compare(0, 2, "p/"); });
+    ASSERT_TRUE(range);
+    std::vector<MvccRecord> expected = {
+        {"p/a", "a3", 3}, {"p/b", "b5", 5}, {"p/c", "c4", 4}};
+    if (read_id == 6) expected.emplace_back("p/k", "k5", 5);
+    expect_mvcc_records(range->first, expected);
+    EXPECT_TRUE(range->first == range->second);
+    for (const auto &[key, value, version] : expected) {
+      EXPECT_EQ(engine->get(key, read_id), std::make_optional(std::make_pair(value, version)));
+    }
+  }
 }
 
 // 目的：验证查询跳过事务标记后，刷盘仍能取得标记对应的事务 ID。
@@ -1847,7 +1906,64 @@ TEST_F(EngineGetRollbackTest, ValuesAndTombstonesStayFilteredAcrossFreezeAndFlus
     EXPECT_FALSE(engine->get("updated", 2));
     EXPECT_EQ(engine->get("deleted", 2), std::make_optional(
                   std::make_pair(std::string("ancient"), uint64_t{1})));
+    // 上面的 Level 迭代器已销毁、读锁已释放，再独立验证谓词查询。
+    for (uint64_t read_id : {uint64_t{0}, uint64_t{3}, uint64_t{5}}) {
+      auto range = engine->lsm_iters_monotony_predicate(
+          read_id, [](const std::string &) { return 0; });
+      ASSERT_TRUE(range);
+      expect_mvcc_records(range->first,
+          {{"restored", "keep", 3}, {"updated", "old", 3}});
+    }
   }
+}
+
+// 目的：回滚过滤不改变 compaction 的全版本保留，整理后仍能找到有效旧值。
+// 场景：事务 5 的更新、删除、新增已刷盘后 abort，再通过正常 flush 触发 L0→L1。
+// 核对点查、前缀查询及物理版本，避免仅查询正确却把历史记录悄悄丢弃。
+TEST_F(EngineGetRollbackTest, RangeRollbackSurvivesActualCompaction) {
+  engine->put("p/k", "old", 3);
+  engine->put("p/revive", "keep", 3);
+  engine->put("p/tomb", "ancient", 1);
+  engine->remove("p/tomb", 3);
+  engine->flush();
+  TranContext context(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  context.put("p/k", "cancelled");
+  context.remove("p/revive");
+  context.put("p/new", "cancelled");
+  context.put("p/tomb", "cancelled-resurrection");
+  engine->flush();
+  ASSERT_TRUE(context.abort());
+
+  auto check_range = [&] {
+    for (uint64_t read_id : {0, 3, 5}) {
+      auto range = engine->lsm_iters_monotony_predicate(
+          read_id, [](const std::string &key) { return -key.compare(0, 2, "p/"); });
+      ASSERT_TRUE(range);
+      expect_mvcc_records(range->first, {{"p/k", "old", 3}, {"p/revive", "keep", 3}});
+      EXPECT_FALSE(engine->get("p/new", read_id));
+      EXPECT_FALSE(engine->get("p/tomb", read_id));
+      EXPECT_EQ(engine->get("p/k", read_id), std::make_optional(
+          std::make_pair(std::string("old"), uint64_t{3})));
+    }
+  };
+  check_range();
+  const int ratio = TomlConfig::getInstance().getLsmSstLevelRatio();
+  ASSERT_GE(ratio, 2);
+  for (int i = 0; i < ratio; ++i) {
+    engine->put("zz-filler-" + std::to_string(i), "v", 100 + i);
+    engine->flush();
+  }
+  ASSERT_FALSE(engine->level_sst_ids[1].empty());
+  check_range();
+
+  std::vector<uint64_t> versions;
+  for (const auto &[id, sst] : engine->ssts) {
+    for (auto it = sst->begin(0, true); it.is_valid(); ++it) {
+      if (it->first == "p/k") versions.push_back(it.get_cur_tranc_id());
+    }
+  }
+  std::sort(versions.begin(), versions.end());
+  EXPECT_EQ(versions, (std::vector<uint64_t>{3, 5}));
 }
 
 // 目的：内存与磁盘都过滤后，再按真实版本比较；同版本仍优先内存来源。

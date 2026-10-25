@@ -1,7 +1,6 @@
 #pragma once
 
 #include "iterator/iterator.h"
-
 #include <memory>
 
 namespace tiny_lsm {
