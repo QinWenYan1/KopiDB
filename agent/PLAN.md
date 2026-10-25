@@ -25,13 +25,13 @@
 | ① | 保存并查询回滚 ID | 已完成 |
 | ② | 实现 abort，调整写入上下文 | 已完成 |
 | ③ | 接通单条与批量查询 | 功能验收通过；get 的两处旧注释待清理 |
-| ④ | 接通遍历、前缀和谓词查询 | 进行中：ConcactIterator 构造已通过；当前接通跨 SST 的 operator++ |
+| ④ | 接通遍历、前缀和谓词查询 | 进行中：Concact 构造和跨 SST ++ 已通过；当前接通 Level 构造 |
 | ⑤ | 接回事务读取缓存与提交检查 | 待开始 |
 | ⑥ | 持久化状态与正常重启 | 待开始 |
 
 ## 当前推进项
 
-**2026-10-25 ConcactIterator 构造已验收：声明/定义一致，成员按值保存回调，首次查找每张 SST 时传给 begin。新增 2 个构造测试，test_lsm 构建成功，选跑新增用例与 MvccConcactSkipsInvisibleSsts，3/3 通过。覆盖连续全取消 SST、取消值/墓碑、有效墓碑、读取上限 0/6/10、普通/全版本模式、回调独立保存、空输入及全部不可见；未验收回滚后的跨 SST 推进。当前给出 operator++ 的完整草案，换表时复用 is_aborted_；头文件无需改动。未运行完整 test_lsm 或其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-concact-constructor-rollback-qrhzv69n`。**
+**2026-10-25 重新读取当前源码：ConcactIterator::operator++ 的 begin 调用已恢复为三个参数，上一轮重复传参编译错误已解决。新增 2 个跨 SST 回滚测试，test_lsm 构建成功，相关 Concact 测试 5/5 通过。覆盖连续全取消表、取消值/墓碑、有效墓碑、读取上限 0/6/10、普通/全版本模式、回调独立保存、取消尾表至 end、结束后 ++ 及共享块缓存的无回调全版本读取。未运行完整 test_lsm 或其他套件。当前给出 Level_Iterator 构造草案，向 MemTable/L0/L1+ 三路传同一回调，不添加 Level 回调成员。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-concact-increment-fixed-0o_hogey`。**
 
 上轮 begin 测试覆盖首条与后续 key 的取消值/墓碑、有效墓碑、读取上限 0 与历史上限、回调独立保存、空块、全部取消及默认参数兼容。业务源码及头文件由用户修改，未降低既有断言。构建与测试日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-begin-rollback-efcgymdy`。
 
@@ -210,7 +210,7 @@
 
 构建与测试日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-constructor-seek-82t_mbe9`。本轮只修改测试和协作文档。
 
-SST 后续按函数推进：operator++、seek_first 与普通构造均已通过；SST::begin 和 sst_iters_monotony_predicate 也已通过，ConcactIterator 构造也已通过，当前处理其 operator++。BlockIterator 两种构造已保存回调，后续操作沿用成员，无需重复配置。
+SST 后续按函数推进：operator++、seek_first 与普通构造均已通过；SST::begin 和 sst_iters_monotony_predicate 也已通过，ConcactIterator 构造和 operator++ 也已通过，当前处理 Level_Iterator 构造。BlockIterator 两种构造已保存回调，后续操作沿用成员，无需重复配置。
 
 已完成 operator++：用户在新块构造参数末尾传入 is_aborted_。新增 2 个测试验证跨块取消值/墓碑、连续全取消块、有效墓碑保留、普通/全版本模式、读取上限 0/5/10、缓存刷新、尾部全取消到 end、调用方清空回调以及共享块缓存的不同读取规则互不覆盖。完整 SST 22/22 通过，未运行其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-increment-rollback-bbsk_a_o`。
 
@@ -224,11 +224,13 @@ SST 后续按函数推进：operator++、seek_first 与普通构造均已通过�
 
 已完成 ConcactIterator 构造：声明与定义一致，按值保存 is_aborted_，创建各张 SST 起点时传入成员，保留已有逐表查找及有效墓碑。新增 ConcactRollbackConstructorSelectsFirstValidSst、ConcactRollbackConstructorHandlesEmptyResults，连同原 MvccConcactSkipsInvisibleSsts 共 3/3 通过。初始/最终空 SST 迭代器仅作占位，不读取记录，无需携带回调。
 
-当前 ConcactIterator::operator++ 草案：当前表内推进仍委托 cur_iter；耗尽后 while 连续寻找下一张有效 SST，每次调用 begin(max_tranc_id_, keep_all_versions_, is_aborted_)，找到起点后不额外 ++。所有表耗尽后保留原空 SST 结束态，普通操作不重新接收或覆盖回调。已对照 reference-impl，本地保留已修正的连续跳表循环，仅接通回调；等待用户手写与跨 SST 回滚测试。Level 查询和 compaction 调用暂不改，默认空回调维持旧接口和 compaction 原始版本读取。
+已完成 ConcactIterator::operator++：每次进入新 SST 都调用 begin(max_tranc_id_, keep_all_versions_, is_aborted_)；连续跳过无有效记录的表，全部耗尽后保留原结束态。复读当前代码确认只传三个参数；上一轮构建错误已解决。新增 ConcactRollbackIncrementPreservesFilterAcrossSsts、ConcactRollbackIncrementKeepsUnfilteredHistory，加上此前三个测试共 5/5 通过，默认无回调的全版本读取仍保留原始记录。
+
+当前 Level_Iterator 构造草案：增加默认空的回调参数，将它分别传给 memtable.begin(max_tranc_id_, false, is_aborted)、L0 的 sst->begin(max_tranc_id_, false, is_aborted)、L1+ 的 ConcactIterator(ssts, max_tranc_id_, false, is_aborted)。保留现有读锁、真实版本比较、同版本来源优先级、事务标记和最终墓碑过滤。Level 只在构造时创建子迭代器，后续 ++ 直接推进它们，因此不增加自己的回调成员；MemTable/L0 已收集副本，Concact/SST 已自行保存回调。头文件同步声明并直接包含 functional；Engine::begin 的管理器取用和传递仍在下一步骤，默认参数维持旧调用兼容。已对照本地 reference-impl 的 Level 构造和推进路径，等待用户手写与验收。
 
 2026-10-24 同类问题审计：检索 include/src 中全部 is_aborted 声明、赋值和调用，并核对各迭代器接口及查询转发路径。当前只有 BlockIterator 与 SstIterator 保存该回调，均在已有回调参数的构造中初始化，未发现其他普通操作重复接收并覆盖成员。BlockIterator 按 key 构造向 Block 查询传递构造参数，与当前成员规则一致，不构成重复配置。其余查询参数用于当次筛选或创建新对象。审计时发现的 ++ 跨块和 seek_first 漏传现均已通过验证，普通构造也已接通；公开遍历、范围入口及上层接通尚未完成。审计只针对该设计问题，未运行新测试，不宣称完整回滚链已完成。
 
-验证边界：两种构造、重复 seek、++ 跨块、seek_first 和公开 SST::begin 均已通过；SST 谓词范围入口也已通过；Concact/Level 和 Engine 的回调传递仍待接通。以上是既定后续任务，不能把本次测试通过视为 SST、Engine 的完整范围回滚查询已完成。
+验证边界：两种构造、重复 seek、++ 跨块、seek_first 和公开 SST::begin 均已通过；SST 谓词范围入口也已通过；Concact 构造和跨 SST ++ 已通过；Level 和 Engine 的回调传递仍待接通。以上是既定后续任务，不能把本次测试通过视为 SST、Engine 的完整范围回滚查询已完成。
 
 已完成 MemTable::begin：第三个参数接收可选 is_aborted。collect 中先跳过空 key，再用 get_cur_tranc_id 取得真实版本，筛选读取上限与回滚状态；收集所有内存表，保留有效墓碑和来源优先级。查询不删除原节点；测试确认刷盘仍能读取事务标记并报告 ID。后续 getter 已允许读取标记版本，begin 的标记过滤仍保留；is_valid 及 Level/SST 的现有过滤未改动。Engine 范围入口尚未传入回调，因此本函数通过不代表完整范围回滚查询已接通。
 

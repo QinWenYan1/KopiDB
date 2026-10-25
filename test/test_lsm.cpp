@@ -332,6 +332,77 @@ TEST_F(LSMTest, ConcactRollbackConstructorHandlesEmptyResults) {
   EXPECT_FALSE(called);
 }
 
+// 目的：Concact 换 SST 时继续使用构造时的回滚规则，连续跳过全取消的表。
+// 场景：a 有效，b/c 两张表全取消，d/e 有有效旧版本，f/g 两张尾表全取消。
+// 覆盖取消值/墓碑、有效墓碑、历史上限、两种版本模式及到达 end 后再次 ++。
+TEST_F(LSMTest, ConcactRollbackIncrementPreservesFilterAcrossSsts) {
+  auto cache = std::make_shared<BlockCache>(16, 2);
+  const std::vector<std::vector<MvccRecord>> groups = {
+      {{"a", "a3", 3}}, {{"b", "b9", 9}}, {{"c", "", 8}},
+      {{"d", "d12", 12}, {"d", "d9", 9}, {"d", "", 7},
+       {"d", "d5", 5}, {"d", "d2", 2}},
+      {{"e", "", 9}, {"e", "e4", 4}},
+      {{"f", "f9", 9}}, {{"g", "", 8}}};
+  std::vector<std::shared_ptr<SST>> ssts;
+  for (size_t i = 0; i < groups.size(); ++i) {
+    SSTBuilder builder(32, false);
+    for (const auto &[key, value, id] : groups[i]) {
+      builder.add(key, value, id);
+    }
+    ssts.push_back(builder.build(
+        i, test_dir + "/concat-increment-" + std::to_string(i) + ".sst", cache));
+  }
+
+  for (bool keep_all : {false, true}) {
+    SCOPED_TRACE(keep_all);
+    for (uint64_t read_id : {0, 6, 10}) {
+      SCOPED_TRACE(read_id);
+      std::function<bool(uint64_t)> is_aborted =
+          [](uint64_t id) { return id == 9 || id == 8; };
+      ConcactIterator it(ssts, read_id, keep_all, is_aborted);
+      is_aborted = {}; // 换表时仍须能使用迭代器保存的回调。
+      ASSERT_TRUE(it.is_valid());
+      EXPECT_EQ(it->first, "a"); // 填充旧缓存，验证推进后不会读到旧值。
+      std::vector<MvccRecord> expected = {{"a", "a3", 3}};
+      if (keep_all) {
+        if (read_id == 0) expected.emplace_back("d", "d12", 12);
+        if (read_id != 6) expected.emplace_back("d", "", 7);
+        expected.emplace_back("d", "d5", 5);
+        expected.emplace_back("d", "d2", 2);
+      } else if (read_id == 0) {
+        expected.emplace_back("d", "d12", 12);
+      } else {
+        expected.emplace_back("d", read_id == 6 ? "d5" : "", read_id == 6 ? 5 : 7);
+      }
+      expected.emplace_back("e", "e4", 4);
+      expect_mvcc_records(it, expected);
+      ConcactIterator end({}, read_id, keep_all);
+      EXPECT_TRUE(it == end);
+      EXPECT_EQ(&(++it), static_cast<BaseIterator *>(&it));
+      EXPECT_TRUE(it == end);
+    }
+  }
+}
+
+// 目的：回滚过滤只影响本次遍历，不能修改共享 SST 或影响不带回调的全版本读取。
+// 场景：两个迭代器共享 a/b 两张表和块缓存，一个过滤 b@9，另一个保留全部物理版本。
+TEST_F(LSMTest, ConcactRollbackIncrementKeepsUnfilteredHistory) {
+  auto cache = std::make_shared<BlockCache>(8, 2);
+  SSTBuilder a(32, false), b(32, false);
+  a.add("a", "a3", 3);
+  b.add("b", "", 9);
+  b.add("b", "b5", 5);
+  const std::vector<std::shared_ptr<SST>> ssts = {
+      a.build(1, test_dir + "/concat-shared-a.sst", cache),
+      b.build(2, test_dir + "/concat-shared-b.sst", cache)};
+  ConcactIterator filtered(ssts, 0, false, [](uint64_t id) { return id == 9; });
+  ConcactIterator physical(ssts, 0, true);
+  ++filtered;
+  ++physical;
+  expect_mvcc_records(filtered, {{"b", "b5", 5}});
+  expect_mvcc_records(physical, {{"b", "", 9}, {"b", "b5", 5}});
+}
+
 // 目的：Level 从 MemTable/L0/L1 中选择真实的最新可见版本，并最后过滤墓碑。
 // 场景：MemTable 的 k@4 比磁盘旧；L0 的 k@9 是墓碑，L1 的 k@7 仍应被快照 8 看见。
 TEST_F(LSMTest, MvccLevelMergesSnapshotsAcrossSources) {
