@@ -1,6 +1,6 @@
 # KopiDB 当前任务计划：事务回滚
 
-最后更新：2026-10-24。本文件只记录本轮任务、实施顺序和验收标准；项目状态、全局约定和延期事项统一见 [STATE.md](STATE.md)。
+最后更新：2026-10-25。本文件只记录本轮任务、实施顺序和验收标准；项目状态、全局约定和延期事项统一见 [STATE.md](STATE.md)。
 
 当前目标：完成 Lab 5.2 中的逻辑回滚，使事务取消后，查询能跳过其写入的版本并找到有效旧版本。
 
@@ -25,13 +25,13 @@
 | ① | 保存并查询回滚 ID | 已完成 |
 | ② | 实现 abort，调整写入上下文 | 已完成 |
 | ③ | 接通单条与批量查询 | 功能验收通过；get 的两处旧注释待清理 |
-| ④ | 接通遍历、前缀和谓词查询 | 进行中：SST seek_first 已通过；当前接通普通构造函数 |
+| ④ | 接通遍历、前缀和谓词查询 | 进行中：SST::begin 已通过；当前接通 SST 谓词范围查询 |
 | ⑤ | 接回事务读取缓存与提交检查 | 待开始 |
 | ⑥ | 持久化状态与正常重启 | 待开始 |
 
 ## 当前推进项
 
-**2026-10-24 已检查用户的 SstIterator::seek_first：创建块迭代器时正确沿用成员回调，逐块寻找可见起点的逻辑保持正确。新增 2 个测试，重新构建后完整 test_sst 24/24 通过。当前给出普通构造函数接收并保存回调的声明与完整实现草案，等待用户手写；随后处理 SST::begin 和范围入口。助手没有修改业务源码。**
+**2026-10-25 SST::begin 已验收：用户补齐 SstIterator 构造的第四个参数 is_aborted，重新构建后完整 test_sst 26/26 通过，上一轮公开入口测试失败已解决，断言未改。当前给出 sst_iters_monotony_predicate 的回调转发草案：块内范围查询传回调，两端 SST 迭代器在构造时保存；普通声明和两处 friend 声明同步。等待用户手写，尚未验收该范围入口。助手未修改业务代码，未运行其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-begin-fixed-pc1k5ds0`。**
 
 上轮 begin 测试覆盖首条与后续 key 的取消值/墓碑、有效墓碑、读取上限 0 与历史上限、回调独立保存、空块、全部取消及默认参数兼容。业务源码及头文件由用户修改，未降低既有断言。构建与测试日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-begin-rollback-efcgymdy`。
 
@@ -210,17 +210,21 @@
 
 构建与测试日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-constructor-seek-82t_mbe9`。本轮只修改测试和协作文档。
 
-SST 后续按函数推进：operator++ 与 seek_first 传递成员回调均已通过；当前处理普通构造，随后处理 SST::begin 及范围入口。BlockIterator 两种构造已保存回调，后续操作沿用成员，无需重复配置。
+SST 后续按函数推进：operator++、seek_first 与普通构造均已通过；SST::begin 也已通过，当前处理 sst_iters_monotony_predicate。BlockIterator 两种构造已保存回调，后续操作沿用成员，无需重复配置。
 
 已完成 operator++：用户在新块构造参数末尾传入 is_aborted_。新增 2 个测试验证跨块取消值/墓碑、连续全取消块、有效墓碑保留、普通/全版本模式、读取上限 0/5/10、缓存刷新、尾部全取消到 end、调用方清空回调以及共享块缓存的不同读取规则互不覆盖。完整 SST 22/22 通过，未运行其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-increment-rollback-bbsk_a_o`。
 
 已完成 seek_first：用户将 is_aborted_ 传入每个 BlockIterator，继续使用已有的逐块查找逻辑。新增 2 个测试覆盖连续全取消前缀块、取消/有效墓碑、读取上限 0/6/10、普通/全版本模式、调用方清空回调、重复定位与缓存刷新、整表取消后 end 状态及空 SST 句柄。完整 SST 24/24 通过，未运行其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-seek-first-rollback-k8s3u3g7`。
 
-当前普通构造草案：在 keep_all_versions 后增加默认空的回调参数；初始化列表按成员声明顺序保存读取上限、模式和 is_aborted_，随后调用已验收的 seek_first。声明与定义需同步，原有两/三参数调用继续兼容；SST::begin 后续单独增加回调入口。已对照本地 reference-impl 的构造后定位流程。用户完成后验证首次定位、后续推进、默认参数及空句柄；草案尚未落地验收。
+已完成普通构造：用户在 keep_all_versions 后增加默认空回调参数，声明与定义一致，初始化列表保存 is_aborted_ 后调用 seek_first。新增 RollbackDefaultConstructorInitializesFilterBeforeFirstSeek，验证首次定位跳过全取消首块、取消/有效墓碑、读取上限 0/6/10、普通/全版本模式、回调独立保存与后续跨块推进、默认参数、全部取消及空句柄。完整 SST 25/25 通过，未运行其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-default-ctor-rollback-nskqalc0`。
 
-2026-10-24 同类问题审计：检索 include/src 中全部 is_aborted 声明、赋值和调用，并核对各迭代器接口及查询转发路径。当前只有 BlockIterator 与 SstIterator 保存该回调，均在已有回调参数的构造中初始化，未发现其他普通操作重复接收并覆盖成员。BlockIterator 按 key 构造向 Block 查询传递构造参数，与当前成员规则一致，不构成重复配置。其余查询参数用于当次筛选或创建新对象。审计时发现的 ++ 跨块和 seek_first 漏传现均已通过验证；普通构造、范围入口及上层接通尚未完成。审计只针对该设计问题，未运行新测试，不宣称完整回滚链已完成。
+已完成 SST::begin：声明在 keep_all_versions 后增加默认空回调，定义将三项读取条件传入普通 SstIterator 构造。用户补齐漏传的第四个参数后，完整 SST 26/26 通过。公开入口测试覆盖取消首块、取消墓碑后的旧值、保留有效墓碑、跨过全取消块、普通/全版本遍历、调用方清空回调及整表取消；保留原有默认参数测试。SST 本身不保存回调；上层显式传递仍在后续既定任务内。
 
-验证边界：按 key 构造、重复 seek、++ 跨块和 seek_first 均已通过；普通构造仍无回调参数，公开遍历和范围入口仍待接通。以上是既定后续任务，不能把本次测试通过视为 SST、Engine 的完整范围回滚查询已完成。
+当前 sst_iters_monotony_predicate 草案：保留元数据剪枝、跳过空区间和右边界跨块归一化，仅将 is_aborted 传给 Block::get_monotony_predicate_iters，并在 final_begin/final_end.emplace(nullptr, tranc_id, false, is_aborted) 时保存到新对象。同步 include/sst/sst_iterator.h 的普通声明及 friend 声明、include/sst/sst.h 的 friend 声明；只有普通声明提供默认参数。现有 Engine 三参数调用暂时兼容，Engine 回调接入仍在后续阶段内。已重新阅读 Lab 5.2 并对照本地 reference-impl；回滚名单与回调属于本项目已确认方案，参考未提供该参数。等待用户修改后验证，尚未标记范围入口完成。
+
+2026-10-24 同类问题审计：检索 include/src 中全部 is_aborted 声明、赋值和调用，并核对各迭代器接口及查询转发路径。当前只有 BlockIterator 与 SstIterator 保存该回调，均在已有回调参数的构造中初始化，未发现其他普通操作重复接收并覆盖成员。BlockIterator 按 key 构造向 Block 查询传递构造参数，与当前成员规则一致，不构成重复配置。其余查询参数用于当次筛选或创建新对象。审计时发现的 ++ 跨块和 seek_first 漏传现均已通过验证，普通构造也已接通；公开遍历、范围入口及上层接通尚未完成。审计只针对该设计问题，未运行新测试，不宣称完整回滚链已完成。
+
+验证边界：两种构造、重复 seek、++ 跨块、seek_first 和公开 SST::begin 均已通过；SST 谓词范围入口及上层回调传递仍待接通。以上是既定后续任务，不能把本次测试通过视为 SST、Engine 的完整范围回滚查询已完成。
 
 已完成 MemTable::begin：第三个参数接收可选 is_aborted。collect 中先跳过空 key，再用 get_cur_tranc_id 取得真实版本，筛选读取上限与回滚状态；收集所有内存表，保留有效墓碑和来源优先级。查询不删除原节点；测试确认刷盘仍能读取事务标记并报告 ID。后续 getter 已允许读取标记版本，begin 的标记过滤仍保留；is_valid 及 Level/SST 的现有过滤未改动。Engine 范围入口尚未传入回调，因此本函数通过不代表完整范围回滚查询已接通。
 

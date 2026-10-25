@@ -923,6 +923,111 @@ TEST_F(SSTTest, RollbackSeekFirstHandlesAllCancelledAndNullSst) {
   EXPECT_FALSE(callback_called);
 }
 
+// 目的：普通构造必须先保存回调，再定位首条记录；之后的 ++ 继续使用同一规则。
+// 场景：a 整块取消，b 的新墓碑取消但旧墓碑有效，c 保留有效旧值，d 整块取消。
+// 覆盖读取上限、两种遍历模式、回调独立保存、默认参数、全部取消及空 SST 句柄。
+TEST_F(SSTTest, RollbackDefaultConstructorInitializesFilterBeforeFirstSeek) {
+  SSTBuilder builder(32, true);
+  const std::string b(24, 'b'), older_b(24, 'B'), c(24, 'c');
+  builder.add("a", std::string(24, 'a'), 9);
+  builder.add("b", "", 9);
+  builder.add("b", "", 7);
+  builder.add("b", b, 5);
+  builder.add("b", older_b, 3);
+  builder.add("c", std::string(24, 'C'), 9);
+  builder.add("c", c, 4);
+  builder.add("d", std::string(24, 'd'), 9);
+  auto sst = builder.build(1, "test_data/default-ctor-rollback.sst",
+                          std::make_shared<BlockCache>(8, 2));
+  ASSERT_EQ(sst->num_blocks(), 4);
+  using Row = std::tuple<std::string, std::string, uint64_t>;
+  const std::vector<Row> latest = {{"b", "", 7}, {"c", c, 4}};
+  const std::vector<Row> historical = {{"b", b, 5}, {"c", c, 4}};
+  const std::vector<Row> latest_all = {
+      {"b", "", 7}, {"b", b, 5}, {"b", older_b, 3}, {"c", c, 4}};
+  const std::vector<Row> historical_all = {
+      {"b", b, 5}, {"b", older_b, 3}, {"c", c, 4}};
+
+  for (bool keep_all : {false, true}) {
+    SCOPED_TRACE(keep_all);
+    for (uint64_t read_id : {0, 6, 10}) {
+      SCOPED_TRACE(read_id);
+      std::function<bool(uint64_t)> is_aborted =
+          [](uint64_t id) { return id == 9; };
+      SstIterator it(sst, read_id, keep_all, is_aborted);
+      is_aborted = {};
+      const auto &expected = keep_all
+          ? (read_id == 6 ? historical_all : latest_all)
+          : (read_id == 6 ? historical : latest);
+      for (const auto &[key, value, version] : expected) {
+        ASSERT_TRUE(it.is_valid());
+        EXPECT_EQ(it->first, key);
+        EXPECT_EQ(it->second, value);
+        EXPECT_EQ(it.get_cur_tranc_id(), version);
+        ++it;
+      }
+      EXPECT_TRUE(it.is_end());
+      EXPECT_TRUE(it == sst->end());
+    }
+  }
+
+  SstIterator unfiltered(sst, 0);
+  ASSERT_TRUE(unfiltered.is_valid());
+  EXPECT_EQ(unfiltered->first, "a");
+  EXPECT_EQ(unfiltered.get_cur_tranc_id(), 9);
+  SstIterator all_cancelled(sst, 0, false, [](uint64_t) { return true; });
+  EXPECT_TRUE(all_cancelled == sst->end());
+
+  bool callback_called = false;
+  SstIterator empty(nullptr, 0, false, [&callback_called](uint64_t) {
+    callback_called = true;
+    return true;
+  });
+  EXPECT_TRUE(empty.is_end());
+  EXPECT_FALSE(callback_called);
+}
+
+// 目的：公开 begin 必须把回滚规则交给新迭代器，首次定位和后续跨块推进都要生效。
+// 场景：a 整块取消；b 的新墓碑取消，应读到旧值；c 的有效墓碑必须保留；
+// d 整块取消后继续到 e。覆盖普通/全版本模式，以及整张表全部取消的结果。
+TEST_F(SSTTest, RollbackBeginPassesFilterToIterator) {
+  SSTBuilder builder(32, true);
+  const std::string old_b(24, 'b'), old_c(24, 'c'), value_e(24, 'e');
+  builder.add("a", std::string(24, 'a'), 9);
+  builder.add("b", "", 9);
+  builder.add("b", old_b, 3);
+  builder.add("c", "", 7);
+  builder.add("c", old_c, 2);
+  builder.add("d", std::string(24, 'd'), 9);
+  builder.add("e", value_e, 4);
+  auto sst = builder.build(1, "test_data/begin-rollback.sst",
+                          std::make_shared<BlockCache>(8, 2));
+  ASSERT_EQ(sst->num_blocks(), 5);
+  using Row = std::tuple<std::string, std::string, uint64_t>;
+  for (bool keep_all : {false, true}) {
+    SCOPED_TRACE(keep_all);
+    std::function<bool(uint64_t)> is_aborted =
+        [](uint64_t id) { return id == 9; };
+    auto it = sst->begin(0, keep_all, is_aborted);
+    is_aborted = {}; // 返回的迭代器须独立保存规则。
+    std::vector<Row> expected = {{"b", old_b, 3}, {"c", "", 7}};
+    if (keep_all) {
+      expected.emplace_back("c", old_c, 2);
+    }
+    expected.emplace_back("e", value_e, 4);
+    for (const auto &[key, value, version] : expected) {
+      ASSERT_TRUE(it.is_valid());
+      ASSERT_EQ(it->first, key);
+      EXPECT_EQ(it->second, value);
+      EXPECT_EQ(it.get_cur_tranc_id(), version);
+      ++it;
+    }
+    EXPECT_TRUE(it == sst->end());
+  }
+  auto all_cancelled = sst->begin(0, false, [](uint64_t) { return true; });
+  EXPECT_TRUE(all_cancelled == sst->end());
+}
+
 int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
   init_spdlog_file();

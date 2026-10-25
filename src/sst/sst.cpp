@@ -256,9 +256,9 @@ std::string SST::resolve_value(const std::string &raw_value) const {
 bool SST::is_wisckey() const { return storage_mode_ == 1; }
 
 // Lab 3.6 返回起始位置迭代器
-SstIterator SST::begin(uint64_t tranc_id, bool keep_all_versions) {
-  // ? 返回 SstIterator(shared_from_this(), tranc_id, keep_all_versions)
-  return SstIterator(shared_from_this(), tranc_id, keep_all_versions);
+// 返回 SstIterator(shared_from_this(), tranc_id, keep_all_versions)
+SstIterator SST::begin(uint64_t tranc_id, bool keep_all_versions, const std::function<bool(uint64_t)> &is_aborted) {
+  return SstIterator(shared_from_this(), tranc_id, keep_all_versions, is_aborted);
 }
 
 // Lab 3.6 返回终止位置迭代器
