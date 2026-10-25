@@ -126,7 +126,7 @@ void TranContext::remove(const std::string &key) {
   // 不能用 temp_map_.erase(key)：
   // 那会丢失删除意图，随后 get 可能重新读到数据库中的旧值。
   // 保留墓碑后，本事务 get 返回不存在，commit 再应用这次删除。
-  temp_map_.insert_or_assign(key,std::string{});
+  temp_map_.insert_or_assign(key, std::string{});
   spdlog::trace("TranContext--{}: remove({}) stored in temp map",
                 isolation_level_to_string(isolation_level_), key);
 }
@@ -242,10 +242,9 @@ bool TranContext::commit(bool test_fail) {
   // 同一次提交中的所有冲突查询，共用这个回滚判断
   // 复制 shared_ptr 即可：后面还要用 manager 登记提交或取消
   // 因此这里不能把 manager move 走
-  std::function<bool(uint64_t)> is_aborted =
-      [manager](uint64_t id) {
-        return manager->is_aborted(id);
-      };
+  std::function<bool(uint64_t)> is_aborted = [manager](uint64_t id) {
+    return manager->is_aborted(id);
+  };
 
   // 3. 查询某个 key 当前真实的最新版本，保留墓碑
   //    0 表示不限制版本上限，才能发现比当前事务更新的记录
@@ -399,17 +398,18 @@ bool TranContext::commit(bool test_fail) {
 
 // 这一步完成的是“登记取消并结束上下文”
 // 读未提交已经写入的数据，要等后续查询路径接入回滚名单后，才能真正对查询隐藏
-bool TranContext::abort() { 
+bool TranContext::abort() {
   // 同一个 TranContext 的操作由调用者串行执行
   // 已经提交或回滚的事务，不能再次取消
   if (isCommited || isAborted)
-    return false; 
+    return false;
 
   // 上下文持有的是 weak_ptr，管理器可能已经销毁
   // 回滚必须让管理器记住这个 ID，不能只修改本地标志
-  auto manager = tranManager_.lock(); 
-  if(!manager)
-    throw std::logic_error("TranContext::abort: transaction manager has expired");
+  auto manager = tranManager_.lock();
+  if (!manager)
+    throw std::logic_error(
+        "TranContext::abort: transaction manager has expired");
 
   // 先登记回滚，再修改上下文状态
   // 如果登记抛异常，下面的代码不会执行
@@ -425,18 +425,18 @@ bool TranContext::abort() {
 
   // 登记成功后，正式结束这个上下文
   // 前面的检查已保证 isCommited 为 false，无需重复赋值
-  isAborted = true; 
+  isAborted = true;
 
   // 丢弃尚未提交的修改，以及这个事务自己的读取缓存
   // clear 只清理上下文容器，不修改数据库里的记录
-  temp_map_.clear(); 
-  read_map_.clear();  
+  temp_map_.clear();
+  read_map_.clear();
 
   // 当前阶段没有把这些操作记录写入 WAL，可以直接丢弃
   // 后续接入 WAL 时，再处理回滚日志
-  operations.clear(); 
+  operations.clear();
 
-  return true; 
+  return true;
 }
 
 enum IsolationLevel TranContext::get_isolation_level() {
@@ -482,9 +482,7 @@ void TranManager::set_engine(std::shared_ptr<LSMEngine> engine) {
 TranManager::~TranManager() { write_tranc_id_file(); }
 
 // TODO: Lab 5.2 持久化事务状态信息
-void TranManager::write_tranc_id_file() {
-
-}
+void TranManager::write_tranc_id_file() {}
 
 // TODO: Lab 5.2 读取持久化的事务状态信息
 void TranManager::read_tranc_id_file() {}
@@ -492,17 +490,18 @@ void TranManager::read_tranc_id_file() {}
 bool TranManager::is_aborted(uint64_t tranc_id) const {
   // 查询期间，其他线程可能正在登记回滚并修改集合
   // 读取和写入必须使用同一把锁，避免同时访问正在变化的容器
-  std::lock_guard<std::mutex> lock(mutex_); 
+  std::lock_guard<std::mutex> lock(mutex_);
 
   // contains 只查询，不插入元素，也不会复制整个集合
   // 空集合或没有找到该 ID 时，自然返回 false，无需额外判空
-  return aborted_tranc_ids_.contains(tranc_id); 
+  return aborted_tranc_ids_.contains(tranc_id);
 }
 
 // TODO: Lab 5.2 更新持久化的事务状态信息
 // 负责登记事务的结束状态（已提交或已回滚），供后续刷盘时处理
 // 如果是回滚，还会把事务 ID 加入回滚名单
-void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id, TransactionState state) {}
+void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id,
+                                              TransactionState state) {}
 
 // TODO: Lab 5.2 更新持久化的事务状态信息
 void TranManager::add_flushed_tranc_id(uint64_t tranc_id) {}
