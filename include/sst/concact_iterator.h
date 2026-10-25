@@ -2,9 +2,9 @@
 
 #include "sst.h"
 #include "sst_iterator.h"
+#include <functional>
 #include <memory>
 #include <vector>
-#include <functional>
 
 namespace tiny_lsm {
 class ConcactIterator : public BaseIterator {
@@ -22,7 +22,7 @@ private:
 public:
   ConcactIterator(std::vector<std::shared_ptr<SST>> ssts, uint64_t tranc_id,
                   bool keep_all_versions = false,
-                const std::function<bool(uint64_t)> &is_aborted = {});
+                  const std::function<bool(uint64_t)> &is_aborted = {});
 
   std::string key();
   std::string value();

@@ -56,7 +56,7 @@ BaseIterator &ConcactIterator::operator++() {
 
     // 新 SST 从第一条可见记录开始。
     // 这里不能再额外 ++，否则会跳过它的第一条可见记录。
-    cur_iter = ssts[cur_idx]->begin(max_tranc_id_, keep_all_versions_);
+    cur_iter = ssts[cur_idx]->begin(max_tranc_id_, keep_all_versions_, is_aborted_);
 
     // 新 SST 仍不可见：继续循环。
     // 新 SST 有可见记录：退出循环，停在该记录上。
