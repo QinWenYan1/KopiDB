@@ -550,7 +550,7 @@ LSMEngine::lsm_iters_monotony_predicate(
       for (size_t id : ids) {
         --priority;
         auto range =
-            sst_iters_monotony_predicate(ssts.at(id), tranc_id, predicate);
+            sst_iters_monotony_predicate(ssts.at(id), tranc_id, predicate, is_aborted);
         if (!range.has_value())
           continue;
 
@@ -559,6 +559,7 @@ LSMEngine::lsm_iters_monotony_predicate(
           //  可见性过滤可能让区间起点落在某个块的末尾
           //  此时不能解引用，让循环的 ++ 推进到后续块
           //  为什么？
+          // 
           //  你当前的范围查询在 sst_iterator.cpp 会把这个块迭代器直接装入 SST
           //  迭代器 因此可能出现： it.is_valid() == false  //
           //  当前没有可读取的记录 it.is_end()   == false  //
