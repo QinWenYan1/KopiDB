@@ -466,6 +466,23 @@ std::string LSMEngine::get_sst_path(size_t sst_id, size_t target_level) {
 std::optional<std::pair<TwoMergeIterator, TwoMergeIterator>>
 LSMEngine::lsm_iters_monotony_predicate(
     uint64_t tranc_id, std::function<int(const std::string &)> predicate) {
+
+  // 1. 与 get、begin 一样，先取得有效的事务管理器。
+  // 无法查询回滚名单时，应报错，不能当作“没有事务被回滚”。
+  auto manager = tran_manager.lock();
+  if (!manager) {
+    throw std::runtime_error(
+        "LSMEngine::lsm_iters_monotony_predicate: "
+        "transaction manager is unavailable");
+  }
+
+  // 本次查询的所有来源使用同一回滚判断。
+  // 回调持有 shared_ptr，保证收集期间管理器仍然存在。
+  std::function<bool(uint64_t)> is_aborted =
+      [manager = std::move(manager)](uint64_t id) {
+        return manager->is_aborted(id);
+      };
+
   // 收集所有来源的候选记录
   // 此时必须保留墓碑，等跨来源比较完成后才能过滤
   std::vector<SearchItem> items;
@@ -500,9 +517,14 @@ LSMEngine::lsm_iters_monotony_predicate(
     size_t priority = ssts.size();
 
     // 1. 收集 MemTable 中满足谓词的记录
-    //    从 memtable 查询: memtable.iters_monotony_predicate(tranc_id,
-    //    predicate) false 是 skip_delete=false：保留删除标记
-    auto mem_it = memtable.begin(tranc_id, false);
+    //    从 memtable 查询: memtable.iters_monotony_predicate(tranc_id, predicate)
+    // 
+    // false 是 skip_delete=false：有效墓碑必须保留，
+    // 否则磁盘中的旧值可能在后面的归并中重新出现。
+    //
+    // 先传入回滚判断，让 MemTable 找到有效版本：
+    // 例如 k@9 已回滚、k@5 有效，这里应取得 k@5
+    auto mem_it = memtable.begin(tranc_id, false, is_aborted);
     for (; mem_it.is_valid(); ++mem_it) {
       auto [key, value] = *mem_it;
       const int pos = predicate(key);

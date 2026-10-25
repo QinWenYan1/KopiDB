@@ -12,13 +12,13 @@
 
 当前任务：实现 **按事务 ID 标记回滚，并在查询时排除该事务的版本**。回滚集合、状态查询接口、结束登记、abort 及写入路径的旧方案清理已完成；存储查询过滤尚未完成。
 
-当前推进项：第①、②阶段完成，第③阶段点查与批查回滚功能通过；get 的两处旧注释仍待清理。按已验收功能阶段计为 **50%（3/6）**，不代表工时比例。第④阶段已通过 MemTable 范围入口、Block/SST 回调链、Concact 构造与跨 SST 推进，以及 Level 三路回调传递。2026-10-25 用户补齐 Level 创建 Concact 时的 false 参数后，新增两个 Level 测试，构建成功，Level/Concact 相关 **8/8 通过**；未运行完整 test_lsm 或其他套件。当前给出 LSMEngine::begin 获取管理器并传递回调的草案，尚待用户手写及公开入口验收。已有 Level 测试显式传入回调，不代表 Engine 已接通；助手只修改测试与文档。最新日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-level-constructor-fixed-s33rf702`。
+当前推进项：第①、②阶段完成，第③阶段点查与批查回滚功能通过；get 的两处旧注释仍待清理。按已验收功能阶段计为 **50%（3/6）**，不代表工时比例。第④阶段 MemTable、Block/SST、Concact、Level 已验收项保持不变；2026-10-25 LSMEngine::begin 已正确取得管理器并传递回调。新增两项公开入口测试，扩展两项真实 abort 回归，三个旧存储测试补管理器绑定且保留原断言；构建成功，相关 **15/15 通过**。覆盖未绑定/失效、空库、回调持有与释放管理器、活跃表/冻结表/SST 和跨来源遍历。未运行完整 test_lsm 或其他套件。当前给出 Engine 谓词查询接入回调的草案，等待用户手写；助手只修改测试和文档。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-engine-begin-rollback-3sko7xtn`。
 
 2026-10-22 SST 检查：SST::get 已将回调正确传给按 key 构造的 SstIterator，范围/Bloom 检查、读取上限和有效墓碑处理正确。扩展现有测试到公开 get 入口，完整 test_sst 19/19 通过。随后已接通 Engine 候选 SST 查询及 get。
 
 2026-10-23 最新 Engine 检查：get_batch 在用户修正 if (man) 为 if (!man) 后，管理器前置检查及回调传递正确。新增 2 个批量测试，扩展既有跨来源比较到批量入口；构建成功，相关 48/48 通过。覆盖空/非空输入依赖检查、实际取消新增/修改/删除、活跃表/冻结表/SST、连续取消、历史上限、顺序/重复/缺失、墓碑及同版本来源优先级。上一轮 get 的 46 个回归也包含在本轮中。助手未修改业务代码。
 
-当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator/SstIterator 按 key 构造、SstIterator::seek、SST::get 及 Engine::sst_get_ 在显式传入回调时会排除已取消版本，保留有效墓碑，相关测试通过。Engine 的公开 get/get_batch 已从管理器取得并传入回调；commit 的内部候选查询尚未接通。MemTable::get 返回的原节点迭代器不保存回调；get_record/get_batch 在锁内复制结果。BlockIterator 两种构造现已保存回调，块内 ++ 自动沿用筛选；SstIterator 按 key 构造已保存回调，seek 沿用成员并传给当前块，++ 跨块与 seek_first 也已正确传递成员回调，普通构造也已保存回调，公开 SST::begin 已通过；SST 谓词范围入口也已通过；Concact 构造及 ++ 跨 SST 也已通过；Level 构造的三路传递也已通过，Engine 的公开范围入口仍待接通，留在第④阶段继续处理。数据库回滚查询尚未完成。
+当前 SkipList::get、MemTable::get/get_record/get_batch、Block::get_idx_binary/get_value_binary、BlockIterator/SstIterator 按 key 构造、SstIterator::seek、SST::get 及 Engine::sst_get_ 在显式传入回调时会排除已取消版本，保留有效墓碑，相关测试通过。Engine 的公开 get/get_batch 已从管理器取得并传入回调；commit 的内部候选查询尚未接通。MemTable::get 返回的原节点迭代器不保存回调；get_record/get_batch 在锁内复制结果。BlockIterator 两种构造现已保存回调，块内 ++ 自动沿用筛选；SstIterator 按 key 构造已保存回调，seek 沿用成员并传给当前块，++ 跨块与 seek_first 也已正确传递成员回调，普通构造也已保存回调，公开 SST::begin 已通过；SST 谓词范围入口也已通过；Concact 构造及 ++ 跨 SST 也已通过；Level 构造的三路传递也已通过，Engine::begin 的公开遍历也已通过；Engine 谓词查询仍待接通，留在第④阶段继续处理。数据库回滚查询尚未完成。
 
 2026-10-23 已确认管理器约定：Engine 公开查询必须有有效的管理器，未绑定和已销毁均报错；不再保留未绑定兼容分支，不需要 owner_before。get 已按此实现并通过缺失/失效测试，回调持有 shared_ptr 到查询结束；查询期间的持有关系经过代码检查，未添加生命周期并发压力测试。get_batch 已沿用此约定并通过测试，即使空输入也先检查依赖。Lab 5.5 的生产入口绑定仍按原计划延期，当前测试显式绑定，不以此降低业务查询的要求。
 

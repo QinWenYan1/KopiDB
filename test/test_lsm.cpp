@@ -407,6 +407,7 @@ TEST_F(LSMTest, ConcactRollbackIncrementKeepsUnfilteredHistory) {
 // 场景：MemTable 的 k@4 比磁盘旧；L0 的 k@9 是墓碑，L1 的 k@7 仍应被快照 8 看见。
 TEST_F(LSMTest, MvccLevelMergesSnapshotsAcrossSources) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
   auto install = [&](size_t level, const std::vector<MvccRecord> &records) {
     SSTBuilder builder(32, false);
     for (const auto &[key, value, id] : records)
@@ -511,6 +512,41 @@ TEST_F(LSMTest, LevelRollbackHandlesEmptyAndDeletedResults) {
     EXPECT_TRUE(all_cancelled.is_end());
     EXPECT_TRUE(all_cancelled == Level_Iterator{});
   }
+}
+
+// 目的：公开 begin 与 get 一样需要有效管理器；空库也不能掩盖缺失的依赖。
+// 场景：未绑定时拒绝，绑定后空库正常到 end，管理器销毁后再次拒绝。
+TEST_F(LSMTest, EngineBeginRequiresLiveManager) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  EXPECT_THROW((void)engine->begin(0), std::runtime_error);
+  auto manager = bind_test_manager(engine);
+  EXPECT_TRUE(engine->begin(0).is_end());
+  engine->memtable.put("a", "a3", 3);
+  {
+    auto it = engine->begin(0);
+    expect_mvcc_records(it, {{"a", "a3", 3}});
+  }
+  manager.reset();
+  EXPECT_THROW((void)engine->begin(0), std::runtime_error);
+  EXPECT_THROW((void)engine->begin(5), std::runtime_error);
+}
+
+// 目的：begin 返回后，惰性遍历的回调仍持有管理器；销毁迭代器后不形成引用环。
+// 场景：L1 有两张 SST，遍历 a 后才进入 b；调用方清空管理器指针，仍须跳过 b@9。
+TEST_F(LSMTest, EngineBeginKeepsManagerForLazySstReads) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
+  manager->add_ready_to_flush_tranc_id(9, TransactionState::ABORTED);
+  add_sst_for_point_query(engine, 1, 1, {{"a", "a3", 3}});
+  add_sst_for_point_query(engine, 1, 2, {{"b", "", 9}, {"b", "b5", 5}});
+  std::weak_ptr<TranManager> weak = manager;
+  {
+    auto it = engine->begin(0);
+    manager.reset();
+    EXPECT_FALSE(weak.expired());
+    expect_mvcc_records(it, {{"a", "a3", 3}, {"b", "b5", 5}});
+  }
+  EXPECT_TRUE(weak.expired());
 }
 
 // 目的：compaction 中同 key、同版本冲突时，应延续较新来源 A 的优先级。
@@ -1018,6 +1054,7 @@ TEST_F(LSMTest, IteratorOperations) {
 // 预期：最终只输出 A、Z，顺序正确；不限定标记必须在哪一层过滤。
 TEST_F(LSMTest, TransactionMarkerDoesNotReorderMergedIteration) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
 
   SSTBuilder builder(256, false);
   builder.add("Z", "disk-value", 3);
@@ -1079,6 +1116,7 @@ TEST_F(LSMTest, PredicateDoesNotExposeTransactionMarkersToCallback) {
 //       不会删除底层记录。直接构造提交后的状态，不依赖 WAL 的实现。
 TEST_F(LSMTest, QuerySkippingTransactionMarkerPreservesFlushMetadata) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
   engine->memtable.put("A", "value", 5);
   engine->memtable.put("", "", 5);
 
@@ -1801,6 +1839,10 @@ TEST_F(EngineGetRollbackTest, ValuesAndTombstonesStayFilteredAcrossFreezeAndFlus
       EXPECT_FALSE(engine->get("deleted", read_id));
       EXPECT_FALSE(engine->get("added", read_id));
       EXPECT_FALSE(engine->get("missing", read_id));
+      // 同一状态从公开遍历入口读取，也应隐藏取消记录及有效墓碑。
+      // 迭代器在本轮结束时销毁，下一阶段冻结/刷盘前已经释放 SST 读锁。
+      auto it = engine->begin(read_id);
+      expect_mvcc_records(it, {{"restored", "keep", 3}, {"updated", "old", 3}});
     }
     EXPECT_FALSE(engine->get("updated", 2));
     EXPECT_EQ(engine->get("deleted", 2), std::make_optional(
@@ -1856,6 +1898,10 @@ TEST_F(EngineGetRollbackTest, ComparesFilteredMemoryAndDiskCandidates) {
       EXPECT_EQ(results[i].first, keys[i]);
       EXPECT_EQ(results[i].second, engine->get(keys[i], read_id));
     }
+    // 公开 begin 也要同时过滤内存和 L0 的取消版本，再与 L1 比较。
+    auto it = engine->begin(read_id);
+    expect_mvcc_records(it, {{"equal_kept", "memory5", 5},
+                             {"k", "disk7", 7}, {"restored", "disk7", 7}});
   }
   EXPECT_EQ(engine->get("k", 6), std::make_optional(
                 std::make_pair(std::string("memory3"), uint64_t{3})));
