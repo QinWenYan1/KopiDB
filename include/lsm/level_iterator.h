@@ -1,9 +1,9 @@
 #pragma once
 #include "iterator/iterator.h"
+#include <functional>
 #include <memory>
 #include <optional>
 #include <shared_mutex>
-#include <functional>
 
 namespace tiny_lsm {
 class LSMEngine;
@@ -11,7 +11,8 @@ class LSMEngine;
 class Level_Iterator : public BaseIterator {
 public:
   Level_Iterator() = default;
-  Level_Iterator(std::shared_ptr<LSMEngine> engine_, uint64_t max_tranc_id, const std::function<bool(uint64_t)> &is_aborted = {});
+  Level_Iterator(std::shared_ptr<LSMEngine> engine_, uint64_t max_tranc_id,
+                 const std::function<bool(uint64_t)> &is_aborted = {});
 
   virtual BaseIterator &operator++() override;
   virtual bool operator==(const BaseIterator &other) const override;

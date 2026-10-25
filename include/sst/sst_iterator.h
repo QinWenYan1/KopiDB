@@ -14,18 +14,17 @@ namespace tiny_lsm {
 class SstIterator;
 class SST;
 
-std::optional<std::pair<SstIterator, SstIterator>>
-sst_iters_monotony_predicate(std::shared_ptr<SST> sst, uint64_t tranc_id,
-                             std::function<int(const std::string &)> predicate,
-                            const std::function<bool(uint64_t)> &is_aborted = {}
-                          );
+std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
+    std::shared_ptr<SST> sst, uint64_t tranc_id,
+    std::function<int(const std::string &)> predicate,
+    const std::function<bool(uint64_t)> &is_aborted = {});
 
 class SstIterator : public BaseIterator {
   friend std::optional<std::pair<SstIterator, SstIterator>>
   sst_iters_monotony_predicate(
       std::shared_ptr<SST> sst, uint64_t tranc_id,
-      std::function<int(const std::string &)> predicate, 
-    const std::function<bool(uint64_t)> &is_aborted);
+      std::function<int(const std::string &)> predicate,
+      const std::function<bool(uint64_t)> &is_aborted);
 
   friend SST;
 
@@ -50,7 +49,7 @@ public:
   // 默认空回调保持原有调用方式兼容
   SstIterator(std::shared_ptr<SST> sst, uint64_t tranc_id,
               bool keep_all_versions = false,
-            const std::function<bool(uint64_t)> &is_aborted = {});
+              const std::function<bool(uint64_t)> &is_aborted = {});
 
   // 创建迭代器，并定位 key 的最大有效版本
   // SST 为空或没有有效版本时进入 end 状态

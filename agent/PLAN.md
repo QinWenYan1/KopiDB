@@ -25,13 +25,13 @@
 | ① | 保存并查询回滚 ID | 已完成 |
 | ② | 实现 abort，调整写入上下文 | 已完成 |
 | ③ | 接通单条与批量查询 | 功能验收通过；get 的两处旧注释待清理 |
-| ④ | 接通遍历、前缀和谓词查询 | 进行中：Concact 构造和跨 SST ++ 已通过；当前接通 Level 构造 |
+| ④ | 接通遍历、前缀和谓词查询 | 进行中：Level 构造的 Concact 调用漏传 false，构建待通过 |
 | ⑤ | 接回事务读取缓存与提交检查 | 待开始 |
 | ⑥ | 持久化状态与正常重启 | 待开始 |
 
 ## 当前推进项
 
-**2026-10-25 重新读取当前源码：ConcactIterator::operator++ 的 begin 调用已恢复为三个参数，上一轮重复传参编译错误已解决。新增 2 个跨 SST 回滚测试，test_lsm 构建成功，相关 Concact 测试 5/5 通过。覆盖连续全取消表、取消值/墓碑、有效墓碑、读取上限 0/6/10、普通/全版本模式、回调独立保存、取消尾表至 end、结束后 ++ 及共享块缓存的无回调全版本读取。未运行完整 test_lsm 或其他套件。当前给出 Level_Iterator 构造草案，向 MemTable/L0/L1+ 三路传同一回调，不添加 Level 回调成员。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-concact-increment-fixed-0o_hogey`。**
+**2026-10-25 检查 Level_Iterator 构造：声明/定义已接收回调，MemTable 与 L0 传递正确；src/lsm/level_iterator.cpp:89 创建 ConcactIterator 时漏了第三个参数 false，回调误放到 keep_all_versions 的位置。xmake build test_lsm 失败，构建结束后再次读取该行，仍为三参数调用。等待用户补为 (ssts, max_tranc_id_, false, is_aborted)；本轮未新增或运行测试，未修改业务代码。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-level-constructor-review-d182z7d3/build.log`。**
 
 上轮 begin 测试覆盖首条与后续 key 的取消值/墓碑、有效墓碑、读取上限 0 与历史上限、回调独立保存、空块、全部取消及默认参数兼容。业务源码及头文件由用户修改，未降低既有断言。构建与测试日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-begin-rollback-efcgymdy`。
 
@@ -226,7 +226,7 @@ SST 后续按函数推进：operator++、seek_first 与普通构造均已通过�
 
 已完成 ConcactIterator::operator++：每次进入新 SST 都调用 begin(max_tranc_id_, keep_all_versions_, is_aborted_)；连续跳过无有效记录的表，全部耗尽后保留原结束态。复读当前代码确认只传三个参数；上一轮构建错误已解决。新增 ConcactRollbackIncrementPreservesFilterAcrossSsts、ConcactRollbackIncrementKeepsUnfilteredHistory，加上此前三个测试共 5/5 通过，默认无回调的全版本读取仍保留原始记录。
 
-当前 Level_Iterator 构造草案：增加默认空的回调参数，将它分别传给 memtable.begin(max_tranc_id_, false, is_aborted)、L0 的 sst->begin(max_tranc_id_, false, is_aborted)、L1+ 的 ConcactIterator(ssts, max_tranc_id_, false, is_aborted)。保留现有读锁、真实版本比较、同版本来源优先级、事务标记和最终墓碑过滤。Level 只在构造时创建子迭代器，后续 ++ 直接推进它们，因此不增加自己的回调成员；MemTable/L0 已收集副本，Concact/SST 已自行保存回调。头文件同步声明并直接包含 functional；Engine::begin 的管理器取用和传递仍在下一步骤，默认参数维持旧调用兼容。已对照本地 reference-impl 的 Level 构造和推进路径，等待用户手写与验收。
+当前 Level_Iterator 构造草案：增加默认空的回调参数，将它分别传给 memtable.begin(max_tranc_id_, false, is_aborted)、L0 的 sst->begin(max_tranc_id_, false, is_aborted)、L1+ 的 ConcactIterator(ssts, max_tranc_id_, false, is_aborted)。保留现有读锁、真实版本比较、同版本来源优先级、事务标记和最终墓碑过滤。Level 只在构造时创建子迭代器，后续 ++ 直接推进它们，因此不增加自己的回调成员；MemTable/L0 已收集副本，Concact/SST 已自行保存回调。头文件同步声明并直接包含 functional；Engine::begin 的管理器取用和传递仍在下一步骤，默认参数维持旧调用兼容。已对照本地 reference-impl 的 Level 构造和推进路径。用户已修改，但 Concact 调用漏传 false 导致构建失败，修正后再补充三路回滚归并测试并验收。
 
 2026-10-24 同类问题审计：检索 include/src 中全部 is_aborted 声明、赋值和调用，并核对各迭代器接口及查询转发路径。当前只有 BlockIterator 与 SstIterator 保存该回调，均在已有回调参数的构造中初始化，未发现其他普通操作重复接收并覆盖成员。BlockIterator 按 key 构造向 Block 查询传递构造参数，与当前成员规则一致，不构成重复配置。其余查询参数用于当次筛选或创建新对象。审计时发现的 ++ 跨块和 seek_first 漏传现均已通过验证，普通构造也已接通；公开遍历、范围入口及上层接通尚未完成。审计只针对该设计问题，未运行新测试，不宣称完整回滚链已完成。
 
