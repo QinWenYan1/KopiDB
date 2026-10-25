@@ -16,13 +16,16 @@ class SST;
 
 std::optional<std::pair<SstIterator, SstIterator>>
 sst_iters_monotony_predicate(std::shared_ptr<SST> sst, uint64_t tranc_id,
-                             std::function<int(const std::string &)> predicate);
+                             std::function<int(const std::string &)> predicate,
+                            const std::function<bool(uint64_t)> &is_aborted = {}
+                          );
 
 class SstIterator : public BaseIterator {
   friend std::optional<std::pair<SstIterator, SstIterator>>
   sst_iters_monotony_predicate(
       std::shared_ptr<SST> sst, uint64_t tranc_id,
-      std::function<int(const std::string &)> predicate);
+      std::function<int(const std::string &)> predicate, 
+    const std::function<bool(uint64_t)> &is_aborted);
 
   friend SST;
 

@@ -8,11 +8,11 @@
 #include "vlog/vlog.h"
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
-#include <functional>
 
 namespace tiny_lsm {
 
@@ -60,7 +60,9 @@ class SST : public std::enable_shared_from_this<SST> {
   friend std::optional<std::pair<SstIterator, SstIterator>>
   sst_iters_monotony_predicate(
       std::shared_ptr<SST> sst, uint64_t tranc_id,
-      std::function<int(const std::string &)> predicate);
+      std::function<int(const std::string &)> predicate,
+    const std::function<bool(uint64_t)> &is_aborted
+  );
 
 private:
   FileObj file;
@@ -94,7 +96,8 @@ public:
 
   // 查询 key 的最大有效版本；没有有效版本时返回 end()
   // 有效墓碑仍然返回，交给上层参与跨来源比较
-  SstIterator get(const std::string &key, uint64_t tranc_id, const std::function<bool(uint64_t)> &is_aborted = {});
+  SstIterator get(const std::string &key, uint64_t tranc_id,
+                  const std::function<bool(uint64_t)> &is_aborted = {});
 
   // 返回sst中block的数量
   size_t num_blocks() const;
@@ -120,7 +123,8 @@ public:
   std::optional<std::pair<SstIterator, SstIterator>>
   iters_monotony_predicate(std::function<bool(const std::string &)> predicate);
 
-  SstIterator begin(uint64_t tranc_id, bool keep_all_versions = false, const std::function<bool(uint64_t)> &is_aborted = {});
+  SstIterator begin(uint64_t tranc_id, bool keep_all_versions = false,
+                    const std::function<bool(uint64_t)> &is_aborted = {});
   SstIterator end();
 
   std::pair<uint64_t, uint64_t> get_tranc_id_range() const;
@@ -148,8 +152,8 @@ public:
   SSTBuilder(size_t block_size, bool has_bloom);
 
   // WiscKey constructor: values larger than wisckey_threshold go to vlog
-  SSTBuilder(size_t block_size, bool has_bloom,
-             std::shared_ptr<VLog> vlog, size_t wisckey_threshold);
+  SSTBuilder(size_t block_size, bool has_bloom, std::shared_ptr<VLog> vlog,
+             size_t wisckey_threshold);
 
   // 添加一个key-value对
   void add(const std::string &key, const std::string &value, uint64_t tranc_id);

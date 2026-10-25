@@ -17,7 +17,8 @@ namespace tiny_lsm {
 //   <0: 不满足谓词, 需要向左移动
 std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
     std::shared_ptr<SST> sst, uint64_t tranc_id,
-    std::function<int(const std::string &)> predicate) {
+    std::function<int(const std::string &)> predicate,
+  const std::function<bool(uint64_t)> &is_aborted) {
 
   if (!sst)
     return std::nullopt;
@@ -41,7 +42,7 @@ std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
 
     // 2. 落到范围中 → 读块精找 (块内两次二分, 返回 [first, last+1) 迭代器对)
     auto block = sst->read_block(block_idx);
-    auto range = block->get_monotony_predicate_iters(tranc_id, predicate);
+    auto range = block->get_monotony_predicate_iters(tranc_id, predicate, is_aborted);
     if (!range.has_value())
       // 范围命中但可见性过滤后无命中 (tranc 太旧)
       continue;
@@ -61,14 +62,14 @@ std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
     if (!final_begin.has_value()) {
       // 先构造空迭代器，再装入已找到的位置
       // 避免正常构造函数调用 seek_first()，重复读取 SST 开头
-      final_begin.emplace(nullptr, tranc_id);
+      final_begin.emplace(nullptr, tranc_id,false, is_aborted);
       final_begin->m_sst = sst;
       final_begin->set_block_idx(block_idx);
       final_begin->set_block_it(std::move(i_begin));
     }
     // 每遇到一个非空区间，就更新终点
     // 循环结束时，保留的是最后一个非空区间的终点
-    final_end.emplace(nullptr, tranc_id);
+    final_end.emplace(nullptr, tranc_id, false, is_aborted);
     final_end->m_sst = sst;
     final_end->set_block_idx(block_idx);
     final_end->set_block_it(std::move(i_end));

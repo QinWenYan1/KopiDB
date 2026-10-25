@@ -197,7 +197,8 @@ int64_t SST::find_block_idx(const std::string &key) {
 // 先检查 key 是否在 [first_key, last_key] 范围内, 否则返回 end()
 // 再用 bloom_filter 快速排除
 // 返回 SstIterator(shared_from_this(), key, tranc_id)
-SstIterator SST::get(const std::string &key, uint64_t tranc_id, const std::function<bool(uint64_t)> &is_aborted) {
+SstIterator SST::get(const std::string &key, uint64_t tranc_id,
+                     const std::function<bool(uint64_t)> &is_aborted) {
 
   // 1. 文件级范围快筛: 整个 SST 的 [first_key, last_key] 不含 key
   // 直接返回 end，无需读取数据块
@@ -257,8 +258,10 @@ bool SST::is_wisckey() const { return storage_mode_ == 1; }
 
 // Lab 3.6 返回起始位置迭代器
 // 返回 SstIterator(shared_from_this(), tranc_id, keep_all_versions)
-SstIterator SST::begin(uint64_t tranc_id, bool keep_all_versions, const std::function<bool(uint64_t)> &is_aborted) {
-  return SstIterator(shared_from_this(), tranc_id, keep_all_versions, is_aborted);
+SstIterator SST::begin(uint64_t tranc_id, bool keep_all_versions,
+                       const std::function<bool(uint64_t)> &is_aborted) {
+  return SstIterator(shared_from_this(), tranc_id, keep_all_versions,
+                     is_aborted);
 }
 
 // Lab 3.6 返回终止位置迭代器
