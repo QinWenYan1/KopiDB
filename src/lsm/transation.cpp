@@ -396,8 +396,8 @@ bool TranContext::commit(bool test_fail) {
   return true;
 }
 
-// 这一步完成的是“登记取消并结束上下文”
-// 读未提交已经写入的数据，要等后续查询路径接入回滚名单后，才能真正对查询隐藏
+// 请求管理器登记回滚，并结束上下文、清理本事务的暂存数据
+// 查询侧已接入回滚过滤；
 bool TranContext::abort() {
   // 同一个 TranContext 的操作由调用者串行执行
   // 已经提交或回滚的事务，不能再次取消
