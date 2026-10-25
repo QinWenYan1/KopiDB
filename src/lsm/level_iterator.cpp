@@ -86,7 +86,7 @@ Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
 
     // ConcactIterator 保存回调，首次定位和后续换表都会继续过滤
     // false 表示每个 key 只保留最大有效版本
-    iter_vec.push_back(std::make_shared<ConcactIterator>(ssts, max_tranc_id_, is_aborted));
+    iter_vec.push_back(std::make_shared<ConcactIterator>(ssts, max_tranc_id_, false, is_aborted));
   }
 
   // ===== 收尾: 把迭代器停到第一个"活着的" key 上 =====
