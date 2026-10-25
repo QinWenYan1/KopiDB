@@ -598,7 +598,26 @@ LSMEngine::lsm_iters_monotony_predicate(
 
 // Lab 4.7: 返回 Level_Iterator(shared_from_this(), tranc_id)
 Level_Iterator LSMEngine::begin(uint64_t tranc_id) {
-  // shared_from_this() 获取当前引擎的共享指针，
+
+  // 1. 从弱引用取得事务管理器
+  // 与 get/get_batch 的约定一致：公开查询需要有效管理器
+  // 才能判断哪些版本已经回滚
+  auto manager = tran_manager.lock(); 
+  if (!manager){
+    throw std::runtime_error(
+       "LSMEngine::begin: transaction manager is unavailable"
+    ); 
+  }
+
+  // 2. 创建本次遍历共用的回滚判断
+  // 按值捕获 shared_ptr，让保存此回调的子迭代器持有管理器
+  // 这样 begin 返回后，后续跨块、跨 SST 读取仍能查询回滚状态
+  //
+  // tranc_id == 0 只表示没有版本上限，仍然要过滤已回滚版本
+  std::function<bool(uint64_t)> is_aborted = 
+    [manager = std::move(manager)](uint64_t id){return manager->is_aborted(id); }; 
+
+  // 3. shared_from_this() 获取当前引擎的共享指针，
   // 让迭代器持有引擎，保证遍历期间引擎仍然存在。
   //
   // tranc_id 是读取的版本上限；0 表示不限制版本。
@@ -606,7 +625,12 @@ Level_Iterator LSMEngine::begin(uint64_t tranc_id) {
   // Level_Iterator 的构造函数已经负责：
   // 合并 MemTable 和各层 SST，选择最新可见版本，
   // 跳过墓碑，并定位到第一个有效 key；没有结果则处于结束状态。
-  return Level_Iterator(shared_from_this(), tranc_id);
+  //
+  // Level 构造会把回调传给 MemTable、L0 和 L1+，
+  // 完成归并并定位到第一条可返回的记录。
+  //
+  // SST 集合的读锁由 Level 自己持有，这里无需再获取同一把锁
+  return Level_Iterator(shared_from_this(), tranc_id, is_aborted);
 }
 
 // Lab 4.7: 返回空的 Level_Iterator{}
