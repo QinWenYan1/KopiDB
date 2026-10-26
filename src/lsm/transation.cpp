@@ -539,7 +539,8 @@ void TranManager::add_flushed_tranc_id(uint64_t tranc_id){
 
   // readyToFlushTrancIds_ 是按 ID 升序排列的 map
   // 本次只处理目标 ID，以及比它小的已回滚事务
-  
+  auto it = readyToFlushTrancIds_.begin(); 
+  while (it != readyToFlushTrancIds_.end() && it->first)
 }
 
 uint64_t TranManager::getNextTransactionId() {
