@@ -40,7 +40,10 @@
       "name": "LSMTest.TransactionEndRegistrationSurvivesFlushCleanup",
       "original_file": "test/test_lsm.cpp",
       "original_line": 1541,
-      "sha256": "149c19349d82b81c5e85dc7f5c999ccc347c5dad881e38741762d1644e014fde"
+      "sha256": "149c19349d82b81c5e85dc7f5c999ccc347c5dad881e38741762d1644e014fde",
+      "restored_to": "test/test_lsm.cpp",
+      "restored_date": "2026-10-26",
+      "restore_reason": "Stage 1: flush registration and commit-to-flush integration; original comments and assertions preserved."
     },
     {
       "name": "LSMTest.TransactionEndRegistrationSupportsConcurrentQueries",
@@ -145,7 +148,10 @@
       "name": "TranCommitTest.FreezesTableAndRegistersBeforeFlush",
       "original_file": "test/test_lsm.cpp",
       "original_line": 2700,
-      "sha256": "b41928c8c372ca4b9790562c7a64d069e44e360ffa09d2a41a0f976c3239493f"
+      "sha256": "b41928c8c372ca4b9790562c7a64d069e44e360ffa09d2a41a0f976c3239493f",
+      "restored_to": "test/test_lsm.cpp",
+      "restored_date": "2026-10-26",
+      "restore_reason": "Stage 1: flush registration and commit-to-flush integration; original comments and assertions preserved."
     },
     {
       "name": "TranCommitTest.ZeroLimitsStopAfterMemoryBecomesEmpty",

@@ -108,25 +108,6 @@ TEST_F(LSMTest, EnginePredicateRollbackMergesBoundedRange) {
 }
 
 
-// 目的：待刷盘登记清理后，回滚名单仍有效，不能让 SST 中的取消版本重新可见。
-// 场景：5 已取消，6 已提交；登记 6 刷盘时会一并清理较小的回滚 ID 5。
-//       再对 5 重复登记、清理，仍不得丢失其回滚身份。
-TEST_F(LSMTest, TransactionEndRegistrationSurvivesFlushCleanup) {
-  TranManager manager(test_dir);
-  manager.add_ready_to_flush_tranc_id(5, TransactionState::ABORTED);
-  manager.add_ready_to_flush_tranc_id(6, TransactionState::OP_COMMITTED);
-  manager.add_flushed_tranc_id(6);
-
-  EXPECT_TRUE(manager.get_flushed_tranc_ids().contains(5));
-  EXPECT_TRUE(manager.get_flushed_tranc_ids().contains(6));
-  EXPECT_TRUE(manager.is_aborted(5));
-  EXPECT_FALSE(manager.is_aborted(6));
-
-  manager.add_ready_to_flush_tranc_id(5, TransactionState::ABORTED);
-  manager.add_flushed_tranc_id(5);
-  EXPECT_TRUE(manager.is_aborted(5));
-  EXPECT_FALSE(manager.is_aborted(6));
-}
 
 
 // 目的：真实 abort 后，新增/修改/删除均不可见，有效的旧墓碑仍应阻止旧值复活。
@@ -689,24 +670,6 @@ TEST_F(TranReadVisibilityTest, RejectsDirtyValuesAndTombstonesBeforeCaching) {
   }
 }
 
-// 目的：达到单表阈值会自动冻结，但没有达到总量阈值时不提前刷盘。
-// 场景：小单表阈值、大总量阈值；随后显式刷盘，检查事务完成标记通知管理器。
-TEST_F(TranCommitTest, FreezesTableAndRegistersBeforeFlush) {
-  config->modify_lsm_per_mem_size_limit(128);
-  TranContext context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
-  const std::string value(256, 'v');
-  context.put("k", value);
-  ASSERT_TRUE(context.commit());
-  EXPECT_EQ(engine->memtable.get_cur_size(), 0u);
-  EXPECT_GE(engine->memtable.get_frozen_size(), 128u);
-  EXPECT_TRUE(engine->ssts.empty());
-  EXPECT_FALSE(manager->get_flushed_tranc_ids().contains(5));
-  engine->flush();
-  EXPECT_EQ(engine->memtable.get_total_size(), 0u);
-  EXPECT_TRUE(manager->get_flushed_tranc_ids().contains(5));
-  EXPECT_EQ(engine->get("k", 0),
-            std::make_optional(std::make_pair(value, uint64_t{5})));
-}
 
 // 目的：0 容量阈值触发刷盘后可以正常退出，避免对空 MemTable 无限循环。
 TEST_F(TranCommitTest, ZeroLimitsStopAfterMemoryBecomesEmpty) {

@@ -2475,6 +2475,103 @@ TEST_F(LSMTest, SmallConfigLargeDataPersistent) {
   }
 }
 
+// 目的：待刷盘登记清理后，回滚名单仍有效，不能让 SST 中的取消版本重新可见。
+// 场景：5 已取消，6 已提交；登记 6 刷盘时会一并清理较小的回滚 ID 5。
+//       再对 5 重复登记、清理，仍不得丢失其回滚身份。
+TEST_F(LSMTest, TransactionEndRegistrationSurvivesFlushCleanup) {
+  TranManager manager(test_dir);
+  manager.add_ready_to_flush_tranc_id(5, TransactionState::ABORTED);
+  manager.add_ready_to_flush_tranc_id(6, TransactionState::OP_COMMITTED);
+  manager.add_flushed_tranc_id(6);
+
+  EXPECT_TRUE(manager.get_flushed_tranc_ids().contains(5));
+  EXPECT_TRUE(manager.get_flushed_tranc_ids().contains(6));
+  EXPECT_TRUE(manager.is_aborted(5));
+  EXPECT_FALSE(manager.is_aborted(6));
+
+  manager.add_ready_to_flush_tranc_id(5, TransactionState::ABORTED);
+  manager.add_flushed_tranc_id(5);
+  EXPECT_TRUE(manager.is_aborted(5));
+  EXPECT_FALSE(manager.is_aborted(6));
+}
+
+
+// 目的：达到单表阈值会自动冻结，但没有达到总量阈值时不提前刷盘。
+// 场景：小单表阈值、大总量阈值；随后显式刷盘，检查事务完成标记通知管理器。
+TEST_F(TranCommitTest, FreezesTableAndRegistersBeforeFlush) {
+  config->modify_lsm_per_mem_size_limit(128);
+  TranContext context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
+  const std::string value(256, 'v');
+  context.put("k", value);
+  ASSERT_TRUE(context.commit());
+  EXPECT_EQ(engine->memtable.get_cur_size(), 0u);
+  EXPECT_GE(engine->memtable.get_frozen_size(), 128u);
+  EXPECT_TRUE(engine->ssts.empty());
+  EXPECT_FALSE(manager->get_flushed_tranc_ids().contains(5));
+  engine->flush();
+  EXPECT_EQ(engine->memtable.get_total_size(), 0u);
+  EXPECT_TRUE(manager->get_flushed_tranc_ids().contains(5));
+  EXPECT_EQ(engine->get("k", 0),
+            std::make_optional(std::make_pair(value, uint64_t{5})));
+}
+
+
+// 目的：刷盘通知只能结算目标事务及较小的已回滚事务，不能越过未刷盘的提交事务。
+// 场景：1 已提交但未刷盘，2 已回滚，3 已提交且先刷盘；检查点应停在 0。
+//       收到 1 的通知后推进到 3；更大的回滚事务 4 留待随后 5 的通知处理。
+TEST_F(LSMTest, TransactionFlushRegistrationPreservesGaps) {
+  TranManager manager(test_dir);
+  manager.add_ready_to_flush_tranc_id(1, TransactionState::OP_COMMITTED);
+  manager.add_ready_to_flush_tranc_id(2, TransactionState::ABORTED);
+  manager.add_ready_to_flush_tranc_id(3, TransactionState::OP_COMMITTED);
+  manager.add_ready_to_flush_tranc_id(4, TransactionState::ABORTED);
+  manager.add_ready_to_flush_tranc_id(5, TransactionState::OP_COMMITTED);
+
+  manager.add_flushed_tranc_id(3);
+  EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{0, 2, 3}));
+  EXPECT_EQ(manager.get_checkpoint_tranc_id(), 0u);
+  EXPECT_EQ(manager.get_max_flushed_tranc_id(), 3u);
+
+  manager.add_flushed_tranc_id(1);
+  EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{3}));
+  EXPECT_EQ(manager.get_checkpoint_tranc_id(), 3u);
+  EXPECT_TRUE(manager.is_aborted(2));
+  EXPECT_TRUE(manager.is_aborted(4));
+
+  manager.add_flushed_tranc_id(5);
+  EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{5}));
+  EXPECT_EQ(manager.get_checkpoint_tranc_id(), 5u);
+  EXPECT_EQ(manager.get_max_flushed_tranc_id(), 5u);
+  EXPECT_TRUE(manager.is_aborted(2));
+  EXPECT_TRUE(manager.is_aborted(4));
+}
+
+// 目的：重复结束登记或重复刷盘通知不能把已经推进的检查点拉回旧 ID。
+// 场景：检查点已到 3，再登记 1 提交、2 回滚并重复通知；仍保持 3，随后可推进到 4。
+TEST_F(LSMTest, TransactionFlushRegistrationDuplicatesKeepCheckpoint) {
+  TranManager manager(test_dir);
+  manager.add_ready_to_flush_tranc_id(1, TransactionState::OP_COMMITTED);
+  manager.add_ready_to_flush_tranc_id(2, TransactionState::ABORTED);
+  manager.add_ready_to_flush_tranc_id(3, TransactionState::OP_COMMITTED);
+  manager.add_flushed_tranc_id(1);
+  manager.add_flushed_tranc_id(3);
+  ASSERT_EQ(manager.get_checkpoint_tranc_id(), 3u);
+
+  manager.add_ready_to_flush_tranc_id(1, TransactionState::OP_COMMITTED);
+  manager.add_ready_to_flush_tranc_id(2, TransactionState::ABORTED);
+  manager.add_flushed_tranc_id(3);
+  manager.add_flushed_tranc_id(1);
+  manager.add_flushed_tranc_id(3);
+  EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{3}));
+  EXPECT_EQ(manager.get_checkpoint_tranc_id(), 3u);
+  EXPECT_TRUE(manager.is_aborted(2));
+
+  manager.add_ready_to_flush_tranc_id(4, TransactionState::OP_COMMITTED);
+  manager.add_flushed_tranc_id(4);
+  EXPECT_EQ(manager.get_checkpoint_tranc_id(), 4u);
+  EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{4}));
+}
+
 int main(int argc, char **argv) {
   testing::InitGoogleTest(&argc, argv);
   init_spdlog_file();

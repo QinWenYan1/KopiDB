@@ -8,7 +8,9 @@
 
 ## 当前进度
 
-当前推进项（2026-10-26）：用户已确认本轮五个核心函数的四阶段计划，现开始阶段①的 add_ready_to_flush_tranc_id。草案在聊天中提供，业务代码仍由用户手写；当前 0/4 阶段验收通过。助手已原样恢复两项登记测试并新增上下文生命周期测试，剩余 22 个延期用例尚未接入。用户认可的“先定目标，再拆阶段”方法已写入 goal-to-plan skill 并接入 AGENT.md。三个 getter 和调用方仅检查必要联动，混合隔离与 get 修改单独安排。
+当前推进项（2026-10-26）：用户的 add_ready_to_flush_tranc_id 实现检查通过，登记、并发查询和上下文释放三项测试 3/3 通过；现进入阶段①的 add_flushed_tranc_id，草案在聊天中提供，业务代码仍由用户手写。当前 0/4 阶段验收通过。累计原样恢复 4 个延期用例，新增 3 个本轮针对性用例，剩余 20 个延期用例尚未接入。三个 getter 和调用方仅检查必要联动，混合隔离与 get 修改单独安排。
+
+本轮复测（2026-10-26）：结束登记构建成功、3/3 通过；回滚名单新增、失败回退顺序和最后移出活跃集合均符合方案，未注入内存分配失败。下一刷盘函数仍为空，新恢复／补充的四项刷盘基线构建成功、0/4 通过，失败对应刷盘集合未更新；不影响已通过的结束登记结论。恢复项哈希一致、无重复定义，未运行其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-state-registration-review-n6n9ubcr`；`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-state-flush-baseline-jmknqqde`。
 
 本轮空桩基线（2026-10-26）：`xmake build test_lsm` 成功，在独立临时目录选跑登记、并发查询和上下文释放共 3 项测试，0/3 通过；当前 add_ready_to_flush_tranc_id 仍为空，与失败一致，未改业务源码。未运行其余套件或注入分配失败。两项恢复测试的原始哈希一致，无重复注册；goal-to-plan 的格式校验通过。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-state-registration-baseline-e01mqs7x`。
 

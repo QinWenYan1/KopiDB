@@ -12,19 +12,23 @@
 
 | 阶段 | 函数／工作 | 状态 |
 | --- | --- | --- |
-| ① 内存中的状态维护 | add_ready_to_flush_tranc_id → add_flushed_tranc_id | 进行中：第一个函数草案与测试准备 |
+| ① 内存中的状态维护 | add_ready_to_flush_tranc_id → add_flushed_tranc_id | 进行中：结束登记通过，开始刷盘登记 |
 | ② 状态文件读写 | write_tranc_id_file → read_tranc_id_file | 待开始 |
 | ③ 启动时恢复 | TranManager 构造函数 | 待开始 |
 | ④ 联调与回归验收 | 恢复适用延期测试，补充重启测试并验证调用链 | 待开始 |
 
-当前函数：`TranManager::add_ready_to_flush_tranc_id()`，草案在聊天中提供，由用户手动加入。参考分支仅写 readyToFlushTrancIds_；本地方案还需维护 aborted_tranc_ids_ 并在登记成功后移出 activeTrans_。已恢复两项原登记测试，新增一项通过 weak_ptr 验证已结束上下文释放、活跃上下文保留的测试。业务函数仍待用户填写，不能勾选实现或验收完成。
+当前函数：`TranManager::add_flushed_tranc_id()`，草案在聊天中提供，由用户手动加入。用户已正确实现 add_ready_to_flush_tranc_id，结束登记的三项针对性测试 3/3 通过；异常回退顺序通过代码检查，未注入分配失败。
+
+下一函数沿用作者“结算目标 ID 与较小的已回滚 ID”规则，不结算较小但尚无刷盘通知的已提交事务。原地压缩连续前缀，并避免重复登记将已被检查点覆盖的旧 ID 重新插回集合；成功记录某项后才移除其待刷盘条目，回滚名单保持独立。已恢复刷盘清理、commit 到 flush 衔接两项测试，并新增乱序空缺和重复登记检查点测试。当前刷盘函数仍为空，四项基线测试 0/4 通过，不代表草案已执行。
+
+2026-10-26 日志：结束登记复测 `/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-state-registration-review-n6n9ubcr`；刷盘空桩基线 `/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-state-flush-baseline-jmknqqde`。两次 test_lsm 构建均成功，测试均在独立临时目录运行，未运行其他套件。
 
 2026-10-26 空桩基线：`test_lsm` 构建成功，独立临时目录选跑上述 3 项，0/3 通过。失败对应回滚登记未发生和已结束上下文仍被持有；这是实现前的基线，不是实现草案已经运行。原样恢复测试的 SHA-256 校验通过，活动测试与剩余延期文件无重复定义。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-state-registration-baseline-e01mqs7x`。
 
 ## ① 内存中的状态维护
 
-- [ ] 讲清 readyToFlushTrancIds_、flushedTrancIds_、aborted_tranc_ids_、activeTrans_ 的职责与状态变化，并对照作者参考。
-- [ ] 独立实现并检查 `add_ready_to_flush_tranc_id()`：登记提交或回滚，维护回滚名单；成功登记后移出活跃集合。
+- [x] 讲清 readyToFlushTrancIds_、flushedTrancIds_、aborted_tranc_ids_、activeTrans_ 的职责与状态变化，并对照作者参考。
+- [x] 独立实现并检查 `add_ready_to_flush_tranc_id()`：登记提交或回滚，维护回滚名单；成功登记后移出活跃集合。
 - [ ] 独立实现并检查 `add_flushed_tranc_id()`：更新刷盘记录及待刷盘集合，保留仍需用于查询的回滚名单。
 - [ ] 补充并运行登记相关测试，完成阶段验收。
 

@@ -2,9 +2,9 @@
 
 2026-10-25，用户明确要求：结束登记、刷盘登记、活跃状态及混合隔离留到下一任务，依赖它们的测试先从当前测试集移出，完成实现后统一测试。
 
-最初从 `test/test_lsm.cpp` 移出 **24 个用例**。2026-10-26 阶段①开始后，其中 **2 个**已原样移回 `test/test_lsm.cpp`：`TransactionEndRegistrationTracksOnlyAbortedIds`、`TransactionEndRegistrationSupportsConcurrentQueries`；恢复时核对注释和函数体的 SHA-256 与清单一致。
+最初从 `test/test_lsm.cpp` 移出 **24 个用例**。2026-10-26 阶段①开始后，其中 **4 个**已原样移回 `test/test_lsm.cpp`：`TransactionEndRegistrationTracksOnlyAbortedIds`、`TransactionEndRegistrationSupportsConcurrentQueries`、`TransactionEndRegistrationSurvivesFlushCleanup`、`FreezesTableAndRegistersBeforeFlush`；恢复时核对注释和函数体的 SHA-256 与清单一致。
 
-剩余 **22 个用例**保存在 [transaction_state_tests.inc](transaction_state_tests.inc)，该文件仍未接入 `test_lsm`。原位置、名称、内容校验值及已恢复项位置见 [transaction_state_tests.json](transaction_state_tests.json)。恢复编译不代表验收通过，实际结果见 STATE。
+剩余 **20 个用例**保存在 [transaction_state_tests.inc](transaction_state_tests.inc)，该文件仍未接入 `test_lsm`。原位置、名称、内容校验值及已恢复项位置见 [transaction_state_tests.json](transaction_state_tests.json)。恢复编译不代表验收通过，实际结果见 STATE。
 
 这些用例覆盖：
 

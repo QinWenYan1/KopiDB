@@ -531,8 +531,16 @@ void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id, TransactionStat
   activeTrans_.erase(tranc_id); 
 }
 
-// TODO: Lab 5.2 更新持久化的事务状态信息
-void TranManager::add_flushed_tranc_id(uint64_t tranc_id) {}
+// Lab 5.2 更新持久化的事务状态信息
+// 登记刷盘完成，并更新连续完成的检查点。
+// 已回滚事务可以结算，但其回滚名单仍须保留，供查询过滤使用。
+void TranManager::add_flushed_tranc_id(uint64_t tranc_id){
+  std::lock_guard<std::mutex> lock(mutex_); 
+
+  // readyToFlushTrancIds_ 是按 ID 升序排列的 map
+  // 本次只处理目标 ID，以及比它小的已回滚事务
+  
+}
 
 uint64_t TranManager::getNextTransactionId() {
   return nextTransactionId_.fetch_add(1);
