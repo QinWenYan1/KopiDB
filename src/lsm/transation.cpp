@@ -497,11 +497,39 @@ bool TranManager::is_aborted(uint64_t tranc_id) const {
   return aborted_tranc_ids_.contains(tranc_id);
 }
 
-// TODO: Lab 5.2 更新持久化的事务状态信息
-// 负责登记事务的结束状态（已提交或已回滚），供后续刷盘时处理
+// Lab 5.2 负责登记事务的结束状态（已提交或已回滚），供后续刷盘时处理
 // 如果是回滚，还会把事务 ID 加入回滚名单
-void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id,
-                                              TransactionState state) {}
+void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id, TransactionState state) {
+  // 多个事务可能同时结束，查询线程也可能正在读取回滚名单
+  // 用同一把锁保护本次涉及的三个容器，避免其他线程看到更新到一半的状态
+  std::lock_guard<std::mutex> lock(mutex_); 
+
+  // 1. 回滚事务先加入名单，让查询能够排除它写入的所有版本
+  //
+  // insert 返回值中的 second 表示“这次是否真的新增了这个 ID”
+  // 重复登记时为 false；后面如果失败，不能误删此前已经存在的回滚记录
+  bool inserted_abort = false; 
+  if (state == TransactionState::ABORTED)
+    inserted_abort = aborted_tranc_ids_.insert(tranc_id).second; 
+
+  // 2. 保存结束状态，交给后续刷盘登记使用
+  // 首次登记插入记录；相同结束状态的重复登记更新已有记录
+  try{
+    readyToFlushTrancIds_.insert_or_assign(tranc_id, state); 
+  } catch (...) {
+    // 例如 map 分配节点时内存不足：
+    // 如果刚才已经新增了回滚 ID，就撤销本次新增，恢复调用前的状态
+    // 此时尚未移出活跃集合，调用方也不会误以为登记成功
+    if (inserted_abort) 
+      aborted_tranc_ids_.erase(tranc_id);
+
+    throw;
+  } 
+
+  // 3. 两处登记都成功后，这个事务才不再属于“正在执行的事务”
+  // 移除的是管理器持有的 shared_ptr；用户仍持有句柄时，上下文继续有效
+  activeTrans_.erase(tranc_id); 
+}
 
 // TODO: Lab 5.2 更新持久化的事务状态信息
 void TranManager::add_flushed_tranc_id(uint64_t tranc_id) {}
