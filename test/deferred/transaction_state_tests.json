@@ -31,7 +31,10 @@
       "name": "LSMTest.TransactionEndRegistrationTracksOnlyAbortedIds",
       "original_file": "test/test_lsm.cpp",
       "original_line": 1521,
-      "sha256": "8f9750605b7ecafbbbb060403d6bd272e2319ed82983403d9a15933e72156aed"
+      "sha256": "8f9750605b7ecafbbbb060403d6bd272e2319ed82983403d9a15933e72156aed",
+      "restored_to": "test/test_lsm.cpp",
+      "restored_date": "2026-10-26",
+      "restore_reason": "Stage 1: end-state registration; original comments and assertions preserved."
     },
     {
       "name": "LSMTest.TransactionEndRegistrationSurvivesFlushCleanup",
@@ -43,7 +46,10 @@
       "name": "LSMTest.TransactionEndRegistrationSupportsConcurrentQueries",
       "original_file": "test/test_lsm.cpp",
       "original_line": 1561,
-      "sha256": "6b29a1aef0943b8e42e09734304189f0266d6aca43f948ad40d5a2619eb2fa87"
+      "sha256": "6b29a1aef0943b8e42e09734304189f0266d6aca43f948ad40d5a2619eb2fa87",
+      "restored_to": "test/test_lsm.cpp",
+      "restored_date": "2026-10-26",
+      "restore_reason": "Stage 1: end-state registration; original comments and assertions preserved."
     },
     {
       "name": "EngineGetRollbackTest.ValuesAndTombstonesStayFilteredAcrossFreezeAndFlush",

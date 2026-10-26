@@ -1656,6 +1656,105 @@ TEST_F(LSMTest, TranContextGetRejectsFinishedTransactions) {
   }
 }
 
+// 目的：结束登记区分提交与回滚，重复登记回滚不会影响其他事务。
+// 场景：5 取消、6 提交、7 未登记；再次取消 5 后，只有 5 属于回滚名单。
+TEST_F(LSMTest, TransactionEndRegistrationTracksOnlyAbortedIds) {
+  TranManager manager(test_dir);
+  EXPECT_FALSE(manager.is_aborted(5));
+  EXPECT_FALSE(manager.is_aborted(6));
+
+  manager.add_ready_to_flush_tranc_id(5, TransactionState::ABORTED);
+  manager.add_ready_to_flush_tranc_id(6, TransactionState::OP_COMMITTED);
+  EXPECT_TRUE(manager.is_aborted(5));
+  EXPECT_FALSE(manager.is_aborted(6));
+  EXPECT_FALSE(manager.is_aborted(7));
+
+  manager.add_ready_to_flush_tranc_id(5, TransactionState::ABORTED);
+  EXPECT_TRUE(manager.is_aborted(5));
+  EXPECT_FALSE(manager.is_aborted(6));
+  EXPECT_FALSE(manager.is_aborted(7));
+}
+
+
+// 目的：多个线程登记结束状态，同时查询回滚名单，不能丢登记或误判提交事务。
+// 场景：4 个线程各登记 64 个不同 ID，奇数取消、偶数提交；每次登记后立即查询，
+//       全部线程结束后再逐一核对。并发用例之外，仍需检查所有集合访问均持锁。
+TEST_F(LSMTest, TransactionEndRegistrationSupportsConcurrentQueries) {
+  TranManager manager(test_dir);
+  constexpr size_t worker_count = 4;
+  constexpr size_t per_worker = 64;
+  std::vector<std::exception_ptr> errors(worker_count);
+  std::vector<int> queries_correct(worker_count, 1);
+  std::vector<std::thread> workers;
+  std::latch start(1);
+
+  for (size_t worker = 0; worker < worker_count; ++worker) {
+    workers.emplace_back([&, worker] {
+      start.wait();
+      try {
+        for (size_t offset = 0; offset < per_worker; ++offset) {
+          const uint64_t id = worker * per_worker + offset + 1;
+          const bool aborted = (id % 2 != 0);
+          manager.add_ready_to_flush_tranc_id(
+              id, aborted ? TransactionState::ABORTED
+                          : TransactionState::OP_COMMITTED);
+          if (manager.is_aborted(id) != aborted || manager.is_aborted(0)) {
+            queries_correct[worker] = 0;
+          }
+        }
+      } catch (...) {
+        errors[worker] = std::current_exception();
+      }
+    });
+  }
+  start.count_down();
+  for (auto &worker : workers) {
+    worker.join();
+  }
+
+  for (size_t worker = 0; worker < worker_count; ++worker) {
+    ASSERT_FALSE(static_cast<bool>(errors[worker])) << worker;
+    EXPECT_EQ(queries_correct[worker], 1) << worker;
+  }
+  for (uint64_t id = 1; id <= worker_count * per_worker; ++id) {
+    EXPECT_EQ(manager.is_aborted(id), id % 2 != 0) << id;
+  }
+}
+
+
+// 目的：结束登记释放管理器对已结束上下文的持有，仍活跃的事务继续被保留。
+// 场景：工厂创建提交、回滚和未结束的三个事务。外部句柄还在时上下文仍有效；
+//       外部句柄释放后，已结束的上下文应销毁，未结束的上下文仍由管理器持有。
+TEST_F(LSMTest, TransactionEndRegistrationReleasesOnlyFinishedContexts) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
+  auto committed = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
+  auto aborted = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
+  auto active = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
+  const auto committed_id = committed->tranc_id_;
+  const auto aborted_id = aborted->tranc_id_;
+  std::weak_ptr<TranContext> committed_observer = committed;
+  std::weak_ptr<TranContext> aborted_observer = aborted;
+  std::weak_ptr<TranContext> active_observer = active;
+
+  aborted.reset();
+  active.reset();
+  ASSERT_FALSE(aborted_observer.expired());
+  ASSERT_FALSE(active_observer.expired());
+
+  manager->add_ready_to_flush_tranc_id(committed_id,
+                                      TransactionState::OP_COMMITTED);
+  EXPECT_FALSE(committed_observer.expired());
+  committed.reset();
+  EXPECT_TRUE(committed_observer.expired());
+  EXPECT_FALSE(manager->is_aborted(committed_id));
+
+  manager->add_ready_to_flush_tranc_id(aborted_id, TransactionState::ABORTED);
+  EXPECT_TRUE(aborted_observer.expired());
+  EXPECT_TRUE(manager->is_aborted(aborted_id));
+  EXPECT_FALSE(active_observer.expired());
+}
+
 // commit 测试单独管理容量配置；测试结束后恢复，避免影响其他用例。
 class TranCommitTest : public LSMTest {
 protected:

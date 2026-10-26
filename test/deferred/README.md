@@ -2,7 +2,9 @@
 
 2026-10-25，用户明确要求：结束登记、刷盘登记、活跃状态及混合隔离留到下一任务，依赖它们的测试先从当前测试集移出，完成实现后统一测试。
 
-已从 `test/test_lsm.cpp` 移出 **24 个用例**，原注释、测试函数体及断言原样保存在 [transaction_state_tests.inc](transaction_state_tests.inc)。此文件没有接入 `test_lsm`，也不会被当前 xmake 目标自动编译。原位置、名称和内容校验值见 [transaction_state_tests.json](transaction_state_tests.json)。
+最初从 `test/test_lsm.cpp` 移出 **24 个用例**。2026-10-26 阶段①开始后，其中 **2 个**已原样移回 `test/test_lsm.cpp`：`TransactionEndRegistrationTracksOnlyAbortedIds`、`TransactionEndRegistrationSupportsConcurrentQueries`；恢复时核对注释和函数体的 SHA-256 与清单一致。
+
+剩余 **22 个用例**保存在 [transaction_state_tests.inc](transaction_state_tests.inc)，该文件仍未接入 `test_lsm`。原位置、名称、内容校验值及已恢复项位置见 [transaction_state_tests.json](transaction_state_tests.json)。恢复编译不代表验收通过，实际结果见 STATE。
 
 这些用例覆盖：
 
@@ -14,7 +16,9 @@
 
 ## 恢复方式
 
-相关 fixture 和辅助函数保留在 `test_lsm.cpp`。下一轮实现完毕后，可以在该文件的 `main` 函数之前加入：
+相关 fixture 和辅助函数保留在 `test_lsm.cpp`。后续按当前任务范围逐项原样移回用例，并从 `.inc` 移除对应定义、更新清单的 `restored_to` 字段，避免重复定义。混合隔离用例仍单独延期。
+
+只有剩余用例所依赖的功能全部接通后，才可以在该文件的 `main` 函数之前整体加入：
 
 ```cpp
 #include "deferred/transaction_state_tests.inc"

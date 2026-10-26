@@ -12,12 +12,14 @@
 
 | 阶段 | 函数／工作 | 状态 |
 | --- | --- | --- |
-| ① 内存中的状态维护 | add_ready_to_flush_tranc_id → add_flushed_tranc_id | 待开始 |
+| ① 内存中的状态维护 | add_ready_to_flush_tranc_id → add_flushed_tranc_id | 进行中：第一个函数草案与测试准备 |
 | ② 状态文件读写 | write_tranc_id_file → read_tranc_id_file | 待开始 |
 | ③ 启动时恢复 | TranManager 构造函数 | 待开始 |
 | ④ 联调与回归验收 | 恢复适用延期测试，补充重启测试并验证调用链 | 待开始 |
 
-下一函数：`TranManager::add_ready_to_flush_tranc_id()`。目前只完成目标和阶段确认，尚未开始本轮业务实现。
+当前函数：`TranManager::add_ready_to_flush_tranc_id()`，草案在聊天中提供，由用户手动加入。参考分支仅写 readyToFlushTrancIds_；本地方案还需维护 aborted_tranc_ids_ 并在登记成功后移出 activeTrans_。已恢复两项原登记测试，新增一项通过 weak_ptr 验证已结束上下文释放、活跃上下文保留的测试。业务函数仍待用户填写，不能勾选实现或验收完成。
+
+2026-10-26 空桩基线：`test_lsm` 构建成功，独立临时目录选跑上述 3 项，0/3 通过。失败对应回滚登记未发生和已结束上下文仍被持有；这是实现前的基线，不是实现草案已经运行。原样恢复测试的 SHA-256 校验通过，活动测试与剩余延期文件无重复定义。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-state-registration-baseline-e01mqs7x`。
 
 ## ① 内存中的状态维护
 

@@ -19,6 +19,8 @@ KopiDB 是类 RocksDB 的教学级 LSM-tree KV 存储引擎（C++20），沿 [ti
 
 ## Lab 协作流程
 
+开始新任务或重新界定多步骤任务时，使用 [goal-to-plan：先定目标，再拆阶段](agent/skills/goal-to-plan/SKILL.md)。已经确认的目标与计划直接沿用。
+
 开始或继续 Lab、逐函数讲解实现、检查用户修改及进行阶段验收时，读取并遵循 [lab-workflow：逐函数完成 Lab](agent/skills/lab-workflow/SKILL.md)。其中统一维护资料阅读、独立推导与参考校正、逐函数教学、用户手写业务代码、助手补测试及阶段收尾的流程。
 
 主线按 Lab 顺序推进。RocksDB 源码阅读与笔记按用户的学习安排开展，不作为每个 Lab 的强制前置步骤。后续章节和无关重构统一记录在 STATE 的暂缓事项中。
