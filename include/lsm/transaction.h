@@ -119,8 +119,18 @@ private:
   // 因此不能跟着待刷盘记录一起删除
   // 所有读写均由 mutex_ 保护
   std::unordered_set<uint64_t> aborted_tranc_ids_;
+  // 下一个将分配的事务 ID，从 1 开始
+  // ID 已分配不代表事务已提交，更不代表其数据已经刷盘
   std::atomic<uint64_t> nextTransactionId_ = 1;
+
+  // 活跃事务表：保存通过 new_tranc 创建、尚未结束的事务上下文
+  // 提交或回滚登记成功后移除；用户自己的 shared_ptr 仍可保留上下文
   std::map<uint64_t, std::shared_ptr<TranContext>> activeTrans_;
+
+
+  // 待处理的结束登记：事务 ID -> 已提交 / 已回滚
+  // 事务已经结束，但尚未完成刷盘流程中的结算
+  // 它记录事务状态，不保存 key-value，也不负责实际刷盘
   std::map<uint64_t, TransactionState> readyToFlushTrancIds_;
   std::set<uint64_t> flushedTrancIds_;
   FileObj tranc_id_file_;

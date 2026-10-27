@@ -532,15 +532,56 @@ void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id, TransactionStat
 }
 
 // Lab 5.2 更新持久化的事务状态信息
-// 登记刷盘完成，并更新连续完成的检查点。
-// 已回滚事务可以结算，但其回滚名单仍须保留，供查询过滤使用。
+// 登记刷盘完成，并更新连续完成的检查点
+// 已回滚事务可以结算，但其回滚名单仍须保留，供查询过滤使用
+// flush() 写出 SST
+//    ↓
+// 确认这次刷出了哪些事务的完成标记
+//    ↓
+// 逐个调用 add_flushed_tranc_id(id)，登记结果
 void TranManager::add_flushed_tranc_id(uint64_t tranc_id){
   std::lock_guard<std::mutex> lock(mutex_); 
 
   // readyToFlushTrancIds_ 是按 ID 升序排列的 map
   // 本次只处理目标 ID，以及比它小的已回滚事务
   auto it = readyToFlushTrancIds_.begin(); 
-  while (it != readyToFlushTrancIds_.end() && it->first)
+  while (it != readyToFlushTrancIds_.end() && it->first <= tranc_id){
+    const uint64_t ready_id = it->first; 
+
+    // 较小的已提交事务，可能还没收到自己的刷盘通知
+    // 例如收到 3 的通知，不能直接认为已经提交的 1 也刷盘了
+    if (ready_id != tranc_id && it->second != TransactionState::ABORTED){
+      ++it; 
+      continue; 
+    } 
+
+    // 集合初始化为 {0}，压缩后首项表示 检查点 ：从开头到哪个 ID，已经连续处理完成
+    // 小于等于检查点的 ID 已经被覆盖，不要因重复登记重新插入
+    // 否则集合首项会变小，导致检查点倒退
+    if(ready_id > *flushedTrancIds_.begin()){
+      // 先记录完成，再移除待处理条目
+      // 如果这里分配节点失败，当前条目仍留在 ready 表中
+      flushedTrancIds_.insert(ready_id); 
+
+      // 原地压缩连续前缀，只保留最后一个连续 ID
+      // 例如 {0, 1, 2, 4} -> {2, 4}，保留 3 尚未完成这个空缺
+      auto last_contiguous = flushedTrancIds_.begin(); 
+      auto next = last_contiguous; 
+      ++next; 
+
+      while (next != flushedTrancIds_.end() && *next - *last_contiguous == 1){
+        last_contiguous = next; 
+        ++next; 
+      }
+
+      // erase 的区间是左闭右开，所以 last_contiguous 本身会保留
+      flushedTrancIds_.erase(flushedTrancIds_.begin(), last_contiguous); 
+    }
+
+    // 当前条目已经结算，erase 返回下一项，继续遍历
+    // 这里只删除待刷盘记录，绝不删除 aborted_tranc_ids_ 中的 ID
+    it = readyToFlushTrancIds_.erase(it); 
+  }
 }
 
 uint64_t TranManager::getNextTransactionId() {
