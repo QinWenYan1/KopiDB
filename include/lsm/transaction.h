@@ -132,7 +132,21 @@ private:
   // 事务已经结束，但尚未完成刷盘流程中的结算
   // 它记录事务状态，不保存 key-value，也不负责实际刷盘
   std::map<uint64_t, TransactionState> readyToFlushTrancIds_;
+
+  // 已结算事务的进度记录，初始化为 {0}。
+  // “结算”包括：已提交事务收到刷盘通知，或已回滚事务完成结算
+  //
+  // 首项是连续完成的检查点；后续元素是越过缺口、先完成的 ID
+  // 例如 {3, 5, 7} 表示：1～3 连续完成，5、7 也完成，4、6 尚未确认
+  // 因此最大 ID 是 7，但检查点只能是 3
+  //
+  // 连续前缀会被压缩，例如 {0, 1, 2, 3, 5} -> {3, 5}
+  // 被压缩的旧 ID 不再单独存放，contains(id) 为 false 不一定表示未完成
   std::set<uint64_t> flushedTrancIds_;
+
+
+  // 事务状态文件的句柄，供 write/read_tranc_id_file 保存和恢复元信息
+  // 它不是保存 key-value 的 SST 文件，也不是 WAL 日志文件
   FileObj tranc_id_file_;
 };
 
