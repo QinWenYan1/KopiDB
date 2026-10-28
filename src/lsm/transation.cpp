@@ -499,10 +499,10 @@ void TranManager::write_tranc_id_file() {
   // 1. 先在内存中编码完整内容，再操作文件
   // 如果编码时分配内存失败，原有状态文件还没有被修改
   // 最后的字符 1 表示本次采用的文件格式版本
-  std::vector<uint8_t>  buf{'K', 'O', 'P', 'I', 'T', 'X', 'N', '1'}; 
+  std::vector<uint8_t>  buf; 
 
-  // 统一按小端顺序写入整数：低位字节在前，高位字节在后
-  // 例如数字 1 编码为：01 00 00 00 00 00 00 00
+  // 每个整数固定使用 8 字节，低位字节先写入（小端）：低位字节在前，高位字节在后
+  // 例如数字 1 保存为：01 00 00 00 00 00 00 00
   auto append_u64 = [&](uint64_t value){
     for (unsigned shift = 0; shift < 64; shift += 8) {
       buf.push_back(static_cast<uint8_t>(value >> shift) & 0xffu); 
@@ -518,7 +518,41 @@ void TranManager::write_tranc_id_file() {
 
   // 3. 保存检查点和检查点之后零散完成的 ID
   // std::set 自带升序，直接按迭代顺序写入即可
+  // 例如 {3, 5}：1～3 已连续完成，5 也完成，4 尚未确认
+  // set 已按升序排列，直接按迭代顺序保存
+  for (uint64_t id : flushedTrancIds_) 
+    append_u64(id); 
   
+  // 4. 保存已经结束、但还留在待处理集合中的事务
+  // 每项需要同时保存 ID 和结束状态，才能区分提交与回滚
+  // 文件中明确约定：0 表示提交，1 表示回滚
+  for (const auto &[id, state] : readyToFlushTrancIds_) {
+    append_u64(id); 
+
+    switch (state) { 
+    case tiny_lsm::TransactionState::ABORTED:
+      append_u64(1);
+      break;  
+
+    case tiny_lsm::TransactionState::OP_COMMITTED:
+      append_u64(0); 
+      break; 
+    
+    default:
+      throw std::logic_error("TranManager::write_tranc_id_file: unknown transaction state");
+    }
+  }
+
+  // 5. 单独保存回滚名单
+  // 一个回滚事务即使已经从 ready 中清理，其旧记录仍可能留在 SST
+  // 重启后必须记住这个 ID，查询才能继续跳过它的记录
+  // unordered_set 的输出顺序不固定，但恢复集合不依赖顺序
+  for (uint64_t id : aborted_tranc_ids_)
+    append_u64(id); 
+  
+    
+
+
 
 
 

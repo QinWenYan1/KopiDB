@@ -2573,7 +2573,7 @@ TEST_F(LSMTest, TransactionFlushRegistrationDuplicatesKeepCheckpoint) {
   EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{4}));
 }
 
-// 目的：空管理器也保存明确的版本标识、下一个 ID 和初始检查点。
+// 目的：空管理器也保存下一个 ID 和初始检查点，直接采用固定布局，不写格式标识。
 // 场景：首次创建后显式保存，检查固定的小端字节布局，不依赖尚未实现的读取函数。
 TEST_F(LSMTest, TransactionStateFileWriteEncodesInitialState) {
   TranManager manager(test_dir);
@@ -2581,11 +2581,9 @@ TEST_F(LSMTest, TransactionStateFileWriteEncodesInitialState) {
   auto file = FileObj::open(manager.get_tranc_id_file_path(), false);
   const auto bytes = file.read_to_slice(0, file.size());
 
-  std::vector<uint8_t> expected(48, 0);
-  const std::string magic = "KOPITXN1";
-  std::copy(magic.begin(), magic.end(), expected.begin());
-  expected[8] = 1;  // nextTransactionId = 1
-  expected[16] = 1; // flushed 集合只有初始检查点 0
+  std::vector<uint8_t> expected(40, 0);
+  expected[0] = 1; // nextTransactionId = 1
+  expected[8] = 1; // flushed 集合只有初始检查点 0
   EXPECT_EQ(bytes, expected);
 }
 
@@ -2606,8 +2604,7 @@ TEST_F(LSMTest, TransactionStateFileWriteKeepsPendingAndAbortedIds) {
 
   auto file = FileObj::open(manager.get_tranc_id_file_path(), false);
   const auto bytes = file.read_to_slice(0, file.size());
-  ASSERT_EQ(bytes.size(), 128u); // 40 字节头部 + 3 个 flushed + 3 对 ready + 2 个 aborted
-  EXPECT_EQ(std::string(bytes.begin(), bytes.begin() + 8), "KOPITXN1");
+  ASSERT_EQ(bytes.size(), 120u); // 32 字节固定字段 + 3 个 flushed + 3 对 ready + 2 个 aborted
   auto word = [&](size_t offset) {
     uint64_t value = 0;
     for (size_t i = 0; i < 8; ++i) {
@@ -2615,26 +2612,26 @@ TEST_F(LSMTest, TransactionStateFileWriteKeepsPendingAndAbortedIds) {
     }
     return value;
   };
-  EXPECT_EQ(word(8), 7u);
+  EXPECT_EQ(word(0), 7u);
+  EXPECT_EQ(word(8), 3u);
   EXPECT_EQ(word(16), 3u);
-  EXPECT_EQ(word(24), 3u);
-  EXPECT_EQ(word(32), 2u);
-  EXPECT_EQ(word(40), 0u);
-  EXPECT_EQ(word(48), 2u);
-  EXPECT_EQ(word(56), 3u);
-  EXPECT_EQ(word(64), 1u);
-  EXPECT_EQ(word(72), 0u); // 0 = OP_COMMITTED
-  EXPECT_EQ(word(80), 4u);
-  EXPECT_EQ(word(88), 1u); // 1 = ABORTED
-  EXPECT_EQ(word(96), 5u);
-  EXPECT_EQ(word(104), 0u);
-  EXPECT_EQ((std::set<uint64_t>{word(112), word(120)}),
+  EXPECT_EQ(word(24), 2u);
+  EXPECT_EQ(word(32), 0u);
+  EXPECT_EQ(word(40), 2u);
+  EXPECT_EQ(word(48), 3u);
+  EXPECT_EQ(word(56), 1u);
+  EXPECT_EQ(word(64), 0u); // 0 = OP_COMMITTED
+  EXPECT_EQ(word(72), 4u);
+  EXPECT_EQ(word(80), 1u); // 1 = ABORTED
+  EXPECT_EQ(word(88), 5u);
+  EXPECT_EQ(word(96), 0u);
+  EXPECT_EQ((std::set<uint64_t>{word(104), word(112)}),
             (std::set<uint64_t>{2, 4})); // unordered_set 不要求输出顺序
   EXPECT_EQ(manager.getNextTransactionId(), 7u); // 保存本身不消耗 ID
 }
 
 // 目的：重复保存时，较短的新内容不能残留上次文件末尾的旧记录。
-// 场景：待处理集合清理、检查点压缩使文件由 104 字节缩到 56 字节。
+// 场景：待处理集合清理、检查点压缩使文件由 96 字节缩到 48 字节。
 TEST_F(LSMTest, TransactionStateFileWriteTruncatesOldTail) {
   TranManager manager(test_dir);
   for (int i = 0; i < 3; ++i) {
@@ -2644,12 +2641,12 @@ TEST_F(LSMTest, TransactionStateFileWriteTruncatesOldTail) {
   manager.add_ready_to_flush_tranc_id(2, TransactionState::ABORTED);
   manager.add_ready_to_flush_tranc_id(3, TransactionState::OP_COMMITTED);
   manager.write_tranc_id_file();
-  EXPECT_EQ(std::filesystem::file_size(manager.get_tranc_id_file_path()), 104u);
+  EXPECT_EQ(std::filesystem::file_size(manager.get_tranc_id_file_path()), 96u);
 
   manager.add_flushed_tranc_id(3);
   manager.add_flushed_tranc_id(1);
   manager.write_tranc_id_file();
-  EXPECT_EQ(std::filesystem::file_size(manager.get_tranc_id_file_path()), 56u);
+  EXPECT_EQ(std::filesystem::file_size(manager.get_tranc_id_file_path()), 48u);
   auto first = FileObj::open(manager.get_tranc_id_file_path(), false);
   const auto expected = first.read_to_slice(0, first.size());
   first.close();
