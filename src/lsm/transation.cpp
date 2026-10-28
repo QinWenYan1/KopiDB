@@ -486,7 +486,7 @@ TranManager::~TranManager() { write_tranc_id_file(); }
 void TranManager::write_tranc_id_file() {
   // 保存期间不能让结束登记或刷盘登记修改这些集合
   // 同时让多个保存请求串行执行，避免互相覆盖文件
-  std::lock_guard<std::mutex> lock(mutex_); 
+  std::lock_guard<std::mutex> lock(mutex_);
 }
 
 // TODO: Lab 5.2 读取持久化的事务状态信息
@@ -504,36 +504,37 @@ bool TranManager::is_aborted(uint64_t tranc_id) const {
 
 // Lab 5.2 负责登记事务的结束状态（已提交或已回滚），供后续刷盘时处理
 // 如果是回滚，还会把事务 ID 加入回滚名单
-void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id, TransactionState state) {
+void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id,
+                                              TransactionState state) {
   // 多个事务可能同时结束，查询线程也可能正在读取回滚名单
   // 用同一把锁保护本次涉及的三个容器，避免其他线程看到更新到一半的状态
-  std::lock_guard<std::mutex> lock(mutex_); 
+  std::lock_guard<std::mutex> lock(mutex_);
 
   // 1. 回滚事务先加入名单，让查询能够排除它写入的所有版本
   //
   // insert 返回值中的 second 表示“这次是否真的新增了这个 ID”
   // 重复登记时为 false；后面如果失败，不能误删此前已经存在的回滚记录
-  bool inserted_abort = false; 
+  bool inserted_abort = false;
   if (state == TransactionState::ABORTED)
-    inserted_abort = aborted_tranc_ids_.insert(tranc_id).second; 
+    inserted_abort = aborted_tranc_ids_.insert(tranc_id).second;
 
   // 2. 保存结束状态，交给后续刷盘登记使用
   // 首次登记插入记录；相同结束状态的重复登记更新已有记录
-  try{
-    readyToFlushTrancIds_.insert_or_assign(tranc_id, state); 
+  try {
+    readyToFlushTrancIds_.insert_or_assign(tranc_id, state);
   } catch (...) {
     // 例如 map 分配节点时内存不足：
     // 如果刚才已经新增了回滚 ID，就撤销本次新增，恢复调用前的状态
     // 此时尚未移出活跃集合，调用方也不会误以为登记成功
-    if (inserted_abort) 
+    if (inserted_abort)
       aborted_tranc_ids_.erase(tranc_id);
 
     throw;
-  } 
+  }
 
   // 3. 两处登记都成功后，这个事务才不再属于“正在执行的事务”
   // 移除的是管理器持有的 shared_ptr；用户仍持有句柄时，上下文继续有效
-  activeTrans_.erase(tranc_id); 
+  activeTrans_.erase(tranc_id);
 }
 
 // Lab 5.2 更新持久化的事务状态信息
@@ -544,15 +545,15 @@ void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id, TransactionStat
 // 确认这次刷出了哪些事务的完成标记
 //    ↓
 // 逐个调用 add_flushed_tranc_id(id)，登记结果
-void TranManager::add_flushed_tranc_id(uint64_t tranc_id){
-  std::lock_guard<std::mutex> lock(mutex_); 
+void TranManager::add_flushed_tranc_id(uint64_t tranc_id) {
+  std::lock_guard<std::mutex> lock(mutex_);
 
   // ready 表保存已经结束、等待结算的事务，按 ID 从小到大排列
   // 沿用作者的规则：处理本次通知的 ID，以及更小的已回滚事务
   // 大于本次 ID 的条目，留给后续处理
-  auto it = readyToFlushTrancIds_.begin(); 
-  while (it != readyToFlushTrancIds_.end() && it->first <= tranc_id){
-    const uint64_t ready_id = it->first; 
+  auto it = readyToFlushTrancIds_.begin();
+  while (it != readyToFlushTrancIds_.end() && it->first <= tranc_id) {
+    const uint64_t ready_id = it->first;
 
     // 例如 ready 中有：
     //   1：已提交，2：已回滚，3：已提交
@@ -560,40 +561,39 @@ void TranManager::add_flushed_tranc_id(uint64_t tranc_id){
     //   3 可以登记完成；
     //   2 已回滚，不需要保留其写入结果，可以一起结算
     //   1 虽然已提交，却可能仍在 MemTable，必须等自己的刷盘通知
-    if (ready_id != tranc_id && it->second != TransactionState::ABORTED){
-      ++it; 
-      continue; 
-    } 
+    if (ready_id != tranc_id && it->second != TransactionState::ABORTED) {
+      ++it;
+      continue;
+    }
 
-    // 集合初始化为 {0}，压缩后首项表示 检查点 ：从开头到哪个 ID，已经连续处理完成
-    // flushed 集合首项表示“从开头到这里，已经连续处理完成”
+    // 集合初始化为 {0}，压缩后首项表示 检查点 ：从开头到哪个
+    // ID，已经连续处理完成 flushed 集合首项表示“从开头到这里，已经连续处理完成”
     // 例如 {3, 5} 表示 1～3 已完成，5 也完成，但 4 尚未确认
     //
     // 再次遇到 1 时，不应插回去：
     // {3, 5} 若变成 {1, 3, 5}，首项就错误地退回了 1
     // 因此只插入检查点之后的 ID
-    if(ready_id > *flushedTrancIds_.begin()){
+    if (ready_id > *flushedTrancIds_.begin()) {
       // 先记入完成集合，最后才删除 ready 条目。
       // 如果插入时内存分配失败，当前事务的待处理登记仍然保留。
-      flushedTrancIds_.insert(ready_id); 
+      flushedTrancIds_.insert(ready_id);
 
-      
       // 找到从当前检查点开始，最后一个连续的 ID
       // 例如 {0, 1, 2, 4}：
       // 0→1→2 连续，但缺少 3，所以必须停在 2，不能推进到 4
-      auto last_contiguous = flushedTrancIds_.begin(); 
-      auto next = last_contiguous; 
-      ++next; 
+      auto last_contiguous = flushedTrancIds_.begin();
+      auto next = last_contiguous;
+      ++next;
 
-      while (next != flushedTrancIds_.end() && *next - *last_contiguous == 1){
-        last_contiguous = next; 
-        ++next; 
+      while (next != flushedTrancIds_.end() && *next - *last_contiguous == 1) {
+        last_contiguous = next;
+        ++next;
       }
 
       // 用最后一个连续 ID 代表前面整段，减少记录数量
       // {0, 1, 2, 4} -> {2, 4}，仍然能看出 3 尚未完成
       // erase 是左闭右开，因此保留 last_contiguous 指向的 2
-      flushedTrancIds_.erase(flushedTrancIds_.begin(), last_contiguous); 
+      flushedTrancIds_.erase(flushedTrancIds_.begin(), last_contiguous);
     }
 
     // 当前 ID 已新登记完成，或者早已被检查点覆盖，
@@ -601,7 +601,7 @@ void TranManager::add_flushed_tranc_id(uint64_t tranc_id){
     //
     // 这里只清理待处理登记，不删除回滚名单
     // 回滚数据可能仍在 SST 中，查询依然需要通过名单排除它
-    it = readyToFlushTrancIds_.erase(it); 
+    it = readyToFlushTrancIds_.erase(it);
   }
 }
 
