@@ -3,6 +3,7 @@
 #include "lsm/engine.h"
 #include "lsm/level_iterator.h"
 #include "sst/concact_iterator.h"
+#include "utils/files.h"
 #include <algorithm>
 #include <cstdlib>
 #include <exception>
@@ -2570,6 +2571,102 @@ TEST_F(LSMTest, TransactionFlushRegistrationDuplicatesKeepCheckpoint) {
   manager.add_flushed_tranc_id(4);
   EXPECT_EQ(manager.get_checkpoint_tranc_id(), 4u);
   EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{4}));
+}
+
+// 目的：空管理器也保存明确的版本标识、下一个 ID 和初始检查点。
+// 场景：首次创建后显式保存，检查固定的小端字节布局，不依赖尚未实现的读取函数。
+TEST_F(LSMTest, TransactionStateFileWriteEncodesInitialState) {
+  TranManager manager(test_dir);
+  manager.write_tranc_id_file();
+  auto file = FileObj::open(manager.get_tranc_id_file_path(), false);
+  const auto bytes = file.read_to_slice(0, file.size());
+
+  std::vector<uint8_t> expected(48, 0);
+  const std::string magic = "KOPITXN1";
+  std::copy(magic.begin(), magic.end(), expected.begin());
+  expected[8] = 1;  // nextTransactionId = 1
+  expected[16] = 1; // flushed 集合只有初始检查点 0
+  EXPECT_EQ(bytes, expected);
+}
+
+// 目的：保存四类状态，尤其不能在清理 ready 条目后漏掉独立回滚名单。
+// 场景：2 回滚、3 先刷盘，1 未刷盘，4 回滚、5 提交仍待结算，6 仅分配 ID。
+TEST_F(LSMTest, TransactionStateFileWriteKeepsPendingAndAbortedIds) {
+  TranManager manager(test_dir);
+  for (uint64_t id = 1; id <= 6; ++id) {
+    ASSERT_EQ(manager.getNextTransactionId(), id);
+  }
+  manager.add_ready_to_flush_tranc_id(1, TransactionState::OP_COMMITTED);
+  manager.add_ready_to_flush_tranc_id(2, TransactionState::ABORTED);
+  manager.add_ready_to_flush_tranc_id(3, TransactionState::OP_COMMITTED);
+  manager.add_flushed_tranc_id(3);
+  manager.add_ready_to_flush_tranc_id(4, TransactionState::ABORTED);
+  manager.add_ready_to_flush_tranc_id(5, TransactionState::OP_COMMITTED);
+  manager.write_tranc_id_file();
+
+  auto file = FileObj::open(manager.get_tranc_id_file_path(), false);
+  const auto bytes = file.read_to_slice(0, file.size());
+  ASSERT_EQ(bytes.size(), 128u); // 40 字节头部 + 3 个 flushed + 3 对 ready + 2 个 aborted
+  EXPECT_EQ(std::string(bytes.begin(), bytes.begin() + 8), "KOPITXN1");
+  auto word = [&](size_t offset) {
+    uint64_t value = 0;
+    for (size_t i = 0; i < 8; ++i) {
+      value |= uint64_t{bytes.at(offset + i)} << (8 * i);
+    }
+    return value;
+  };
+  EXPECT_EQ(word(8), 7u);
+  EXPECT_EQ(word(16), 3u);
+  EXPECT_EQ(word(24), 3u);
+  EXPECT_EQ(word(32), 2u);
+  EXPECT_EQ(word(40), 0u);
+  EXPECT_EQ(word(48), 2u);
+  EXPECT_EQ(word(56), 3u);
+  EXPECT_EQ(word(64), 1u);
+  EXPECT_EQ(word(72), 0u); // 0 = OP_COMMITTED
+  EXPECT_EQ(word(80), 4u);
+  EXPECT_EQ(word(88), 1u); // 1 = ABORTED
+  EXPECT_EQ(word(96), 5u);
+  EXPECT_EQ(word(104), 0u);
+  EXPECT_EQ((std::set<uint64_t>{word(112), word(120)}),
+            (std::set<uint64_t>{2, 4})); // unordered_set 不要求输出顺序
+  EXPECT_EQ(manager.getNextTransactionId(), 7u); // 保存本身不消耗 ID
+}
+
+// 目的：重复保存时，较短的新内容不能残留上次文件末尾的旧记录。
+// 场景：待处理集合清理、检查点压缩使文件由 104 字节缩到 56 字节。
+TEST_F(LSMTest, TransactionStateFileWriteTruncatesOldTail) {
+  TranManager manager(test_dir);
+  for (int i = 0; i < 3; ++i) {
+    manager.getNextTransactionId();
+  }
+  manager.add_ready_to_flush_tranc_id(1, TransactionState::OP_COMMITTED);
+  manager.add_ready_to_flush_tranc_id(2, TransactionState::ABORTED);
+  manager.add_ready_to_flush_tranc_id(3, TransactionState::OP_COMMITTED);
+  manager.write_tranc_id_file();
+  EXPECT_EQ(std::filesystem::file_size(manager.get_tranc_id_file_path()), 104u);
+
+  manager.add_flushed_tranc_id(3);
+  manager.add_flushed_tranc_id(1);
+  manager.write_tranc_id_file();
+  EXPECT_EQ(std::filesystem::file_size(manager.get_tranc_id_file_path()), 56u);
+  auto first = FileObj::open(manager.get_tranc_id_file_path(), false);
+  const auto expected = first.read_to_slice(0, first.size());
+  first.close();
+  manager.write_tranc_id_file();
+  auto second = FileObj::open(manager.get_tranc_id_file_path(), false);
+  EXPECT_EQ(second.read_to_slice(0, second.size()), expected);
+}
+
+// 目的：显式保存失败要报告异常，析构兜底保存失败不能让异常逃出析构函数。
+// 场景：把状态文件路径替换为目录，制造真实的打开失败；不依赖文件权限或 /dev/full。
+TEST_F(LSMTest, TransactionStateFileWriteReportsFailureWithoutTerminating) {
+  auto manager = std::make_unique<TranManager>(test_dir);
+  const auto path = manager->get_tranc_id_file_path();
+  ASSERT_TRUE(std::filesystem::remove(path));
+  ASSERT_TRUE(std::filesystem::create_directory(path));
+  EXPECT_THROW(manager->write_tranc_id_file(), std::runtime_error);
+  manager.reset(); // 路径仍不可写，析构应记录失败并正常返回。
 }
 
 int main(int argc, char **argv) {
