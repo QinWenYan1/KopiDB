@@ -509,6 +509,20 @@ void TranManager::write_tranc_id_file() {
     }
   }; 
 
+  // 2. 先保存下一个 ID，以及三个容器各有多少条记录。
+  // 读取时根据数量，确定每一部分的边界。
+  append_u64(next_id);
+  append_u64(flushedTrancIds_.size()); 
+  append_u64(readyToFlushTrancIds_.size());
+  append_u64(aborted_tranc_ids_.size()); 
+
+  // 3. 保存检查点和检查点之后零散完成的 ID
+  // std::set 自带升序，直接按迭代顺序写入即可
+  
+
+
+
+
 }
 
 // TODO: Lab 5.2 读取持久化的事务状态信息
