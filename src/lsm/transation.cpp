@@ -487,6 +487,28 @@ void TranManager::write_tranc_id_file() {
   // 保存期间不能让结束登记或刷盘登记修改这些集合
   // 同时让多个保存请求串行执行，避免互相覆盖文件
   std::lock_guard<std::mutex> lock(mutex_);
+
+  const uint64_t next_id = nextTransactionId_.load(); 
+
+  // 刷盘集合必须保留一个检查点，初始值为 0
+  // 正常事务 ID 从 1 开始，next_id 为 0 表示分配器已经回绕
+  // 这些状态不合法时明确报错，不把错误状态写进文件
+  if (flushedTrancIds_.empty() || next_id == 0)
+    throw std::logic_error("TranManager::write_tranc_id_file: invalid transaction state");
+
+  // 1. 先在内存中编码完整内容，再操作文件
+  // 如果编码时分配内存失败，原有状态文件还没有被修改
+  // 最后的字符 1 表示本次采用的文件格式版本
+  std::vector<uint8_t>  buf{'K', 'O', 'P', 'I', 'T', 'X', 'N', '1'}; 
+
+  // 统一按小端顺序写入整数：低位字节在前，高位字节在后
+  // 例如数字 1 编码为：01 00 00 00 00 00 00 00
+  auto append_u64 = [&](uint64_t value){
+    for (unsigned shift = 0; shift < 64; shift += 8) {
+      buf.push_back(static_cast<uint8_t>(value >> shift) & 0xffu); 
+    }
+  }; 
+
 }
 
 // TODO: Lab 5.2 读取持久化的事务状态信息
