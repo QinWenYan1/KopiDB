@@ -480,8 +480,14 @@ void TranManager::set_engine(std::shared_ptr<LSMEngine> engine) {
 
 TranManager::~TranManager() { write_tranc_id_file(); }
 
-// TODO: Lab 5.2 持久化事务状态信息
-void TranManager::write_tranc_id_file() {}
+// Lab 5.2 持久化事务状态信息
+// 保存事务管理器的元信息
+// 本函数不刷 MemTable，也不写 WAL；只保存当前的事务状态记录
+void TranManager::write_tranc_id_file() {
+  // 保存期间不能让结束登记或刷盘登记修改这些集合
+  // 同时让多个保存请求串行执行，避免互相覆盖文件
+  std::lock_guard<std::mutex> lock(mutex_); 
+}
 
 // TODO: Lab 5.2 读取持久化的事务状态信息
 void TranManager::read_tranc_id_file() {}
@@ -548,7 +554,6 @@ void TranManager::add_flushed_tranc_id(uint64_t tranc_id){
   while (it != readyToFlushTrancIds_.end() && it->first <= tranc_id){
     const uint64_t ready_id = it->first; 
 
-
     // 例如 ready 中有：
     //   1：已提交，2：已回滚，3：已提交
     // 本次收到的是事务 3 的刷盘通知：
@@ -591,7 +596,6 @@ void TranManager::add_flushed_tranc_id(uint64_t tranc_id){
       flushedTrancIds_.erase(flushedTrancIds_.begin(), last_contiguous); 
     }
 
-    
     // 当前 ID 已新登记完成，或者早已被检查点覆盖，
     // 都不必继续留在 ready 表中。erase 返回下一项，继续遍历
     //
