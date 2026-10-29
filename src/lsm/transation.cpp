@@ -692,6 +692,10 @@ void TranManager::read_tranc_id_file() {
   // 使用 swap 替换整个容器，避免重复加载时混入旧记录
   // 当前这些容器使用标准分配器和默认比较／哈希对象
   // 交换不需要重新分配节点；旧内容随后随临时容器销毁
+  flushedTrancIds_.swap(flushed); 
+  readyToFlushTrancIds_.swap(ready); 
+  aborted_tranc_ids_.swap(aborted); 
+  nextTransactionId_.store(next_id); 
   
 }
 
