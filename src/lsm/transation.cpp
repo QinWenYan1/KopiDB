@@ -479,14 +479,13 @@ void TranManager::set_engine(std::shared_ptr<LSMEngine> engine) {
 }
 
 // 自定义析构函数，是为了在 TranManager 被销毁时，自动做最后一次事务状态保存
-TranManager::~TranManager() { 
-  try{
+TranManager::~TranManager() {
+  try {
     write_tranc_id_file();
-  } catch (const std::exception &e){
+  } catch (const std::exception &e) {
     // 析构时已经无法让调用者重试，通过日志报告保存失败。
-    spdlog::error(
-        "TranManager: failed to save state during destruction: {}",
-        e.what());
+    spdlog::error("TranManager: failed to save state during destruction: {}",
+                  e.what());
   } catch (...) {
     spdlog::error(
         "TranManager: unknown error while saving state during destruction");
@@ -501,58 +500,60 @@ void TranManager::write_tranc_id_file() {
   // 同时让多个保存请求串行执行，避免互相覆盖文件
   std::lock_guard<std::mutex> lock(mutex_);
 
-  const uint64_t next_id = nextTransactionId_.load(); 
+  const uint64_t next_id = nextTransactionId_.load();
 
   // 刷盘集合必须保留一个检查点，初始值为 0
   // 正常事务 ID 从 1 开始，next_id 为 0 表示分配器已经回绕
   // 这些状态不合法时明确报错，不把错误状态写进文件
   if (flushedTrancIds_.empty() || next_id == 0)
-    throw std::logic_error("TranManager::write_tranc_id_file: invalid transaction state");
+    throw std::logic_error(
+        "TranManager::write_tranc_id_file: invalid transaction state");
 
   // 1. 先在内存中编码完整内容，再操作文件
   // 如果编码时分配内存失败，原有状态文件还没有被修改
   // 最后的字符 1 表示本次采用的文件格式版本
-  std::vector<uint8_t>  buf; 
+  std::vector<uint8_t> buf;
 
   // 每个整数固定使用 8 字节，低位字节先写入（小端）：低位字节在前，高位字节在后
   // 例如数字 1 保存为：01 00 00 00 00 00 00 00
-  auto append_u64 = [&](uint64_t value){
+  auto append_u64 = [&](uint64_t value) {
     for (unsigned shift = 0; shift < 64; shift += 8) {
-      buf.push_back(static_cast<uint8_t>(value >> shift) & 0xffu); 
+      buf.push_back(static_cast<uint8_t>(value >> shift) & 0xffu);
     }
-  }; 
+  };
 
   // 2. 先保存下一个 ID，以及三个容器各有多少条记录。
   // 读取时根据数量，确定每一部分的边界。
   append_u64(next_id);
-  append_u64(flushedTrancIds_.size()); 
+  append_u64(flushedTrancIds_.size());
   append_u64(readyToFlushTrancIds_.size());
-  append_u64(aborted_tranc_ids_.size()); 
+  append_u64(aborted_tranc_ids_.size());
 
   // 3. 保存检查点和检查点之后零散完成的 ID
   // std::set 自带升序，直接按迭代顺序写入即可
   // 例如 {3, 5}：1～3 已连续完成，5 也完成，4 尚未确认
   // set 已按升序排列，直接按迭代顺序保存
-  for (uint64_t id : flushedTrancIds_) 
-    append_u64(id); 
-  
+  for (uint64_t id : flushedTrancIds_)
+    append_u64(id);
+
   // 4. 保存已经结束、但还留在待处理集合中的事务
   // 每项需要同时保存 ID 和结束状态，才能区分提交与回滚
   // 文件中明确约定：0 表示提交，1 表示回滚
   for (const auto &[id, state] : readyToFlushTrancIds_) {
-    append_u64(id); 
+    append_u64(id);
 
-    switch (state) { 
+    switch (state) {
     case tiny_lsm::TransactionState::ABORTED:
       append_u64(1);
-      break;  
+      break;
 
     case tiny_lsm::TransactionState::OP_COMMITTED:
-      append_u64(0); 
-      break; 
-    
+      append_u64(0);
+      break;
+
     default:
-      throw std::logic_error("TranManager::write_tranc_id_file: unknown transaction state");
+      throw std::logic_error(
+          "TranManager::write_tranc_id_file: unknown transaction state");
     }
   }
 
@@ -561,14 +562,14 @@ void TranManager::write_tranc_id_file() {
   // 重启后必须记住这个 ID，查询才能继续跳过它的记录
   // unordered_set 的输出顺序不固定，但恢复集合不依赖顺序
   for (uint64_t id : aborted_tranc_ids_)
-    append_u64(id); 
+    append_u64(id);
 
   // 6. 编码完成后，再覆盖状态文件
   // true 表示以截断模式打开：先清空旧内容，再写入新内容
   // 例如上次保存 96 字节、本次只有 48 字节
   // 必须删除多出来的旧尾部，不能只覆盖前 48 字节
-  tranc_id_file_.close(); 
-  tranc_id_file_ = FileObj::open(get_tranc_id_file_path(), true); 
+  tranc_id_file_.close();
+  tranc_id_file_ = FileObj::open(get_tranc_id_file_path(), true);
 
   // 检查写入和流缓冲刷新是否成功
   // 当前文件工具的 write() 对错误检查不充分，因此也要检查 sync()
@@ -576,7 +577,6 @@ void TranManager::write_tranc_id_file() {
     throw std::runtime_error(
         "TranManager::write_tranc_id_file: failed to save transaction state");
   }
-
 }
 
 // TODO: Lab 5.2 读取持久化的事务状态信息
