@@ -586,19 +586,19 @@ void TranManager::write_tranc_id_file() {
 void TranManager::read_tranc_id_file() {
   // 与保存、结束登记和刷盘登记使用同一把锁
   // 本函数用于启动恢复，恢复完成后再对外提供事务服务
-  std::lock_guard<std::mutex> lock(mutex_); 
+  std::lock_guard<std::mutex> lock(mutex_);
 
   // 1. 检查文件是否至少包含四个固定字段：
   // next_id、flushed 数量、ready 数量、aborted 数量
   // 每个字段都是 8 字节，后面的所有记录也由 8 字节整数组成
-  const size_t file_size = tranc_id_file_.size(); 
-  if (file_size < 32 || file_size % 8 != 0){
+  const size_t file_size = tranc_id_file_.size();
+  if (file_size < 32 || file_size % 8 != 0) {
     throw std::runtime_error(
         "TranManager::read_tranc_id_file: invalid file length");
   }
 
   const auto buf = tranc_id_file_.read_to_slice(0, file_size);
-  size_t offset = 0; 
+  size_t offset = 0;
 
   // 按写入时的小端顺序还原一个整数，同时推进读取位置
   // 先转为 uint64_t 再移位，保证高位字节也能正确参与计算
@@ -606,15 +606,15 @@ void TranManager::read_tranc_id_file() {
   // 固定字段已由上面的长度检查保证完整
   // 容器内容则会在进入循环前统一检查长度
   auto read_u64 = [&]() {
-    uint64_t value = 0; 
-    for (unsigned shift = 0; shift < 64; shift += 8){
-      value |= static_cast<uint64_t>(buf[offset++]) << shift; 
+    uint64_t value = 0;
+    for (unsigned shift = 0; shift < 64; shift += 8) {
+      value |= static_cast<uint64_t>(buf[offset++]) << shift;
     }
-    return value; 
-  }; 
+    return value;
+  };
 
-  const uint64_t next_id = read_u64(); 
-  const uint64_t flushed_count = read_u64(); 
+  const uint64_t next_id = read_u64();
+  const uint64_t flushed_count = read_u64();
   const uint64_t ready_count = read_u64();
   const uint64_t aborted_count = read_u64();
 
@@ -625,58 +625,58 @@ void TranManager::read_tranc_id_file() {
   // ready 每项占 2 个整数：ID 和状态
   // aborted 每项占 1 个整数
   size_t remaining = (buf.size() - offset) / 8;
-  
+
   // flushed 至少保留一个检查点；next_id 必须大于 0
   if (next_id == 0 || flushed_count == 0 || flushed_count > remaining)
-     throw std::runtime_error("TranManager::read_tranc_id_file: invalid header");
-  remaining -= static_cast<size_t>(flushed_count); 
+    throw std::runtime_error("TranManager::read_tranc_id_file: invalid header");
+  remaining -= static_cast<size_t>(flushed_count);
 
   // 先检查能放下多少对，再乘以 2 扣除
   // 避免文件中的错误大数在乘法或加法中溢出
   if (ready_count > remaining / 2)
-    throw std::runtime_error("TranManager::read_tranc_id_file: invalid ready count");
-  remaining -= static_cast<size_t>(ready_count) * 2; 
+    throw std::runtime_error(
+        "TranManager::read_tranc_id_file: invalid ready count");
+  remaining -= static_cast<size_t>(ready_count) * 2;
 
   // 最后一段必须刚好占完剩余内容
   // 既不能缺少记录，也不能残留未被这些数量解释的尾部数据
   if (aborted_count != remaining)
-    throw std::runtime_error("TranManager::read_tranc_id_file: invalid aborted count");
+    throw std::runtime_error(
+        "TranManager::read_tranc_id_file: invalid aborted count");
 
   // 3. 先恢复到临时容器，暂时不修改管理器成员
   // 后面任何解析或内存分配失败，都不会留下半份新状态
-  std::set<uint64_t> flushed; 
-  std::map<uint64_t, TransactionState> ready; 
-  std::unordered_set<uint64_t> aborted; 
+  std::set<uint64_t> flushed;
+  std::map<uint64_t, TransactionState> ready;
+  std::unordered_set<uint64_t> aborted;
 
   // 保存时 flushed 来自 set，因此文件里的 ID 应严格递增
   // 重复或降序都说明内容不符合我们的写入格式
-  for (uint64_t i = 0; i < flushed_count; ++i){
-    const uint64_t id = read_u64(); 
+  for (uint64_t i = 0; i < flushed_count; ++i) {
+    const uint64_t id = read_u64();
 
     if (!flushed.empty() && id <= *flushed.rbegin())
-      throw std::runtime_error("TranManager::read_tranc_id_file: invalid flushed order");
+      throw std::runtime_error(
+          "TranManager::read_tranc_id_file: invalid flushed order");
 
     // 已确认 ID 递增，提示容器在末尾插入，避免重复查找位置
-    flushed.emplace_hint(flushed.end(), id); 
+    flushed.emplace_hint(flushed.end(), id);
   }
 
   // ready 来自 map，同样按 ID 严格递增
   // 状态编码必须与写入函数一致：0 为提交，1 为回滚
-  for(uint64_t i = 0; i < ready_count; ++i) {
-    const uint64_t id = read_u64(); 
-    const uint64_t state_code = read_u64(); 
+  for (uint64_t i = 0; i < ready_count; ++i) {
+    const uint64_t id = read_u64();
+    const uint64_t state_code = read_u64();
 
-    if (state_code > 1 || (!ready.empty() && id <= ready.rbegin()->first)) 
-      throw std::runtime_error("TranManager::read_tranc_id_file: invalid ready entry");
+    if (state_code > 1 || (!ready.empty() && id <= ready.rbegin()->first))
+      throw std::runtime_error(
+          "TranManager::read_tranc_id_file: invalid ready entry");
 
-    const auto state = (state_code == 0) 
-      ? TransactionState::OP_COMMITTED
-      : TransactionState::ABORTED; 
-    ready.emplace_hint(ready.end(), id, state); 
-
-
+    const auto state = (state_code == 0) ? TransactionState::OP_COMMITTED
+                                         : TransactionState::ABORTED;
+    ready.emplace_hint(ready.end(), id, state);
   }
-
 }
 
 bool TranManager::is_aborted(uint64_t tranc_id) const {
