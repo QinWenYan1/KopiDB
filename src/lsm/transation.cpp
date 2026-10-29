@@ -634,7 +634,19 @@ void TranManager::read_tranc_id_file() {
   // 先检查能放下多少对，再乘以 2 扣除
   // 避免文件中的错误大数在乘法或加法中溢出
   if (ready_count > remaining / 2)
+    throw std::runtime_error("TranManager::read_tranc_id_file: invalid ready count");
+  remaining -= static_cast<size_t>(ready_count) * 2; 
 
+  // 最后一段必须刚好占完剩余内容
+  // 既不能缺少记录，也不能残留未被这些数量解释的尾部数据
+  if (aborted_count != remaining)
+    throw std::runtime_error("TranManager::read_tranc_id_file: invalid aborted count");
+
+  // 3. 先恢复到临时容器，暂时不修改管理器成员
+  // 后面任何解析或内存分配失败，都不会留下半份新状态
+  std::set<uint64_t> flushed; 
+  std::map<uint64_t, TransactionState> ready; 
+  std::unordered_set<uint64_t> aborted; 
 
 }
 
