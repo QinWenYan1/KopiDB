@@ -677,6 +677,22 @@ void TranManager::read_tranc_id_file() {
                                          : TransactionState::ABORTED;
     ready.emplace_hint(ready.end(), id, state);
   }
+
+  // 回滚名单来自 unordered_set，不要求文件里的 ID 有序
+  // 但同一个 ID 不应出现两次，避免自动去重掩盖错误内容
+  for (uint64_t i = 0; i < aborted_count; ++i) {
+    const uint64_t id = read_u64(); 
+
+    if (!aborted.insert(id).second)
+      throw std::runtime_error(
+          "TranManager::read_tranc_id_file: duplicate aborted ID");
+  }
+
+  // 4. 所有内容都已成功读取并验证，再替换正式状态
+  // 使用 swap 替换整个容器，避免重复加载时混入旧记录
+  // 当前这些容器使用标准分配器和默认比较／哈希对象
+  // 交换不需要重新分配节点；旧内容随后随临时容器销毁
+  
 }
 
 bool TranManager::is_aborted(uint64_t tranc_id) const {
