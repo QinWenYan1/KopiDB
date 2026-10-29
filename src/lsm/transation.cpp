@@ -615,8 +615,25 @@ void TranManager::read_tranc_id_file() {
 
   const uint64_t next_id = read_u64(); 
   const uint64_t flushed_count = read_u64(); 
-   const uint64_t ready_count = read_u64();
+  const uint64_t ready_count = read_u64();
   const uint64_t aborted_count = read_u64();
+
+  // 2. 检查三个数量是否与文件剩余内容一致
+  // remaining 表示还剩多少个“8 字节整数”，不是字节数
+  //
+  // flushed 每项占 1 个整数
+  // ready 每项占 2 个整数：ID 和状态
+  // aborted 每项占 1 个整数
+  size_t remaining = (buf.size() - offset) / 8;
+  
+  // flushed 至少保留一个检查点；next_id 必须大于 0
+  if (next_id == 0 || flushed_count == 0 || flushed_count > remaining)
+     throw std::runtime_error("TranManager::read_tranc_id_file: invalid header");
+  remaining -= static_cast<size_t>(flushed_count); 
+
+  // 先检查能放下多少对，再乘以 2 扣除
+  // 避免文件中的错误大数在乘法或加法中溢出
+  if (ready_count > remaining / 2)
 
 
 }
