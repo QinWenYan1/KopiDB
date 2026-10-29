@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 #include <iostream>
 #include <latch>
+#include <limits>
 #include <mutex>
 #include <set>
 #include <shared_mutex>
@@ -2664,6 +2665,157 @@ TEST_F(LSMTest, TransactionStateFileWriteReportsFailureWithoutTerminating) {
   ASSERT_TRUE(std::filesystem::create_directory(path));
   EXPECT_THROW(manager->write_tranc_id_file(), std::runtime_error);
   manager.reset(); // 路径仍不可写，析构应记录失败并正常返回。
+}
+
+namespace {
+// 按已约定的固定布局准备输入文件，读取测试不依赖业务写入函数。
+std::vector<uint8_t> transaction_state_bytes(const std::vector<uint64_t> &words) {
+  std::vector<uint8_t> bytes;
+  for (uint64_t word : words) {
+    for (unsigned shift = 0; shift < 64; shift += 8) {
+      bytes.push_back(static_cast<uint8_t>((word >> shift) & 0xffu));
+    }
+  }
+  return bytes;
+}
+
+void replace_transaction_state_file(const std::string &path,
+                                    std::vector<uint8_t> bytes) {
+  auto file = FileObj::open(path, true);
+  if (!bytes.empty()) {
+    ASSERT_TRUE(file.write(0, bytes));
+  }
+  ASSERT_TRUE(file.sync());
+}
+} // namespace
+
+// 目的：恢复四类状态，特别是 ready 的状态值和已被 ready 清理的回滚 ID。
+// 场景：文件记录 next=7，flushed={0,2,3}，ready={1提交,4回滚,5提交}，abort={2,4}。
+// 恢复后通知 3 不得跨过未刷盘的 1；通知 1、5 后检查点应分别到 3、5。
+TEST_F(LSMTest, TransactionStateFileReadRestoresPendingAndAbortedIds) {
+  TranManager manager(test_dir);
+  replace_transaction_state_file(manager.get_tranc_id_file_path(),
+      transaction_state_bytes({7, 3, 3, 2, 0, 2, 3, 1, 0, 4, 1, 5, 0, 2, 4}));
+
+  manager.read_tranc_id_file();
+  EXPECT_EQ(manager.getNextTransactionId(), 7u);
+  EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{0, 2, 3}));
+  EXPECT_TRUE(manager.is_aborted(2));
+  EXPECT_TRUE(manager.is_aborted(4));
+  EXPECT_FALSE(manager.is_aborted(5));
+
+  manager.add_flushed_tranc_id(3);
+  EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{0, 2, 3}));
+  manager.add_flushed_tranc_id(1);
+  EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{3}));
+  manager.add_flushed_tranc_id(5);
+  EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{5}));
+  EXPECT_TRUE(manager.is_aborted(2));
+  EXPECT_TRUE(manager.is_aborted(4));
+}
+
+// 目的：重复加载应使用文件里的完整状态，不能把它追加到旧容器中。
+// 场景：管理器原有 ready 4 和回滚 1；文件只有检查点 3、待处理回滚 6。
+// 再次加载前加入回滚 8，重读同一文件后 1、8 都应消失，ready 4 也不应残留。
+TEST_F(LSMTest, TransactionStateFileReadReplacesStateOnRepeatedLoads) {
+  TranManager manager(test_dir);
+  manager.add_ready_to_flush_tranc_id(1, TransactionState::ABORTED);
+  manager.add_ready_to_flush_tranc_id(4, TransactionState::OP_COMMITTED);
+  replace_transaction_state_file(manager.get_tranc_id_file_path(),
+      transaction_state_bytes({9, 1, 1, 1, 3, 6, 1, 6}));
+
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    SCOPED_TRACE(attempt);
+    manager.read_tranc_id_file();
+    EXPECT_EQ(manager.getNextTransactionId(), 9u);
+    EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{3}));
+    EXPECT_FALSE(manager.is_aborted(1));
+    EXPECT_FALSE(manager.is_aborted(8));
+    EXPECT_TRUE(manager.is_aborted(6));
+    manager.add_flushed_tranc_id(4);
+    EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{3}));
+    if (attempt == 0) {
+      manager.add_ready_to_flush_tranc_id(8, TransactionState::ABORTED);
+    }
+  }
+}
+
+// 目的：读取完整的 64 位 ID，不能只取低 32 位或把高低字节读反。
+// 场景：八个字节各不相同，固定小端文件恢复后应得到原来的大整数。
+TEST_F(LSMTest, TransactionStateFileReadPreserves64BitId) {
+  TranManager manager(test_dir);
+  constexpr uint64_t next_id = 0x0102030405060708ULL;
+  replace_transaction_state_file(manager.get_tranc_id_file_path(),
+      transaction_state_bytes({next_id, 1, 0, 0, 0}));
+  manager.read_tranc_id_file();
+  EXPECT_EQ(manager.getNextTransactionId(), next_id);
+  EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{0}));
+}
+
+// 目的：拒绝截断、尾部残留和不合理数量，避免越界、数量计算溢出或静默重置。
+// 场景：空文件、不完整字段、计数与实际字节数不匹配、空检查点、零 next ID。
+TEST_F(LSMTest, TransactionStateFileReadRejectsInvalidLengthsAndCounts) {
+  TranManager manager(test_dir);
+  auto truncated = transaction_state_bytes({1, 1, 0, 0, 0});
+  truncated.pop_back();
+  auto extra_byte = transaction_state_bytes({1, 1, 0, 0, 0});
+  extra_byte.push_back(0);
+  const uint64_t huge = std::numeric_limits<uint64_t>::max();
+  const std::vector<std::vector<uint8_t>> cases{
+      {}, std::vector<uint8_t>(31, 0), truncated, extra_byte,
+      transaction_state_bytes({1, 1, 0, 0, 0, 9}),
+      transaction_state_bytes({0, 1, 0, 0, 0}),
+      transaction_state_bytes({1, 0, 0, 0}),
+      transaction_state_bytes({1, huge, 0, 0, 0}),
+      transaction_state_bytes({1, 1, huge, 0, 0}),
+      transaction_state_bytes({1, 1, 0, huge, 0})};
+  for (size_t i = 0; i < cases.size(); ++i) {
+    SCOPED_TRACE(i);
+    replace_transaction_state_file(manager.get_tranc_id_file_path(), cases[i]);
+    EXPECT_THROW(manager.read_tranc_id_file(), std::runtime_error);
+  }
+}
+
+// 目的：拒绝不符合当前编码约定的条目，避免容器自动去重掩盖损坏内容。
+// 场景：flushed/ready 重复或降序、aborted 重复、ready 使用未定义的状态编码。
+TEST_F(LSMTest, TransactionStateFileReadRejectsInvalidEntries) {
+  TranManager manager(test_dir);
+  const std::vector<std::vector<uint64_t>> cases{
+      {8, 2, 0, 0, 1, 1},
+      {8, 2, 0, 0, 3, 1},
+      {8, 1, 2, 0, 0, 2, 0, 2, 0},
+      {8, 1, 2, 0, 0, 3, 0, 2, 0},
+      {8, 1, 0, 2, 0, 2, 2},
+      {8, 1, 1, 0, 0, 2, 2}};
+  for (size_t i = 0; i < cases.size(); ++i) {
+    SCOPED_TRACE(i);
+    replace_transaction_state_file(manager.get_tranc_id_file_path(),
+                                    transaction_state_bytes(cases[i]));
+    EXPECT_THROW(manager.read_tranc_id_file(), std::runtime_error);
+  }
+}
+
+// 目的：即使读到文件末尾才发现错误，也必须完整保留原先的管理器状态。
+// 场景：新文件前半段合法，最后两个回滚 ID 重复；不能留下新 ID 或一半新容器。
+TEST_F(LSMTest, TransactionStateFileReadFailurePreservesExistingState) {
+  TranManager manager(test_dir);
+  for (uint64_t id = 1; id <= 6; ++id) {
+    ASSERT_EQ(manager.getNextTransactionId(), id);
+  }
+  manager.add_ready_to_flush_tranc_id(1, TransactionState::OP_COMMITTED);
+  manager.add_ready_to_flush_tranc_id(2, TransactionState::ABORTED);
+  manager.add_ready_to_flush_tranc_id(3, TransactionState::OP_COMMITTED);
+  manager.add_flushed_tranc_id(3);
+  replace_transaction_state_file(manager.get_tranc_id_file_path(),
+      transaction_state_bytes({99, 1, 0, 2, 8, 10, 10}));
+
+  EXPECT_THROW(manager.read_tranc_id_file(), std::runtime_error);
+  EXPECT_EQ(manager.getNextTransactionId(), 7u);
+  EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{0, 2, 3}));
+  EXPECT_TRUE(manager.is_aborted(2));
+  EXPECT_FALSE(manager.is_aborted(10));
+  manager.add_flushed_tranc_id(1);
+  EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{3}));
 }
 
 int main(int argc, char **argv) {
