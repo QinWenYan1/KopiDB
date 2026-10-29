@@ -648,6 +648,35 @@ void TranManager::read_tranc_id_file() {
   std::map<uint64_t, TransactionState> ready; 
   std::unordered_set<uint64_t> aborted; 
 
+  // 保存时 flushed 来自 set，因此文件里的 ID 应严格递增
+  // 重复或降序都说明内容不符合我们的写入格式
+  for (uint64_t i = 0; i < flushed_count; ++i){
+    const uint64_t id = read_u64(); 
+
+    if (!flushed.empty() && id <= *flushed.rbegin())
+      throw std::runtime_error("TranManager::read_tranc_id_file: invalid flushed order");
+
+    // 已确认 ID 递增，提示容器在末尾插入，避免重复查找位置
+    flushed.emplace_hint(flushed.end(), id); 
+  }
+
+  // ready 来自 map，同样按 ID 严格递增
+  // 状态编码必须与写入函数一致：0 为提交，1 为回滚
+  for(uint64_t i = 0; i < ready_count; ++i) {
+    const uint64_t id = read_u64(); 
+    const uint64_t state_code = read_u64(); 
+
+    if (state_code > 1 || (!ready.empty() && id <= ready.rbegin()->first)) 
+      throw std::runtime_error("TranManager::read_tranc_id_file: invalid ready entry");
+
+    const auto state = (state_code == 0) 
+      ? TransactionState::OP_COMMITTED
+      : TransactionState::ABORTED; 
+    ready.emplace_hint(ready.end(), id, state); 
+
+
+  }
+
 }
 
 bool TranManager::is_aborted(uint64_t tranc_id) const {
