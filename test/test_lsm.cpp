@@ -2818,6 +2818,112 @@ TEST_F(LSMTest, TransactionStateFileReadFailurePreservesExistingState) {
   EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{3}));
 }
 
+// 目的：首次构造得到 ID 从 1 开始、检查点为 0、回滚名单为空的状态。
+// 场景：调用方已经创建数据目录，但目录里还没有 tranc_id 文件。
+TEST_F(LSMTest, TransactionManagerStartupInitializesFreshState) {
+  TranManager manager(test_dir);
+  EXPECT_TRUE(std::filesystem::exists(manager.get_tranc_id_file_path()));
+  ASSERT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{0}));
+  EXPECT_EQ(manager.get_checkpoint_tranc_id(), 0u);
+  EXPECT_EQ(manager.get_max_flushed_tranc_id(), 0u);
+  EXPECT_FALSE(manager.is_aborted(1));
+  EXPECT_EQ(manager.getNextTransactionId(), 1u);
+  EXPECT_EQ(manager.getNextTransactionId(), 2u);
+}
+
+// 目的：正常析构保存、再次构造恢复，串起写入与读取，验证多次重启的 ID 延续。
+// 场景：首次关闭保留乱序刷盘缺口、待处理状态、已清理 ready 的回滚 ID；
+// 第二次启动补齐刷盘登记，再关闭并启动，检查点和回滚名单仍然正确。
+TEST_F(LSMTest, TransactionManagerStartupResumesStateAfterNormalClose) {
+  {
+    TranManager manager(test_dir);
+    for (uint64_t id = 1; id <= 6; ++id) {
+      ASSERT_EQ(manager.getNextTransactionId(), id);
+    }
+    manager.add_ready_to_flush_tranc_id(1, TransactionState::OP_COMMITTED);
+    manager.add_ready_to_flush_tranc_id(2, TransactionState::ABORTED);
+    manager.add_ready_to_flush_tranc_id(3, TransactionState::OP_COMMITTED);
+    manager.add_flushed_tranc_id(3);
+    manager.add_ready_to_flush_tranc_id(4, TransactionState::ABORTED);
+    manager.add_ready_to_flush_tranc_id(5, TransactionState::OP_COMMITTED);
+  }
+  {
+    TranManager manager(test_dir);
+    EXPECT_EQ(manager.getNextTransactionId(), 7u);
+    EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{0, 2, 3}));
+    EXPECT_TRUE(manager.is_aborted(2));
+    EXPECT_TRUE(manager.is_aborted(4));
+    EXPECT_FALSE(manager.is_aborted(5));
+    manager.add_flushed_tranc_id(1);
+    EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{3}));
+    manager.add_flushed_tranc_id(5);
+    EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{5}));
+  }
+  {
+    TranManager manager(test_dir);
+    EXPECT_EQ(manager.getNextTransactionId(), 8u);
+    EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{5}));
+    EXPECT_TRUE(manager.is_aborted(2));
+    EXPECT_TRUE(manager.is_aborted(4));
+  }
+}
+
+// 目的：已有文件读取失败必须使构造失败，不能当作新库并覆盖原文件。
+// 场景：文件为空、被截断，或完整长度中含非法状态码；失败后原字节保持不变。
+TEST_F(LSMTest, TransactionManagerStartupRejectsInvalidFileWithoutOverwriting) {
+  const auto path = (std::filesystem::path(test_dir) / "tranc_id").string();
+  auto truncated = transaction_state_bytes({1, 1, 0, 0, 0});
+  truncated.pop_back();
+  const std::vector<std::vector<uint8_t>> cases{
+      {}, truncated, transaction_state_bytes({3, 1, 1, 0, 0, 2, 9})};
+  for (size_t i = 0; i < cases.size(); ++i) {
+    SCOPED_TRACE(i);
+    replace_transaction_state_file(path, cases[i]);
+    EXPECT_THROW((void)std::make_unique<TranManager>(test_dir),
+                 std::runtime_error);
+    auto file = FileObj::open(path, false);
+    EXPECT_EQ(file.read_to_slice(0, file.size()), cases[i]);
+  }
+}
+
+// 目的：回滚 ID 即使已经从 ready 清理，重启后第一次 SST 查询也必须排除该版本。
+// 场景：直接构建含“修改／删除／新增”三个回滚版本的 SST，正常关闭后重新加载。
+// 本用例只验证状态恢复与查询接通；真实事务提交、刷盘及 compaction 链路在阶段④验收。
+TEST_F(LSMTest, TransactionManagerStartupRestoresRollbackForSstRecords) {
+  {
+    auto engine = std::make_shared<LSMEngine>(test_dir);
+    auto manager = bind_test_manager(engine);
+    for (uint64_t id = 1; id <= 3; ++id) {
+      ASSERT_EQ(manager->getNextTransactionId(), id);
+    }
+    add_sst_for_point_query(engine, 0, 1,
+        {{"deleted", "", 2}, {"deleted", "old_deleted", 1},
+         {"inserted", "new", 2},
+         {"updated", "new", 2}, {"updated", "old_updated", 1}});
+    manager->add_ready_to_flush_tranc_id(1, TransactionState::OP_COMMITTED);
+    manager->add_ready_to_flush_tranc_id(2, TransactionState::ABORTED);
+    manager->add_ready_to_flush_tranc_id(3, TransactionState::OP_COMMITTED);
+    manager->add_flushed_tranc_id(1);
+    manager->add_flushed_tranc_id(3);
+    EXPECT_EQ(manager->get_flushed_tranc_ids(), (std::set<uint64_t>{3}));
+  }
+  {
+    auto engine = std::make_shared<LSMEngine>(test_dir);
+    auto manager = bind_test_manager(engine);
+    EXPECT_TRUE(manager->is_aborted(2));
+    EXPECT_EQ(manager->getNextTransactionId(), 4u);
+    const auto updated = engine->get("updated", 0);
+    ASSERT_TRUE(updated.has_value());
+    EXPECT_EQ(updated->first, "old_updated");
+    EXPECT_EQ(updated->second, 1u);
+    const auto deleted = engine->get("deleted", 0);
+    ASSERT_TRUE(deleted.has_value());
+    EXPECT_EQ(deleted->first, "old_deleted");
+    EXPECT_EQ(deleted->second, 1u);
+    EXPECT_FALSE(engine->get("inserted", 0).has_value());
+  }
+}
+
 int main(int argc, char **argv) {
   testing::InitGoogleTest(&argc, argv);
   init_spdlog_file();
