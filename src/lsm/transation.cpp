@@ -583,7 +583,21 @@ void TranManager::write_tranc_id_file() {
 // 作者参考只恢复 nextTransactionId_ 和 flushedTrancIds_
 // 我们还要对称恢复之前保存的 ready 和回滚名单
 void TranManager::read_tranc_id_file() {
-  
+  // 与保存、结束登记和刷盘登记使用同一把锁
+  // 本函数用于启动恢复，恢复完成后再对外提供事务服务
+  std::lock_guard<std::mutex> lock(mutex_); 
+
+  // 1. 检查文件是否至少包含四个固定字段：
+  // next_id、flushed 数量、ready 数量、aborted 数量
+  // 每个字段都是 8 字节，后面的所有记录也由 8 字节整数组成
+  const size_t file_size = tranc_id_file_.size(); 
+  if (file_size < 32 || file_size % 8 != 0){
+    throw std::runtime_error(
+        "TranManager::read_tranc_id_file: invalid file length");
+  }
+
+  const auto buf = tranc_id_file_.read_to_slice(0, file_size);
+  size_t offset = 0; 
 
 }
 
