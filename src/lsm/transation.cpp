@@ -549,13 +549,20 @@ void TranManager::write_tranc_id_file() {
   // unordered_set 的输出顺序不固定，但恢复集合不依赖顺序
   for (uint64_t id : aborted_tranc_ids_)
     append_u64(id); 
-  
-    
 
+  // 6. 编码完成后，再覆盖状态文件
+  // true 表示以截断模式打开：先清空旧内容，再写入新内容
+  // 例如上次保存 96 字节、本次只有 48 字节
+  // 必须删除多出来的旧尾部，不能只覆盖前 48 字节
+  tranc_id_file_.close(); 
+  tranc_id_file_ = FileObj::open(get_tranc_id_file_path(), true); 
 
-
-
-
+  // 检查写入和流缓冲刷新是否成功
+  // 当前文件工具的 write() 对错误检查不充分，因此也要检查 sync()
+  if (!tranc_id_file_.write(0, buf) || !tranc_id_file_.sync()) {
+    throw std::runtime_error(
+        "TranManager::write_tranc_id_file: failed to save transaction state");
+  }
 
 }
 
