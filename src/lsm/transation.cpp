@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <sys/types.h>
 #include <utility>
 #include <vector>
 
@@ -598,6 +599,25 @@ void TranManager::read_tranc_id_file() {
 
   const auto buf = tranc_id_file_.read_to_slice(0, file_size);
   size_t offset = 0; 
+
+  // 按写入时的小端顺序还原一个整数，同时推进读取位置
+  // 先转为 uint64_t 再移位，保证高位字节也能正确参与计算
+  //
+  // 固定字段已由上面的长度检查保证完整
+  // 容器内容则会在进入循环前统一检查长度
+  auto read_u64 = [&]() {
+    uint64_t value = 0; 
+    for (unsigned shift = 0; shift < 64; shift += 8){
+      value |= static_cast<uint64_t>(buf[offset++]) << shift; 
+    }
+    return value; 
+  }; 
+
+  const uint64_t next_id = read_u64(); 
+  const uint64_t flushed_count = read_u64(); 
+   const uint64_t ready_count = read_u64();
+  const uint64_t aborted_count = read_u64();
+
 
 }
 
