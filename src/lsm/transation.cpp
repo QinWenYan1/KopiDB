@@ -578,8 +578,14 @@ void TranManager::write_tranc_id_file() {
   }
 }
 
-// TODO: Lab 5.2 读取持久化的事务状态信息
-void TranManager::read_tranc_id_file() {}
+// Lab 5.2 读取持久化的事务状态信息
+// 读取文件 → 检查长度和数量 → 解码到临时容器 → 全部成功后替换成员
+// 作者参考只恢复 nextTransactionId_ 和 flushedTrancIds_
+// 我们还要对称恢复之前保存的 ready 和回滚名单
+void TranManager::read_tranc_id_file() {
+  
+
+}
 
 bool TranManager::is_aborted(uint64_t tranc_id) const {
   // 查询期间，其他线程可能正在登记回滚并修改集合
