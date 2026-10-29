@@ -478,7 +478,20 @@ void TranManager::set_engine(std::shared_ptr<LSMEngine> engine) {
   engine_ = std::move(engine);
 }
 
-TranManager::~TranManager() { write_tranc_id_file(); }
+// 自定义析构函数，是为了在 TranManager 被销毁时，自动做最后一次事务状态保存
+TranManager::~TranManager() { 
+  try{
+    write_tranc_id_file();
+  } catch (const std::exception &e){
+    // 析构时已经无法让调用者重试，通过日志报告保存失败。
+    spdlog::error(
+        "TranManager: failed to save state during destruction: {}",
+        e.what());
+  } catch (...) {
+    spdlog::error(
+        "TranManager: unknown error while saving state during destruction");
+  }
+}
 
 // Lab 5.2 持久化事务状态信息
 // 保存事务管理器的元信息
