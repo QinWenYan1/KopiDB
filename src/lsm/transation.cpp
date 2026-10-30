@@ -444,14 +444,15 @@ enum IsolationLevel TranContext::get_isolation_level() {
 }
 
 // *********************** TranManager ***********************
-TranManager::TranManager(std::string data_dir) : data_dir_(std::move(data_dir)) {
+TranManager::TranManager(std::string data_dir)
+    : data_dir_(std::move(data_dir)) {
   // data_dir 按值传入，后面不再使用这个参数
   // 将它移动到成员中，避免再复制一次路径字符串
   //
   // 路径函数还负责将空目录参数规范为当前目录 "."
   auto file_path = get_tranc_id_file_path();
 
-   // 1. 已有状态文件：恢复上次保存的事务状态
+  // 1. 已有状态文件：恢复上次保存的事务状态
   if (std::filesystem::exists(file_path)) {
     // 表示打开已有文件，不清空其内容
     tranc_id_file_ = FileObj::open(file_path, false);
@@ -464,8 +465,8 @@ TranManager::TranManager(std::string data_dir) : data_dir_(std::move(data_dir)) 
 
     // 恢复成功后结束，不能再执行下面的新库初始化
     // 否则会把检查点 0 混入已经恢复的刷盘集合
-    return; 
-  } 
+    return;
+  }
 
   // 2. 没有状态文件：建立首次启动的初始状态
   //

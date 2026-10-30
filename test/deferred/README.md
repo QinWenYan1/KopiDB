@@ -4,9 +4,11 @@
 
 最初从 `test/test_lsm.cpp` 移出 **24 个用例**。2026-10-26 阶段①开始后，其中 **4 个**已原样移回 `test/test_lsm.cpp`：`TransactionEndRegistrationTracksOnlyAbortedIds`、`TransactionEndRegistrationSupportsConcurrentQueries`、`TransactionEndRegistrationSurvivesFlushCleanup`、`FreezesTableAndRegistersBeforeFlush`；恢复时核对注释和函数体的 SHA-256 与清单一致。
 
-剩余 **20 个用例**保存在 [transaction_state_tests.inc](transaction_state_tests.inc)，该文件仍未接入 `test_lsm`。原位置、名称、内容校验值及已恢复项位置见 [transaction_state_tests.json](transaction_state_tests.json)。恢复编译不代表验收通过，实际结果见 STATE。
+2026-10-30 阶段④又原样恢复 **19 个用例**，累计恢复 **23/24**；恢复前逐项核对原注释与函数体的 SHA-256，未改断言。覆盖回滚后的点查、批查、范围、compaction、提交冲突和状态登记。恢复编译不代表验收通过，实际结果见 STATE。
 
-这些用例覆盖：
+剩余 **1 个混合隔离用例** `TranReadVisibilityTest.RejectsDirtyValuesAndTombstonesBeforeCaching` 保存在 [transaction_state_tests.inc](transaction_state_tests.inc)，该文件仍未接入 `test_lsm`。它检查 RC/RR/SERIALIZABLE 排除其他尚未提交事务的值与墓碑，属于用户明确另行安排的任务。原位置、名称、内容校验值及已恢复项位置见 [transaction_state_tests.json](transaction_state_tests.json)。
+
+原 24 个用例覆盖：
 
 - 结束/回滚登记、并发查询、刷盘登记及登记清理。
 - 真实 abort 后的点查、批查、范围查询、compaction 和提交冲突检查。
