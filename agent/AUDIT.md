@@ -1,8 +1,10 @@
-# 已完成 Lab 范围的数据库缺陷审计
+# KopiDB 全局问题账本
 
-日期：2026-10-30。状态：审计完成，以下 4 项均已用测试复现，业务代码尚未修改。
+最后更新：2026-10-30。当前 A1～A4 均已复现，状态为待排期，尚未选入修复计划，业务代码未修改。
 
-## 范围与依据
+本文件持续记录全局发现，规则见 [audit-to-plan](skills/audit-to-plan/SKILL.md)。选择问题开始处理时，在 [PLAN.md](PLAN.md) 按编号展开执行步骤，并在这里更新状态和计划链接；验收后保留原条目，补充解决日期与证据。项目现状和全局约定见 [STATE.md](STATE.md)。
+
+## 首次审计的范围与依据
 
 核查事务上下文、提交／取消、事务状态、Engine 点查与批查、迭代器归并、SkipList／MemTable、Block／SST 构建、compaction、块缓存及文件工具的关键路径。结合当前代码、现有回归，以及 [Lab 5.2](https://github.com/Vanilla-Beauty/tiny-lsm/blob/lab-doc-2/src/lab5/lab5.2-Tranc-ID.md) 和本地 `reference-impl` 校正判断。
 
@@ -10,18 +12,20 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 
 这是对关键路径的一轮检查及针对性验证，不代表已经证明全库不存在其他缺陷。此前 247/247 是原有测试范围的通过记录；本轮扩大场景后新增了真实失败证据。
 
-## 已确认的问题与估时
+## 问题索引
 
-估时包括方案落地、修改和针对性回归，不含逐行教学与手写学习时间；是范围估计，不是完成时间承诺。
+以下时间保留为首次审计的粗估，尚未按具体修复方案复核；不作为当前排期或完成承诺。方案确定后再区分改动量与必要测试成本，不根据问题严重程度推算工期。
 
-| 编号 | 优先级 | 问题 | 最小修复范围 | 预估 |
-| --- | --- | --- | --- | --- |
-| A1 | P1 | 写文件失败仍报告成功，刷盘误移除内存数据 | StdFile::write/create、FileObj::create_and_write 的错误传递 | 45～90 分钟 |
-| A2 | P1 | RC/RR/SERIALIZABLE 可以读到其他 RU 事务的未提交版本，RR 缓存可延续错误 | TranContext::get、Engine 读取策略、TranManager 状态查询的必要联动 | 2～4 小时 |
-| A3 | P1 | compaction 最后一批刚好落盘后，又构建空 SST 并抛异常 | LSMEngine::gen_sst_from_iter 的收尾判空 | 20～40 分钟 |
-| A4 | P2 | 大记录之后不同 key 无法正常换块，被提前的偏移检查拒绝 | Block::add_entry 的检查顺序，验证 SSTBuilder::add 衔接 | 20～40 分钟 |
+| 编号 | 状态 | 优先级 | 问题 | 最小修复范围 | 历史粗估 |
+| --- | --- | --- | --- | --- | --- |
+| [A1](#a1) | 待排期 | P1 | 写文件失败仍报告成功，刷盘误移除内存数据 | StdFile::write/create、FileObj::create_and_write 的错误传递 | 45～90 分钟 |
+| [A2](#a2) | 待排期 | P1 | RC/RR/SERIALIZABLE 可以读到其他 RU 事务的未提交版本，RR 缓存可延续错误 | TranContext::get、Engine 读取策略、TranManager 状态查询的必要联动 | 2～4 小时 |
+| [A3](#a3) | 待排期 | P1 | compaction 最后一批刚好落盘后，又构建空 SST 并抛异常 | LSMEngine::gen_sst_from_iter 的收尾判空 | 20～40 分钟 |
+| [A4](#a4) | 待排期 | P2 | 大记录之后不同 key 无法正常换块，被提前的偏移检查拒绝 | Block::add_entry 的检查顺序，验证 SSTBuilder::add 衔接 | 20～40 分钟 |
 
-建议 A1 → A2 → A3 → A4。合计约 3.5～7 小时有效开发时间；A2 涉及读取语义，估时不确定性最大。修复时沿用逐函数讲解、用户手写业务代码、助手补测试的流程。
+这四项类型均为已确认缺陷，确认日期为 2026-10-30。建议顺序为 A1 → A2 → A3 → A4；建议顺序不等于已经进入当前 PLAN。修复仍沿用逐函数讲解、用户手写业务代码、助手补测试的流程。
+
+<a id="a1"></a>
 
 ### A1：写失败被当作刷盘成功
 
@@ -35,6 +39,8 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 
 修复方向：逐层传递写入和刷新失败，让 build 抛异常；已有 flush_last 的成功后移除流程即可保留数据。验收：失败要上报，内存记录仍在，不登记失败的 SST；正常文件读写通过。
 
+<a id="a2"></a>
+
 ### A2：未提交版本进入严格读取与缓存
 
 位置：`src/lsm/transation.cpp:159` 的 RC 读取与 RU 共用 Engine::get(key, 0)；`:180` 的 RR 首次读取随后直接缓存；`src/lsm/engine.cpp:118` 仅检查 is_aborted。
@@ -47,6 +53,8 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 
 验收：有效旧值和旧墓碑都能正确返回；自身暂存修改优先；RU 保持允许脏读；RC 能看到后续提交；RR 首次结果合法且重复读取稳定；覆盖 MemTable 与 SST。
 
+<a id="a3"></a>
+
 ### A3：compaction 收尾误判空 builder
 
 位置：`src/lsm/engine.cpp:874` 使用 real_size()>0 判断是否还需 build；`src/sst/sst.cpp:407` 加上了 Block::cur_size，而空 Block 也计入 2 字节条目数。
@@ -56,6 +64,8 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 测试 `TranCommitTest.AuditCompactionDoesNotBuildEmptyTail` 通过正常 put_batch/flush 触发真实 compaction，已复现上述异常。
 
 修复方向：按当前 builder 是否实际加入记录判断收尾，不用编码预估字节数代替“有无记录”。验收：恰好完成最后一批与仍有尾部记录两种情况均成功，不多建空 SST，合并后数据和版本保留。
+
+<a id="a4"></a>
 
 ### A4：正常换块被偏移检查抢先拒绝
 

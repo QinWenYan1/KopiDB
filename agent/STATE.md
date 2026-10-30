@@ -2,17 +2,19 @@
 
 最后核对：2026-10-30。当前缺陷审计见 [PLAN.md](PLAN.md)，具体问题、证据及估时见 [AUDIT.md](AUDIT.md)。
 
-本文件记录当前事实、已确认的设计、全局约定、验收边界和延期事项。代码与记录不一致时，先检查代码，再更新记录；不能把讨论通过的方案当作已经实现。[PLAN.md](PLAN.md) 只记录本轮任务、执行顺序、TODO 与具体的验收场景。
+本文件记录项目现状、已确认的设计、全局约定、验收边界和整体排期。代码与记录不一致时，先检查代码，再更新记录；不能把讨论通过的方案当作已经实现。[AUDIT.md](AUDIT.md) 是全局问题账本；[PLAN.md](PLAN.md) 只记录当前选定工作、执行顺序、TODO 与具体的验收场景。
 
 `agent/` 保存项目协作资料：`STATE.md` 记录状态，`PLAN.md` 记录当前计划，`skills/` 按技能分别建目录。Lab 教学与验收使用 [逐函数完成 Lab](skills/lab-workflow/SKILL.md)；评估疑似 bug 和修改必要性时，使用 [先验证，再修复](skills/verify-before-fix/SKILL.md)。
 
+2026-10-30 文档职责约定：发现问题先登记 AUDIT，选定后进入 PLAN 成为当前工作；AUDIT 保留稳定编号和证据，实施及验收时更新状态，解决后也不删除原记录。STATE 记录项目层面的结果和约定，通过链接引用问题，不重复维护完整问题清单。具体流程见 [audit-to-plan](skills/audit-to-plan/SKILL.md)。
+
 ## 当前进度
 
-2026-10-30 最新审计：用户要求统一检查已完成的事务及存储功能，并排除尚未开始的 WAL 等 Lab。当前确认 4 项可复现缺陷：A1 文件写失败未传播导致 flush 误移除内存数据；A2 严格隔离读取可见未提交版本并缓存错误；A3 compaction 最后一批落盘后误建空 SST；A4 大记录后不同 key 正常换块被偏移检查提前拒绝。修复尚未开始，详见 AUDIT。恢复原混合隔离用例并新增 3 项回归，4 项均实际失败；额外 File/Bloom、BlockCache、BlockMeta 共 24/24 通过。业务代码未改动。
+2026-10-30 最新审计已完成，确认 4 项缺陷，编号 A1～A4，统一在 [AUDIT.md](AUDIT.md) 维护。当前均待排期，尚未选入修复 PLAN。恢复原混合隔离用例并新增 3 项回归，4 项均实际失败；额外 File/Bloom、BlockCache、BlockMeta 共 24/24 通过。业务代码未改动，尚未开始的 Lab 未列为 bug。
 
 原 24 项延期测试现在均已回到 test/test_lsm.cpp，恢复时核对注释与函数体 SHA-256 一致；最后一项也已启用，没有使用 DISABLED_ 隐藏失败。原 test/deferred 的暂存源码、清单及 README 已清理。上一轮 247/247 表示当时的测试范围，不能用它覆盖本轮新增失败。
 
-审计证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-transaction-audit-9pf2t5tg`；SST 测试路径修正和写失败现场复核：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-audit-confirmation-g62hkbp9`。A1 在子进程内模拟文件写入长度限制，观察到 flush 无异常返回、内存 8210→0、登记 1 张 SST；这是普通 I/O 失败，不是 WAL 或断电恢复问题。
+逐项触发场景、代码位置、复现日志和估时维护在 AUDIT；此处保留项目级验收结果和历史进度。
 
 以下保留上一轮状态维护验收与历史记录。
 
