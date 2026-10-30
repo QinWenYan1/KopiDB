@@ -21,6 +21,11 @@
 #include <tuple>
 #include <unordered_map>
 #include <vector>
+#ifndef _WIN32
+#include <csignal>
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
 
 using namespace ::tiny_lsm;
 
@@ -2011,6 +2016,34 @@ TEST_F(TranAbortTest, CannotAbortAnAlreadyCommittedTransaction) {
 // 下一项验收：检查首次读取是否已经读脏，再检查可重复读缓存是否残留脏结果。
 class TranReadVisibilityTest : public TranCommitTest {};
 
+// 目的：RC/RR/SERIALIZABLE 不应读取其他 RU 事务尚未提交的值或墓碑。
+// 场景：通过 new_tranc 创建全部事务，先提交 old，再启动 RU 写入和较晚的读事务；
+// 在 RU 取消前后都应读到 old。该测试同时捕获缓存脏值和缓存错误“不存在”的问题。
+TEST_F(TranReadVisibilityTest, RejectsDirtyValuesAndTombstonesBeforeCaching) {
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ, IsolationLevel::SERIALIZABLE}) {
+    for (bool tombstone : {false, true}) {
+      SCOPED_TRACE(static_cast<int>(level));
+      SCOPED_TRACE(tombstone);
+      const auto key = "visibility-" + std::to_string(static_cast<int>(level)) +
+                       (tombstone ? "-deleted" : "-updated");
+      auto base = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+      base->put(key, "old");
+      ASSERT_TRUE(base->commit());
+      auto writer = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+      if (tombstone) writer->remove(key);
+      else writer->put(key, "dirty");
+      auto reader = manager->new_tranc(level);
+      EXPECT_EQ(reader->get(key), std::make_optional(std::string("old")))
+          << "First read must exclude the other transaction's uncommitted record";
+      ASSERT_TRUE(writer->abort());
+      EXPECT_EQ(reader->get(key), std::make_optional(std::string("old")))
+          << "A cached dirty value or false absence must not survive abort";
+      ASSERT_TRUE(reader->abort());
+    }
+  }
+}
+
 
 
 // 目的：内存/SST 中的新值和新墓碑都拒绝旧事务，且整个暂存集合零写入。
@@ -3662,6 +3695,61 @@ TEST_F(TranCommitTest, RollbackStateSurvivesFlushCompactionAndRestart) {
   EXPECT_EQ(manager->get_checkpoint_tranc_id(), last_id);
   EXPECT_TRUE(manager->is_aborted(cancelled_id));
   check_visible();
+}
+
+#ifndef _WIN32
+// 目的：SST 写入失败必须报错，并保留 MemTable 中尚未成功落盘的数据。
+// 场景：仅在子进程内限制文件最大长度为 512 字节，正常调用 flush 写入更大记录。
+// 父进程的资源限制不变；这是普通文件写入失败，不涉及 WAL 或崩溃恢复。
+TEST_F(TranCommitTest, AuditFlushWriteFailurePreservesMemory) {
+  engine->put("disk-error", std::string(8192, 'v'), 1);
+  const auto before = engine->memtable.get_total_size();
+  ASSERT_GT(before, 512u);
+  EXPECT_EXIT(
+      {
+        struct rlimit limits;
+        if (getrlimit(RLIMIT_FSIZE, &limits) != 0) _exit(90);
+        limits.rlim_cur = 512;
+        std::signal(SIGXFSZ, SIG_IGN);
+        if (setrlimit(RLIMIT_FSIZE, &limits) != 0) _exit(91);
+        try {
+          engine->flush();
+        } catch (const std::exception &) {
+          const bool preserved = engine->memtable.get_total_size() == before &&
+                                 engine->ssts.empty();
+          _exit(preserved ? 0 : 3);
+        }
+        // 没有报错，即使仅写出一部分字节也会被上层当成成功。
+        std::cerr << "flush returned without error; memory before=" << before
+                  << ", after=" << engine->memtable.get_total_size()
+                  << ", registered SSTs=" << engine->ssts.size() << std::endl;
+        _exit(2);
+      },
+      ::testing::ExitedWithCode(0), "");
+}
+#endif
+
+// 目的：compaction 的最后一批恰好完成落盘时，不能继续构建空 SST。
+// 场景：每张 L0 SST 含两个大于块容量的合法记录，目标 SST 阈值很小，
+// 最后一对记录生成 SST 后 builder 被重置；收尾必须识别它已没有记录。
+TEST_F(TranCommitTest, AuditCompactionDoesNotBuildEmptyTail) {
+  config->modify_lsm_per_mem_size_limit(1);
+  const int ratio = config->getLsmSstLevelRatio();
+  ASSERT_GE(ratio, 2);
+  const std::string value(config->getLsmBlockSize() + 64, 'v');
+  for (int i = 0; i < ratio; ++i) {
+    const std::string prefix = "key-" + std::to_string(i);
+    engine->put_batch({{prefix + "-a", value}, {prefix + "-b", value}}, i + 1);
+    ASSERT_NO_THROW(engine->flush());
+  }
+  engine->put("zz-trigger", "v", ratio + 1);
+  ASSERT_NO_THROW(engine->flush());
+  EXPECT_FALSE(engine->level_sst_ids[1].empty());
+  for (int i = 0; i < ratio; ++i) {
+    const auto result = engine->get("key-" + std::to_string(i) + "-a", 0);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->first, value);
+  }
 }
 
 int main(int argc, char **argv) {

@@ -1,0 +1,79 @@
+# 已完成 Lab 范围的数据库缺陷审计
+
+日期：2026-10-30。状态：审计完成，以下 4 项均已用测试复现，业务代码尚未修改。
+
+## 范围与依据
+
+核查事务上下文、提交／取消、事务状态、Engine 点查与批查、迭代器归并、SkipList／MemTable、Block／SST 构建、compaction、块缓存及文件工具的关键路径。结合当前代码、现有回归，以及 [Lab 5.2](https://github.com/Vanilla-Beauty/tiny-lsm/blob/lab-doc-2/src/lab5/lab5.2-Tranc-ID.md) 和本地 `reference-impl` 校正判断。
+
+Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 WAL 持久化。WAL、Record 后续编解码、日志重放、崩溃恢复、Lab 5.5 入口初始化整合、后续 Redis/WiscKey 扩展不列入本次 bug 清单。已接受的同 key 版本编码超限抛异常、固定状态格式、调用方串行使用同一 TranContext 等约定保持不变。
+
+这是对关键路径的一轮检查及针对性验证，不代表已经证明全库不存在其他缺陷。此前 247/247 是原有测试范围的通过记录；本轮扩大场景后新增了真实失败证据。
+
+## 已确认的问题与估时
+
+估时包括方案落地、修改和针对性回归，不含逐行教学与手写学习时间；是范围估计，不是完成时间承诺。
+
+| 编号 | 优先级 | 问题 | 最小修复范围 | 预估 |
+| --- | --- | --- | --- | --- |
+| A1 | P1 | 写文件失败仍报告成功，刷盘误移除内存数据 | StdFile::write/create、FileObj::create_and_write 的错误传递 | 45～90 分钟 |
+| A2 | P1 | RC/RR/SERIALIZABLE 可以读到其他 RU 事务的未提交版本，RR 缓存可延续错误 | TranContext::get、Engine 读取策略、TranManager 状态查询的必要联动 | 2～4 小时 |
+| A3 | P1 | compaction 最后一批刚好落盘后，又构建空 SST 并抛异常 | LSMEngine::gen_sst_from_iter 的收尾判空 | 20～40 分钟 |
+| A4 | P2 | 大记录之后不同 key 无法正常换块，被提前的偏移检查拒绝 | Block::add_entry 的检查顺序，验证 SSTBuilder::add 衔接 | 20～40 分钟 |
+
+建议 A1 → A2 → A3 → A4。合计约 3.5～7 小时有效开发时间；A2 涉及读取语义，估时不确定性最大。修复时沿用逐函数讲解、用户手写业务代码、助手补测试的流程。
+
+### A1：写失败被当作刷盘成功
+
+位置：`src/utils/std_file.cpp:74` 的 write 无条件返回 true；同文件 `create:42` 忽略 write 结果；`src/utils/files.cpp:36` 的 create_and_write 未检查最终 sync 结果。
+
+实际链路：文件写入／刷新失败 → SSTBuilder::build 仍返回 SST 对象 → MemTable::flush_last 将冻结表移除 → Engine 登记 SST。写成功的假象会造成数据丢失风险。
+
+测试 `TranCommitTest.AuditFlushWriteFailurePreservesMemory` 在子进程内将普通文件长度限制为 512 字节，再通过正常 flush 写入大记录。实际输出为：`flush returned without error; memory before=8210, after=0, registered SSTs=1`。父进程资源限制不变；这不是崩溃恢复测试。
+
+参考实现中 StdFile::write 也无条件返回 true，说明这是沿用代码的问题，不能据此认定它正确。
+
+修复方向：逐层传递写入和刷新失败，让 build 抛异常；已有 flush_last 的成功后移除流程即可保留数据。验收：失败要上报，内存记录仍在，不登记失败的 SST；正常文件读写通过。
+
+### A2：未提交版本进入严格读取与缓存
+
+位置：`src/lsm/transation.cpp:159` 的 RC 读取与 RU 共用 Engine::get(key, 0)；`:180` 的 RR 首次读取随后直接缓存；`src/lsm/engine.cpp:118` 仅检查 is_aborted。
+
+场景：已提交 k@1=old；RU 事务 2 写入 dirty 或墓碑但不提交；随后创建的 RC/RR/SERIALIZABLE 事务读取。当前会返回 dirty 或 nullopt。事务 2 取消后，RR/SERIALIZABLE 仍可返回此前缓存的错误结果。
+
+原延期测试 `TranReadVisibilityTest.RejectsDirtyValuesAndTombstonesBeforeCaching` 已原样恢复并重新运行，失败与上述场景一致。
+
+修复方向：根据读取事务的隔离要求筛选候选，严格读取排除其他仍在执行的事务及已回滚事务，先筛选再选择最大版本并缓存。不能简单将所有 is_aborted 改成“未提交即过滤”，否则会破坏 RU 的既定行为；也不能只在最终结果上过滤，丢失被遮住的有效旧版本。新状态查询接口的名称与签名在修复方案中确定，本审计不提前扩张公开接口。
+
+验收：有效旧值和旧墓碑都能正确返回；自身暂存修改优先；RU 保持允许脏读；RC 能看到后续提交；RR 首次结果合法且重复读取稳定；覆盖 MemTable 与 SST。
+
+### A3：compaction 收尾误判空 builder
+
+位置：`src/lsm/engine.cpp:874` 使用 real_size()>0 判断是否还需 build；`src/sst/sst.cpp:407` 加上了 Block::cur_size，而空 Block 也计入 2 字节条目数。
+
+场景：合并的最后一批记录正好达到目标并生成 SST，builder 随即重置为空；循环结束后 real_size() 仍为 2，于是再调用 build，抛出 `SSTBuilder::build: Cannot build empty SST`。
+
+测试 `TranCommitTest.AuditCompactionDoesNotBuildEmptyTail` 通过正常 put_batch/flush 触发真实 compaction，已复现上述异常。
+
+修复方向：按当前 builder 是否实际加入记录判断收尾，不用编码预估字节数代替“有无记录”。验收：恰好完成最后一批与仍有尾部记录两种情况均成功，不多建空 SST，合并后数据和版本保留。
+
+### A4：正常换块被偏移检查抢先拒绝
+
+位置：`src/block/block.cpp:195` 的旧块偏移检查发生在 `:205` 的容量判断之前。
+
+场景：a 的 value 为 65530 字节，长度字段合法，第一条记录从偏移 0 开始可编码；整条记录使块内数据超过 65535 字节。接着加入不同 key 的 b，本可因容量不足返回 false，让 SSTBuilder 换新块，但当前先抛出偏移超限异常。
+
+测试 `SSTTest.AuditDifferentKeyCanStartBlockAfterLargeEntry` 已复现 `Block::add_entry: entry offset exceeds uint16_t limit`。
+
+修复方向：区分“本条记录无法编码”与“旧块装不下、可以换块”；调整容量及偏移检查顺序。单条长度超限仍抛异常；force_write 的同 key 版本组超限仍抛异常，不拆分同 key，不改变持久化格式。
+
+验收：大记录后不同 key 正常进入新块并可读回；原有同 key 超限保护仍成立。
+
+## 验证记录
+
+- 原混合隔离用例和新增 3 个问题用例均构建成功并实际运行，4 项均复现失败；未修改业务代码或削弱断言。
+- 完整 File/Bloom 工具测试 11/11、BlockCache 7/7、BlockMeta 6/6，共 24/24 通过。
+- 第一轮日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-transaction-audit-9pf2t5tg`。新增 SST 测试初次使用了不存在的 fixture 路径变量，助手已改为该 fixture 的 test_data 路径；该编译错误不属于业务缺陷。
+- 修正测试并补充 I/O 现场输出后的复核日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-audit-confirmation-g62hkbp9`，SST 与 LSM 两个目标构建成功，分别复现 A4、A1。
+- 上一轮关键存储及 LSM 回归 247/247 的日志仍保留，本轮没有重复运行整套，也没有运行依赖尚未完成 Lab 的入口／WAL／恢复用例。
+- 原 24 项延期测试已全部回到 test/test_lsm.cpp，注释和函数体 SHA-256 均与原清单一致；未使用 DISABLED_ 隐藏失败。原暂存文件已清理，当前普通 test_lsm/test_sst 包含上述待修的失败用例。

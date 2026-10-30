@@ -1127,6 +1127,24 @@ TEST_F(SSTTest, RollbackPredicateHandlesEmptyRangesAndCancelledTail) {
   EXPECT_EQ(unfiltered->first.get_cur_tranc_id(), 9);
 }
 
+// 目的：前一块已经很大时，不同 key 仍应正常换块，不能误报新记录偏移超限。
+// 场景：单条 value 的 65530 字节可由 uint16_t 编码，但整条记录超过 65535 字节；
+// 下一条是不同 key，可以放到新块。此测试不要求把同 key 的版本拆到不同块。
+TEST_F(SSTTest, AuditDifferentKeyCanStartBlockAfterLargeEntry) {
+  SSTBuilder builder(4096, true);
+  const std::string large(65530, 'v');
+  ASSERT_NO_THROW(builder.add("a", large, 1));
+  ASSERT_NO_THROW(builder.add("b", "small", 2));
+  auto cache = std::make_shared<BlockCache>(16, 2);
+  auto sst = builder.build(1, "test_data/audit-large-entry.sst", cache);
+  auto a = sst->get("a", 0);
+  ASSERT_TRUE(a.is_valid());
+  EXPECT_EQ(a->second, large);
+  auto b = sst->get("b", 0);
+  ASSERT_TRUE(b.is_valid());
+  EXPECT_EQ(b->second, "small");
+}
+
 int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
   init_spdlog_file();
