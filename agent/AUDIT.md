@@ -1,6 +1,6 @@
 # KopiDB 全局问题账本
 
-最后更新：2026-10-30。用户已确认 A1～A4 的五阶段修复计划，见 [PLAN.md](PLAN.md)。A1 开始 issue 草稿与修复准备，A2～A4 已纳入计划；业务代码尚未修改，四项均未解决。
+最后更新：2026-10-31。用户已确认 A1～A4 的五阶段修复计划，见 [PLAN.md](PLAN.md)。A1 的 issue 草稿已交付，当前逐函数推进 StdFile::write；A2～A4 已纳入计划。业务代码尚未修改，四项均未解决。
 
 本文件持续记录全局发现，规则见 [audit-to-plan](skills/audit-to-plan/SKILL.md)。选择问题开始处理时，在 [PLAN.md](PLAN.md) 按编号展开执行步骤，并在这里更新状态和计划链接；验收后保留原条目，补充解决日期与证据。项目现状和全局约定见 [STATE.md](STATE.md)。
 
@@ -18,7 +18,7 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 
 | 编号 | 状态 | 优先级 | 问题 | 最小修复范围 | 历史粗估 |
 | --- | --- | --- | --- | --- | --- |
-| [A1](#a1) | [处理中：issue 草稿](PLAN.md#stage-a1) | P1 | 写文件失败仍报告成功，刷盘误移除内存数据 | StdFile::write/create、FileObj::create_and_write 的错误传递 | 45～90 分钟 |
+| [A1](#a1) | [处理中：StdFile::write](PLAN.md#stage-a1) | P1 | 写文件失败仍报告成功，刷盘误移除内存数据 | StdFile::write/create、FileObj::create_and_write 的错误传递 | 45～90 分钟 |
 | [A2](#a2) | [已纳入计划](PLAN.md#stage-a2) | P1 | RC/RR/SERIALIZABLE 可以读到其他 RU 事务的未提交版本，RR 缓存可延续错误 | TranContext::get、Engine 读取策略、TranManager 状态查询的必要联动 | 2～4 小时 |
 | [A3](#a3) | [已纳入计划](PLAN.md#stage-a3) | P1 | compaction 最后一批刚好落盘后，又构建空 SST 并抛异常 | LSMEngine::gen_sst_from_iter 的收尾判空 | 20～40 分钟 |
 | [A4](#a4) | [已纳入计划](PLAN.md#stage-a4) | P2 | 大记录之后不同 key 无法正常换块，被提前的偏移检查拒绝 | Block::add_entry 的检查顺序，验证 SSTBuilder::add 衔接 | 20～40 分钟 |
@@ -38,6 +38,10 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 参考实现中 StdFile::write 也无条件返回 true，说明这是沿用代码的问题，不能据此认定它正确。
 
 修复方向：逐层传递写入和刷新失败，让 build 抛异常；已有 flush_last 的成功后移除流程即可保留数据。验收：失败要上报，内存记录仍在，不登记失败的 SST；正常文件读写通过。
+
+2026-10-31 首个函数准备：重新核对当前代码及本地 reference-impl，两者 write 都无条件返回 true。提供的草案保持 bool 接口，seekp 定位失败即返回 false，写入后返回流状态；最终流刷新检查仍由后续 create_and_write 处理。业务源码尚未修改，草案未执行。
+
+已向 test/test_utils.cpp 添加 `FileTest.StdFileWritePreservesOtherBytes`（指定偏移覆盖并关闭重读，验证其他字节保留）和 `FileTest.StdFileWriteReportsFileSizeLimitFailure`（仅子进程限制文件长度，64 KiB 写入遇到真实 I/O 失败须返回 false）。构建 test_utils 成功；隔离临时目录运行 FileTest.*，10 项中 9 通过、1 失败，失败为后者的 write 返回 true，子进程退出码 2。未运行 Bloom、LSM 或其他套件，本结果仅是 write 修复前基线。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a1-write-baseline-or2bppwa`。
 
 <a id="a2"></a>
 

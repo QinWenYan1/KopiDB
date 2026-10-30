@@ -2,9 +2,16 @@
 #include "utils/bloom_filter.h"
 #include "utils/cursor.h"
 #include "utils/files.h"
+#include "utils/std_file.h"
 #include <filesystem>
 #include <gtest/gtest.h>
 #include <random>
+
+#ifndef _WIN32
+#include <csignal>
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
 
 using namespace ::tiny_lsm;
 
@@ -52,6 +59,55 @@ TEST_F(FileTest, BasicWriteAndRead) {
   auto read_data = opened_file.read_to_slice(0, data.size());
   EXPECT_EQ(read_data, data);
 }
+
+// 目的：指定偏移覆盖写入时，只改变目标字节，读取后再次写入也能正确定位。
+// 场景：写入 5 字节并读取中间部分，再覆盖偏移 1 的两字节；关闭重开后核对全部内容。
+TEST_F(FileTest, StdFileWritePreservesOtherBytes) {
+  const std::string path = "test_data/std_file_offsets.dat";
+  const std::vector<uint8_t> original{10, 20, 30, 40, 50};
+  const std::vector<uint8_t> replacement{99, 88};
+  StdFile file;
+  ASSERT_TRUE(file.open(path, true));
+  ASSERT_TRUE(file.write(0, original.data(), original.size()));
+  ASSERT_TRUE(file.sync());
+  EXPECT_EQ(file.read(2, 2), (std::vector<uint8_t>{30, 40}));
+
+  ASSERT_TRUE(file.write(1, replacement.data(), replacement.size()));
+  ASSERT_TRUE(file.sync());
+  file.close();
+
+  StdFile reopened;
+  ASSERT_TRUE(reopened.open(path, false));
+  EXPECT_EQ(reopened.size(), original.size());
+  EXPECT_EQ(reopened.read(0, original.size()),
+            (std::vector<uint8_t>{10, 99, 88, 40, 50}));
+}
+
+#ifndef _WIN32
+// 目的：真实文件写入失败时，StdFile::write 必须通过 false 上报，不能无条件成功。
+// 场景：仅在子进程中限制文件最大长度为 512 字节，再进行 64 KiB 写入。
+// 这笔大写入会触发文件 I/O；小写入也可能等到 sync 才暴露错误，因此不使用小缓冲测试。
+// 子进程直接退出，不改变父进程的资源限制；失败文件由 fixture 在临时测试目录清理。
+TEST_F(FileTest, StdFileWriteReportsFileSizeLimitFailure) {
+  EXPECT_EXIT(
+      {
+        struct rlimit limits;
+        if (getrlimit(RLIMIT_FSIZE, &limits) != 0) _exit(90);
+        limits.rlim_cur = 512;
+        std::signal(SIGXFSZ, SIG_IGN);
+        if (setrlimit(RLIMIT_FSIZE, &limits) != 0) _exit(91);
+
+        StdFile file;
+        if (!file.open("test_data/std_file_write_failure.dat", true)) _exit(92);
+        const std::vector<uint8_t> data(64 * 1024, 0xAB);
+        const bool write_ok = file.write(0, data.data(), data.size());
+        // 同时确认故障注入确实造成了 I/O 失败，避免测试仅因准备错误而通过。
+        if (file.sync()) _exit(93);
+        _exit(write_ok ? 2 : 0);
+      },
+      ::testing::ExitedWithCode(0), "");
+}
+#endif
 
 // 测试大文件
 TEST_F(FileTest, LargeFile) {
