@@ -444,18 +444,41 @@ enum IsolationLevel TranContext::get_isolation_level() {
 }
 
 // *********************** TranManager ***********************
-TranManager::TranManager(std::string data_dir) : data_dir_(data_dir) {
+TranManager::TranManager(std::string data_dir) : data_dir_(std::move(data_dir)) {
+  // data_dir 按值传入，后面不再使用这个参数
+  // 将它移动到成员中，避免再复制一次路径字符串
+  //
+  // 路径函数还负责将空目录参数规范为当前目录 "."
   auto file_path = get_tranc_id_file_path();
 
-  // 判断文件是否存在
-
-  if (!std::filesystem::exists(file_path)) {
-    tranc_id_file_ = FileObj::open(file_path, true);
-    flushedTrancIds_.insert(0);
-  } else {
+   // 1. 已有状态文件：恢复上次保存的事务状态
+  if (std::filesystem::exists(file_path)) {
+    // 表示打开已有文件，不清空其内容
     tranc_id_file_ = FileObj::open(file_path, false);
+    // 恢复下一个 ID、刷盘进度、待处理状态和回滚名单
+    // 读取函数内部会加锁，这里不要重复获取同一个 mutex
+    //
+    // 如果文件损坏或读取失败，直接让异常向上传播
+    // 构造失败，调用者不会得到一个状态错误的管理器
     read_tranc_id_file();
-  }
+
+    // 恢复成功后结束，不能再执行下面的新库初始化
+    // 否则会把检查点 0 混入已经恢复的刷盘集合
+    return; 
+  } 
+
+  // 2. 没有状态文件：建立首次启动的初始状态
+  //
+  // nextTransactionId_ 已在头文件中初始化为 1
+  // active、ready 和 aborted 容器默认都是空的
+  // flushed 则需要显式放入检查点 0，表示尚无已完成事务
+  //
+  // 先建立内存中的检查点，再创建文件
+  flushedTrancIds_.insert(0);
+
+  // true 表示创建文件；这个分支已经确认状态文件不存在
+  // 初始状态及后续变化，由显式保存或正常析构写入文件
+  tranc_id_file_ = FileObj::open(file_path, true);
 }
 
 void TranManager::init_new_wal() {
