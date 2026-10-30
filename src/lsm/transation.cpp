@@ -4,7 +4,6 @@
 #include "memtable/memtable.h"
 #include "spdlog/spdlog.h"
 #include "utils/files.h"
-#include "utils/set_operation.h"
 #include <cstdint>
 #include <filesystem>
 #include <memory>
