@@ -1,6 +1,6 @@
 # KopiDB 全局问题账本
 
-最后更新：2026-10-30。当前 A1～A4 均已复现，状态为待排期，尚未选入修复计划，业务代码未修改。
+最后更新：2026-10-30。用户已确认 A1～A4 的五阶段修复计划，见 [PLAN.md](PLAN.md)。A1 开始 issue 草稿与修复准备，A2～A4 已纳入计划；业务代码尚未修改，四项均未解决。
 
 本文件持续记录全局发现，规则见 [audit-to-plan](skills/audit-to-plan/SKILL.md)。选择问题开始处理时，在 [PLAN.md](PLAN.md) 按编号展开执行步骤，并在这里更新状态和计划链接；验收后保留原条目，补充解决日期与证据。项目现状和全局约定见 [STATE.md](STATE.md)。
 
@@ -18,12 +18,12 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 
 | 编号 | 状态 | 优先级 | 问题 | 最小修复范围 | 历史粗估 |
 | --- | --- | --- | --- | --- | --- |
-| [A1](#a1) | 待排期 | P1 | 写文件失败仍报告成功，刷盘误移除内存数据 | StdFile::write/create、FileObj::create_and_write 的错误传递 | 45～90 分钟 |
-| [A2](#a2) | 待排期 | P1 | RC/RR/SERIALIZABLE 可以读到其他 RU 事务的未提交版本，RR 缓存可延续错误 | TranContext::get、Engine 读取策略、TranManager 状态查询的必要联动 | 2～4 小时 |
-| [A3](#a3) | 待排期 | P1 | compaction 最后一批刚好落盘后，又构建空 SST 并抛异常 | LSMEngine::gen_sst_from_iter 的收尾判空 | 20～40 分钟 |
-| [A4](#a4) | 待排期 | P2 | 大记录之后不同 key 无法正常换块，被提前的偏移检查拒绝 | Block::add_entry 的检查顺序，验证 SSTBuilder::add 衔接 | 20～40 分钟 |
+| [A1](#a1) | [处理中：issue 草稿](PLAN.md#stage-a1) | P1 | 写文件失败仍报告成功，刷盘误移除内存数据 | StdFile::write/create、FileObj::create_and_write 的错误传递 | 45～90 分钟 |
+| [A2](#a2) | [已纳入计划](PLAN.md#stage-a2) | P1 | RC/RR/SERIALIZABLE 可以读到其他 RU 事务的未提交版本，RR 缓存可延续错误 | TranContext::get、Engine 读取策略、TranManager 状态查询的必要联动 | 2～4 小时 |
+| [A3](#a3) | [已纳入计划](PLAN.md#stage-a3) | P1 | compaction 最后一批刚好落盘后，又构建空 SST 并抛异常 | LSMEngine::gen_sst_from_iter 的收尾判空 | 20～40 分钟 |
+| [A4](#a4) | [已纳入计划](PLAN.md#stage-a4) | P2 | 大记录之后不同 key 无法正常换块，被提前的偏移检查拒绝 | Block::add_entry 的检查顺序，验证 SSTBuilder::add 衔接 | 20～40 分钟 |
 
-这四项类型均为已确认缺陷，确认日期为 2026-10-30。建议顺序为 A1 → A2 → A3 → A4；建议顺序不等于已经进入当前 PLAN。修复仍沿用逐函数讲解、用户手写业务代码、助手补测试的流程。
+这四项类型均为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 → A2 → A3 → A4 → 整体验收推进。每进入一个新问题，先在聊天中写 issue 草稿供用户手动发布，再逐函数推进；没有自动创建远程 issue。具体执行与验收标准维护在 PLAN。
 
 <a id="a1"></a>
 
@@ -42,6 +42,8 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 <a id="a2"></a>
 
 ### A2：未提交版本进入严格读取与缓存
+
+章节归属：目录 **5.1.2「事务管理器」**（文章标题 Lab 5.2）正文 3.2.3 get。目录 **5.2「WAL 和崩溃恢复」**尚未开始，与本项读取隔离错误区分。
 
 位置：`src/lsm/transation.cpp:159` 的 RC 读取与 RU 共用 Engine::get(key, 0)；`:180` 的 RR 首次读取随后直接缓存；`src/lsm/engine.cpp:118` 仅检查 is_aborted。
 
