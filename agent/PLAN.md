@@ -6,12 +6,12 @@
 
 **修复进度：20%（1/5 阶段验收通过）**。按验收阶段数计算，不代表工时比例。
 
-当前：用户已认可阶段① A1 验收并要求继续，进入阶段② A2。本轮先交付混合隔离读取问题的 issue 草稿，已核对当前调用链及历史失败证据，尚未修改 A2 业务代码或新增接口。下一实现从管理器的读取状态查询开始，按原约定由用户手写。
+当前：A2 issue 草稿及可复制的 GitHub 链接版本已交付，用户要求开始实现。本轮提供 `TranManager::should_skip_read(uint64_t tranc_id, bool require_committed) const` 的声明与完整函数体草案，等待用户手动加入后检查；业务代码尚未修改，未运行新接口测试。
 
 | 阶段 | 工作 | 状态 |
 | --- | --- | --- |
 | ① [A1](AUDIT.md#a1) | 文件写入失败逐层上报 | 已验收：197/197 相关回归通过 |
-| ② [A2](AUDIT.md#a2) | 目录 5.1.2「事务管理器」的混合隔离读取修复 | 处理中：issue 草稿，代码未改 |
+| ② [A2](AUDIT.md#a2) | 目录 5.1.2「事务管理器」的混合隔离读取修复 | 处理中：管理器读取判断草案，待用户实现 |
 | ③ [A3](AUDIT.md#a3) | compaction 收尾不构建空 SST | 待开始 |
 | ④ [A4](AUDIT.md#a4) | 大记录后不同 key 正常换块 | 待开始 |
 | ⑤ 整体验收 | 相关回归及修复记录收尾 | 待开始 |
@@ -46,9 +46,15 @@
 
 2026-10-31 启动：按约定在聊天中起草 issue，不自动发布。当前代码仍将 RU/RC 共用的读取交给仅过滤回滚版本的 Engine；RR 首次结果直接缓存。已有混合隔离测试的历史结果确认该路径失败，本轮仅复核代码与日志，未重复运行测试。接口名称及签名仍按下方草案在实现前细化。
 
+2026-10-31 首个函数设计：新增 `bool should_skip_read(uint64_t tranc_id, bool require_committed) const`。参数 tranc_id 是候选记录的写事务 ID；返回 true 表示本次查询应跳过该记录。所有读取都排除回滚事务；require_committed 为 true 时还排除活跃事务。两项状态判断共用一次 mutex_ 加锁，不在锁内再调用自行加锁的 is_aborted。当前约定中显式事务通过 new_tranc 登记；结束登记在同一把锁下更新回滚集合并移除活跃项。
+
+后续衔接方案：Engine::get 增加本次读取是否要求已提交的参数，默认 false 保持既有调用行为，在查询中捕获该参数并复用现有回调传递路径；TranContext::get 为 RU 选择 false，为 RC/RR/SERIALIZABLE 存储读取选择 true。原有版本上限仍独立生效，自身暂存修改仍在进入 Engine 前返回。管理器函数返回 false 只表示未被状态规则排除，不代表已经满足版本上限。提交冲突检查继续使用原 is_aborted，不因此隐藏活跃事务的冲突版本。
+
+首个函数检查：用户加入声明与函数体后，补充状态测试验证活跃时 RU 放行／严格读取跳过、提交后放行、回滚后一律跳过及回滚状态经过刷盘结算后仍保留。未登记的低层测试／普通单次操作记录沿用现有可见性，不以缺少 active 项推导任意 ID 的提交证明；本函数不负责启动崩溃恢复。
+
 依次处理：
 
-- [ ] 在 [TranManager](../include/lsm/transaction.h) 新增读取状态查询，拟名 `should_skip_read()`，签名在该阶段细化；在同一次加锁中检查活跃与回滚集合，不改变现有 `is_aborted()` 的含义。
+- [ ] 在 [TranManager](../include/lsm/transaction.h) 新增 `should_skip_read(uint64_t tranc_id, bool require_committed) const`；在同一次加锁中检查活跃与回滚集合，不改变现有 `is_aborted()` 的含义。当前仅提供草案。
 - [ ] [LSMEngine::get](../src/lsm/engine.cpp)：根据本次读取规则构造过滤条件，复用底层已有回调，在选择胜出版本之前过滤；保留既有调用行为。
 - [ ] [TranContext::get](../src/lsm/transation.cpp)：自身修改优先，按隔离级别选择读取规则，首次合法读取之后再写入读缓存。
 
