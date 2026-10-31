@@ -107,6 +107,55 @@ TEST_F(FileTest, StdFileWriteReportsFileSizeLimitFailure) {
       },
       ::testing::ExitedWithCode(0), "");
 }
+
+// 目的：create 不能把内部 write 的失败吞掉，否则上层仍会把不完整文件当成成功。
+// 场景：普通文件只能写入 512 字节，创建时直接传入 64 KiB 初始内容。
+TEST_F(FileTest, StdFileCreateReportsWriteFailure) {
+  EXPECT_EXIT(
+      {
+        struct rlimit limits;
+        if (getrlimit(RLIMIT_FSIZE, &limits) != 0) _exit(90);
+        limits.rlim_cur = 512;
+        std::signal(SIGXFSZ, SIG_IGN);
+        if (setrlimit(RLIMIT_FSIZE, &limits) != 0) _exit(91);
+
+        StdFile file;
+        std::vector<uint8_t> data(64 * 1024, 0xAB);
+        const bool created =
+            file.create("test_data/std_file_create_failure.dat", data);
+        if (file.sync()) _exit(92);
+        _exit(created ? 2 : 0);
+      },
+      ::testing::ExitedWithCode(0), "");
+}
+
+// 目的：create_and_write 必须对完整的“创建、写入、刷新”流程负责，失败时抛异常。
+// 场景：将文件长度限制为 0，分别尝试小写入和大写入。
+// 小写入可能先进入流缓冲区，到最终 sync 才失败；大写入覆盖直接 I/O 失败的路径。
+// 无论错误在哪一步出现，都不能返回可供 SSTBuilder 使用的 FileObj。
+TEST_F(FileTest, CreateAndWriteReportsIoFailures) {
+  for (const size_t size : {size_t{32}, size_t{64 * 1024}}) {
+    SCOPED_TRACE(size);
+    EXPECT_EXIT(
+        {
+          struct rlimit limits;
+          if (getrlimit(RLIMIT_FSIZE, &limits) != 0) _exit(90);
+          limits.rlim_cur = 0;
+          std::signal(SIGXFSZ, SIG_IGN);
+          if (setrlimit(RLIMIT_FSIZE, &limits) != 0) _exit(91);
+
+          try {
+            auto file = FileObj::create_and_write(
+                "test_data/create_and_write_failure.dat",
+                std::vector<uint8_t>(size, 0xAB));
+          } catch (const std::runtime_error &) {
+            _exit(0);
+          }
+          _exit(2);
+        },
+        ::testing::ExitedWithCode(0), "");
+  }
+}
 #endif
 
 // 测试大文件

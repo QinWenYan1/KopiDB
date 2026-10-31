@@ -1,6 +1,6 @@
 # KopiDB 全局问题账本
 
-最后更新：2026-10-31。用户已确认 A1～A4 的五阶段修复计划，见 [PLAN.md](PLAN.md)。A1 的 issue 草稿已交付，当前逐函数推进 StdFile::write；A2～A4 已纳入计划。业务代码尚未修改，四项均未解决。
+最后更新：2026-10-31。用户已确认 A1～A4 的五阶段修复计划，见 [PLAN.md](PLAN.md)。A1 已按本次单独授权由助手代修并通过验收；A2～A4 已纳入计划，尚未开始修改。
 
 本文件持续记录全局发现，规则见 [audit-to-plan](skills/audit-to-plan/SKILL.md)。选择问题开始处理时，在 [PLAN.md](PLAN.md) 按编号展开执行步骤，并在这里更新状态和计划链接；验收后保留原条目，补充解决日期与证据。项目现状和全局约定见 [STATE.md](STATE.md)。
 
@@ -18,7 +18,7 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 
 | 编号 | 状态 | 优先级 | 问题 | 最小修复范围 | 历史粗估 |
 | --- | --- | --- | --- | --- | --- |
-| [A1](#a1) | [处理中：StdFile::write](PLAN.md#stage-a1) | P1 | 写文件失败仍报告成功，刷盘误移除内存数据 | StdFile::write/create、FileObj::create_and_write 的错误传递 | 45～90 分钟 |
+| [A1](#a1) | [已解决](PLAN.md#stage-a1) | P1 | 写文件失败仍报告成功，刷盘误移除内存数据 | StdFile::write/create、FileObj::create_and_write 的错误传递 | 45～90 分钟 |
 | [A2](#a2) | [已纳入计划](PLAN.md#stage-a2) | P1 | RC/RR/SERIALIZABLE 可以读到其他 RU 事务的未提交版本，RR 缓存可延续错误 | TranContext::get、Engine 读取策略、TranManager 状态查询的必要联动 | 2～4 小时 |
 | [A3](#a3) | [已纳入计划](PLAN.md#stage-a3) | P1 | compaction 最后一批刚好落盘后，又构建空 SST 并抛异常 | LSMEngine::gen_sst_from_iter 的收尾判空 | 20～40 分钟 |
 | [A4](#a4) | [已纳入计划](PLAN.md#stage-a4) | P2 | 大记录之后不同 key 无法正常换块，被提前的偏移检查拒绝 | Block::add_entry 的检查顺序，验证 SSTBuilder::add 衔接 | 20～40 分钟 |
@@ -29,7 +29,7 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 
 ### A1：写失败被当作刷盘成功
 
-位置：`src/utils/std_file.cpp:74` 的 write 无条件返回 true；同文件 `create:42` 忽略 write 结果；`src/utils/files.cpp:36` 的 create_and_write 未检查最终 sync 结果。
+修复前位置：`src/utils/std_file.cpp:74` 的 write 无条件返回 true；同文件 `create:42` 忽略 write 结果；`src/utils/files.cpp:36` 的 create_and_write 未检查最终 sync 结果。
 
 实际链路：文件写入／刷新失败 → SSTBuilder::build 仍返回 SST 对象 → MemTable::flush_last 将冻结表移除 → Engine 登记 SST。写成功的假象会造成数据丢失风险。
 
@@ -42,6 +42,14 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 2026-10-31 首个函数准备：重新核对当前代码及本地 reference-impl，两者 write 都无条件返回 true。提供的草案保持 bool 接口，seekp 定位失败即返回 false，写入后返回流状态；最终流刷新检查仍由后续 create_and_write 处理。业务源码尚未修改，草案未执行。
 
 已向 test/test_utils.cpp 添加 `FileTest.StdFileWritePreservesOtherBytes`（指定偏移覆盖并关闭重读，验证其他字节保留）和 `FileTest.StdFileWriteReportsFileSizeLimitFailure`（仅子进程限制文件长度，64 KiB 写入遇到真实 I/O 失败须返回 false）。构建 test_utils 成功；隔离临时目录运行 FileTest.*，10 项中 9 通过、1 失败，失败为后者的 write 返回 true，子进程退出码 2。未运行 Bloom、LSM 或其他套件，本结果仅是 write 修复前基线。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a1-write-baseline-or2bppwa`。
+
+**解决日期：2026-10-31。** 用户明确授权助手代修 A1，三个文件工具函数已修改并配中文注释：write 使用 seekp 并返回真实错误状态；create 传递 write 失败，保留空文件创建及打开失败原行为；create_and_write 检查最终 sync 并抛异常。SSTBuilder、MemTable、Engine 的刷盘逻辑无需修改。另修正事务状态保存函数中“write 错误检查不充分”的过时注释，无逻辑变化。
+
+新增 `FileTest.StdFileCreateReportsWriteFailure` 与 `FileTest.CreateAndWriteReportsIoFailures`，分别验证 create 的失败传递及 FileObj 的小／大写入失败上报；二者在修改前实际均失败，日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a1-propagation-baseline-vqfv2_v2`。
+
+加强 `TranCommitTest.AuditFlushWriteFailurePreservesMemory`：失败后检查内存字节数、原值及版本、SST 登记与层级目录；恢复资源限制后重试成功，内存正常移除，SST 中值和版本与失败前一致。修复后四个目标均构建成功，隔离目录实际运行 **197/197 通过**：File/Bloom 15、MemTable 49、SST 28、LSM 105。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a1-validation-3h5b8e_i`，含每套件过滤器、构建日志、测试 JSON、summary.json 和源码哈希。
+
+本轮范围：A2 的混合隔离用例、A3 的空尾部用例、A4 的换块用例仍保留且未修复，未纳入 A1 验收；11 项依赖后续入口／恢复的 LSM 用例也未运行，完整名单见日志 excluded.json。没有新增 fsync、文件替换原子性或崩溃恢复保障。
 
 <a id="a2"></a>
 

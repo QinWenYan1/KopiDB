@@ -595,7 +595,7 @@ void TranManager::write_tranc_id_file() {
   tranc_id_file_ = FileObj::open(get_tranc_id_file_path(), true);
 
   // 检查写入和流缓冲刷新是否成功
-  // 当前文件工具的 write() 对错误检查不充分，因此也要检查 sync()
+  // write() 成功时内容仍可能在流缓冲区，最终刷新也必须单独检查
   if (!tranc_id_file_.write(0, buf) || !tranc_id_file_.sync()) {
     throw std::runtime_error(
         "TranManager::write_tranc_id_file: failed to save transaction state");

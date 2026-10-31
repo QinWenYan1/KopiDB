@@ -36,13 +36,22 @@ bool FileObj::truncate(size_t offset) {
 FileObj FileObj::create_and_write(const std::string &path,
                                   std::vector<uint8_t> buf) {
   FileObj file_obj;
+
+  // 1. 创建文件并写入初始内容；底层返回 false 时，将失败转为异常。
+  // SSTBuilder 只有拿到成功返回的 FileObj，才可以继续构建 SST 对象。
   if (!file_obj.m_file->create(path, buf)) {
     throw std::runtime_error("Failed to create or write file: " + path);
   }
 
-  // 同步到磁盘
-  file_obj.m_file->sync();
+  // 2. 小写入可能只进入了流缓冲区，直到刷新时才暴露磁盘写入错误。
+  // 因此 create 成功后还必须检查 sync，不能把刷新失败当作完整写入成功。
+  // 这里的 sync 是文件流 flush，不等同于保证断电持久性的 fsync。
+  if (!file_obj.m_file->sync()) {
+    throw std::runtime_error("Failed to flush file: " + path);
+  }
 
+  // 3. 两步均成功后才返回。失败时异常向上传递，
+  // MemTable::flush_last 不会执行后面的移除冻结表、扣减内存占用等操作。
   return std::move(file_obj);
 }
 

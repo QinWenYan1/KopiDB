@@ -3700,6 +3700,7 @@ TEST_F(TranCommitTest, RollbackStateSurvivesFlushCompactionAndRestart) {
 #ifndef _WIN32
 // 目的：SST 写入失败必须报错，并保留 MemTable 中尚未成功落盘的数据。
 // 场景：仅在子进程内限制文件最大长度为 512 字节，正常调用 flush 写入更大记录。
+// 失败后核对原值和版本仍可读，再恢复长度限制并重试，确认保留的数据能正常刷出。
 // 父进程的资源限制不变；这是普通文件写入失败，不涉及 WAL 或崩溃恢复。
 TEST_F(TranCommitTest, AuditFlushWriteFailurePreservesMemory) {
   engine->put("disk-error", std::string(8192, 'v'), 1);
@@ -3709,15 +3710,33 @@ TEST_F(TranCommitTest, AuditFlushWriteFailurePreservesMemory) {
       {
         struct rlimit limits;
         if (getrlimit(RLIMIT_FSIZE, &limits) != 0) _exit(90);
+        const struct rlimit original_limits = limits;
         limits.rlim_cur = 512;
         std::signal(SIGXFSZ, SIG_IGN);
         if (setrlimit(RLIMIT_FSIZE, &limits) != 0) _exit(91);
         try {
           engine->flush();
         } catch (const std::exception &) {
-          const bool preserved = engine->memtable.get_total_size() == before &&
-                                 engine->ssts.empty();
-          _exit(preserved ? 0 : 3);
+          const auto record = engine->get("disk-error", 0);
+          const bool preserved =
+              engine->memtable.get_total_size() == before &&
+              engine->ssts.empty() && engine->level_sst_ids.empty() && record &&
+              record->first == std::string(8192, 'v') && record->second == 1;
+          if (!preserved) _exit(3);
+
+          // 故障消失后，仍可把同一批内存数据刷入有效 SST。
+          if (setrlimit(RLIMIT_FSIZE, &original_limits) != 0) _exit(92);
+          try {
+            if (engine->flush() != 1) _exit(4);
+            const auto after_retry = engine->get("disk-error", 0);
+            const bool retried = engine->memtable.get_total_size() == 0 &&
+                                 engine->ssts.size() == 1 &&
+                                 engine->level_sst_ids.at(0).size() == 1 &&
+                                 after_retry == record;
+            _exit(retried ? 0 : 5);
+          } catch (const std::exception &) {
+            _exit(6);
+          }
         }
         // 没有报错，即使仅写出一部分字节也会被上层当成成功。
         std::cerr << "flush returned without error; memory before=" << before

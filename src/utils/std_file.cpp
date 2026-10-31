@@ -40,14 +40,20 @@ bool StdFile::open(const std::string &filename, bool create) {
 }
 
 bool StdFile::create(const std::string &filename, std::vector<uint8_t> &buf) {
+  // 先创建或截断文件；保留原接口在打开失败时抛异常的行为。
   if (!this->open(filename, true)) {
     throw std::runtime_error("Failed to open file for writing");
   }
-  if (!buf.empty()) {
-    write(0, buf.data(), buf.size());
+
+  // 创建空文件也是合法操作，此时没有初始内容需要写入。
+  if (buf.empty()) {
+    return true;
   }
 
-  return true;
+  // 将初始内容的写入结果交给调用方。
+  // 文件已经打开，不代表内容已经写好；忽略 false 会把不完整文件当成成功。
+  // 最终流缓冲刷新仍由调用方执行并检查 sync()。
+  return write(0, buf.data(), buf.size());
 }
 
 void StdFile::close() {
@@ -72,10 +78,23 @@ std::vector<uint8_t> StdFile::read(size_t offset, size_t length) {
 }
 
 bool StdFile::write(size_t offset, const void *data, size_t size) {
-  file_.seekg(offset, std::ios::beg);
+  // 1. 从文件开头计算偏移，定位本次写入的位置。
+  // seekp 用于定位写入位置，seekg 用于定位读取位置。
+  file_.seekp(offset, std::ios::beg);
+
+  // 定位失败时报告失败，不继续尝试写入。
+  // 例如文件未打开，或者文件流已经处于失败状态。
+  if (!file_) {
+    return false;
+  }
+
+  // 2. 写入指定数量的字节；底层 I/O 失败会设置文件流的错误状态。
   file_.write(static_cast<const char *>(data), size);
-  // this->sync();
-  return true;
+
+  // 3. 返回真实流状态，不能无条件报告成功。
+  // 写入可能暂存在流缓冲区中，此处成功不保证后续刷新成功；
+  // 调用方仍须检查 sync()。这里不逐次刷新，避免多次写入时重复刷新。
+  return file_.good();
 }
 
 bool StdFile::sync() {
