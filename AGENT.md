@@ -28,6 +28,8 @@ KopiDB 是类 RocksDB 的教学级 LSM-tree KV 存储引擎（C++20），沿 [ti
 
 发现问题、选择问题开始修复或验收回写时，使用 [audit-to-plan：问题先记账，选中再实施](agent/skills/audit-to-plan/SKILL.md)。AUDIT 保存全局问题事实；选中的工作进入 PLAN，原条目保留并更新状态；STATE 保存项目现状与整体排期，通过链接引用问题，避免重复维护。修复任务继续时只需优先读取 PLAN 关联的条目。
 
+用户要求起草／改写 issue，或进入新的修复问题时，使用 [draft-issue：起草可直接发布的 issue](agent/skills/draft-issue/SKILL.md)。在聊天中提供自包含的中文正文，源码位置使用核实过的 GitHub 链接，由用户手动发布；用户要求直接复制时不混入整体进度或教学内容。
+
 ## 判断问题与提出修改
 
 评估疑似 bug、检查实现、判断修复是否必要，或设计涉及状态与参数传递的改动时，读取并遵循 [verify-before-fix：先验证，再修复](agent/skills/verify-before-fix/SKILL.md)。
