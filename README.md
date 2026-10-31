@@ -6,16 +6,16 @@ KopiDB 是一个用于学习数据库实现的 C++20 LSM-tree KV 引擎，包含
 
 ---
 
-## 目录
+## 🧭 目录
 
-- [什么是 LSM-tree？](#what-is-lsm)
-- [为什么需要 LSM-tree？](#why-lsm)
-- [应用场景](#use-cases)
-- [学习文档](#learning-docs)
-- [构建与测试](#build-and-test)
-- [C++ 使用示例](#cpp-example)
-  - [普通 CRUD](#basic-crud)
-  - [显式事务](#transactions)
+- [📖 什么是 LSM-tree？](#what-is-lsm)
+- [💡 为什么需要 LSM-tree？](#why-lsm)
+- [🎯 应用场景](#use-cases)
+- [📚 学习文档](#learning-docs)
+- [🛠️ 构建与测试](#build-and-test)
+- [💻 C++ 使用示例](#cpp-example)
+  - [📝 普通 CRUD](#basic-crud)
+  - [🔄 显式事务](#transactions)
 
 
 
@@ -23,7 +23,7 @@ KopiDB 是一个用于学习数据库实现的 C++20 LSM-tree KV 引擎，包含
 
 <a id="what-is-lsm"></a>
 
-## 什么是 LSM-tree？
+## 📖 什么是 LSM-tree？
 
 LSM-tree（Log-Structured Merge-Tree，O'Neil et al. 1996）的核心思想是**把随机写转化为顺序写**：写入先进内存有序结构（MemTable）并追加 WAL 保证持久化，内存写满后批量刷盘为不可变 SST 文件，后台 Compaction 逐层合并清理。RocksDB（Meta）是这一结构的工业级代表实现，也是本项目对标的对象。
 
@@ -38,7 +38,7 @@ LSM-tree（Log-Structured Merge-Tree，O'Neil et al. 1996）的核心思想是**
 
 <a id="why-lsm"></a>
 
-## 为什么需要 LSM-tree？
+## 💡 为什么需要 LSM-tree？
 
 相比 B+ 树（读优化的原地更新结构）：
 
@@ -52,7 +52,7 @@ LSM-tree（Log-Structured Merge-Tree，O'Neil et al. 1996）的核心思想是**
 
 <a id="use-cases"></a>
 
-## 应用场景
+## 🎯 应用场景
 
 LSM 架构常见于写密集负载的典型选择：
 
@@ -84,7 +84,7 @@ LSM 架构常见于写密集负载的典型选择：
 
 <a id="build-and-test"></a>
 
-## 构建与测试
+## 🛠️ 构建与测试
 
 需要 C++20 编译器和 [Xmake](https://xmake.io)，配置见 [config.toml](config.toml)。
 
@@ -100,7 +100,7 @@ xmake run test_skiplist     # 运行一个模块的测试
 
 <a id="cpp-example"></a>
 
-## C++ 使用示例
+## 💻 C++ 使用示例
 
 普通读写直接使用 `LSM`；需要把多次操作作为一笔事务处理时，再调用 `begin_tran()`。
 
@@ -108,7 +108,7 @@ xmake run test_skiplist     # 运行一个模块的测试
 
 <a id="basic-crud"></a>
 
-### 普通 CRUD
+### 📝 普通 CRUD
 
 `put()` 用于新增或更新，`get()` 查询，`remove()` 删除；不需要手动提交事务。
 
@@ -140,9 +140,9 @@ int main() {
 
 <a id="transactions"></a>
 
-### 显式事务
+### 🔄 显式事务
 
-通过 `begin_tran()` 开启事务，在事务句柄上读写，最后调用 `commit()` 提交。
+通过 `begin_tran()` 开启事务，在事务句柄上读写，最后调用 `commit()` 提交。下例只展示调用流程，省略提交结果处理。
 
 ```cpp
 #include "lsm/engine.h"
@@ -162,10 +162,7 @@ int main() {
     std::cout << *value << '\n';  // Alice
   }
 
-  if (!tx->commit()) {
-    std::cerr << "事务提交失败\n";
-    return 1;
-  }
+  tx->commit();  // 提交本事务的修改。
   return 0;
 }
 ```
@@ -174,3 +171,4 @@ int main() {
 
 使用非空 key；空 value 表示删除，删除操作使用 `remove(key)`。项目目前用于学习，尚不提供 WAL 崩溃恢复保证。
 
+---
