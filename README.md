@@ -100,66 +100,66 @@ xmake run test_skiplist     # 运行一个模块的测试
 
 ## 💻 C++ 使用示例
 
-普通读写直接使用 `LSM`；需要把多次操作作为一笔事务处理时，再调用 `begin_tran()`
+下面在同一个数据库实例中演示五类用法，用注释区分；为突出调用流程，省略提交结果处理。
 
-> 以下展示公开接口的用法；当前入口初始化尚未完成，暂不能直接运行这两个示例。
+> 以下为公开接口示意；当前入口初始化尚未完成，暂不能直接运行。
 
-- 普通 CRUD
+```cpp
+#include "lsm/engine.h"
+#include "lsm/level_iterator.h"
+#include <iostream>
 
-  `put()` 用于新增或更新，`get()` 查询，`remove()` 删除；不需要手动提交事务
+using namespace tiny_lsm;
 
-  ```cpp
-  #include "lsm/engine.h"
-  #include <iostream>
+int main() {
+  LSM db("api-demo");
 
-  using namespace tiny_lsm;
-
-  int main() {
-    LSM db("kv-demo");
-
-    // 新增
-    db.put("name", "Alice");
-
-    // 查询：key 不存在时返回 std::nullopt。
-    if (auto value = db.get("name")) {
-      std::cout << *value << '\n';  // Alice
-    }
-
-    // 更新：对同一个 key 再次 put。
-    db.put("name", "Bob");
-
-    // 删除
-    db.remove("name");
-    return 0;
+  // ---------- 1. 普通 CRUD：无需显式开启事务 ----------
+  db.put("name", "Alice");  // 新增
+  if (auto value = db.get("name")) {
+    std::cout << *value << '\n';  // 查询：Alice
   }
-  ```
-
-- 显式事务：通过 `begin_tran()` 开启事务，在事务句柄上读写，最后调用 `commit()` 提交。下例只展示调用流程，省略提交结果处理。
-
-  ```cpp
-  #include "lsm/engine.h"
-  #include <iostream>
-
-  using namespace tiny_lsm;
-
-  int main() {
-    LSM db("transaction-demo");
-    auto tx = db.begin_tran(IsolationLevel::REPEATABLE_READ);
-
-    tx->put("name", "Alice");
-    tx->put("city", "Shanghai");
-
-    // 事务能读到自己尚未提交的修改。
-    if (auto value = tx->get("name")) {
-      std::cout << *value << '\n';  // Alice
-    }
-
-    tx->commit();  // 提交本事务的修改。
-    return 0;
+  db.put("name", "Bob");  // 更新同一个 key
+  db.remove("name");      // 删除
+  if (!db.get("name")) {
+    std::cout << "name 不存在\n";
   }
-  ```
 
-如果决定放弃这笔事务，将提交操作改为 `tx->abort()`；事务结束后不再使用该句柄读写。
+  // ---------- 2. 显式事务：开启、读写、提交 ----------
+  auto tx = db.begin_tran(IsolationLevel::REPEATABLE_READ);
+  tx->put("user:1", "Alice");
+  tx->put("user:2", "Bob");
+  if (auto value = tx->get("user:1")) {
+    std::cout << *value << '\n';  // 能读到本事务尚未提交的修改
+  }
+  tx->commit();  // 提交本事务的修改；结束后不再用 tx 读写
+
+  // ---------- 3. 事务回滚：放弃本事务的修改 ----------
+  auto cancelled = db.begin_tran(IsolationLevel::REPEATABLE_READ);
+  cancelled->put("user:1", "Temporary");
+  cancelled->abort();  // 放弃修改；结束后不再用 cancelled 读写
+  if (auto value = db.get("user:1")) {
+    std::cout << *value << '\n';  // 前一笔事务提交成功时，仍为 Alice
+  }
+
+  // ---------- 4. 批量操作：一次传入多个 key ----------
+  db.put_batch({{"batch:a", "A"}, {"batch:b", "B"}, {"batch:c", "C"}});
+  for (const auto &[key, value] :
+       db.get_batch({"batch:a", "batch:b", "missing"})) {
+    // 每个结果保留对应 key；不存在的 key 返回 std::nullopt。
+    std::cout << key << " = " << value.value_or("<不存在>") << '\n';
+  }
+  db.remove_batch({"batch:a", "batch:b"});
+
+  // ---------- 5. 有序遍历：按 key 升序读取 ----------
+  // begin(0) 的 0 表示不限制读取版本号。
+  for (auto it = db.begin(0); it != db.end(); ++it) {
+    std::cout << it->first << " = " << it->second << '\n';
+  }
+
+  return 0;
+}
+```
 
 使用非空 key；空 value 表示删除，删除操作使用 `remove(key)`。项目目前用于学习，尚不提供 WAL 崩溃恢复保证。
 

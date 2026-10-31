@@ -107,7 +107,7 @@
 8. **迭代器重构不作为本轮前置任务。** 保留现有迭代器组合与推进逻辑，在去重之前接入必要的回滚判断；不要求每个迭代器各新增一套过滤。此前讨论的统一 MVCC 迭代器仍是延期的重构方向。
 9. **正式显式事务统一由 begin_tran/new_tranc 创建。** 用户于 2026-10-25 确认；直接构造 TranContext 保留给底层测试，不用于验证正式事务的跨事务可见性。构造函数暂不改访问权限，不要求改写所有底层测试；需要验证混合隔离的测试通过工厂创建并登记事务。当前组件调用通过 new_tranc；LSM 门面的 begin_tran 依赖后续初始化整合。
 10. **业务数据使用非空 key。** 空 key 保留给内部事务标记；空 value 是删除墓碑，当前不能作为普通空字符串值存储。
-11. **普通 KV 与显式事务分开呈现。** README 分为普通 CRUD 和显式事务两个示例，并维护对应目录。使用者入口是 LSM::put/get/remove，调用普通接口不要求 begin_tran 或 commit；用户主动开启显式事务后，才通过上下文 commit/abort。“不使用显式事务”不等于禁用内部事务 ID／MVCC，当前配置和构造接口没有关闭整套事务机制的开关。Engine／TranManager 绑定、ID 分配及内部状态保存不能放进这两类用户示例。改写前读取用户最新 README，保留知识、参考资料和结构，不以“简洁”为由擅自删减。
+11. **用户 API 示例保持清晰边界。** 按用户最新要求，README 使用一个完整代码块，以注释分隔普通 CRUD、事务提交、事务回滚、批量操作和有序遍历。普通接口不要求 begin_tran 或 commit；用户主动开启显式事务后，才通过上下文 commit/abort。“不使用显式事务”不等于禁用内部事务 ID／MVCC，当前配置和构造接口没有关闭整套事务机制的开关。只展示 LSM 和事务句柄的公开接口，不要求用户绑定 Engine／TranManager、分配 ID 或保存内部状态。改写前读取用户最新 README，保留知识、参考资料和结构，不以“简洁”为由擅自删减。
 
 
 2026-10-24 回调归属审计：当前 include/src 中未发现除已修正的 SstIterator::seek 外，其他普通操作重新配置对象已保存的 is_aborted_。这不表示所有范围入口已经接通。Block 当前不长期保存回调，由调用方提供查询条件；BlockIterator 保存供后续操作复用。用户提出让 Block 也保存，技术上可行，但属于依赖归属调整，不是缺失成员即有 bug。若直接保存当前捕获 shared_ptr<TranManager> 的回调，在管理器已绑定引擎且块仍在缓存中时，会形成 Engine → BlockCache → Block → 回调 → TranManager → Engine 的强引用环；需另外设计弱引用或独立状态对象及初始化路径。固定绑定回滚查询器并不天然导致并发冲突，也不要求改变 Block 磁盘编码。进一步核对：当前 Engine/缓存/Block/SST 不以成员持有返回的 BlockIterator/SstIterator；创建或返回对象并不自动建立长期持有关系。迭代器持有 Block，Block 没有反向持有该迭代器，因此当前回调不会沿这条路径形成闭环。此结论来自成员与调用关系检查，未新增生命周期测试。当前建议维持已有归属，先完成必要的回调传递；未代改业务代码。
@@ -333,6 +333,8 @@ int main() {
   两个示例均按项目参数通过 `-fsyntax-only` 检查；17 个本地链接、8 个目录锚点通过。未运行程序，当前证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-readme-two-examples-wts8tqkf`，含修改前 README、提取的两个程序、语法日志与 summary.json。前一版单示例语法记录保留于 `kopidb-readme-public-api-zxylfa8h`。当前无事务系统开关的结论来自 LSM 构造签名、普通 put/get/remove 的 ID 分配路径以及 config.toml／TomlConfig 的核对。
 
   同日按用户反馈移除显式事务示例的 if/cerr/return 失败分支，保留 commit 调用并注明省略结果处理；只简化文档，不改变返回值或引擎错误语义。该版本事务示例语法检查通过，证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-readme-simple-commit-fd7tylkb`。普通 CRUD 代码未变，各小节和目录已配图标，8 个目录跳转通过；未运行程序。
+
+  最新整合版本：按用户要求把普通 CRUD、提交、回滚、批量、有序遍历五类用例放入一个程序，以中文注释分段。核对了 get_batch 的 optional<string> 返回值，以及 begin(0)/end 所需的 Level_Iterator 定义；编译参数下语法检查通过，15 个本地链接、6 个目录锚点通过。使用示例之前的用户正文及原有页尾逐字保留。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-readme-all-api-ipgpbik_`。入口尚未完成，未运行程序，旧组件示例的运行结果不迁用于此。
 
 - 2026-10-31 README 精简示例：从新 README 提取事务写入／提交／读取程序，构建 lsm 并链接成功；在隔离目录首次运行和正常关闭后重跑，**2/2 通过**，均输出 KopiDB。日志、提取源码及编译命令：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-readme-quickstart-h5uzoyrm`。迁入本文件的原并发验证程序 SHA-256 与之前通过的版本一致，没有用旧示例结果代替新示例验收；65 个本地链接检查通过。助手本轮只编辑文档，用户正在手写的业务源码未改动。
 
