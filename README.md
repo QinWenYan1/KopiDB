@@ -14,8 +14,6 @@ KopiDB 是一个用于学习数据库实现的 C++20 LSM-tree KV 引擎，包含
 - [📚 学习文档](#learning-docs)
 - [🛠️ 构建与测试](#build-and-test)
 - [💻 C++ 使用示例](#cpp-example)
-  - [📝 普通 CRUD](#basic-crud)
-  - [🔄 显式事务](#transactions)
 
 
 
@@ -102,70 +100,64 @@ xmake run test_skiplist     # 运行一个模块的测试
 
 ## 💻 C++ 使用示例
 
-普通读写直接使用 `LSM`；需要把多次操作作为一笔事务处理时，再调用 `begin_tran()`。
+普通读写直接使用 `LSM`；需要把多次操作作为一笔事务处理时，再调用 `begin_tran()`
 
 > 以下展示公开接口的用法；当前入口初始化尚未完成，暂不能直接运行这两个示例。
 
-<a id="basic-crud"></a>
+- 普通 CRUD
 
-### 📝 普通 CRUD
+  `put()` 用于新增或更新，`get()` 查询，`remove()` 删除；不需要手动提交事务
 
-`put()` 用于新增或更新，`get()` 查询，`remove()` 删除；不需要手动提交事务。
+  ```cpp
+  #include "lsm/engine.h"
+  #include <iostream>
 
-```cpp
-#include "lsm/engine.h"
-#include <iostream>
+  using namespace tiny_lsm;
 
-using namespace tiny_lsm;
+  int main() {
+    LSM db("kv-demo");
 
-int main() {
-  LSM db("kv-demo");
+    // 新增
+    db.put("name", "Alice");
 
-  // 新增
-  db.put("name", "Alice");
+    // 查询：key 不存在时返回 std::nullopt。
+    if (auto value = db.get("name")) {
+      std::cout << *value << '\n';  // Alice
+    }
 
-  // 查询：key 不存在时返回 std::nullopt。
-  if (auto value = db.get("name")) {
-    std::cout << *value << '\n';  // Alice
+    // 更新：对同一个 key 再次 put。
+    db.put("name", "Bob");
+
+    // 删除
+    db.remove("name");
+    return 0;
   }
+  ```
 
-  // 更新：对同一个 key 再次 put。
-  db.put("name", "Bob");
+- 显式事务：通过 `begin_tran()` 开启事务，在事务句柄上读写，最后调用 `commit()` 提交。下例只展示调用流程，省略提交结果处理。
 
-  // 删除
-  db.remove("name");
-  return 0;
-}
-```
+  ```cpp
+  #include "lsm/engine.h"
+  #include <iostream>
 
-<a id="transactions"></a>
+  using namespace tiny_lsm;
 
-### 🔄 显式事务
+  int main() {
+    LSM db("transaction-demo");
+    auto tx = db.begin_tran(IsolationLevel::REPEATABLE_READ);
 
-通过 `begin_tran()` 开启事务，在事务句柄上读写，最后调用 `commit()` 提交。下例只展示调用流程，省略提交结果处理。
+    tx->put("name", "Alice");
+    tx->put("city", "Shanghai");
 
-```cpp
-#include "lsm/engine.h"
-#include <iostream>
+    // 事务能读到自己尚未提交的修改。
+    if (auto value = tx->get("name")) {
+      std::cout << *value << '\n';  // Alice
+    }
 
-using namespace tiny_lsm;
-
-int main() {
-  LSM db("transaction-demo");
-  auto tx = db.begin_tran(IsolationLevel::REPEATABLE_READ);
-
-  tx->put("name", "Alice");
-  tx->put("city", "Shanghai");
-
-  // 事务能读到自己尚未提交的修改。
-  if (auto value = tx->get("name")) {
-    std::cout << *value << '\n';  // Alice
+    tx->commit();  // 提交本事务的修改。
+    return 0;
   }
-
-  tx->commit();  // 提交本事务的修改。
-  return 0;
-}
-```
+  ```
 
 如果决定放弃这笔事务，将提交操作改为 `tx->abort()`；事务结束后不再使用该句柄读写。
 
