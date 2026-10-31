@@ -731,6 +731,20 @@ bool TranManager::is_aborted(uint64_t tranc_id) const {
   return aborted_tranc_ids_.contains(tranc_id);
 }
 
+bool TranManager::should_skip_read(uint64_t tranc_id, bool require_committed) const {
+  // 1. 在同一次加锁中检查回滚集合和活跃集合。
+  //
+  // 回滚登记会先加入回滚集合，再从活跃集合移除
+  // 如果分成两次独立查询，可能发生：
+  //   查回滚集合时尚未回滚；
+  //   查活跃集合时已经回滚并被移除
+  // 这样就会错误地认为该事务“既未回滚，也不活跃”
+  // 与登记过程共用同一把锁，可以避免这种状态拼接
+  std::lock_guard<std::mutex> lock(mutex_); 
+  
+}
+
+
 // Lab 5.2 负责登记事务的结束状态（已提交或已回滚），供后续刷盘时处理
 // 如果是回滚，还会把事务 ID 加入回滚名单
 void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id,

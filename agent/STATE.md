@@ -12,9 +12,11 @@
 
 2026-10-31 issue 写作方法已独立为 [draft-issue](skills/draft-issue/SKILL.md)：复现与预期／实际差异、核实远程版本与行号的 GitHub 源码链接、最小修复方向和可验收标准。用户要求直接复制时只交付标题和正文，不夹带整体进度；AUDIT／PLAN 的状态流转继续由 audit-to-plan 管理。
 
+2026-10-31 文档分工补充：README 面向使用者，保留 LSM-tree 介绍、设计取舍、应用场景、学习文档，并与构建、简短使用示例和必要限制统一组织；顶部提供可跳转的目录，章节变化时同步维护。能力核查、待确认目标、线程／隔离设计及验证程序统一在 STATE 维护；缺陷与失败证据沿用 AUDIT 原条目。迁移内容与既有章节合并，不在两处保留完整副本。
+
 ## 当前进度
 
-2026-10-31 用户单独授权助手修复基础文件工具 A1，并要求中文注释与修改说明；其余核心模块仍由用户手写。A1 三个函数已修改并验收，文件写入／刷新错误能够传至刷盘入口，失败保留可查询的内存数据，故障解除后重试成功。相关回归 **197/197 通过**；A2 issue 已交付，用户要求开始实现，当前提供管理器读取判断函数草案。整体修复计划仍为 **20%（1/5 阶段）**；A2 未修改业务代码，A3～A4 待开始。执行细节见 [PLAN.md](PLAN.md)，问题状态及测试证据见 [AUDIT.md](AUDIT.md)。
+2026-10-31 用户单独授权助手修复基础文件工具 A1，并要求中文注释与修改说明；其余核心模块仍由用户手写。A1 三个函数已修改并验收，文件写入／刷新错误能够传至刷盘入口，失败保留可查询的内存数据，故障解除后重试成功。相关回归 **197/197 通过**；A2 issue 已交付，用户正在加入管理器读取判断函数，尚未验收。本轮插入的 README 说明与示例不改变主线进度。整体修复计划仍为 **20%（1/5 阶段）**；A3～A4 待开始。执行细节见 [PLAN.md](PLAN.md)，问题状态及测试证据见 [AUDIT.md](AUDIT.md)。
 
 本轮通过数不包含尚未修复的 A2～A4 和依赖后续章节的 11 个 LSM 用例；文件 sync 仍为流 flush，没有据此扩展为 fsync 或崩溃恢复。目录 5.2 的 WAL 与崩溃恢复继续按后续排期推进。
 
@@ -76,7 +78,7 @@
 
 | 位置 | 当前代码状态 |
 | --- | --- |
-| [TranContext 构造、get、commit](../src/lsm/transation.cpp) | 本轮状态维护与回滚相关调用已接通并通过回归；get 的混合隔离及读缓存修复仍独立延期。 |
+| [TranContext 构造、get、commit](../src/lsm/transation.cpp) | 本轮状态维护与回滚相关调用已接通并通过回归；get 的混合隔离及读缓存问题见 [A2](AUDIT.md#a2)，当前修复步骤见 PLAN。 |
 | `TranContext::put()` | 已删除旧值查询和备份，更新函数说明，代码检查、构建及对应回归通过。 |
 | `TranContext::remove()` | 已独立实现结束状态检查、DELETE 记录、立即/暂存墓碑；新增 4 个测试通过，覆盖重复删除、历史版本、与 put 交替及结束后拒绝删除。 |
 | `TranContext::abort()` | 已实现状态检查、回滚登记及上下文清理；点查、批查、范围和 compaction／正常重启后的回滚过滤已通过本轮回归。 |
@@ -98,12 +100,14 @@
 1. **读未提交继续立即写入。** `TranContext::put/remove` 使用本事务 ID 写入存储层；其他隔离级别先暂存，提交时应用修改。
 2. **回滚名单由 TranManager 管理。** 采用普通 `std::unordered_set<uint64_t>`，读写均受现有互斥锁保护。当前先接受检查时加锁的成本。
 3. **回滚通过排除版本实现。** 事务 5 回滚后，所有 `tranc_id == 5` 的记录都不再作为查询候选，覆盖内存和 SST。原记录可以暂时保留。
-4. **继续比较真实版本号。** 保留现有跨 MemTable、SST 选择最大可见版本的逻辑；不改成找到第一个 key 就返回。
-5. **先过滤回滚版本，再去重和处理墓碑。** 例如 `k@5 = new` 已回滚、`k@3 = old` 有效，应返回 `old@3`。版本上限为 0 只表示不限制版本大小，仍须排除回滚版本。
-6. **Block/SST 记录编码保持现状。** 回滚 ID 随事务状态文件保存。刷盘登记完成不代表旧记录已被物理删除，因此不能顺便清掉回滚名单。
+4. **继续比较真实版本号。** 保留现有跨 MemTable、SST 选择最大可见版本的逻辑；不改成找到第一个 key 就返回。版本编号来自事务创建顺序，不等于提交顺序。
+5. **先过滤回滚版本，再去重和处理墓碑。** 例如 `k@5 = new` 已回滚、`k@3 = old` 有效，应返回 `old@3`。版本上限为 0 只表示不限制版本大小，仍须排除回滚版本，也不能据此认定只会读到已提交数据。
+6. **Block/SST 记录编码保持现状。** 长度与偏移字段采用 16 位编码，无法编码的单条记录或同 key 版本组沿用抛异常方案；不同 key 正常换块的问题单列 [A4](AUDIT.md#a4)。回滚 ID 随事务状态文件保存。刷盘登记完成不代表旧记录已被物理删除，因此不能顺便清掉回滚名单。
 7. **读未提交 put 的冲突检查暂缓。** 当前先完成回滚主线；后续再讨论是否增加这项约束。
 8. **迭代器重构不作为本轮前置任务。** 保留现有迭代器组合与推进逻辑，在去重之前接入必要的回滚判断；不要求每个迭代器各新增一套过滤。此前讨论的统一 MVCC 迭代器仍是延期的重构方向。
-9. **正式显式事务统一由 begin_tran/new_tranc 创建。** 用户于 2026-10-25 确认；直接构造 TranContext 保留给底层测试，不用于验证正式事务的跨事务可见性。构造函数暂不改访问权限，不要求改写所有底层测试；需要验证混合隔离的测试通过工厂创建并登记事务。
+9. **正式显式事务统一由 begin_tran/new_tranc 创建。** 用户于 2026-10-25 确认；直接构造 TranContext 保留给底层测试，不用于验证正式事务的跨事务可见性。构造函数暂不改访问权限，不要求改写所有底层测试；需要验证混合隔离的测试通过工厂创建并登记事务。当前组件调用通过 new_tranc；LSM 门面的 begin_tran 依赖后续初始化整合。
+10. **业务数据使用非空 key。** 空 key 保留给内部事务标记；空 value 是删除墓碑，当前不能作为普通空字符串值存储。
+11. **普通 KV 与显式事务分开呈现。** README 分为普通 CRUD 和显式事务两个示例，并维护对应目录。使用者入口是 LSM::put/get/remove，调用普通接口不要求 begin_tran 或 commit；用户主动开启显式事务后，才通过上下文 commit/abort。“不使用显式事务”不等于禁用内部事务 ID／MVCC，当前配置和构造接口没有关闭整套事务机制的开关。Engine／TranManager 绑定、ID 分配及内部状态保存不能放进这两类用户示例。改写前读取用户最新 README，保留知识、参考资料和结构，不以“简洁”为由擅自删减。
 
 
 2026-10-24 回调归属审计：当前 include/src 中未发现除已修正的 SstIterator::seek 外，其他普通操作重新配置对象已保存的 is_aborted_。这不表示所有范围入口已经接通。Block 当前不长期保存回调，由调用方提供查询条件；BlockIterator 保存供后续操作复用。用户提出让 Block 也保存，技术上可行，但属于依赖归属调整，不是缺失成员即有 bug。若直接保存当前捕获 shared_ptr<TranManager> 的回调，在管理器已绑定引擎且块仍在缓存中时，会形成 Engine → BlockCache → Block → 回调 → TranManager → Engine 的强引用环；需另外设计弱引用或独立状态对象及初始化路径。固定绑定回滚查询器并不天然导致并发冲突，也不要求改变 Block 磁盘编码。进一步核对：当前 Engine/缓存/Block/SST 不以成员持有返回的 BlockIterator/SstIterator；创建或返回对象并不自动建立长期持有关系。迭代器持有 Block，Block 没有反向持有该迭代器，因此当前回调不会沿这条路径形成闭环。此结论来自成员与调用关系检查，未新增生命周期测试。当前建议维持已有归属，先完成必要的回调传递；未代改业务代码。
@@ -114,21 +118,45 @@
 
 ## 验收边界与待确认事项
 
-- TranContext 按事务创建：每次 begin_tran/new_tranc 返回新上下文，不是按线程缓存的 thread_local 对象，也没有绑定线程的机制。一个线程可以创建多个事务，shared_ptr 也能被传给其他线程。
-- 当前 TranContext 没有内部线程同步，同一实例的方法及成员访问必须由调用方串行执行；管理器的锁不保护上下文的 isAborted、temp_map_ 等成员。2026-10-20 核对作者的 transaction.h 与 test_lsm.cpp：上下文无 mutex，事务测试顺序操作句柄；这些代码没有证明“每个线程自动独占一个上下文”。本地 commit/abort 的串行使用注释来自此前助手草案，不是已经核实的 Lab 明文规定。
-- 当前保留上述使用限制；2026-10-20 已核对用户加入的类接口说明，明确外部同步与跨线程移交要求。该说明不表示“自动线程隔离”，也不能将同一上下文并发安全列为已验收。若以后要求并发操作同一上下文，再统一同步 put/remove/get/commit/abort 及相关成员访问，而非仅锁 abort。
-- 只添加集合或实现 `abort()`，还不能宣称回滚完成；点查、批量查询、范围遍历和提交冲突检查都需要接通。
-- `TranContext::get()` 的 `read_map_` 可能绕过存储层查询，需要检查缓存值和缓存的“不存在”结果如何与事务状态配合。
-- 混合隔离级别下，读已提交、可重复读对其他事务未提交数据的可见性仍需处理。仅排除 ABORTED 不等于已经实现“只读已提交”。
-- 2026-10-25 曾确认混合隔离失败；当前已完成结束登记时移出 activeTrans_，旧的“只增不删”障碍已解除。后续回滚／活跃联合判断仍需在一致的管理器锁保护下进行，不能无锁读取其他上下文的 isCommited/isAborted。未登记的任意 ID 不因此获得“已提交”证明；正式读取依赖已确认的事务入口及普通单次写入约定，恢复一致性仍按后续章节验收。
-- 当前 `SERIALIZABLE` 有单键读记录校验，不代表已经实现完整串行化或范围幻读保护。
-- 当前提交路径跳过 WAL 持久化；WAL 和崩溃恢复按后续 Lab 推进。
-- Block 编码超限沿用已确认的抛异常方案，长期容量设计另行讨论。
+<a id="thread-model"></a>
+
+### 线程模型
+
+已确认的上下文约定：每次 begin_tran/new_tranc 创建一个独立的 TranContext，没有 thread_local 或线程绑定机制。一个线程可以顺序执行多笔事务，也可以在 A 未结束时操作 B。上下文没有内部互斥保护，同一实例的方法及公开成员必须由调用方串行访问；跨线程移交也需要同步。管理器的锁不保护上下文的暂存值和读缓存。用户已将这一约定写入类接口；它是本项目已接受的使用限制，不是已核实的作者明文要求。
+
+**建议目标，尚待用户确认：** 一个进程初始化一套 DB，不同线程共享这套组件，通过公开接口读写，各自操作独立事务；同一上下文和同一迭代器串行使用。用户询问这是否是 RocksDB 的用法，并未表示同意将它作为最终规格。
+
+```text
+线程 A → 事务 A ─┐
+                 ├→ 同一套 Engine + TranManager → MemTable / SST
+线程 B → 事务 B ─┘
+```
+
+当前只验证过并发创建事务、提交与刷盘、状态登记等具体路径，不能从“已有锁”或这些测试推出全部接口线程安全。内部验证示例限定一套组件管理一个目录，不承诺并发关闭、清库、修改内部成员，或多个实例／进程同时打开同一目录的安全性。
+
+依据：[RocksDB 官方并发约定](https://github.com/meta/rocksdb/wiki/Basic-Operations#concurrency) 明确允许同一进程的多个线程共享 DB；Iterator、WriteBatch 等对象的共享访问可能需要外部同步。tiny-lsm 作者的 [Readme](https://github.com/Vanilla-Beauty/tiny-lsm/blob/master/Readme.md#L177-L207) 列出 MVCC、RU、RC、RR，将 Serializable 留作 TODO；已查说明没有完整线程安全契约。不能从单线程示例推导整库只能单线程，也不能把本地所有缺陷都归为作者错误。A2 的具体前提、反例及失败证据统一见 [AUDIT](AUDIT.md#a2)。
+
+### 隔离与读取能力
+
+存储层已经实现同 key 多版本、读取上限、跨来源真实版本比较与回滚过滤；对应基础测试通过。各组件完成情况见上方代码状态表。隔离级别的要求和当前差距统一如下，A2 的完整现象与修复细节不在此重复维护：
+
+| 级别 | 目标行为 | 当前验收边界 |
+| --- | --- | --- |
+| RU | 允许读取未提交修改，回滚后排除对应版本 | 立即写入及回滚过滤已有验证。 |
+| RC | 自身修改优先，其余只读已提交版本；后续查询允许看到后来提交的数据 | 暂存与重查已有实现，混合隔离缺口见 A2。 |
+| RR | 自身修改优先；同一 key 的首次合法结果保持稳定，包括不存在 | 已有读取上限和缓存，首次合法性仍受 A2 影响；不是跨所有 key 的一致提交快照。 |
+| SERIALIZABLE | 完整串行化需额外并发控制与验收 | 当前只有单键缓存及提交验证，不代表已经支持范围幻读保护或完整串行化。 |
+
+结束登记已在管理器锁内移除活跃项，旧的“活跃表只增不删”障碍已解除；读取仍需联合判断回滚与活跃状态，不能无锁访问其他上下文的 isCommited/isAborted。未登记的任意 ID 也不因“不在活跃表”就获得提交证明；正式事务入口、普通单次操作和启动恢复要分别遵循各自约定。
+
+正常 SST／事务状态文件保存和重启已有组件级验证；当前 commit 路径跳过 WAL。文件格式、错误处理与 flush/fsync 区别已在“已确认的设计”说明，不能将正常重启测试当作崩溃恢复保证。当前 LSM 入口尚未整合，内部示例显式绑定 Engine 与管理器。
+
+LSM 架构的一般性能取舍、RocksDB 的工业能力和作者项目功能列表，都不能当作 KopiDB 的实测性能或已验收能力。
 
 ## 全局排期与延期事项
 
-- **以 Lab 章节顺序为主线。** 当前推进 Lab 5.2 的事务回滚，不能因发现其他模块未完成，就把后续 Lab 的任务插入当前步骤。每个拟修改函数都应说明它与当前验收目标的直接关系；必要依赖先解释清楚，无关缺陷、优化和重构记入全局待办，不自行扩大任务。
-- 后续章节顺序：完成 Lab 5.2 的事务逻辑、状态维护及对应验收，再进入 Lab 5.3 Record、Lab 5.4 WAL、Lab 5.5 恢复与初始化整合。骨架已有函数体不代表已经按我们的流程实现、验收。
+- **以 Lab 章节顺序为主线。** Lab 0～4 基础实现和目录 5.1.1 的存储层 MVCC 已接通；当前收尾目录 5.1.2「事务管理器」并处理已选定缺陷。各阶段历史验收不能覆盖后来发现的问题，问题详情以 AUDIT 为准；未完成的其他模块不自动加入当前步骤。
+- 后续依次进入目录 5.2.1 Record 编解码、5.2.2 WAL、5.2.3 恢复与初始化整合；Redis 与 WiscKey 仍按后续教程推进。骨架已有函数体不代表已经按我们的流程实现、验收。
 - 优先完成当前 Lab 功能。沿用现有迭代器组合、接口拼写与 Block/SST 编码；只对本轮需要的调用链进行局部接入，小型辅助函数仅在直接减少重复代码时引入。
 - 每完成一项功能运行对应测试，接通后做受影响范围的回归；没有新改动或失败线索时，不重复全库排查。
 - 新发现的问题先判断是否阻碍当前验收；无关问题放入全局待办。有效旧值丢失、取消墓碑继续遮住旧值等问题必须在对应任务中修复。
@@ -138,8 +166,7 @@
 | 事项 | 当前安排 |
 | --- | --- |
 | 事务状态维护、持久化与正常重启 | 本轮五个核心函数、四阶段验收已完成；2026-10-30 回归 247/247 通过。 |
-| 混合隔离与读缓存 | 已进入最新缺陷审计 A2，原测试已恢复并再次复现失败；严格读取策略及 get 修改尚未实现。与之前五个状态维护函数的完成结论区分。 |
-| 文件写失败传播、compaction 空尾部、正常换块 | 最新审计 A1/A3/A4 均已用测试复现，位置与修复估时见 AUDIT；未修改业务代码。 |
+| 当前已选定缺陷 | A1～A4 的事实和处理状态统一见 [AUDIT](AUDIT.md)，实施顺序及验收步骤见 [PLAN](PLAN.md)，此处不再维护第二份问题状态表。 |
 | 迭代器职责重构、集中 MVCC 筛选 | 当前回滚功能接通后另行评估，详见下方议题一。 |
 | 同 key 写入版本单调约束与读取优化 | 与迭代器重构一并讨论，详见下方议题二。 |
 | 同一 TranContext 被并发访问的风险 | 当前由调用方保证串行使用，类接口说明已补充；是否支持内部同步留待后续评估，详见下方议题三。 |
@@ -217,19 +244,95 @@
 - 验收方向：证明并测试同 key 有效版本的写入约束；对比优化前后的查询结果与候选来源访问次数，覆盖并发、删除、取消、历史快照、跨层与 compaction 场景，保留必要回归。
 - 当前处理：现有代码尚未具备该全局保证，继续保留跨来源比较；本轮先完成回滚，该议题延期。
 
-### 议题三：明确 TranContext 的并发访问边界，评估内部同步保护
+### 议题三：评估 TranContext 内部同步保护
 
-- 记录日期：2026-10-20。状态：潜在并发风险，尚未实施内部同步，也未发布 GitHub issue。
-- 位置：[TranContext 类定义](../include/lsm/transaction.h)、[put/remove/get/commit/abort](../src/lsm/transation.cpp)。
-- 当前事实：每个事务有独立上下文，但没有自动线程绑定；同一个 shared_ptr 可以被传给多个线程。上下文的状态、缓存和暂存容器没有自身互斥保护。
-- 触发条件：多个线程未做外部同步，同时操作同一个上下文或直接访问其公开成员；不同线程各自使用不同上下文不属于这一问题。
-- 影响：例如 put 插入 temp_map_ 时 abort 同时清空它，会产生数据竞争；commit 与 abort 并发还可能破坏事务结束状态的一致性。TranManager 和存储层的锁不能代替上下文同步。
-- 当前处理：用户已补充类接口注释并经核对，明确同一实例必须由调用方串行使用，跨线程移交需正确同步。注释表达使用限制，不代表代码强制执行，也不代表并发风险已消除。
-- 后续评估：是否支持同一上下文的并发调用；如果支持，统一保护状态检查、容器访问及结束状态更新，并处理公开成员绕过保护的问题，不能仅给 abort 加锁。检查新增锁与管理器、存储层锁的顺序。
-- 验收方向：若实施同步，补充同一上下文 put/abort、get/abort、commit/abort 等并发用例，验证无数据竞争、结束状态唯一、结束后不再接受修改，并检查不同上下文仍可并发；条件允许时使用 ThreadSanitizer。
-- 当前排期：作为全局延期事项保存在 STATE，不加入当前回滚 PLAN 的实施步骤。
+- 记录日期：2026-10-20。当前已接受的外部同步约定和待确认 DB 线程模型统一见[线程模型](#thread-model)，本议题尚未实施，也未发布 GitHub issue。
+- 可选扩展：如果未来要求多个线程同时访问同一个上下文，应统一保护 put/remove/get/commit/abort 和公开状态，检查与管理器、存储层的锁顺序；只给 abort 加锁不足以实现该能力。
+- 评估时验证同一上下文读写／回滚／提交之间无数据竞争、结束状态唯一，并保留不同上下文的并发能力；可使用 ThreadSanitizer 辅助。该扩展不属于当前 A2 的修复要求。
+
+<a id="behavior-example"></a>
+
+## 内部行为验证示例
+
+从 README 移入并去重：该程序用于核对行为，不作为用户手册的最小入门示例。它使用 Engine／TranManager 显式绑定，覆盖同一线程交替操作事务、同 key 重复读，以及两个线程分别提交不同 key；全部写事务为 RC。A2 的 RU/RC 混合读取反例已在 AUDIT 记录，不在此复制。
+
+2026-10-31 该完整程序已按项目参数编译，在同一隔离目录完成首次运行和正常关闭后重跑，**2/2 通过**。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-readme-behavior-d07guqo4`，包含提取源码、编译命令、两次日志及 summary.json；没有运行 WAL／崩溃恢复或全面并发压力测试。源码保持与该验证版本一致。
+
+<details>
+<summary>展开完整验证程序</summary>
+
+```cpp
+#include "lsm/engine.h"
+#include <future>
+#include <iostream>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <string>
+
+using namespace tiny_lsm;
+
+int main() {
+  auto require = [](bool ok, const char *message) {
+    if (!ok) throw std::runtime_error(message);
+  };
+
+  // 初始化一次，后续所有事务共用这套组件。
+  auto engine = std::make_shared<LSMEngine>("readme-demo");
+  auto manager = std::make_shared<TranManager>(engine->data_dir);
+  manager->set_engine(engine);
+  engine->set_tran_manager(manager);
+
+  auto base = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  base->put("k", "old");
+  require(base->commit(), "base commit failed");
+
+  // 这里没有创建线程：读事务还没结束，就在同一线程中开启写事务。
+  auto reader = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
+  const auto old_value = std::make_optional(std::string("old"));
+  require(reader->get("k") == old_value, "first read mismatch");
+
+  auto writer = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  writer->put("k", "new");
+  require(writer->commit(), "writer commit failed");
+  require(reader->get("k") == old_value, "repeatable read mismatch");
+  require(reader->abort(), "reader cleanup failed");
+
+  const auto latest = engine->get("k", 0);
+  require(latest && latest->first == "new", "latest value mismatch");
+
+  // 两个工作线程共享 manager/engine，但各自创建、使用自己的事务上下文。
+  auto write_key = [manager](std::string key) {
+    auto tx = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+    tx->put(key, "done");
+    if (!tx->commit()) throw std::runtime_error("worker commit failed");
+  };
+  auto a = std::async(std::launch::async, write_key, "worker/a");
+  auto b = std::async(std::launch::async, write_key, "worker/b");
+  a.get();  // 等待线程完成，并接收线程中的异常。
+  b.get();
+
+  const auto a_value = engine->get("worker/a", 0);
+  const auto b_value = engine->get("worker/b", 0);
+  require(a_value && a_value->first == "done", "worker/a mismatch");
+  require(b_value && b_value->first == "done", "worker/b mismatch");
+
+  // 当前组件示例显式完成正常刷盘和状态保存；这不是 WAL 崩溃恢复。
+  while (engine->memtable.get_total_size() > 0) engine->flush();
+  manager->write_tranc_id_file();
+  std::cout << "repeatable read and independent transaction workers: OK\n";
+}
+```
+
+</details>
 
 ## 测试状态
+
+- 2026-10-31 README 用户入口纠正：先前两个组件示例采用 Engine／TranManager 手动绑定，测试结果只代表内部联调，不能作为公开 LSM 入口已可运行的证据。最新版本以用户恢复后的 README 为基线，独立展示普通 CRUD 与显式事务两个公开接口示例；现有构造尚未完成绑定，故保留一句不可直接运行的说明，不为文档提前实现后续初始化／恢复任务。与修改前快照逐字比对：使用示例之外只增加两项子目录链接，用户的知识正文、论文、笔记列表和结构保持原样。
+
+  两个示例均按项目参数通过 `-fsyntax-only` 检查；17 个本地链接、8 个目录锚点通过。未运行程序，当前证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-readme-two-examples-wts8tqkf`，含修改前 README、提取的两个程序、语法日志与 summary.json。前一版单示例语法记录保留于 `kopidb-readme-public-api-zxylfa8h`。当前无事务系统开关的结论来自 LSM 构造签名、普通 put/get/remove 的 ID 分配路径以及 config.toml／TomlConfig 的核对。
+
+- 2026-10-31 README 精简示例：从新 README 提取事务写入／提交／读取程序，构建 lsm 并链接成功；在隔离目录首次运行和正常关闭后重跑，**2/2 通过**，均输出 KopiDB。日志、提取源码及编译命令：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-readme-quickstart-h5uzoyrm`。迁入本文件的原并发验证程序 SHA-256 与之前通过的版本一致，没有用旧示例结果代替新示例验收；65 个本地链接检查通过。助手本轮只编辑文档，用户正在手写的业务源码未改动。
 
 - 最新检查（2026-10-24，Block 全量遍历入口）：新增 `RollbackBeginFiltersInitialAndFollowingRecords`，验证首次定位和后续 ++ 筛选取消值/墓碑、保留有效墓碑、读取上限 0/历史上限、回调独立保存、空块、全部取消及默认调用兼容。重新构建并在独立临时目录运行完整 **Block 35/35、SST 19/19 通过**。业务源码由用户修改，既有测试断言未降低，本轮未运行其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-begin-rollback-efcgymdy`。
 - 最新检查（2026-10-24，Block 前缀入口）：新增 `RollbackPrefixFiltersVersionsAndBoundaries`、`RollbackPrefixHandlesEmptyPrefixAndNoResults`，验证连续取消值/墓碑、有效墓碑保留、范围两端筛选、读取上限 0/历史上限、空前缀、缺失前缀、空块、全取消及旧接口兼容。重新构建并在独立临时目录运行完整 **Block 34/34、SST 19/19 通过**。未改业务源码、未降低既有断言，本轮未运行其他套件。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-block-prefix-rollback-368dh7bl`。

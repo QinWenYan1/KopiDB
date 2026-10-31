@@ -91,6 +91,20 @@ public:
   // 不能把它当作“事务已经提交”的判断
   bool is_aborted(uint64_t tranc_id) const; 
 
+  // TranManager::should_skip_read()。它负责回答：
+  // 这条候选记录，是否应该因为所属事务的状态而被跳过？
+  // 
+  // 判断候选记录是否应该因事务状态而被跳过
+  // tranc_id 是这条记录所属的写事务 ID，不是读快照的版本上限
+  //
+  // require_committed：
+  //   false：允许未提交记录，但仍排除已回滚记录
+  //   true ：还要排除仍在执行的事务记录
+  //
+  // 返回 true 表示跳过；false 仅表示通过事务状态检查
+  // 记录是否超过读取版本上限，仍由存储层判断
+  bool should_skip_read(uint64_t tranc_id, bool require_committed) const;
+
   void add_ready_to_flush_tranc_id(uint64_t tranc_id, TransactionState state);
   void add_flushed_tranc_id(uint64_t tranc_id);
   // void remove_active_tranc_id(uint64_t tranc_id);

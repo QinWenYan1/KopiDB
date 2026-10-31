@@ -1,6 +1,6 @@
 # KopiDB 全局问题账本
 
-最后更新：2026-10-31。用户已确认 A1～A4 的五阶段修复计划，见 [PLAN.md](PLAN.md)。A1 已按本次单独授权由助手代修并通过验收；A2 的 issue 已起草，当前提供管理器读取判断函数草案，业务代码尚未修改；A3～A4 待开始。
+最后更新：2026-10-31。用户已确认 A1～A4 的五阶段修复计划，见 [PLAN.md](PLAN.md)。A1 已按本次单独授权由助手代修并通过验收；A2 的 issue 与管理器读取判断草案已交付，用户正在加入首个函数，尚未验收；A3～A4 待开始。
 
 本文件持续记录全局发现，规则见 [audit-to-plan](skills/audit-to-plan/SKILL.md)。选择问题开始处理时，在 [PLAN.md](PLAN.md) 按编号展开执行步骤，并在这里更新状态和计划链接；验收后保留原条目，补充解决日期与证据。项目现状和全局约定见 [STATE.md](STATE.md)。
 
@@ -66,6 +66,10 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 2026-10-31 用户已认可 A1 并要求继续，A2 开始 issue 草稿。当前调用链和历史 results.json 已复核：测试通过 new_tranc 创建所有事务，覆盖 RC/RR/SERIALIZABLE 与未提交值／墓碑的组合；首次读取返回 dirty 或 nullopt，RR/SERIALIZABLE 还会缓存错误结果。活跃集合在 new_tranc 登记、结束登记成功后移除，当前 is_aborted 只查回滚集合。本轮未重跑测试、未修改业务代码，仍未解决。
 
 2026-10-31 用户确认 issue 并要求实现。首个草案为管理器 `should_skip_read(id, require_committed)`，具体接口、调用衔接及待补测试维护在 PLAN。再次核对本地 reference-impl：作者的 RC/RR 使用开始 ID 作为读取上限，但仅靠上限无法排除更早创建而尚未提交的 RU 事务；本地需结合事务状态。当前只交付草案，未修改业务源码，A2 仍未解决。
+
+2026-10-31 用户提出“作者是否只假定单线程”的前提复核：当前混合隔离用例的业务操作全部在同一调用线程顺序执行，RU 事务尚未结束时再创建读事务即可触发；不需要两个线程同时访问同一上下文。重新构建 test_lsm 并只运行此用例，1 项中 1 项失败，首次读取实际 dirty、预期 old。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a2-sequential-review-i9o1i2i1`。助手未修改业务源码；用户在本轮期间开始手写管理器接口，现有 get 调用链尚未接入该接口，本次不是新增接口的验收。
+
+参考核查边界：本地 reference-impl 的部分 Engine 函数仍是桩，不能据此声称已运行作者完整实现。本次另核对作者远程 master 的 [事务创建／读取](https://github.com/Vanilla-Beauty/tiny-lsm/blob/master/src/lsm/transation.cpp)、[Engine 点查](https://github.com/Vanilla-Beauty/tiny-lsm/blob/master/src/lsm/engine.cpp) 与 MemTable 点查，以及事务 Lab；这些已查材料中未发现“每个 DB 最多一笔活跃事务”或“隔离级别不可混用”的明确限制。作者 master 未在本地构建运行，不能把本地失败冒充作者运行结果。若额外约定整笔事务完全串行或禁止 RU 与严格读取混用，可避开本项案例，但这是比单线程更强的限制，不能擅自作为作者前提。
 
 修复方向：根据读取事务的隔离要求筛选候选，严格读取排除其他仍在执行的事务及已回滚事务，先筛选再选择最大版本并缓存。不能简单将所有 is_aborted 改成“未提交即过滤”，否则会破坏 RU 的既定行为；也不能只在最终结果上过滤，丢失被遮住的有效旧版本。新状态查询接口的名称与签名在修复方案中确定，本审计不提前扩张公开接口。
 
