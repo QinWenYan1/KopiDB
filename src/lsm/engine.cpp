@@ -99,7 +99,8 @@ LSMEngine::~LSMEngine() = default;
 
 // Lab 4.2 查询
 std::optional<std::pair<std::string, uint64_t>>
-LSMEngine::get(const std::string &key, uint64_t tranc_id, bool require_committed) {
+LSMEngine::get(const std::string &key, uint64_t tranc_id,
+               bool require_committed) {
   // 1. 从弱引用取得管理器的 shared_ptr
   //    后面由回调持有它，保证本次查询期间回滚名单仍然可用
   auto man = tran_manager.lock();
@@ -119,10 +120,10 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id, bool require_committed
   //
   // 底层已有的回调约定是“返回 true 就跳过当前版本”
   // 因此可以复用现有传递路径，无需重写各层查找逻辑
-  std::function<bool(uint64_t)> should_skip = 
-    [man = std::move(man), require_committed](uint64_t id) {
-      return man->should_skip_read(id, require_committed);
-    };
+  std::function<bool(uint64_t)> should_skip = [man = std::move(man),
+                                               require_committed](uint64_t id) {
+    return man->should_skip_read(id, require_committed);
+  };
 
   // 3. 在内存表查找过程中就过滤不符合要求的版本
   //

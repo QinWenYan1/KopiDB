@@ -2098,6 +2098,117 @@ TEST_F(TranReadVisibilityTest, ManagerReadPolicySurvivesFlushSettlement) {
   EXPECT_FALSE(manager->should_skip_read(committed->tranc_id_, true));
 }
 
+// 目的：Engine 在选择胜出版本之前过滤未提交记录，内存与 SST 使用同一规则。
+// 场景：已提交旧值和墓碑在 SST，RU 的更新、删除、新增、复活依次位于
+//       活跃表、冻结表、SST；严格读取保持旧结果，默认读取仍允许脏读。
+//       RU 回滚后，两种读取都排除它，但仍保留有效的旧墓碑。
+TEST_F(TranReadVisibilityTest, EngineReadPolicyAcrossMemoryAndSst) {
+  auto base = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  const uint64_t base_id = base->tranc_id_;
+  base->put("updated", "old");
+  base->put("restored", "keep");
+  base->remove("deleted");
+  ASSERT_TRUE(base->commit());
+  engine->flush();
+
+  auto writer = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  const uint64_t writer_id = writer->tranc_id_;
+  writer->put("updated", "dirty");
+  writer->remove("restored");
+  writer->put("added", "dirty");
+  writer->put("deleted", "dirty");
+  const auto old = std::make_optional(std::make_pair(std::string("old"), base_id));
+  const auto keep = std::make_optional(std::make_pair(std::string("keep"), base_id));
+  const auto dirty = std::make_optional(std::make_pair(std::string("dirty"), writer_id));
+
+  for (int phase = 0; phase < 3; ++phase) {
+    SCOPED_TRACE(phase); // 0：活跃表；1：冻结表；2：SST。
+    if (phase == 1) {
+      engine->memtable.frozen_cur_table();
+      ASSERT_EQ(engine->memtable.get_cur_size(), 0u);
+      ASSERT_GT(engine->memtable.get_frozen_size(), 0u);
+    } else if (phase == 2) {
+      engine->flush();
+      ASSERT_EQ(engine->memtable.get_total_size(), 0u);
+    }
+
+    EXPECT_EQ(engine->get("updated", 0, true), old);
+    EXPECT_EQ(engine->get("restored", 0, true), keep);
+    EXPECT_FALSE(engine->get("added", 0, true));
+    EXPECT_FALSE(engine->get("deleted", 0, true));
+    EXPECT_FALSE(engine->get("missing", 0, true));
+    EXPECT_EQ(engine->get("updated", 0), dirty);
+    EXPECT_EQ(engine->get("updated", 0, false), dirty);
+    EXPECT_FALSE(engine->get("restored", 0, false));
+    EXPECT_EQ(engine->get("added", 0, false), dirty);
+    EXPECT_EQ(engine->get("deleted", 0, false), dirty);
+  }
+
+  ASSERT_TRUE(writer->abort());
+  for (bool require_committed : {false, true}) {
+    EXPECT_EQ(engine->get("updated", 0, require_committed), old);
+    EXPECT_EQ(engine->get("restored", 0, require_committed), keep);
+    EXPECT_FALSE(engine->get("added", 0, require_committed));
+    EXPECT_FALSE(engine->get("deleted", 0, require_committed));
+  }
+}
+
+// 目的：读取状态按每次查询重新检查，版本上限与是否要求提交分别生效。
+// 场景：RU 新版本提交前被严格读取跳过，提交后可见；读取旧版本上限时，
+//       新版本即使已经提交也不能越界。过程分别在内存和刷盘后检查。
+TEST_F(TranReadVisibilityTest, EngineReadPolicyTracksCommitAndVersionBound) {
+  auto base = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  const uint64_t base_id = base->tranc_id_;
+  base->put("k", "old");
+  ASSERT_TRUE(base->commit());
+  auto writer = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  const uint64_t writer_id = writer->tranc_id_;
+  writer->put("k", "new");
+  const auto old = std::make_optional(std::make_pair(std::string("old"), base_id));
+  const auto latest = std::make_optional(std::make_pair(std::string("new"), writer_id));
+
+  EXPECT_EQ(engine->get("k", 0, true), old);
+  EXPECT_EQ(engine->get("k", writer_id, true), old);
+  EXPECT_EQ(engine->get("k", 0, false), latest);
+  ASSERT_TRUE(writer->commit());
+  for (bool on_disk : {false, true}) {
+    SCOPED_TRACE(on_disk);
+    if (on_disk) engine->flush();
+    EXPECT_EQ(engine->get("k", 0, true), latest);
+    EXPECT_EQ(engine->get("k", writer_id, true), latest);
+    EXPECT_EQ(engine->get("k", base_id, true), old);
+    EXPECT_EQ(engine->get("k", base_id, false), old);
+  }
+}
+
+// 目的：连续遇到回滚版本和活跃版本时，严格读取仍能继续找到已提交旧值。
+// 场景：SST 中按新到旧保存取消墓碑、活跃值，另一张 SST 保存已提交值；
+//       允许脏读只跳过取消墓碑，严格读取跳过两项，再跨 SST 找到旧值。
+TEST_F(TranReadVisibilityTest,
+       EngineReadPolicySkipsConsecutiveActiveAndAbortedVersions) {
+  auto base = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  const uint64_t base_id = base->tranc_id_;
+  base->put("k", "old");
+  ASSERT_TRUE(base->commit());
+  engine->flush();
+  auto active = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  const uint64_t active_id = active->tranc_id_;
+  active->put("k", "active");
+  auto cancelled = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  cancelled->remove("k");
+  engine->flush();
+  ASSERT_EQ(engine->memtable.get_total_size(), 0u);
+  ASSERT_TRUE(cancelled->abort());
+
+  const auto old = std::make_optional(std::make_pair(std::string("old"), base_id));
+  EXPECT_EQ(engine->get("k", 0, true), old);
+  EXPECT_EQ(engine->get("k", 0, false), std::make_optional(
+                std::make_pair(std::string("active"), active_id)));
+  ASSERT_TRUE(active->abort());
+  EXPECT_EQ(engine->get("k", 0, true), old);
+  EXPECT_EQ(engine->get("k", 0, false), old);
+}
+
 // 目的：RC/RR/SERIALIZABLE 不应读取其他 RU 事务尚未提交的值或墓碑。
 // 场景：通过 new_tranc 创建全部事务，先提交 old，再启动 RU 写入和较晚的读事务；
 // 在 RU 取消前后都应读到 old。该测试同时捕获缓存脏值和缓存错误“不存在”的问题。
@@ -3063,12 +3174,14 @@ TEST_F(LSMTest, EngineBeginKeepsManagerForLazySstReads) {
 TEST_F(LSMTest, EngineGetRequiresLiveManager) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
   EXPECT_THROW(engine->get("missing", 0), std::runtime_error);
+  EXPECT_THROW(engine->get("missing", 0, true), std::runtime_error);
   engine->put("disk", "old", 3);
   engine->put("disk", "cancelled", 5);
   engine->flush();
   engine->put("memory", "current", 7);
   for (const auto &key : {"disk", "memory", "missing"}) {
     EXPECT_THROW(engine->get(key, 0), std::runtime_error);
+    EXPECT_THROW(engine->get(key, 0, true), std::runtime_error);
   }
 
   auto manager = bind_test_manager(engine);
@@ -3083,6 +3196,7 @@ TEST_F(LSMTest, EngineGetRequiresLiveManager) {
   ASSERT_TRUE(engine->tran_manager.expired());
   for (const auto &key : {"disk", "memory", "missing"}) {
     EXPECT_THROW(engine->get(key, 0), std::runtime_error);
+    EXPECT_THROW(engine->get(key, 0, true), std::runtime_error);
   }
 }
 

@@ -6,12 +6,12 @@
 
 **修复进度：20%（1/5 阶段验收通过）**。按验收阶段数计算，不代表工时比例。
 
-当前：用户已完成 `TranManager::should_skip_read(uint64_t tranc_id, bool require_committed) const`，新增 3 项状态读取测试及 12 项相关回归全部通过。进入 A2 第二个函数 `LSMEngine::get`，本轮在聊天中提供实现，业务代码仍由用户手写。DB 使用约定与 README 子任务已收尾；完整运行验收仍按主线推进，文档整理不计为 A2 修复完成。
+当前：用户已完成 `TranManager::should_skip_read` 和 `LSMEngine::get` 的读取规则接入；Engine 新增 3 项读取测试及相关回归共 30/30 通过。进入 A2 第三个函数 `TranContext::get`，本轮在聊天中提供实现，由读取事务的隔离级别决定 require_committed，业务代码仍由用户手写。DB 使用约定与 README 子任务已收尾；完整运行验收仍按主线推进，文档整理不计为 A2 修复完成。
 
 | 阶段 | 工作 | 状态 |
 | --- | --- | --- |
 | ① [A1](AUDIT.md#a1) | 文件写入失败逐层上报 | 已验收：197/197 相关回归通过 |
-| ② [A2](AUDIT.md#a2) | 目录 5.1.2「事务管理器」的混合隔离读取修复 | 处理中：管理器读取判断已验收，进入 Engine::get |
+| ② [A2](AUDIT.md#a2) | 目录 5.1.2「事务管理器」的混合隔离读取修复 | 处理中：管理器与 Engine 已验收，进入 TranContext::get |
 | ③ [A3](AUDIT.md#a3) | compaction 收尾不构建空 SST | 待开始 |
 | ④ [A4](AUDIT.md#a4) | 大记录后不同 key 正常换块 | 待开始 |
 | ⑤ 整体验收 | 相关回归及修复记录收尾 | 待开始 |
@@ -68,15 +68,17 @@
 
 2026-11-01 首个函数验收：用户实现正确，两项集合查询共用一次锁，未调用再次加锁的 is_aborted。新增 `TranReadVisibilityTest.ManagerReadPolicyTracksCommit`、`ManagerReadPolicyRejectsAbort`、`ManagerReadPolicySurvivesFlushSettlement`，验证活跃时允许脏读／严格读取跳过、提交后放行、回滚后一律跳过，以及取消记录仍留在 SST 且检查点推进后继续跳过。连同事务创建、结束登记、刷盘结算与提交／回滚相关旧用例，构建成功、15/15 通过。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a2-manager-review-91gavzcv`，含命令、配置、结果及源码哈希；检查期间源码未变化。助手只新增测试，未修改业务代码。未登记的低层测试／普通单次操作记录沿用现有可见性，不以缺少 active 项推导任意 ID 的提交证明；本函数不负责启动崩溃恢复。
 
+2026-11-01 第二个函数验收：Engine::get 的声明增加默认 false 参数，回调捕获本次读取要求并调用 should_skip_read，同一回调已传给 get_record 和 sst_get_。新增 `TranReadVisibilityTest.EngineReadPolicyAcrossMemoryAndSst`、`EngineReadPolicyTracksCommitAndVersionBound`、`EngineReadPolicySkipsConsecutiveActiveAndAbortedVersions`；扩展缺失／失效管理器测试到严格读取。覆盖未提交更新／删除／新增／复活、有效旧值与墓碑、活跃表／冻结表／SST、提交后重查、版本上限及连续跳过。构建成功，新增与相关旧用例共 30/30 通过。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a2-engine-review-ebk97xy5`，含配置、命令、结果与源码哈希；检查期间源码未变化。助手仅修改测试和记录。
+
 依次处理：
 
 - [x] 在 [TranManager](../include/lsm/transaction.h) 新增 `should_skip_read(uint64_t tranc_id, bool require_committed) const`；在同一次加锁中检查活跃与回滚集合，不改变现有 `is_aborted()` 的含义。2026-11-01 代码检查与相关 15/15 测试通过。
-- [ ] [LSMEngine::get](../src/lsm/engine.cpp)：根据本次读取规则构造过滤条件，复用底层已有回调，在选择胜出版本之前过滤；保留既有调用行为。
+- [x] [LSMEngine::get](../src/lsm/engine.cpp)：根据本次读取规则构造过滤条件，复用底层已有回调，在选择胜出版本之前过滤；保留既有调用行为。2026-11-01 检查、构建与相关 30/30 测试通过。
 - [ ] [TranContext::get](../src/lsm/transation.cpp)：自身修改优先，按隔离级别选择读取规则，首次合法读取之后再写入读缓存。
 
 必要联动：事务与 Engine 头文件声明；只读复核 `new_tranc()` 和结束登记的生命周期，以及提交冲突查询与新读取规则的区分。底层 MemTable、SST、iterator 先复用已有回调，不列为必须重写。
 
-当前尚未接入 Engine::get 与 TranContext::get，因此不将管理器测试通过算作 A2 已解决；原混合隔离回归仍保留，本轮没有重复运行已知尚未修复的完整读取用例。
+当前 TranContext::get 尚未传入隔离要求，仍使用默认 false，因此不将管理器和 Engine 测试通过算作 A2 已解决；原混合隔离回归仍保留，本轮没有重复运行已知尚未修复的完整读取用例。
 
 验收：恢复用例 `TranReadVisibilityTest.RejectsDirtyValuesAndTombstonesBeforeCaching` 通过；覆盖内存与 SST 中未提交值／墓碑、有效旧值／旧墓碑、自身修改、提交后 RC 再读、回滚后读取、RR 重复读取与首次不存在缓存；RU 保持允许脏读。验证现有 SERIALIZABLE 单键读取路径，不宣称完整串行化。
 
