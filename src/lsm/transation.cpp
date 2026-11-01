@@ -140,8 +140,9 @@ std::optional<std::string> TranContext::get(const std::string &key) {
     throw std::logic_error(
         "TranContext::get: transaction has already finished");
 
-  // 2. 优先读取本事务自己的修改
-  //    即使之前缓存过旧值，后续 put/remove 的结果也应优先
+  // 2. 优先返回本事务自己的暂存修改
+  // 即使读缓存里保存了旧值，自己后来的 put/remove 也应该优先
+  // 这些修改属于当前事务，因此不需要交给 Engine 排除未提交版本
   auto pending = temp_map_.find(key);
   if (pending != temp_map_.end()) {
     spdlog::trace("TranContext--get({}): found in temp map", key);
@@ -153,40 +154,49 @@ std::optional<std::string> TranContext::get(const std::string &key) {
     return pending->second;
   }
 
+  // 3. 根据“正在读取的事务”的隔离级别确定要求
+  //
+  // 读未提交允许读取其他活跃事务的记录，因此传 false
+  // 读已提交、可重复读及当前 SERIALIZABLE 分支传 true
+  // 让 Engine 在查找过程中排除活跃事务的记录
+  // 无论传什么，已经回滚的记录都会被排除
+  const bool require_committed = isolation_level_ != IsolationLevel::READ_UNOP_COMMITTED; 
+
   std::optional<std::pair<std::string, uint64_t>> query;
 
   if (isolation_level_ == IsolationLevel::READ_UNOP_COMMITTED ||
       isolation_level_ == IsolationLevel::READ_OP_COMMITTED) {
-    // 3. 这两种级别不复用上一次查询结果，每次重新读取当前版本
-    //    因为这两个级别都允许后一次查询看到新的修改，不要求一直返回第一次读到的值
-    //    读已提交不能一直使用事务开始时的 ID，否则会挡住后续的新版本
-    //    因为 tranc_id_ 在事务创建时就确定了。如果一直拿它作为查询上限，更大 ID
-    //    的版本就一直查不到，即使那个版本已经提
+    // 4. RU / RC 每次重新查询，不复用此前的读取结果。
     //
-    //    注意：0 仅表示不限制版本上限，并不表示“只读取已提交记录”。
-    //    混合隔离级别下的提交状态过滤，还需要事务模块进一步支持。
-    query = engine_->get(key, 0);
+    // 版本上限传 0，允许看到后来产生的版本：
+    // 例如本事务 ID 为 5，事务 6 后来提交，
+    // RC 再次查询时应该允许读到事务 6 的修改。
+    //
+    // 0 只是不限制版本号；是否允许读取未提交记录，
+    // 由第三个参数 require_committed 单独控制。
+    query = engine_->get(key, 0, require_committed);
   } else {
-    // 4. 可重复读：先查读缓存，命中后直接复用第一次的结果
-    //    SERIALIZABLE 的单键读缓存复用这里
-    //    完整串行化还需要额外的并发控制，不能仅凭缓存实现
+    // 5. RR 保持同一个 key 的首次读取结果
+    // 当前 SERIALIZABLE 分支也复用这套单键缓存
+    // 这并不代表仅凭缓存就实现了完整串行化
     auto cached = read_map_.find(key);
-
     if (cached != read_map_.end()) {
       query = cached->second;
     } else {
-      // 首次读取使用本事务的版本上限
-      query = engine_->get(key, tranc_id_);
+      // 首次读取沿用本事务的版本上限，并排除未提交记录
+      // 必须先取得合法结果再缓存，否则脏值或错误的“不存在”
+      // 会一直留在本事务的读缓存中
+      query = engine_->get(key, tranc_id_, require_committed);
 
-      // 即使 query 是 nullopt，也必须缓存
-      // “第一次没查到”也是需要保持稳定的查询结果
+      // nullopt 也要缓存：
+      // “第一次没查到”同样是需要保持稳定的读取结果
       read_map_.emplace(key, query);
     }
   }
 
-  // 5. 检查我们的返回值是否有效
-  //    Engine::get 已将胜出的墓碑转换成 nullopt
-  //    对外只返回 value，真实版本号仍保留在读缓存中
+  // 6. Engine 已将最终胜出的墓碑转换成 nullopt
+  // 对外只返回 value，真实版本号仍保留在读缓存中
+  // 供需要验证读取版本的提交逻辑使用
   if (!query.has_value()) {
     spdlog::trace("TranContext--get({}): returned no value", key);
     return std::nullopt;
