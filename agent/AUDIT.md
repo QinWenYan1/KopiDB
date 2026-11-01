@@ -1,6 +1,6 @@
 # KopiDB 全局问题账本
 
-最后更新：2026-10-31。用户已确认 A1～A4 的五阶段修复计划，见 [PLAN.md](PLAN.md)。A1 已按本次单独授权由助手代修并通过验收；A2 的 issue 与管理器读取判断草案已交付，用户正在加入首个函数，尚未验收；A3～A4 待开始。
+最后更新：2026-11-01。用户已确认 A1～A4 的五阶段修复计划，见 [PLAN.md](PLAN.md)。A1 已按本次单独授权由助手代修并通过验收；A2 的管理器读取判断已通过相关 15/15 测试，当前进入 Engine::get 接入，完整读取尚未验收；A3～A4 待开始。
 
 本文件持续记录全局发现，规则见 [audit-to-plan](skills/audit-to-plan/SKILL.md)。选择问题开始处理时，在 [PLAN.md](PLAN.md) 按编号展开执行步骤，并在这里更新状态和计划链接；验收后保留原条目，补充解决日期与证据。项目现状和全局约定见 [STATE.md](STATE.md)。
 
@@ -19,7 +19,7 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 | 编号 | 状态 | 优先级 | 问题 | 最小修复范围 | 历史粗估 |
 | --- | --- | --- | --- | --- | --- |
 | [A1](#a1) | [已解决](PLAN.md#stage-a1) | P1 | 写文件失败仍报告成功，刷盘误移除内存数据 | StdFile::write/create、FileObj::create_and_write 的错误传递 | 45～90 分钟 |
-| [A2](#a2) | [处理中：管理器读取判断](PLAN.md#stage-a2) | P1 | RC/RR/SERIALIZABLE 可以读到其他 RU 事务的未提交版本，RR 缓存可延续错误 | TranContext::get、Engine 读取策略、TranManager 状态查询的必要联动 | 2～4 小时 |
+| [A2](#a2) | [处理中：Engine 点查接入](PLAN.md#stage-a2) | P1 | RC/RR/SERIALIZABLE 可以读到其他 RU 事务的未提交版本，RR 缓存可延续错误 | TranContext::get、Engine 读取策略、TranManager 状态查询的必要联动 | 2～4 小时 |
 | [A3](#a3) | [已纳入计划](PLAN.md#stage-a3) | P1 | compaction 最后一批刚好落盘后，又构建空 SST 并抛异常 | LSMEngine::gen_sst_from_iter 的收尾判空 | 20～40 分钟 |
 | [A4](#a4) | [已纳入计划](PLAN.md#stage-a4) | P2 | 大记录之后不同 key 无法正常换块，被提前的偏移检查拒绝 | Block::add_entry 的检查顺序，验证 SSTBuilder::add 衔接 | 20～40 分钟 |
 | [A5](#a5) | 已确认排期（改进建议） | 待定 | 公开写入接口校验空 key／空 value，避免误用保留标记 | LSM／TranContext 写入口及批量参数预检查 | 未估时 |
@@ -69,6 +69,8 @@ A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 
 2026-10-31 用户确认 issue 并要求实现。首个草案为管理器 `should_skip_read(id, require_committed)`，具体接口、调用衔接及待补测试维护在 PLAN。再次核对本地 reference-impl：作者的 RC/RR 使用开始 ID 作为读取上限，但仅靠上限无法排除更早创建而尚未提交的 RU 事务；本地需结合事务状态。当前只交付草案，未修改业务源码，A2 仍未解决。
 
 2026-10-31 用户提出“作者是否只假定单线程”的前提复核：当前混合隔离用例的业务操作全部在同一调用线程顺序执行，RU 事务尚未结束时再创建读事务即可触发；不需要两个线程同时访问同一上下文。重新构建 test_lsm 并只运行此用例，1 项中 1 项失败，首次读取实际 dirty、预期 old。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a2-sequential-review-i9o1i2i1`。助手未修改业务源码；用户在本轮期间开始手写管理器接口，现有 get 调用链尚未接入该接口，本次不是新增接口的验收。
+
+2026-11-01 管理器接口已由用户实现并通过检查；新增 3 项状态读取测试，连同 12 项相关回归全部通过。记录实际进入 SST 后回滚、后续刷盘推进检查点，should_skip_read 仍拒绝该事务；已提交事务正常放行。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a2-manager-review-91gavzcv`。Engine 与 TranContext 尚未接入，A2 仍未解决；本轮未重复运行完整混合隔离测试，也未改业务源码。
 
 参考核查边界：本地 reference-impl 的部分 Engine 函数仍是桩，不能据此声称已运行作者完整实现。本次另核对作者远程 master 的 [事务创建／读取](https://github.com/Vanilla-Beauty/tiny-lsm/blob/master/src/lsm/transation.cpp)、[Engine 点查](https://github.com/Vanilla-Beauty/tiny-lsm/blob/master/src/lsm/engine.cpp) 与 MemTable 点查，以及事务 Lab；这些已查材料中未发现“每个 DB 最多一笔活跃事务”或“隔离级别不可混用”的明确限制。作者 master 未在本地构建运行，不能把本地失败冒充作者运行结果。若额外约定整笔事务完全串行或禁止 RU 与严格读取混用，可避开本项案例，但这是比单线程更强的限制，不能擅自作为作者前提。
 

@@ -2016,6 +2016,88 @@ TEST_F(TranAbortTest, CannotAbortAnAlreadyCommittedTransaction) {
 // 下一项验收：检查首次读取是否已经读脏，再检查可重复读缓存是否残留脏结果。
 class TranReadVisibilityTest : public TranCommitTest {};
 
+// 目的：要求已提交的查询跳过活跃事务，提交完成后才允许其记录参与读取。
+// 场景：两笔事务同时活跃；提交其中一笔只放行它，另一笔仍应被严格读取排除。
+//       允许脏读的查询可读取活跃版本；原 is_aborted 不应把活跃误判为回滚。
+TEST_F(TranReadVisibilityTest, ManagerReadPolicyTracksCommit) {
+  const TranManager &read_only_manager = *manager;
+  auto first = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  auto second = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
+  const uint64_t first_id = first->tranc_id_;
+  const uint64_t second_id = second->tranc_id_;
+  first->put("policy-first", "value");
+  second->put("policy-second", "value");
+
+  EXPECT_FALSE(read_only_manager.is_aborted(first_id));
+  EXPECT_FALSE(read_only_manager.should_skip_read(first_id, false));
+  EXPECT_TRUE(read_only_manager.should_skip_read(first_id, true));
+  EXPECT_TRUE(read_only_manager.should_skip_read(second_id, true));
+
+  ASSERT_TRUE(first->commit());
+  EXPECT_FALSE(read_only_manager.should_skip_read(first_id, false));
+  EXPECT_FALSE(read_only_manager.should_skip_read(first_id, true));
+  EXPECT_TRUE(read_only_manager.should_skip_read(second_id, true));
+
+  ASSERT_TRUE(second->commit());
+  EXPECT_FALSE(read_only_manager.should_skip_read(second_id, false));
+  EXPECT_FALSE(read_only_manager.should_skip_read(second_id, true));
+}
+
+// 目的：事务回滚后，允许脏读与要求已提交的查询都必须跳过其记录。
+// 场景：分别取消已经立即写入的 RU 事务、仅有暂存修改的 RR 事务；
+//       另一笔已提交事务仍应通过检查，不能因别人回滚而被一并过滤。
+TEST_F(TranReadVisibilityTest, ManagerReadPolicyRejectsAbort) {
+  auto committed = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  committed->put("policy-committed", "keep");
+  ASSERT_TRUE(committed->commit());
+
+  for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    auto cancelled = manager->new_tranc(level);
+    const uint64_t cancelled_id = cancelled->tranc_id_;
+    cancelled->put("policy-cancelled", "discard");
+    EXPECT_FALSE(manager->should_skip_read(cancelled_id, false));
+    EXPECT_TRUE(manager->should_skip_read(cancelled_id, true));
+
+    ASSERT_TRUE(cancelled->abort());
+    EXPECT_TRUE(manager->is_aborted(cancelled_id));
+    EXPECT_TRUE(manager->should_skip_read(cancelled_id, false));
+    EXPECT_TRUE(manager->should_skip_read(cancelled_id, true));
+    EXPECT_FALSE(manager->should_skip_read(committed->tranc_id_, false));
+    EXPECT_FALSE(manager->should_skip_read(committed->tranc_id_, true));
+  }
+}
+
+// 目的：刷盘结算清理待处理状态后，仍必须排除已经回滚的事务版本。
+// 场景：RU 记录先进入 SST 再回滚，后续事务提交、刷盘推动检查点；
+//       原 SST 仍保留取消记录，管理器不能因为结算完成就重新放行它。
+TEST_F(TranReadVisibilityTest, ManagerReadPolicySurvivesFlushSettlement) {
+  auto cancelled = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  const uint64_t cancelled_id = cancelled->tranc_id_;
+  cancelled->put("policy-cancelled", "discard");
+  engine->flush();
+  ASSERT_EQ(engine->ssts.size(), 1u);
+  auto cancelled_sst = engine->ssts.begin()->second;
+  EXPECT_FALSE(manager->should_skip_read(cancelled_id, false));
+  EXPECT_TRUE(manager->should_skip_read(cancelled_id, true));
+
+  ASSERT_TRUE(cancelled->abort());
+  auto committed = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  committed->put("policy-committed", "keep");
+  ASSERT_TRUE(committed->commit());
+  engine->flush();
+
+  ASSERT_EQ(manager->get_checkpoint_tranc_id(), committed->tranc_id_);
+  auto raw = cancelled_sst->get("policy-cancelled", 0);
+  ASSERT_TRUE(raw.is_valid());
+  EXPECT_EQ(raw->second, "discard");
+  EXPECT_EQ(raw.get_cur_tranc_id(), cancelled_id);
+  EXPECT_TRUE(manager->should_skip_read(cancelled_id, false));
+  EXPECT_TRUE(manager->should_skip_read(cancelled_id, true));
+  EXPECT_FALSE(manager->should_skip_read(committed->tranc_id_, true));
+}
+
 // 目的：RC/RR/SERIALIZABLE 不应读取其他 RU 事务尚未提交的值或墓碑。
 // 场景：通过 new_tranc 创建全部事务，先提交 old，再启动 RU 写入和较晚的读事务；
 // 在 RU 取消前后都应读到 old。该测试同时捕获缓存脏值和缓存错误“不存在”的问题。
