@@ -730,9 +730,9 @@ bool TranManager::is_aborted(uint64_t tranc_id) const {
   // 空集合或没有找到该 ID 时，自然返回 false，无需额外判空
   return aborted_tranc_ids_.contains(tranc_id);
 }
-  
 
-bool TranManager::should_skip_read(uint64_t tranc_id, bool require_committed) const {
+bool TranManager::should_skip_read(uint64_t tranc_id,
+                                   bool require_committed) const {
   // 1. 在同一次加锁中检查回滚集合和活跃集合。
   //
   // 回滚登记会先加入回滚集合，再从活跃集合移除
@@ -741,8 +741,7 @@ bool TranManager::should_skip_read(uint64_t tranc_id, bool require_committed) co
   //   查活跃集合时已经回滚并被移除
   // 这样就会错误地认为该事务“既未回滚，也不活跃”
   // 与登记过程共用同一把锁，可以避免这种状态拼接
-  std::lock_guard<std::mutex> lock(mutex_); 
-
+  std::lock_guard<std::mutex> lock(mutex_);
 
   // 2. 所有隔离级别都跳过已回滚事务的记录
   //
@@ -750,7 +749,7 @@ bool TranManager::should_skip_read(uint64_t tranc_id, bool require_committed) co
   // 这里直接查集合，不调用 is_aborted()：
   // 它内部也会获取 mutex_，重复获取同一把普通 mutex 会死锁
   if (aborted_tranc_ids_.contains(tranc_id))
-    return true; 
+    return true;
 
   // 3. 根据本次读取要求，决定是否跳过活跃事务
   //
@@ -764,9 +763,8 @@ bool TranManager::should_skip_read(uint64_t tranc_id, bool require_committed) co
   //
   // 返回 false 仅表示通过事务状态检查
   // 版本上限、同 key 的版本选择仍由存储层负责
-  return require_committed && activeTrans_.contains(tranc_id); 
+  return require_committed && activeTrans_.contains(tranc_id);
 }
-
 
 // Lab 5.2 负责登记事务的结束状态（已提交或已回滚），供后续刷盘时处理
 // 如果是回滚，还会把事务 ID 加入回滚名单

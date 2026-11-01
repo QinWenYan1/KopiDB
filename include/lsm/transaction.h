@@ -1,15 +1,15 @@
 #pragma once
-#include <unordered_set>
 #include "utils/files.h"
 #include "wal/wal.h"
 #include <atomic>
 #include <map>
-#include <set>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace tiny_lsm {
@@ -21,16 +21,12 @@ enum class IsolationLevel {
   SERIALIZABLE
 };
 
-enum class TransactionState {
-  OP_COMMITTED,
-  ABORTED
-};
+enum class TransactionState { OP_COMMITTED, ABORTED };
 
 inline std::string isolation_level_to_string(const IsolationLevel &level);
 
 class LSMEngine;
 class TranManager;
-
 
 // 一个 TranContext 对应一个事务，每次 begin_tran() 都创建独立上下文。
 // 本类不提供内部线程同步，也不会自动绑定到某个线程。
@@ -84,16 +80,16 @@ public:
   uint64_t getNextTransactionId();
   uint64_t get_max_flushed_tranc_id();
   uint64_t get_checkpoint_tranc_id();
-  std::set<uint64_t>& get_flushed_tranc_ids();
+  std::set<uint64_t> &get_flushed_tranc_ids();
 
   // 判断事务是否已经登记回滚
   // false 只表示不在回滚名单中，也可能是事务仍在进行
   // 不能把它当作“事务已经提交”的判断
-  bool is_aborted(uint64_t tranc_id) const; 
+  bool is_aborted(uint64_t tranc_id) const;
 
   // TranManager::should_skip_read()。它负责回答：
   // 这条候选记录，是否应该因为所属事务的状态而被跳过？
-  // 
+  //
   // 判断候选记录是否应该因事务状态而被跳过
   // tranc_id 是这条记录所属的写事务 ID，不是读快照的版本上限
   //
@@ -141,7 +137,6 @@ private:
   // 提交或回滚登记成功后移除；用户自己的 shared_ptr 仍可保留上下文
   std::map<uint64_t, std::shared_ptr<TranContext>> activeTrans_;
 
-
   // 待处理的结束登记：事务 ID -> 已提交 / 已回滚
   // 事务已经结束，但尚未完成刷盘流程中的结算
   // 它记录事务状态，不保存 key-value，也不负责实际刷盘
@@ -157,7 +152,6 @@ private:
   // 连续前缀会被压缩，例如 {0, 1, 2, 3, 5} -> {3, 5}
   // 被压缩的旧 ID 不再单独存放，contains(id) 为 false 不一定表示未完成
   std::set<uint64_t> flushedTrancIds_;
-
 
   // 事务状态文件的句柄，供 write/read_tranc_id_file 保存和恢复元信息
   // 它不是保存 key-value 的 SST 文件，也不是 WAL 日志文件

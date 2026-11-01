@@ -38,8 +38,11 @@ public:
   LSMEngine(std::string path);
   ~LSMEngine();
 
+  // tranc_id：读取版本上限，0 表示不限制版本号
+  // require_committed：是否额外排除仍活跃的事务记录
+  // 默认 false 保留原有调用行为；无论取值如何，都排除已回滚记录
   std::optional<std::pair<std::string, uint64_t>> get(const std::string &key,
-                                                      uint64_t tranc_id);
+                                                      uint64_t tranc_id, bool require_committed = false);
   std::vector<
       std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
   get_batch(const std::vector<std::string> &keys, uint64_t tranc_id);
