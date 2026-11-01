@@ -146,17 +146,18 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id, bool require_committed
   // sst_get_ 不自行加锁，由这里保护查询过程
   {
     std::shared_lock<std::shared_mutex> lock(ssts_mtx);
-    auto sst_ret = sst_get_(key, tranc_id, is_aborted);
+    auto sst_ret = sst_get_(key, tranc_id, should_skip);
 
-    // 磁盘版本更大才替换；版本相同时，保持内存来源优先
+    // 磁盘版本更大时才替换
+    // 版本相同则保留内存来源，沿用原有优先级
     if (sst_ret.has_value() &&
         (!best.has_value() || sst_ret->second > best->second)) {
       best = std::move(sst_ret);
     }
   }
 
-  // 5. 所有来源比较完，再处理最终结果。
-  //    没有有效版本，或者胜出的版本是墓碑，都向调用者返回不存在
+  // 5. 全部候选比较结束后，再处理最终胜出的墓碑
+  // 有效墓碑表示该 key 已删除，不能退回其他来源的旧值
   if (!best.has_value() || best->first.empty())
     return std::nullopt;
 
