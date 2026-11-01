@@ -99,7 +99,7 @@ LSMEngine::~LSMEngine() = default;
 
 // Lab 4.2 查询
 std::optional<std::pair<std::string, uint64_t>>
-LSMEngine::get(const std::string &key, uint64_t tranc_id) {
+LSMEngine::get(const std::string &key, uint64_t tranc_id, bool require_committed) {
   // 1. 从弱引用取得管理器的 shared_ptr
   //    后面由回调持有它，保证本次查询期间回滚名单仍然可用
   auto man = tran_manager.lock();
@@ -109,17 +109,29 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id) {
   if (!man)
     throw std::runtime_error("LSMEngine::get: transaction manager has expired");
 
-  // 2. 构造本次查询共用的回滚判断
-  //    回调持有管理器，供内存和 SST 查询共同使用
-  //    tranc_id == 0 只表示没有版本上限，仍须排除回滚版本
-  std::function<bool(uint64_t)> is_aborted;
-  if (man)
-    is_aborted = [man = std::move(man)](uint64_t id) {
-      return man->is_aborted(id);
+  // 2. 为本次查询构造统一的事务状态判断。
+  //
+  // 底层传入的 id 是候选记录的真实写事务 ID
+  // 它与本函数参数 tranc_id（读取版本上限）是两回事
+  //
+  // false：排除已回滚事务，允许活跃事务
+  // true ：同时排除已回滚和仍活跃的事务
+  //
+  // 底层已有的回调约定是“返回 true 就跳过当前版本”
+  // 因此可以复用现有传递路径，无需重写各层查找逻辑
+  std::function<bool(uint64_t)> should_skip = 
+    [man = std::move(man), require_committed](uint64_t id) {
+      return man->should_skip_read(id, require_committed);
     };
 
-  // best 保存目前找到的最大可见版本：
-  // nullopt 表示没有候选；{"", id} 表示候选是墓碑
+  // 3. 在内存表查找过程中就过滤不符合要求的版本
+  //
+  // 例如 k@5 尚未提交、k@3 已提交：
+  // 严格读取应跳过 k@5，继续找到 k@3
+  // 如果等查找结束才丢弃 k@5，就会漏掉被它遮住的 k@3
+  //
+  // get_record 在 MemTable 的锁内复制结果
+  // 有效墓碑也先保留，后面还要与 SST 中的版本比较
   std::optional<std::pair<std::string, uint64_t>> best;
 
   // 3. 查询内存中的最大有效版本
@@ -127,10 +139,11 @@ LSMEngine::get(const std::string &key, uint64_t tranc_id) {
   //    暂时保留墓碑，因为还需要与 SST 中的版本比较
   // best 是独立结果，后续原节点被更新不会影响它
   // nullopt 表示未命中；{"", id} 表示墓碑
-  best = memtable.get_record(key, tranc_id, is_aborted);
+  best = memtable.get_record(key, tranc_id, should_skip);
 
-  // 4. 使用同一回滚判断查询 SST，比较内存和磁盘的真实版本号
-  //    sst_get_ 不自行加锁，由这里保护 SST 集合
+  // 4. SST 使用同一套读取条件，并与内存候选比较真实版本
+  // 这里只读取 SST 集合，使用读锁；
+  // sst_get_ 不自行加锁，由这里保护查询过程
   {
     std::shared_lock<std::shared_mutex> lock(ssts_mtx);
     auto sst_ret = sst_get_(key, tranc_id, is_aborted);
