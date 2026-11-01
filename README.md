@@ -13,6 +13,7 @@ KopiDB 是一个用于学习数据库实现的 C++20 LSM-tree KV 引擎，包含
 - [🎯 应用场景](#use-cases)
 - [📚 学习文档](#learning-docs)
 - [🛠️ 构建与测试](#build-and-test)
+- [🧵 并发与事务](#concurrency-and-transactions)
 - [💻 C++ 使用示例](#cpp-example)
 
 
@@ -93,6 +94,18 @@ xmake run test_skiplist     # 运行一个模块的测试
 ```
 
 环境安装步骤见教程的 [Lab 0](https://vanilla-beauty.github.io/tiny-lsm/book/lab0-env.html)。
+
+---
+
+<a id="concurrency-and-transactions"></a>
+
+## 🧵 并发与事务
+
+KopiDB 的并发设计目标是：**同一进程内，多个线程共享同一个数据库实例**，完整并发支持仍在完善中。
+
+每次 `begin_tran()` 创建独立的 `TranContext`，对应一笔事务；同一事务上下文和同一迭代器应串行使用，跨线程交接需由调用方同步。
+
+普通 `put/get/remove` 无需显式开启事务；需要将多次操作组成一笔事务时，再使用 `begin_tran()` 和 `commit/abort`。
 
 ---
 
