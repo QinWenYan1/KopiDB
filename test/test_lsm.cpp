@@ -2013,7 +2013,7 @@ TEST_F(TranAbortTest, CannotAbortAnAlreadyCommittedTransaction) {
 
 
 
-// 下一项验收：检查首次读取是否已经读脏，再检查可重复读缓存是否残留脏结果。
+// 事务读取验收：管理器状态、Engine 筛选及上下文的隔离选择与读缓存。
 class TranReadVisibilityTest : public TranCommitTest {};
 
 // 目的：要求已提交的查询跳过活跃事务，提交完成后才允许其记录参与读取。
@@ -2238,6 +2238,129 @@ TEST_F(TranReadVisibilityTest, RejectsDirtyValuesAndTombstonesBeforeCaching) {
 }
 
 
+
+// 目的：事务入口按读取者的隔离级别筛选 SST 中的未提交记录。
+// 场景：已提交旧值和有效墓碑先刷盘，RU 的更新、删除、新增、复活随后刷盘；
+//       三种严格读取的首次结果必须正确，RU 仍允许脏读，写事务回滚后都读旧结果。
+TEST_F(TranReadVisibilityTest, ContextReadsFilterUncommittedSstVersions) {
+  auto base = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  base->put("updated", "old");
+  base->put("restored", "keep");
+  base->put("deleted", "ancient");
+  ASSERT_TRUE(base->commit());
+  auto deletion = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  deletion->remove("deleted");
+  ASSERT_TRUE(deletion->commit());
+  engine->flush();
+
+  auto writer = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  writer->put("updated", "dirty");
+  writer->remove("restored");
+  writer->put("added", "dirty");
+  writer->put("deleted", "dirty");
+  engine->flush();
+  ASSERT_EQ(engine->memtable.get_total_size(), 0u);
+
+  auto check_committed = [](const std::shared_ptr<TranContext> &reader) {
+    EXPECT_EQ(reader->get("updated"), std::make_optional(std::string("old")));
+    EXPECT_EQ(reader->get("restored"), std::make_optional(std::string("keep")));
+    EXPECT_FALSE(reader->get("added"));
+    EXPECT_FALSE(reader->get("deleted"));
+  };
+  std::vector<std::shared_ptr<TranContext>> readers;
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ, IsolationLevel::SERIALIZABLE}) {
+    readers.push_back(manager->new_tranc(level));
+    SCOPED_TRACE(static_cast<int>(level));
+    check_committed(readers.back());
+  }
+  auto dirty_reader = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  EXPECT_EQ(dirty_reader->get("updated"), std::make_optional(std::string("dirty")));
+  EXPECT_FALSE(dirty_reader->get("restored"));
+  EXPECT_EQ(dirty_reader->get("added"), std::make_optional(std::string("dirty")));
+  EXPECT_EQ(dirty_reader->get("deleted"), std::make_optional(std::string("dirty")));
+
+  ASSERT_TRUE(writer->abort());
+  for (const auto &reader : readers) {
+    check_committed(reader);
+    EXPECT_TRUE(reader->abort());
+  }
+  check_committed(dirty_reader);
+  EXPECT_TRUE(dirty_reader->abort());
+}
+
+// 目的：RC 在写事务提交后重查新值，RR/SERIALIZABLE 保持首次合法结果及不存在缓存。
+// 场景：RU 写事务先创建，读事务后创建，保证其版本号本来就在读取上限内；
+//       提交前过滤它，提交后靠读缓存保持稳定，避免仅因版本上限而偶然通过。
+//       再提交一个更大 ID 的写事务，确认旧 RC 事务仍可读取后来提交的版本。
+TEST_F(TranReadVisibilityTest, ContextCacheAndRefreshFollowIsolation) {
+  auto base = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  base->put("k", "old");
+  base->remove("deleted");
+  ASSERT_TRUE(base->commit());
+  auto writer = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  writer->put("k", "new");
+  writer->put("missing", "created");
+  writer->put("deleted", "revived");
+  std::vector<std::shared_ptr<TranContext>> readers;
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ, IsolationLevel::SERIALIZABLE}) {
+    auto reader = manager->new_tranc(level);
+    EXPECT_EQ(reader->get("k"), std::make_optional(std::string("old")));
+    EXPECT_FALSE(reader->get("missing"));
+    EXPECT_FALSE(reader->get("deleted"));
+    readers.push_back(std::move(reader));
+  }
+
+  ASSERT_TRUE(writer->commit());
+  EXPECT_EQ(readers[0]->get("k"), std::make_optional(std::string("new")));
+  EXPECT_EQ(readers[0]->get("missing"), std::make_optional(std::string("created")));
+  EXPECT_EQ(readers[0]->get("deleted"), std::make_optional(std::string("revived")));
+  for (size_t i = 1; i < readers.size(); ++i) {
+    EXPECT_EQ(readers[i]->get("k"), std::make_optional(std::string("old")));
+    EXPECT_FALSE(readers[i]->get("missing"));
+    EXPECT_FALSE(readers[i]->get("deleted"));
+  }
+  auto fresh = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
+  EXPECT_EQ(fresh->get("missing"), std::make_optional(std::string("created")));
+  EXPECT_EQ(fresh->get("deleted"), std::make_optional(std::string("revived")));
+
+  auto later = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  later->put("k", "latest");
+  ASSERT_TRUE(later->commit());
+  EXPECT_EQ(readers[0]->get("k"), std::make_optional(std::string("latest")));
+  for (const auto &reader : readers) EXPECT_TRUE(reader->abort());
+  EXPECT_TRUE(fresh->abort());
+}
+
+// 目的：严格读取过滤他人的未提交版本后，自身暂存修改仍优先于合法旧值与缓存。
+// 场景：RC/RR/SERIALIZABLE 先读 old，再依次 put、remove、重写同一个 key；
+//       自己能读到最后一次操作，Engine 仍只有旧提交值和另一个 RU 事务的脏值。
+TEST_F(TranReadVisibilityTest, ContextOwnChangesOverrideFilteredCache) {
+  auto base = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  base->put("k", "old");
+  ASSERT_TRUE(base->commit());
+  auto writer = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  writer->put("k", "dirty");
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ, IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    auto reader = manager->new_tranc(level);
+    EXPECT_EQ(reader->get("k"), std::make_optional(std::string("old")));
+    reader->put("k", "own");
+    EXPECT_EQ(reader->get("k"), std::make_optional(std::string("own")));
+    reader->remove("k");
+    EXPECT_FALSE(reader->get("k"));
+    reader->put("k", "rewritten");
+    EXPECT_EQ(reader->get("k"), std::make_optional(std::string("rewritten")));
+    EXPECT_EQ(engine->get("k", 0, true), std::make_optional(
+                  std::make_pair(std::string("old"), base->tranc_id_)));
+    EXPECT_EQ(engine->get("k", 0, false), std::make_optional(
+                  std::make_pair(std::string("dirty"), writer->tranc_id_)));
+    EXPECT_TRUE(reader->abort());
+  }
+  EXPECT_TRUE(writer->abort());
+}
 
 // 目的：内存/SST 中的新值和新墓碑都拒绝旧事务，且整个暂存集合零写入。
 // 场景：三个暂存型级别各测四种冲突来源；另放一个无冲突 key，防止部分提交。

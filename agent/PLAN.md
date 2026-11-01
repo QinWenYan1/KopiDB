@@ -4,15 +4,15 @@
 
 目标：修复 [AUDIT.md](AUDIT.md) 中已经复现的 A1～A4，使四项问题通过行为验收，并通过相关存储与事务回归。用户已确认五阶段计划；默认由用户手写业务代码和头文件，助手提供逐函数实现、补充测试并维护记录。2026-10-31 用户单独授权助手完成 A1 三个文件工具函数，其余阶段仍沿用手写流程。
 
-**修复进度：20%（1/5 阶段验收通过）**。按验收阶段数计算，不代表工时比例。
+**修复进度：40%（2/5 阶段验收通过）**。按验收阶段数计算，不代表工时比例。
 
-当前：用户已完成 `TranManager::should_skip_read` 和 `LSMEngine::get` 的读取规则接入；Engine 新增 3 项读取测试及相关回归共 30/30 通过。进入 A2 第三个函数 `TranContext::get`，本轮在聊天中提供实现，由读取事务的隔离级别决定 require_committed，业务代码仍由用户手写。DB 使用约定与 README 子任务已收尾；完整运行验收仍按主线推进，文档整理不计为 A2 修复完成。
+当前：A2 三个函数已由用户完成，原混合隔离回归及新增完整事务场景通过，适用 LSM 测试 115/115 通过。进入 A3，已复现空 SST 收尾异常，在聊天中先交付 issue，再提供 gen_sst_from_iter 的完整修改草案，业务代码仍由用户手写。DB 使用约定与 README 子任务已收尾。
 
 | 阶段 | 工作 | 状态 |
 | --- | --- | --- |
 | ① [A1](AUDIT.md#a1) | 文件写入失败逐层上报 | 已验收：197/197 相关回归通过 |
-| ② [A2](AUDIT.md#a2) | 目录 5.1.2「事务管理器」的混合隔离读取修复 | 处理中：管理器与 Engine 已验收，进入 TranContext::get |
-| ③ [A3](AUDIT.md#a3) | compaction 收尾不构建空 SST | 待开始 |
+| ② [A2](AUDIT.md#a2) | 目录 5.1.2「事务管理器」的混合隔离读取修复 | 已验收：115/115 适用 LSM 测试通过 |
+| ③ [A3](AUDIT.md#a3) | compaction 收尾不构建空 SST | 处理中：issue 与函数草案，待用户实现 |
 | ④ [A4](AUDIT.md#a4) | 大记录后不同 key 正常换块 | 待开始 |
 | ⑤ 整体验收 | 相关回归及修复记录收尾 | 待开始 |
 
@@ -74,17 +74,19 @@
 
 - [x] 在 [TranManager](../include/lsm/transaction.h) 新增 `should_skip_read(uint64_t tranc_id, bool require_committed) const`；在同一次加锁中检查活跃与回滚集合，不改变现有 `is_aborted()` 的含义。2026-11-01 代码检查与相关 15/15 测试通过。
 - [x] [LSMEngine::get](../src/lsm/engine.cpp)：根据本次读取规则构造过滤条件，复用底层已有回调，在选择胜出版本之前过滤；保留既有调用行为。2026-11-01 检查、构建与相关 30/30 测试通过。
-- [ ] [TranContext::get](../src/lsm/transation.cpp)：自身修改优先，按隔离级别选择读取规则，首次合法读取之后再写入读缓存。
+- [x] [TranContext::get](../src/lsm/transation.cpp)：自身修改优先，按隔离级别选择读取规则，首次合法读取之后再写入读缓存。2026-11-01 完整场景及适用 LSM 回归通过。
 
 必要联动：事务与 Engine 头文件声明；只读复核 `new_tranc()` 和结束登记的生命周期，以及提交冲突查询与新读取规则的区分。底层 MemTable、SST、iterator 先复用已有回调，不列为必须重写。
 
-当前 TranContext::get 尚未传入隔离要求，仍使用默认 false，因此不将管理器和 Engine 测试通过算作 A2 已解决；原混合隔离回归仍保留，本轮没有重复运行已知尚未修复的完整读取用例。
+2026-11-01 A2 验收完成：新增 3 项真实事务测试，覆盖 SST 中的脏值／墓碑与 RU 读取、提交后 RC 重查和 RR/SERIALIZABLE 的合法旧值／不存在缓存、被过滤版本存在时自身暂存修改优先。原 `RejectsDirtyValuesAndTombstonesBeforeCaching` 已通过。构建成功，适用 test_lsm 共 115/115 通过；明确排除 11 个后续 Lab 用例及下一阶段 A3 用例。A3 单独运行 1/1 失败，仍为 Cannot build empty SST，不计入 A2 失败。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a2-final-review-_5j9qx4o`，两个运行目录分别隔离，含排除清单、命令、结果、配置与源码哈希；运行期间源码未变化。助手只改测试与记录，未改业务代码；未运行其他测试目标。
 
 验收：恢复用例 `TranReadVisibilityTest.RejectsDirtyValuesAndTombstonesBeforeCaching` 通过；覆盖内存与 SST 中未提交值／墓碑、有效旧值／旧墓碑、自身修改、提交后 RC 再读、回滚后读取、RR 重复读取与首次不存在缓存；RU 保持允许脏读。验证现有 SERIALIZABLE 单键读取路径，不宣称完整串行化。
 
 <a id="stage-a3"></a>
 
 ## 阶段③ A3：compaction 收尾
+
+2026-11-01 启动：复测 `TranCommitTest.AuditCompactionDoesNotBuildEmptyTail`，1/1 失败，异常与历史依据一致。已验证远程提交 `39188fabd597a8bf15b658221806c3f2166b0460` 的相关源码和测试，用于聊天中的 issue 链接，由用户手动发布。最小方案是在 gen_sst_from_iter 内维护 has_pending_entries：成功 add 后置 true，输出 SST 并重置 builder 后置 false，收尾按该标志决定是否 build。保留当前切分阈值、同 key 版本分组和 builder 创建方式；不增加 SSTBuilder 接口。
 
 - [ ] 修改 [LSMEngine::gen_sst_from_iter](../src/lsm/engine.cpp)：以当前 builder 是否真正加入记录判断收尾，不用包含空块开销的字节数判空。
 

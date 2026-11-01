@@ -1,6 +1,6 @@
 # KopiDB 全局问题账本
 
-最后更新：2026-11-01。用户已确认 A1～A4 的五阶段修复计划，见 [PLAN.md](PLAN.md)。A1 已按本次单独授权由助手代修并通过验收；A2 的管理器读取判断及 Engine::get 接入已验收，最新相关 30/30 测试通过，当前进入 TranContext::get，完整事务读取尚未验收；A3～A4 待开始。
+最后更新：2026-11-01。用户已确认 A1～A4 的五阶段修复计划，见 [PLAN.md](PLAN.md)。A1、A2 已解决；A2 最新适用 LSM 回归 115/115 通过。A3 已复测并进入 issue 与函数草案，A4 待开始。
 
 本文件持续记录全局发现，规则见 [audit-to-plan](skills/audit-to-plan/SKILL.md)。选择问题开始处理时，在 [PLAN.md](PLAN.md) 按编号展开执行步骤，并在这里更新状态和计划链接；验收后保留原条目，补充解决日期与证据。项目现状和全局约定见 [STATE.md](STATE.md)。
 
@@ -19,8 +19,8 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 | 编号 | 状态 | 优先级 | 问题 | 最小修复范围 | 历史粗估 |
 | --- | --- | --- | --- | --- | --- |
 | [A1](#a1) | [已解决](PLAN.md#stage-a1) | P1 | 写文件失败仍报告成功，刷盘误移除内存数据 | StdFile::write/create、FileObj::create_and_write 的错误传递 | 45～90 分钟 |
-| [A2](#a2) | [处理中：事务读取入口接入](PLAN.md#stage-a2) | P1 | RC/RR/SERIALIZABLE 可以读到其他 RU 事务的未提交版本，RR 缓存可延续错误 | TranContext::get、Engine 读取策略、TranManager 状态查询的必要联动 | 2～4 小时 |
-| [A3](#a3) | [已纳入计划](PLAN.md#stage-a3) | P1 | compaction 最后一批刚好落盘后，又构建空 SST 并抛异常 | LSMEngine::gen_sst_from_iter 的收尾判空 | 20～40 分钟 |
+| [A2](#a2) | [已解决](PLAN.md#stage-a2) | P1 | RC/RR/SERIALIZABLE 可以读到其他 RU 事务的未提交版本，RR 缓存可延续错误 | TranContext::get、Engine 读取策略、TranManager 状态查询的必要联动 | 2～4 小时 |
+| [A3](#a3) | [处理中：收尾判空](PLAN.md#stage-a3) | P1 | compaction 最后一批刚好落盘后，又构建空 SST 并抛异常 | LSMEngine::gen_sst_from_iter 的收尾判空 | 20～40 分钟 |
 | [A4](#a4) | [已纳入计划](PLAN.md#stage-a4) | P2 | 大记录之后不同 key 无法正常换块，被提前的偏移检查拒绝 | Block::add_entry 的检查顺序，验证 SSTBuilder::add 衔接 | 20～40 分钟 |
 | [A5](#a5) | 已确认排期（改进建议） | 待定 | 公开写入接口校验空 key／空 value，避免误用保留标记 | LSM／TranContext 写入口及批量参数预检查 | 未估时 |
 
@@ -80,15 +80,19 @@ A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 
 
 2026-11-01 Engine 接入验收：新参数默认保留原读取行为，显式要求已提交时正确排除活跃记录。新增 3 项场景测试及相关回归共 30/30 通过，覆盖内存与 SST 的值／墓碑、连续过滤、提交后重查和版本上限。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a2-engine-review-ebk97xy5`。TranContext::get 尚未选择读取要求，A2 仍未解决，进入最后一个函数及后续完整验收。
 
+2026-11-01 已解决：三个函数均由用户实现，读取者的隔离级别决定是否排除活跃版本，过滤发生在选版本和缓存之前。新增完整事务场景覆盖 SST 的值／墓碑、RU 保留脏读、RC 后续提交可见、RR/SERIALIZABLE 的首次合法值与不存在缓存、自身暂存修改优先；原混合隔离失败用例已通过。适用 LSM 测试 115/115 通过，另列 11 个后续 Lab 用例及 A3，不宣称完整串行化或崩溃恢复。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a2-final-review-_5j9qx4o/a2-regression`，排除清单与源码哈希在父目录。
+
 <a id="a3"></a>
 
 ### A3：compaction 收尾误判空 builder
 
-位置：`src/lsm/engine.cpp:874` 使用 real_size()>0 判断是否还需 build；`src/sst/sst.cpp:407` 加上了 Block::cur_size，而空 Block 也计入 2 字节条目数。
+位置（2026-11-01 核对）：`src/lsm/engine.cpp:889` 使用 real_size()>0 判断是否还需 build；`src/sst/sst.cpp:407` 加上了 Block::cur_size，而 `src/block/block.cpp:589` 在空 Block 中也计入 2 字节条目数。
 
 场景：合并的最后一批记录正好达到目标并生成 SST，builder 随即重置为空；循环结束后 real_size() 仍为 2，于是再调用 build，抛出 `SSTBuilder::build: Cannot build empty SST`。
 
 测试 `TranCommitTest.AuditCompactionDoesNotBuildEmptyTail` 通过正常 put_batch/flush 触发真实 compaction，已复现上述异常。
+
+2026-11-01 复测：A2 回归通过后，在另一隔离目录单独运行该用例，1/1 失败，仍抛 `SSTBuilder::build: Cannot build empty SST`。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a2-final-review-_5j9qx4o/a3-baseline`。已核实远程提交 `39188fabd597a8bf15b658221806c3f2166b0460` 的 engine.cpp、sst.cpp、block.cpp 及原回归位置；在聊天中起草 issue 并提供局部记录标志方案，等待用户手写，未修改业务代码。
 
 修复方向：按当前 builder 是否实际加入记录判断收尾，不用编码预估字节数代替“有无记录”。验收：恰好完成最后一批与仍有尾部记录两种情况均成功，不多建空 SST，合并后数据和版本保留。
 
