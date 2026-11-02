@@ -8,14 +8,19 @@
 namespace tiny_lsm {
 
 // Lab 5.3 实现创建事务的Record
+// OP_CREATE 表示“事务开始”这类记录，可以理解为 BEGIN
+// 名字里的 CREATE 指的是创建事务
+// OP_CREATE  ID=7                  // 事务 7 开始
+// OP_PUT     ID=7  key=a  value=1  // 事务 7 写入 a=1
+// OP_COMMIT  ID=7                  // 事务 7 提交
 Record Record::createRecord(uint64_t tranc_id) {
   // 事务开始记录只描述“哪个事务开始了”，不携带 key/value
   // 两个 std::string 成员默认构造为空，不需要另外赋值
-  Record record; 
+  Record record;
 
   // 保存调用方已经分配好的事务 ID
   // 后续 PUT、DELETE、COMMIT 等记录用同一个 ID 关联到这个事务
-  record.tranc_id_ = tranc_id; 
+  record.tranc_id_ = tranc_id;
   record.operation_type_ = OperationType::OP_CREATE;
 
   // record_len_ 表示编码后的总字节数，包含长度字段自身：
@@ -23,14 +28,12 @@ Record Record::createRecord(uint64_t tranc_id) {
   //
   // 操作类型编码时固定保存为 uint8_t，因此这里按 1 字节计算
   // 而不是使用 OperationType 枚举在内存中占用的大小
-  record.record_len_ = sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t); 
-  return record; 
+  record.record_len_ = sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t);
+  return record;
 }
 
 // Lab 5.3 实现提交事务的Record
-Record Record::commitRecord(uint64_t tranc_id) {
-  return {};
-}
+Record Record::commitRecord(uint64_t tranc_id) { return {}; }
 Record Record::rollbackRecord(uint64_t tranc_id) {
   // TODO: Lab 5.3 实现回滚事务的Record
   return {};
