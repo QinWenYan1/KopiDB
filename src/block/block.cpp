@@ -175,7 +175,7 @@ bool Block::add_entry(const std::string &key, const std::string &value,
   //
   // 若 force_write 且当前容量不足则返回 false
   // 成功添加后记录偏移到 offsets, 返回 true
-  // 
+  //
   // 本条 entry 字节数：
   // [key_len:2B][key:key.size()][val_len:2B][value:value.size()][tranc_id:8B]
 
@@ -210,7 +210,6 @@ bool Block::add_entry(const std::string &key, const std::string &value,
   if (data.size() > UINT16_MAX)
     throw std::length_error(
         "Block::add_entry: entry offset exceeds uint16_t limit");
-
 
   // 条目数量也使用 uint16_t 编码
   // 已有 65535 条时不能再追加，必须在修改 Block 前拒绝
@@ -502,14 +501,16 @@ Block::iters_preffix(uint64_t tranc_id, const std::string &preffix,
   //
   // 例如前缀为 "ab"：
   // "aa" → 正数，"ab1" → 0，"ac" → 负数
-  // 
+  //
   // 将回滚判断继续传下去：
   // 谓词函数负责寻找区间，BlockIterator 负责筛选版本。
   // 返回的两个迭代器会各自保存回调，后续 ++ 继续使用。
   return get_monotony_predicate_iters(
-      tranc_id, [&preffix](const std::string &key) {
+      tranc_id,
+      [&preffix](const std::string &key) {
         return -key.compare(0, preffix.size(), preffix);
-      }, is_aborted);
+      },
+      is_aborted);
 }
 
 // Lab 3.3 使用二分查找获取满足谓词的区间迭代器
@@ -603,8 +604,10 @@ size_t Block::cur_size() const {
 bool Block::is_empty() const { return offsets.empty(); }
 
 // Lab 3.2 获取begin迭代器
-// 返回指向第 0 个 entry 的迭代器: BlockIterator(shared_from_this(), 0, tranc_id)
-BlockIterator Block::begin(uint64_t tranc_id, const std::function<bool(uint64_t)> &is_aborted) {
+// 返回指向第 0 个 entry 的迭代器: BlockIterator(shared_from_this(), 0,
+// tranc_id)
+BlockIterator Block::begin(uint64_t tranc_id,
+                           const std::function<bool(uint64_t)> &is_aborted) {
   // 从物理下标 0 开始寻找第一条有效记录
   // 下标 0 不一定可读：
   // 例如第一条是已回滚的 a@9，构造函数会继续找到有效的 a@5x
@@ -614,11 +617,11 @@ BlockIterator Block::begin(uint64_t tranc_id, const std::function<bool(uint64_t)
   // 让首次定位和后续 ++ 都使用相同的筛选规则
   //
   // 空块或所有记录均不可读时，构造结果自然停在块尾
-  return BlockIterator(shared_from_this(), 0, tranc_id,false, is_aborted);
+  return BlockIterator(shared_from_this(), 0, tranc_id, false, is_aborted);
 }
 
 // Lab 3.2 获取end迭代器
-BlockIterator Block::end() { 
+BlockIterator Block::end() {
   // ? 返回指向末尾 (offsets.size()) 的迭代器
   return BlockIterator(shared_from_this(), offsets.size(), 0);
 }
