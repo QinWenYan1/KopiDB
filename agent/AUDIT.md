@@ -1,6 +1,6 @@
 # KopiDB 全局问题账本
 
-最后更新：2026-11-01。用户已确认 A1～A4 的五阶段修复计划，见 [PLAN.md](PLAN.md)。A1、A2 已解决；A2 最新适用 LSM 回归 115/115 通过。A3 已复测并进入 issue 与函数草案，A4 待开始。
+最后更新：2026-11-02。用户已确认 A1～A4 的五阶段修复计划，见 [PLAN.md](PLAN.md)。A1、A2、A3 已解决；A3 最新适用 LSM 回归 117/117 通过。A4 已复测并进入 issue 与函数草案，待用户实现。
 
 本文件持续记录全局发现，规则见 [audit-to-plan](skills/audit-to-plan/SKILL.md)。选择问题开始处理时，在 [PLAN.md](PLAN.md) 按编号展开执行步骤，并在这里更新状态和计划链接；验收后保留原条目，补充解决日期与证据。项目现状和全局约定见 [STATE.md](STATE.md)。
 
@@ -20,8 +20,8 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 | --- | --- | --- | --- | --- | --- |
 | [A1](#a1) | [已解决](PLAN.md#stage-a1) | P1 | 写文件失败仍报告成功，刷盘误移除内存数据 | StdFile::write/create、FileObj::create_and_write 的错误传递 | 45～90 分钟 |
 | [A2](#a2) | [已解决](PLAN.md#stage-a2) | P1 | RC/RR/SERIALIZABLE 可以读到其他 RU 事务的未提交版本，RR 缓存可延续错误 | TranContext::get、Engine 读取策略、TranManager 状态查询的必要联动 | 2～4 小时 |
-| [A3](#a3) | [处理中：收尾判空](PLAN.md#stage-a3) | P1 | compaction 最后一批刚好落盘后，又构建空 SST 并抛异常 | LSMEngine::gen_sst_from_iter 的收尾判空 | 20～40 分钟 |
-| [A4](#a4) | [已纳入计划](PLAN.md#stage-a4) | P2 | 大记录之后不同 key 无法正常换块，被提前的偏移检查拒绝 | Block::add_entry 的检查顺序，验证 SSTBuilder::add 衔接 | 20～40 分钟 |
+| [A3](#a3) | [已解决](PLAN.md#stage-a3) | P1 | compaction 最后一批刚好落盘后，又构建空 SST 并抛异常 | LSMEngine::gen_sst_from_iter 的收尾判空 | 20～40 分钟 |
+| [A4](#a4) | [处理中：正常换块](PLAN.md#stage-a4) | P2 | 大记录之后不同 key 无法正常换块，被提前的偏移检查拒绝 | Block::add_entry 的检查顺序，验证 SSTBuilder::add 衔接 | 20～40 分钟 |
 | [A5](#a5) | 已确认排期（改进建议） | 待定 | 公开写入接口校验空 key／空 value，避免误用保留标记 | LSM／TranContext 写入口及批量参数预检查 | 未估时 |
 
 A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 → A2 → A3 → A4 → 整体验收推进。A5 是接口约束改进建议，已确认随目录 5.2.3 的公开入口初始化整合处理，不计为第五项已确认缺陷，也未加入当前 PLAN。每进入一个新修复问题，先在聊天中写 issue 草稿供用户手动发布，再逐函数推进；没有自动创建远程 issue。具体执行与验收标准维护在 PLAN。
@@ -96,6 +96,8 @@ A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 
 
 修复方向：按当前 builder 是否实际加入记录判断收尾，不用编码预估字节数代替“有无记录”。验收：恰好完成最后一批与仍有尾部记录两种情况均成功，不多建空 SST，合并后数据和版本保留。
 
+2026-11-02 已解决：用户添加 has_pending_entries，并改用 get_cur_tranc_id 写入真实版本。助手扩展原回归到两种 key 及其版本，新增 TranCommitTest.CompactionPreservesTailAndSameKeyVersions，检查尾部记录、全版本及墓碑保留、历史点查和同 key 只出现在一张 SST。构建成功，适用 test_lsm 117/117 通过；未运行原 11 个后续 Lab 用例。空输入分支仅做代码检查：标志保持 false，跳过循环和收尾，返回空列表；未添加私有函数测试入口。源码在构建与测试期间未变化。日志及命令、配置、排除清单、结果和源码哈希：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a3-review-s3bcul4a`，A3 运行位于 a3-lsm-regression 子目录。助手未修改业务代码；旧 getter 注释已提示用户整理。
+
 <a id="a4"></a>
 
 ### A4：正常换块被偏移检查抢先拒绝
@@ -105,6 +107,8 @@ A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 
 场景：a 的 value 为 65530 字节，长度字段合法，第一条记录从偏移 0 开始可编码；整条记录使块内数据超过 65535 字节。接着加入不同 key 的 b，本可因容量不足返回 false，让 SSTBuilder 换新块，但当前先抛出偏移超限异常。
 
 测试 `SSTTest.AuditDifferentKeyCanStartBlockAfterLargeEntry` 已复现 `Block::add_entry: entry offset exceeds uint16_t limit`。
+
+2026-11-02 进入实施：构建 test_sst 并单独复测该用例，1/1 失败，仍在添加 b 时抛出上述异常。证据位于 `/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a3-review-s3bcul4a/a4-baseline`，不计为 A3 回归失败。已核实远程提交 39188fabd597a8bf15b658221806c3f2166b0460 的相关源码和测试；在聊天中交付 issue 与函数草案，业务修改及修复后验收尚未完成。
 
 修复方向：区分“本条记录无法编码”与“旧块装不下、可以换块”；调整容量及偏移检查顺序。单条长度超限仍抛异常；force_write 的同 key 版本组超限仍抛异常，不拆分同 key，不改变持久化格式。
 

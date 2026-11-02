@@ -1,19 +1,19 @@
 # KopiDB 当前任务：修复 A1～A4
 
-最后更新：2026-11-01。
+最后更新：2026-11-02。
 
 目标：修复 [AUDIT.md](AUDIT.md) 中已经复现的 A1～A4，使四项问题通过行为验收，并通过相关存储与事务回归。用户已确认五阶段计划；默认由用户手写业务代码和头文件，助手提供逐函数实现、补充测试并维护记录。2026-10-31 用户单独授权助手完成 A1 三个文件工具函数，其余阶段仍沿用手写流程。
 
-**修复进度：40%（2/5 阶段验收通过）**。按验收阶段数计算，不代表工时比例。
+**修复进度：60%（3/5 阶段验收通过）**。按验收阶段数计算，不代表工时比例。
 
-当前：A2 三个函数已由用户完成，原混合隔离回归及新增完整事务场景通过，适用 LSM 测试 115/115 通过。进入 A3，已复现空 SST 收尾异常，在聊天中先交付 issue，再提供 gen_sst_from_iter 的完整修改草案，业务代码仍由用户手写。DB 使用约定与 README 子任务已收尾。
+当前：A3 已由用户修复并验收，适用 LSM 测试 117/117 通过。进入 A4，正常换块回归仍复现偏移超限异常；在聊天中先交付 issue，再提供 Block::add_entry 的完整修改草案，业务代码仍由用户手写。DB 使用约定与 README 子任务已收尾。
 
 | 阶段 | 工作 | 状态 |
 | --- | --- | --- |
 | ① [A1](AUDIT.md#a1) | 文件写入失败逐层上报 | 已验收：197/197 相关回归通过 |
 | ② [A2](AUDIT.md#a2) | 目录 5.1.2「事务管理器」的混合隔离读取修复 | 已验收：115/115 适用 LSM 测试通过 |
-| ③ [A3](AUDIT.md#a3) | compaction 收尾不构建空 SST | 处理中：issue 与函数草案，待用户实现 |
-| ④ [A4](AUDIT.md#a4) | 大记录后不同 key 正常换块 | 待开始 |
+| ③ [A3](AUDIT.md#a3) | compaction 收尾不构建空 SST | 已验收：117/117 适用 LSM 测试通过 |
+| ④ [A4](AUDIT.md#a4) | 大记录后不同 key 正常换块 | 处理中：基线复现，issue 与函数草案，待用户实现 |
 | ⑤ 整体验收 | 相关回归及修复记录收尾 | 待开始 |
 
 ## 插入子任务：DB 使用约定与 README 示例
@@ -88,13 +88,17 @@
 
 2026-11-01 启动：复测 `TranCommitTest.AuditCompactionDoesNotBuildEmptyTail`，1/1 失败，异常与历史依据一致。已验证远程提交 `39188fabd597a8bf15b658221806c3f2166b0460` 的相关源码和测试，用于聊天中的 issue 链接，由用户手动发布。最小方案是在 gen_sst_from_iter 内维护 has_pending_entries：成功 add 后置 true，输出 SST 并重置 builder 后置 false，收尾按该标志决定是否 build。保留当前切分阈值、同 key 版本分组和 builder 创建方式；不增加 SSTBuilder 接口。
 
-- [ ] 修改 [LSMEngine::gen_sst_from_iter](../src/lsm/engine.cpp)：以当前 builder 是否真正加入记录判断收尾，不用包含空块开销的字节数判空。
+- [x] 修改 [LSMEngine::gen_sst_from_iter](../src/lsm/engine.cpp)：以当前 builder 是否真正加入记录判断收尾，不用包含空块开销的字节数判空。
+
+2026-11-02 验收：has_pending_entries 的设置、重置和收尾判断正确，写入改用 get_cur_tranc_id。扩展原 A3 用例检查两类 key 和真实版本；新增 CompactionPreservesTailAndSameKeyVersions，验证输出过批次后仍保存尾部、历史版本、墓碑，以及同 key 不跨 SST。构建成功，适用 test_lsm 117/117 通过，排除原 11 个后续 Lab 用例。空输入通过代码检查确认返回空列表，未为私有函数添加测试入口，也未直接运行该分支。验收证据见 [AUDIT A3](AUDIT.md#a3)。旧注释仍提及 get_tranc_id，已提示用户同步说明，不影响运行；助手未改业务代码。
 
 验收：`TranCommitTest.AuditCompactionDoesNotBuildEmptyTail` 通过；覆盖最后一批已完整输出、仍有剩余记录、空输入的收尾行为，确认数据与版本保留，同 key 的版本不跨 SST 切分。
 
 <a id="stage-a4"></a>
 
 ## 阶段④ A4：不同 key 正常换块
+
+2026-11-02 启动：构建并单独运行 SSTTest.AuditDifferentKeyCanStartBlockAfterLargeEntry，1/1 失败，仍为 entry offset exceeds uint16_t limit。已核实远程提交 39188fabd597a8bf15b658221806c3f2166b0460 的 Block::add_entry、SSTBuilder::add 和回归测试位置，用于 issue；方案是将现有容量判断移到偏移和条目数检查之前，保留单条长度检查及 force_write 超限异常。等待用户手写，未改业务代码。
 
 - [ ] 修改 [Block::add_entry](../src/block/block.cpp)：先区分本条记录无法编码与当前块容量不足，调整容量和旧块编码边界的检查顺序。
 

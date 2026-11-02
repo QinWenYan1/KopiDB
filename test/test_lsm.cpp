@@ -4084,9 +4084,79 @@ TEST_F(TranCommitTest, AuditCompactionDoesNotBuildEmptyTail) {
   ASSERT_NO_THROW(engine->flush());
   EXPECT_FALSE(engine->level_sst_ids[1].empty());
   for (int i = 0; i < ratio; ++i) {
-    const auto result = engine->get("key-" + std::to_string(i) + "-a", 0);
-    ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result->first, value);
+    for (const std::string suffix : {"-a", "-b"}) {
+      const auto result = engine->get("key-" + std::to_string(i) + suffix, 0);
+      ASSERT_TRUE(result.has_value());
+      EXPECT_EQ(result->first, value);
+      EXPECT_EQ(result->second, static_cast<uint64_t>(i + 1));
+    }
+  }
+}
+
+// 目的：已经输出过完整批次后，仍须保存不足阈值的尾部记录及其真实版本。
+// 场景：前面的不同 key 使用大 value，触发多张 SST 输出；后面的两个 key
+// 各有多个短版本，其中含最新墓碑。尾部不足一个块，也必须生成 SST。
+// 同时检查每个 key 的所有版本只落在一张 SST，历史点查仍能找到旧版本。
+TEST_F(TranCommitTest, CompactionPreservesTailAndSameKeyVersions) {
+  config->modify_lsm_per_mem_size_limit(1);
+  const int ratio = config->getLsmSstLevelRatio();
+  ASSERT_GE(ratio, 2);
+  const std::string large(config->getLsmBlockSize() + 64, 'v');
+  std::vector<MvccRecord> expected;
+
+  for (int i = 0; i < ratio; ++i) {
+    const uint64_t version = i + 1;
+    const std::string key = "a-" + std::to_string(i);
+    const std::string shared_value = "version-" + std::to_string(i);
+    const std::string tail_value = i + 1 == ratio ? "" : "tail-" + std::to_string(i);
+    engine->put_batch({{key, large}, {"b-shared", shared_value},
+                       {"z-tail", tail_value}}, version);
+    ASSERT_NO_THROW(engine->flush());
+    expected.emplace_back(key, large, version);
+    expected.emplace_back("b-shared", shared_value, version);
+    expected.emplace_back("z-tail", tail_value, version);
+  }
+
+  // 本次 flush 先将已有 L0 合并到 L1；触发记录随后才写入 L0。
+  engine->put("zz-trigger", "v", ratio + 1);
+  ASSERT_NO_THROW(engine->flush());
+  ASSERT_GT(engine->level_sst_ids[1].size(), 1u);
+
+  std::vector<MvccRecord> actual;
+  std::set<size_t> shared_files;
+  std::set<size_t> tail_files;
+  for (size_t id : engine->level_sst_ids[1]) {
+    auto it = engine->ssts.at(id)->begin(0, true);
+    ASSERT_TRUE(it.is_valid());
+    while (it.is_valid()) {
+      // 限制遍历次数，迭代器若错误地重复记录，测试应失败而不是卡住。
+      ASSERT_LT(actual.size(), expected.size());
+      actual.emplace_back(it->first, it->second, it.get_cur_tranc_id());
+      if (it->first == "b-shared") shared_files.insert(id);
+      if (it->first == "z-tail") tail_files.insert(id);
+      ++it;
+    }
+    EXPECT_TRUE(it.is_end());
+  }
+  std::sort(expected.begin(), expected.end());
+  std::sort(actual.begin(), actual.end());
+  EXPECT_EQ(actual, expected);
+  EXPECT_EQ(shared_files.size(), 1u);
+  EXPECT_EQ(tail_files.size(), 1u);
+
+  // 从公开查询验证真实版本未被读取上限 0 覆盖，且尾部墓碑仍然有效。
+  for (int i = 0; i < ratio; ++i) {
+    const uint64_t version = i + 1;
+    EXPECT_EQ(engine->get("b-shared", version),
+              std::make_optional(std::make_pair("version-" + std::to_string(i),
+                                               version)));
+    const auto tail = engine->get("z-tail", version);
+    if (i + 1 == ratio) {
+      EXPECT_FALSE(tail);
+    } else {
+      EXPECT_EQ(tail, std::make_optional(std::make_pair(
+                          "tail-" + std::to_string(i), version)));
+    }
   }
 }
 
