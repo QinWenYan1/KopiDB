@@ -2,12 +2,38 @@
 #include "wal/record.h"
 #include "lsm/engine.h"
 #include "wal/wal.h"
+#include <cstdint>
 #include <filesystem>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <limits>
 
 using namespace testing;
 using namespace ::tiny_lsm;
+
+// 场景：事务上下文创建时生成开始记录，后续操作依靠同一个 ID 关联。
+// 验证记录的身份和类型，并确保没有携带属于 PUT/DELETE 的 key/value。
+// 本组只检查 Record，不创建尚未完成的 WAL 对象。
+TEST(RecordTest, CreateRecordInitializesTransactionStart) {
+  const auto record = Record::createRecord(7);
+
+  EXPECT_EQ(record.getTrancId(), uint64_t{7});
+  EXPECT_EQ(record.getOperationType(), OperationType::OP_CREATE);
+  EXPECT_TRUE(record.getKey().empty());
+  EXPECT_TRUE(record.getValue().empty());
+}
+
+// 场景：日志记录接收完整的 uint64_t ID，不能自行分配、递增或截断 ID。
+// 覆盖 0、超过 32 位的值、最高位为 1 的值和 uint64_t 最大值。
+TEST(RecordTest, CreateRecordPreservesFullWidthId) {
+  const uint64_t ids[] = {0, uint64_t{1} << 32, 0xFEDCBA9876543210ULL,
+                          std::numeric_limits<uint64_t>::max()};
+  for (uint64_t id : ids) {
+    SCOPED_TRACE(id);
+    const auto record = Record::createRecord(id);
+    EXPECT_EQ(record.getTrancId(), id);
+  }
+}
 
 class MockWAL : public WAL {
 public:

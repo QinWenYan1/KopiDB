@@ -2,16 +2,33 @@
 
 #include "wal/record.h"
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 
 namespace tiny_lsm {
 
+// Lab 5.3 实现创建事务的Record
 Record Record::createRecord(uint64_t tranc_id) {
-  // TODO: Lab 5.3 实现创建事务的Record
-  return {};
+  // 事务开始记录只描述“哪个事务开始了”，不携带 key/value
+  // 两个 std::string 成员默认构造为空，不需要另外赋值
+  Record record; 
+
+  // 保存调用方已经分配好的事务 ID
+  // 后续 PUT、DELETE、COMMIT 等记录用同一个 ID 关联到这个事务
+  record.tranc_id_ = tranc_id; 
+  record.operation_type_ = OperationType::OP_CREATE;
+
+  // record_len_ 表示编码后的总字节数，包含长度字段自身：
+  // record_len(2B) + tranc_id(8B) + operation_type(1B) = 11B
+  //
+  // 操作类型编码时固定保存为 uint8_t，因此这里按 1 字节计算
+  // 而不是使用 OperationType 枚举在内存中占用的大小
+  record.record_len_ = sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t); 
+  return record; 
 }
+
+// Lab 5.3 实现提交事务的Record
 Record Record::commitRecord(uint64_t tranc_id) {
-  // TODO: Lab 5.3 实现提交事务的Record
   return {};
 }
 Record Record::rollbackRecord(uint64_t tranc_id) {

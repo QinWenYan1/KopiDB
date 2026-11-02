@@ -16,7 +16,7 @@
 
 ## 当前进度
 
-2026-11-02 当前：用户要求更新下一轮 PLAN，已切换为目录 **5.2.1「Record 编解码」**（文章标题 Lab 5.3），进度 **0%（0/5 阶段）**。已完整阅读 lab-doc-2 的 lab5.3-Record.md、作者 master 的 src/wal/record.cpp 及本地接口／直接调用关系。Lab 明确要求五个静态创建函数和 encode/decode，共七个函数；本地已有参考代码也按约定重新推导实现。当前只更新计划，尚未修改业务代码或新增／运行本节测试。首个函数为 Record::createRecord；逐函数实施和验收标准见 [PLAN.md](PLAN.md)。
+2026-11-02 当前：目录 **5.2.1「Record 编解码」**（文章标题 Lab 5.3），进度 **0%（0/5 阶段）**。已完整阅读 lab-doc-2 的 lab5.3-Record.md、作者 master 的 src/wal/record.cpp 及本地接口／直接调用关系。Lab 明确要求五个静态创建函数和 encode/decode，共七个函数；本地已有参考代码也按约定重新推导实现。用户已实现 createRecord，代码检查正确；助手在 test/test_wal.cpp 新增独立 RecordTest，构建成功，隔离运行 **2/2 通过**，验证记录字段及完整 64 位事务 ID。当前进入 commitRecord，尚未运行编解码或后续 WAL／恢复测试。逐函数实施、验收标准及测试证据见 [PLAN.md](PLAN.md)。
 
 上一轮（2026-11-02）：A1～A4 修复与整体回归全部验收，进度 **100%（5/5 阶段）**。8 个目标共 **291/291 通过**：SkipList 31、MemTable 49、Block 37、SST 29、File/Bloom 15、BlockCache 7、BlockMeta 6、适用 LSM 117。已验证文件写失败上报、按读取隔离要求筛选事务版本、compaction 收尾及大记录后的正常换块；同 key 强制写入超出编码边界仍报错。A3 空输入为代码检查，未直接运行私有入口。业务实现由用户完成（此前 A1 有单独代改授权）；两处旧注释已给出替换文字，仍由用户整理。问题历史、范围及证据保留在 [AUDIT](AUDIT.md#final-regression-2026-11-02)，旧执行清单已从 PLAN 清除。
 
