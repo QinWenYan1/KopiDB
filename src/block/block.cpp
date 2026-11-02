@@ -172,51 +172,61 @@ bool Block::add_entry(const std::string &key, const std::string &value,
                       uint64_t tranc_id, bool force_write) {
   // 每条 entry 格式:
   // [key_len:uint16_t][key][value_len:uint16_t][value][tranc_id:uint64_t]
+  //
   // 若 force_write 且当前容量不足则返回 false
   // 成功添加后记录偏移到 offsets, 返回 true
-  // 1. 本条 entry 字节数：
-  //    [key_len:2B][key:key.size()][val_len:2B][value:value.size()][tranc_id:8B]
+  // 
+  // 本条 entry 字节数：
+  // [key_len:2B][key:key.size()][val_len:2B][value:value.size()][tranc_id:8B]
 
-  // 长度字段只有 16 位，必须在转换和修改 Block 前检查
-  // 换一个新块也无法解决单条记录长度超限，因此直接报错
+  // 1. 先检查本条记录是否可以编码
+  // key/value 的长度字段只有 16 位
+  // 如果它们本身超限，换一个空块也无法解决，因此直接抛异常
   if (key.size() > UINT16_MAX || value.size() > UINT16_MAX)
     throw std::length_error(
         "Block::add_entry: key or value exceeds uint16_t length limit");
 
   size_t entry_size = 2 + key.size() + 2 + value.size() + 8;
 
-  // 2. 容量检查：cur_size() 统计的是 "现有 data + 现有 offsets + num占位 "
-  //    新增一条 entry，offsets 也会多一项
-  //    把新的账一起加入进去，超了就拒写
-  //    另外，空 block 永远收下第一条 entry，哪怕它超 capacity
-
-  // data.size() 是即将写入记录的起点
-  // 65535 仍然可以编码，超过它才会发生截断
-  if (data.size() > UINT16_MAX)
-    throw std::length_error(
-        "Block::add_entry: entry offset exceeds uint16_t limit");
-
-  // 追加后条目数不能超过 65535
-  // 当前已经达到上限时，必须在 push_back 之前拒绝
-  if (offsets.size() >= UINT16_MAX)
-    throw std::length_error(
-        "Block::add_entry: entry count exceeds uint16_t limit");
-
+  // 2. 先判断是否需要换块，再检查旧块的编码边界。
+  // cur_size() 包含已有数据、已有偏移和条目数量字段；
+  // 本条记录除了 entry_size，还需要新增一个 2 字节的偏移。
+  //
+  // 不同 key 允许换块：容量不足时返回 false，让 SSTBuilder 换块重试。
+  // 例如旧块 data 已有 65543 字节，下一条是不同 key，
+  // 应先返回 false，而不是根据旧块的起始偏移直接抛异常。
+  //
+  // 空块允许接收第一条超过目标容量的合法记录。
+  // force_write 用于同 key 的版本组，跳过容量限制，避免拆散版本
   if (!force_write && !offsets.empty() &&
       cur_size() + entry_size + 2 > capacity) {
     return false;
   }
 
-  // 3. 记偏移：必须在追加之前！offset 指向本条 entry 起点
+  // 3. 确定继续写入当前块后，检查编码边界
+  // data.size() 是新记录的起始偏移，必须能用 uint16_t 表示
+  // force_write 只绕过目标容量限制，不能绕过编码上限
+  // 同 key 的版本组超过此边界时，仍按现有约定抛异常
+  if (data.size() > UINT16_MAX)
+    throw std::length_error(
+        "Block::add_entry: entry offset exceeds uint16_t limit");
+
+
+  // 条目数量也使用 uint16_t 编码
+  // 已有 65535 条时不能再追加，必须在修改 Block 前拒绝
+  if (offsets.size() >= UINT16_MAX)
+    throw std::length_error(
+        "Block::add_entry: entry count exceeds uint16_t limit");
+
+  // 4. 检查通过后，先保存新记录的起始偏移，再追加数据
   offsets.push_back(static_cast<uint16_t>(data.size()));
 
-  // 4. 逐字段追加入 data
   // 4.1 key_len: 小端 2 字节压入方式
   uint16_t key_len = static_cast<uint16_t>(key.size());
   data.push_back(key_len & 0xFF);
   data.push_back((key_len >> 8) & 0xFF);
 
-  // 4.2 内容：直接拷贝 string 的字节
+  // 4.2 内容：直接拷贝 string 的字节 key 内容
   data.insert(data.end(), key.begin(), key.end());
 
   // 4.3 val_len: 小端 2 字节
@@ -224,7 +234,7 @@ bool Block::add_entry(const std::string &key, const std::string &value,
   data.push_back(val_len & 0xFF);
   data.push_back((val_len >> 8) & 0xFF);
 
-  // 4.4 压入内容
+  // 4.4 压入 value 内容
   data.insert(data.end(), value.begin(), value.end());
 
   // 4.5 tranc_id: 小端 8 字节 （与 get_tranc_id_at 镜像读法）
