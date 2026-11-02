@@ -844,12 +844,21 @@ LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
                        wk)
           : SSTBuilder(TomlConfig::getInstance().getLsmBlockSize(), true);
 
+  // 当前 builder 是否保存着尚未生成 SST 的记录
+  // 空 builder 的 real_size() 也包含 2 字节编码开销
+  // 因此不能用 real_size() > 0 判断是否存在记录
+  bool has_pending_entries = false;
+
   // 1. 循环从迭代器取 key-value 写入 SSTBuilder
   while (iter.is_valid() && !iter.is_end()) {
     std::string cur_key = (*iter).first;
+
     // 三件套: key / value / 真实版本号
     // (keep_all_versions 模式下 get_tranc_id() 返回 entry 的真实 tranc_id)
+    // Compaction 使用保留全部版本的迭代器
+    // 在该模式下，get_tranc_id() 返回当前记录的真实版本号
     new_sst_builder.add(cur_key, (*iter).second, iter.get_tranc_id());
+    has_pending_entries = true; 
     ++iter;
 
     // 版本切分禁令:
@@ -876,17 +885,22 @@ LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
 
       // 调用 builder.build() 生成 SST 之后并重置 builder
       // 迭代结束后若 builder 非空则再次 build
+      // 这批记录已经输出。换成空 builder，等待接收下一批记录，
+      // 同时清除标志，表示现在没有待输出的数据。
       new_sst_builder =
           (wk > 0 && vlog_)
               ? SSTBuilder(TomlConfig::getInstance().getLsmBlockSize(), true,
                            vlog_, wk)
               : SSTBuilder(TomlConfig::getInstance().getLsmBlockSize(), true);
+      has_pending_entries = false; 
     }
   }
 
   // 3. 收尾: builder 里还有没落盘的数据 -> 再 build 一个
-  //    real_size() = 已完成的 block + 进行中的 block, 比 estimated_size 更全
-  if (new_sst_builder.real_size() > 0) {
+  // 1. 最后一批不足阈值：标志为 true，需要生成 SST。
+  // 2. 最后一批已在循环内输出：标志为 false，不再生成。
+  // 3. 输入原本为空：标志始终为 false，也不生成 SST。
+  if (has_pending_entries) {
     size_t sst_id = next_sst_id++;
     std::string sst_path = get_sst_path(sst_id, target_level);
     auto new_sst = new_sst_builder.build(sst_id, sst_path, block_cache);
