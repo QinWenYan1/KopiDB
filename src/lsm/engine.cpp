@@ -857,7 +857,7 @@ LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
     // (keep_all_versions 模式下 get_tranc_id() 返回 entry 的真实 tranc_id)
     // Compaction 使用保留全部版本的迭代器
     // 在该模式下，get_tranc_id() 返回当前记录的真实版本号
-    new_sst_builder.add(cur_key, (*iter).second, iter.get_tranc_id());
+    new_sst_builder.add(cur_key, (*iter).second, iter.get_cur_tranc_id());
     has_pending_entries = true; 
     ++iter;
 
