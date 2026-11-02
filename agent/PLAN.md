@@ -1,122 +1,90 @@
-# KopiDB 当前任务：修复 A1～A4
+# KopiDB 当前任务：Record 编解码
 
 最后更新：2026-11-02。
 
-目标：修复 [AUDIT.md](AUDIT.md) 中已经复现的 A1～A4，使四项问题通过行为验收，并通过相关存储与事务回归。用户已确认五阶段计划；默认由用户手写业务代码和头文件，助手提供逐函数实现、补充测试并维护记录。2026-10-31 用户单独授权助手完成 A1 三个文件工具函数，其余阶段仍沿用手写流程。
+章节：目录 **5.2.1「Record 编解码」**，文章标题 **Lab 5.3 WAL 日志编解码**。
 
-**修复进度：100%（5/5 阶段验收通过）**。按验收阶段数计算，不代表工时比例。
+**进度：0%（0/5 阶段验收通过）**。按验收阶段数计算，不代表工时比例。当前已阅读 Lab、作者参考和本地调用关系；本轮只完成计划更新，尚未开始独立实现或测试。
 
-当前：A1～A4 功能修复及阶段⑤整体回归均已完成，8 个测试目标共 291/291 通过。本轮只验收已完成模块，不提前实现后续 WAL／恢复和入口初始化。除此前单独授权的 A1 外，业务代码由用户手写；助手新增／扩展测试、运行验证并维护文档。两处旧注释的准确替换文字已交付用户，不影响功能验收。DB 使用约定与 README 子任务已收尾。
+当前函数：`Record::createRecord(uint64_t tranc_id)`，位于 [src/wal/record.cpp](../src/wal/record.cpp) 当前第 9 行。
 
-| 阶段 | 工作 | 状态 |
+## 本轮目标
+
+独立实现 Record 的五个记录创建函数及 encode/decode，使事务操作能够准确转换为字节数组，并从单条或连续多条记录的字节数组中还原事务 ID、操作类型和对应的 key/value。
+
+本轮产物是内存记录与字节数组之间的转换。后续章节和全局延期事项统一见 [STATE.md](STATE.md#全局排期与延期事项)，不混入本轮 TODO。
+
+业务源码及头文件由用户手写；助手逐函数给出带中文注释的完整实现、检查修改、补测试并维护进度。同一阶段内包含多个函数时仍分轮处理。
+
+## 已读资料与当前代码
+
+- [Lab 5.3，lab-doc-2 分支](https://github.com/Vanilla-Beauty/tiny-lsm/blob/lab-doc-2/src/lab5/lab5.3-Record.md)：正文 2.1 要求五个静态创建函数，2.2 要求 encode/decode；本节仅处理字节数组，文件 I/O 在后续章节。
+- [作者 Record 参考，master 分支](https://github.com/Vanilla-Beauty/tiny-lsm/blob/master/src/wal/record.cpp)：2026-11-02 已读取，仅作为方案对照，未运行作者工程。
+- 本地 [record.cpp](../src/wal/record.cpp) 的七个函数均已有参考函数体，仍按 Lab 要求全部重新推导、逐个实现，不能视为本轮已完成。
+- [record.h](../include/wal/record.h) 保留现有公开接口和拼写。getter、print、operator==/!= 仅联动复核，不列入必须重写的函数。
+- 已核对调用关系：TranContext 的创建、put、remove、commit 会构造 Record 并保存到 operations；当前仅保存在内存。rollbackRecord 是本节要求的记录类型，其后续调用接入按 STATE 排期处理。
+- 本轮测试拟加入 [test/test_wal.cpp](../test/test_wal.cpp) 的独立 `RecordTest` 测试组，只筛选该组运行，不构造 WAL 对象。新增测试使用 getter 逐字段核对，避免仅依赖现有 operator== 得出结论。
+
+## 共同设计：在首个函数前讲清
+
+沿用 Lab 的字段布局和现有类型编号，保留 uint16_t 长度字段：
+
+| 记录类型 | 字段 | 总编码长度，含 record_len 本身 |
 | --- | --- | --- |
-| ① [A1](AUDIT.md#a1) | 文件写入失败逐层上报 | 已验收：197/197 相关回归通过 |
-| ② [A2](AUDIT.md#a2) | 目录 5.1.2「事务管理器」的混合隔离读取修复 | 已验收：115/115 适用 LSM 测试通过 |
-| ③ [A3](AUDIT.md#a3) | compaction 收尾不构建空 SST | 已验收：117/117 适用 LSM 测试通过 |
-| ④ [A4](AUDIT.md#a4) | 大记录后不同 key 正常换块 | 已验收：Block 37/37、SST 29/29 通过 |
-| ⑤ 整体验收 | 相关回归及修复记录收尾 | 已验收：8 个目标共 291/291 通过，记录已回写 |
+| CREATE / COMMIT / ROLLBACK | 总长 2B + 事务 ID 8B + 类型 1B | 11 字节 |
+| DELETE | 公共头 + key 长度 2B + key | 13 + key.size() |
+| PUT | 公共头 + key 长度 2B + key + value 长度 2B + value | 15 + key.size() + value.size() |
 
-## 插入子任务：DB 使用约定与 README 示例
+本轮方案：
 
-目标：在 STATE 明确线程、事务、MVCC、隔离和持久化行为，区分目标与已验证能力；README 面向使用者，整合背景介绍、应用场景、构建、简短示例、学习文档和必要限制，提供可跳转的目录。保留 A1～A4 主线，不扩展业务实现。
+1. 总长度和 key/value 长度必须能由现有字段表示。先检查字段长度，再用 size_t 计算总长；通过检查后才转换为 uint16_t。总长超限抛 length_error，不能截断后继续编码。
+2. 总长上限包括公共头及各长度字段，因此 Record 的限制与 SST 单个 key/value 长度限制不能混为一谈。开始 putRecord 时明确展示边界例子，并检查已有 TranContext 调用的正常行为。
+3. 整数明确使用小端编码。作者参考使用 memcpy 写本机字节序；本方案在当前小端平台上保持相同字段字节顺序，避免让编码规则依赖主机。
+4. Record 只保存操作内容；零长度字符串和内嵌空字节按长度处理，不在这一层加入公开 API 的空 key 拒绝策略，也不根据空 value 擅自改变操作类型。
+5. encode 输出一条完整记录；decode 接受连续拼接的多条记录，按输入顺序返回。空输入返回空列表；非空但截断、长度矛盾或类型未知的输入应明确报错，不越界读取、不静默接受坏记录。读取每个字段前，以本条 record_len 的边界检查剩余空间。
 
-- [x] 核对 RocksDB 官方并发约定、tiny-lsm 作者 Readme／事务 Lab，以及 KopiDB 的上下文约定和入口现状。
-- [x] 将新增能力核查、建议线程模型、数据／隔离规则、排期及完整验证程序从 README 迁入 STATE，与已有约定合并；A2 现象和失败记录沿用 AUDIT 条目，避免重复记账。
-- [x] 在用户最新 README 上只修改使用示例及其子目录：普通 CRUD 使用 LSM::put/get/remove；显式事务独立展示 LSM::begin_tran、事务读写及 commit/abort。已移除组件手动绑定和内部状态保存，保留用户恢复的知识、资料、顺序与结构。由于入口初始化未完成，简短标注接口示意。
-- [x] 按用户补充恢复“什么是 LSM-tree／为什么需要 LSM-tree／应用场景／学习文档”，精简重复内容并加入章节目录；示例代码保持不变。
-- [x] 按用户要求给小节及目录加图标；显式事务示例只保留 commit 调用，省略报错输出和退出分支，并简短注明省略结果处理。事务示例语法和 8 个目录跳转检查通过。
-- [x] 按用户最新要求将五类 API 用例合为一个完整代码块，用注释分隔普通 CRUD、事务提交、事务回滚、批量操作和有序遍历。仅修改使用示例正文，保留用户当前目录、背景资料和页尾；合并程序语法、15 个本地链接及 6 个目录锚点检查通过，未运行程序。
-- [x] 两个历史组件示例各自编译及运行 2/2 通过，原程序与证据保留在 STATE；这些结果不代表现在的 LSM 用户接口示例可运行。
-- [x] 普通 CRUD 和显式事务两个示例均通过语法检查，17 个本地链接与 8 个目录锚点通过；与修改前快照比对，使用示例以外仅增加两项子目录链接。没有运行示例，也没有将旧组件示例的通过结果套用到本例；运行验收等待既定的入口初始化任务。
-- [x] 用户已要求将讨论的并发模型写入 README：同一进程的多线程共享 DB，各笔事务使用独立上下文，同一上下文／迭代器串行访问。README 新增三句说明及目录跳转，明确完整并发支持仍在完善；STATE 同步为已确定的使用目标，不表示完整并发能力已验收。
+这些规则在逐函数讲解时解释依据；若实际调用约束要求调整，先说明影响再更新计划，不直接扩展成其他模块的重构。
 
-验收范围：README 易读，示例使用真正的用户接口，并准确区分接口示意与已可运行的程序；迁出的内部资料完整、按职责归档并去重。运行验收不提前牵入后续章节；通过局部示例也不能推出完整线程安全、混合隔离 A2 已解决或具备崩溃恢复。证据维护在 STATE；此子任务不改变主线 1/5 的功能验收进度。
+## 阶段与验收
 
-## 本轮执行约定与边界
+| 阶段 | 依次实现的函数／任务 | 验收标准 | 状态 |
+| --- | --- | --- | --- |
+| ① 事务状态记录 | createRecord → commitRecord → rollbackRecord | 三种记录的类型、完整 64 位 ID 正确；key/value 为空；长度计算代码检查正确，编码完成后验证为 11B | 待开始 |
+| ② 数据操作记录 | putRecord → deleteRecord | 保留对应 key/value；DELETE 不携带 value；合法边界可创建、字段或总长超限明确报错；零长度与二进制内容不被改写 | 待开始 |
+| ③ 编码 | encode | 五种记录字节布局正确，长度与实际输出一致；已知字节样例、字段边界和完整 64 位 ID 通过 | 待开始 |
+| ④ 解码 | decode | 单条与多条混合流准确还原，顺序不变；空输入正确；截断、错误长度和未知类型明确拒绝 | 待开始 |
+| ⑤ 整体验收 | Record 测试及受影响事务回归、记录收尾 | 各类记录往返及已知字节对照通过；现有事务记录创建路径不回归；说明实际运行与尚未接通的范围 | 待开始 |
 
-- 每进入 A1、A2、A3、A4 中一个新问题，先在聊天中写 issue，由用户手动发布；正文包括位置、触发过程、预期与实际差异、修复范围和验收标准。不自动创建远程 issue，也不要求用户必须先发布才能继续。
-- 逐函数给出职责、调用链、带中文注释的完整实现；用户写好后检查并做针对性验证，按用户指令继续。每轮展示全部五阶段状态及完成百分比。
-- A2 属于目录 **5.1.2「事务管理器」**（文章标题为 Lab 5.2）正文 3.2.3 get 的现有读取问题；目录 **5.2「WAL 和崩溃恢复」**尚未开始，本轮不实现日志编解码、WAL、恢复和初始化整合。
-- 保留现有持久化格式及同 key 编码超限抛异常的约定；本轮不安排 iterator 重构或读未提交 put 的冲突策略重设计。
-- 新发现先登记 AUDIT；只有确属本轮必要依赖才说明原因并纳入 PLAN。问题事实和历史复现日志保留在 AUDIT，项目全局约定见 STATE。
+### 阶段①：事务状态记录
 
-<a id="stage-a1"></a>
+- [ ] `Record::createRecord()`：当前 record.cpp:9。
+- [ ] `Record::commitRecord()`：当前 record.cpp:16。
+- [ ] `Record::rollbackRecord()`：当前 record.cpp:23。
+- [ ] 助手补充类型、ID 和无负载字段测试，按函数逐项验收。私有 record_len 不新增 getter，只做计算检查，阶段③补充实际编码长度验证。
 
-## 阶段① A1：文件写入失败逐层上报
+### 阶段②：数据操作记录
 
-已按本次单独授权由助手修改，三个函数均补充中文注释：
+- [ ] `Record::putRecord()`：当前 record.cpp:30。
+- [ ] `Record::deleteRecord()`：当前 record.cpp:42。
+- [ ] 助手覆盖普通字符串、零长度、内嵌空字节、恰好达到总长上限及超限；通过 getter 检查数据完整性。
 
-- [x] [StdFile::write](../src/utils/std_file.cpp)：使用写入定位并检查定位、写入结果，不能无条件返回成功。
-- [x] [StdFile::create](../src/utils/std_file.cpp)：传递初始内容写入失败。
-- [x] [FileObj::create_and_write](../src/utils/files.cpp)：检查创建／写入与最终流刷新结果，失败时抛异常。
+### 阶段③：编码
 
-仅联动复核：`SSTBuilder::build()`、`MemTable::flush_last()`、`LSMEngine::flush()` 的异常传播与成功后移除／登记顺序；目前不列为必改函数。
+- [ ] `Record::encode()`：当前 record.cpp:52。
+- [ ] 五类记录用已知字节序列验证字段顺序、操作类型编码和小端整数。
+- [ ] 验证实际输出长度、字符串原始字节、uint64_t 较高位，以及前两阶段创建的边界记录。
 
-验收：已有 `TranCommitTest.AuditFlushWriteFailurePreservesMemory` 通过；补充必要断言，确认失败后原内存记录仍可读、失败 SST 未登记；正常文件读写和相关 SST 构建通过。测试仅在子进程限制文件长度，不影响父进程；不据此宣称 fsync 或断电恢复能力。
+### 阶段④：解码
 
-2026-10-31 验收通过：故障测试还确认解除文件长度限制后可重试刷盘，值与版本不变；File/Bloom 15/15、MemTable 49/49、SST 适用范围 28/28、LSM 适用范围 105/105。仅修改三个函数的逻辑，事务状态保存处修正一条过时注释；上层刷盘逻辑保持不变。A2～A4 及后续章节用例未计入本阶段通过数。
+- [ ] `Record::decode()`：当前 record.cpp:94。
+- [ ] 单条、连续多条、混合操作、不同事务 ID 和重复 key 保持原顺序，不在编解码中去重或应用事务操作。
+- [ ] 每条记录独立检查头部、记录长度和负载范围；覆盖首条及后续记录截断、零／过小长度、字段长度矛盾、未知操作类型。
+- [ ] 只验证输入字节流的完整解码，不用本节测试替代崩溃恢复验收。
 
-<a id="stage-a2"></a>
+### 阶段⑤：整体验收
 
-## 阶段② A2：事务读取隔离
-
-2026-10-31 启动：按约定在聊天中起草 issue，不自动发布。当前代码仍将 RU/RC 共用的读取交给仅过滤回滚版本的 Engine；RR 首次结果直接缓存。已有混合隔离测试的历史结果确认该路径失败，本轮仅复核代码与日志，未重复运行测试。接口名称及签名仍按下方草案在实现前细化。
-
-2026-10-31 首个函数设计：新增 `bool should_skip_read(uint64_t tranc_id, bool require_committed) const`。参数 tranc_id 是候选记录的写事务 ID；返回 true 表示本次查询应跳过该记录。所有读取都排除回滚事务；require_committed 为 true 时还排除活跃事务。两项状态判断共用一次 mutex_ 加锁，不在锁内再调用自行加锁的 is_aborted。当前约定中显式事务通过 new_tranc 登记；结束登记在同一把锁下更新回滚集合并移除活跃项。
-
-后续衔接方案：Engine::get 增加本次读取是否要求已提交的参数，默认 false 保持既有调用行为，在查询中捕获该参数并复用现有回调传递路径；TranContext::get 为 RU 选择 false，为 RC/RR/SERIALIZABLE 存储读取选择 true。原有版本上限仍独立生效，自身暂存修改仍在进入 Engine 前返回。管理器函数返回 false 只表示未被状态规则排除，不代表已经满足版本上限。提交冲突检查继续使用原 is_aborted，不因此隐藏活跃事务的冲突版本。
-
-2026-11-01 首个函数验收：用户实现正确，两项集合查询共用一次锁，未调用再次加锁的 is_aborted。新增 `TranReadVisibilityTest.ManagerReadPolicyTracksCommit`、`ManagerReadPolicyRejectsAbort`、`ManagerReadPolicySurvivesFlushSettlement`，验证活跃时允许脏读／严格读取跳过、提交后放行、回滚后一律跳过，以及取消记录仍留在 SST 且检查点推进后继续跳过。连同事务创建、结束登记、刷盘结算与提交／回滚相关旧用例，构建成功、15/15 通过。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a2-manager-review-91gavzcv`，含命令、配置、结果及源码哈希；检查期间源码未变化。助手只新增测试，未修改业务代码。未登记的低层测试／普通单次操作记录沿用现有可见性，不以缺少 active 项推导任意 ID 的提交证明；本函数不负责启动崩溃恢复。
-
-2026-11-01 第二个函数验收：Engine::get 的声明增加默认 false 参数，回调捕获本次读取要求并调用 should_skip_read，同一回调已传给 get_record 和 sst_get_。新增 `TranReadVisibilityTest.EngineReadPolicyAcrossMemoryAndSst`、`EngineReadPolicyTracksCommitAndVersionBound`、`EngineReadPolicySkipsConsecutiveActiveAndAbortedVersions`；扩展缺失／失效管理器测试到严格读取。覆盖未提交更新／删除／新增／复活、有效旧值与墓碑、活跃表／冻结表／SST、提交后重查、版本上限及连续跳过。构建成功，新增与相关旧用例共 30/30 通过。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a2-engine-review-ebk97xy5`，含配置、命令、结果与源码哈希；检查期间源码未变化。助手仅修改测试和记录。
-
-依次处理：
-
-- [x] 在 [TranManager](../include/lsm/transaction.h) 新增 `should_skip_read(uint64_t tranc_id, bool require_committed) const`；在同一次加锁中检查活跃与回滚集合，不改变现有 `is_aborted()` 的含义。2026-11-01 代码检查与相关 15/15 测试通过。
-- [x] [LSMEngine::get](../src/lsm/engine.cpp)：根据本次读取规则构造过滤条件，复用底层已有回调，在选择胜出版本之前过滤；保留既有调用行为。2026-11-01 检查、构建与相关 30/30 测试通过。
-- [x] [TranContext::get](../src/lsm/transation.cpp)：自身修改优先，按隔离级别选择读取规则，首次合法读取之后再写入读缓存。2026-11-01 完整场景及适用 LSM 回归通过。
-
-必要联动：事务与 Engine 头文件声明；只读复核 `new_tranc()` 和结束登记的生命周期，以及提交冲突查询与新读取规则的区分。底层 MemTable、SST、iterator 先复用已有回调，不列为必须重写。
-
-2026-11-01 A2 验收完成：新增 3 项真实事务测试，覆盖 SST 中的脏值／墓碑与 RU 读取、提交后 RC 重查和 RR/SERIALIZABLE 的合法旧值／不存在缓存、被过滤版本存在时自身暂存修改优先。原 `RejectsDirtyValuesAndTombstonesBeforeCaching` 已通过。构建成功，适用 test_lsm 共 115/115 通过；明确排除 11 个后续 Lab 用例及下一阶段 A3 用例。A3 单独运行 1/1 失败，仍为 Cannot build empty SST，不计入 A2 失败。日志：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a2-final-review-_5j9qx4o`，两个运行目录分别隔离，含排除清单、命令、结果、配置与源码哈希；运行期间源码未变化。助手只改测试与记录，未改业务代码；未运行其他测试目标。
-
-验收：恢复用例 `TranReadVisibilityTest.RejectsDirtyValuesAndTombstonesBeforeCaching` 通过；覆盖内存与 SST 中未提交值／墓碑、有效旧值／旧墓碑、自身修改、提交后 RC 再读、回滚后读取、RR 重复读取与首次不存在缓存；RU 保持允许脏读。验证现有 SERIALIZABLE 单键读取路径，不宣称完整串行化。
-
-<a id="stage-a3"></a>
-
-## 阶段③ A3：compaction 收尾
-
-2026-11-01 启动：复测 `TranCommitTest.AuditCompactionDoesNotBuildEmptyTail`，1/1 失败，异常与历史依据一致。已验证远程提交 `39188fabd597a8bf15b658221806c3f2166b0460` 的相关源码和测试，用于聊天中的 issue 链接，由用户手动发布。最小方案是在 gen_sst_from_iter 内维护 has_pending_entries：成功 add 后置 true，输出 SST 并重置 builder 后置 false，收尾按该标志决定是否 build。保留当前切分阈值、同 key 版本分组和 builder 创建方式；不增加 SSTBuilder 接口。
-
-- [x] 修改 [LSMEngine::gen_sst_from_iter](../src/lsm/engine.cpp)：以当前 builder 是否真正加入记录判断收尾，不用包含空块开销的字节数判空。
-
-2026-11-02 验收：has_pending_entries 的设置、重置和收尾判断正确，写入改用 get_cur_tranc_id。扩展原 A3 用例检查两类 key 和真实版本；新增 CompactionPreservesTailAndSameKeyVersions，验证输出过批次后仍保存尾部、历史版本、墓碑，以及同 key 不跨 SST。构建成功，适用 test_lsm 117/117 通过，排除原 11 个后续 Lab 用例。空输入通过代码检查确认返回空列表，未为私有函数添加测试入口，也未直接运行该分支。验收证据见 [AUDIT A3](AUDIT.md#a3)。旧注释仍提及 get_tranc_id，已提示用户同步说明，不影响运行；助手未改业务代码。
-
-验收：`TranCommitTest.AuditCompactionDoesNotBuildEmptyTail` 通过；覆盖最后一批已完整输出、仍有剩余记录、空输入的收尾行为，确认数据与版本保留，同 key 的版本不跨 SST 切分。
-
-<a id="stage-a4"></a>
-
-## 阶段④ A4：不同 key 正常换块
-
-2026-11-02 启动：构建并单独运行 SSTTest.AuditDifferentKeyCanStartBlockAfterLargeEntry，1/1 失败，仍为 entry offset exceeds uint16_t limit。已核实远程提交 39188fabd597a8bf15b658221806c3f2166b0460 的 Block::add_entry、SSTBuilder::add 和回归测试位置，用于 issue；方案是将现有容量判断移到偏移和条目数检查之前，保留单条长度检查及 force_write 超限异常。等待用户手写，未改业务代码。
-
-- [x] 修改 [Block::add_entry](../src/block/block.cpp)：先区分本条记录无法编码与当前块容量不足，调整容量和旧块编码边界的检查顺序。
-
-2026-11-02 验收：用户已正确调整检查顺序，编码格式和同 key 强制写入边界保持不变。新增 BlockTest.FullBlockReturnsFalseWithoutChangingRecords、FullBlockStillRejectsUnencodableKeyAndValueLengths；扩展原 A4 SST 用例检查两块及真实版本。构建成功，Block 37/37、SST 29/29 全部通过，包含旧的同 key 偏移超限保护。证据见 [AUDIT A4](AUDIT.md#a4)。第 176 行旧注释遗漏“非强制”条件，已给用户准确替换文字，不影响本次功能验收。
-
-仅联动复核：`SSTBuilder::add()` 收到 false 后结束旧块、创建新块并重试的行为。
-
-验收：`SSTTest.AuditDifferentKeyCanStartBlockAfterLargeEntry` 通过；大记录后不同 key 可以正常读回；单条长度超限和同 key 强制写入编码超限仍抛异常，不改变文件格式。
-
-<a id="stage-regression"></a>
-
-## 阶段⑤ 整体验收
-
-- [x] 运行本轮新增／既有缺陷回归，以及相关 LSM 事务与存储用例。
-- [x] 回归 SkipList、MemTable、Block、SST、File/Bloom 工具、BlockCache、BlockMeta 的已完成能力；测试在隔离临时目录执行，保存构建与运行证据。
-- [x] 明确列出因后续章节未实现而未运行的用例；保留源码，不删除有效断言或跳过本轮缺陷测试。
-- [x] 在 AUDIT 回写每项实际解决结果及证据；在 STATE 记录项目能力与验收范围，再收尾 PLAN。
-
-2026-11-02 整体验收完成：SkipList 31/31、MemTable 49/49、Block 37/37、SST 29/29、File/Bloom 15/15、BlockCache 7/7、BlockMeta 6/6、适用 LSM 117/117，合计 291/291。本轮 Block/SST 结果直接纳入总数，未重复运行；各目标在独立临时目录使用复制配置执行。源码、测试及配置哈希在构建／运行前后一致。排除的 11 个 LSM 用例及其他未运行目标见 [AUDIT 验证记录](AUDIT.md#final-regression-2026-11-02)，证据保存在该条目。检查了改动相关的旧注释：block.cpp:176 的 force_write 条件写反、engine.cpp:856 的 getter 说明过时，已给用户替换文字；这两项注释清理不影响本次功能验收。
-
-完成标准：四项问题的行为验收及相关回归全部通过。历史 247/247 只代表此前范围，不替代本轮结果；仅写好代码或 issue 不计为阶段验收完成。
+- [ ] 构建 test_wal，在隔离目录运行 `--gtest_filter=RecordTest.*`，保证测试不依赖未实现的 WAL 运行机制。
+- [ ] 使用已知字节验证与 encode/decode 往返验证共同检查，避免两个函数犯相同错误却互相抵消。
+- [ ] 回归受工厂函数影响的事务构造、put/remove、commit/abort 用例；按实际变化决定是否需要更广回归。
+- [ ] 检查本轮注释、函数签名与调用衔接，记录构建／测试结果及限制；未运行的后续用例保留源码。
+- [ ] 将本轮完成情况写入 STATE，再收尾 PLAN。发现的问题按 AUDIT 流程分类，不把后续 Lab 的正常未实现功能计为缺陷。
