@@ -7,46 +7,25 @@
 namespace tiny_lsm {
 
 Record Record::createRecord(uint64_t tranc_id) {
-  Record record;
-  record.operation_type_ = OperationType::OP_CREATE;
-  record.tranc_id_ = tranc_id;
-  record.record_len_ = sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t);
-  return record;
+  // TODO: Lab 5.3 实现创建事务的Record
+  return {};
 }
 Record Record::commitRecord(uint64_t tranc_id) {
-  Record record;
-  record.operation_type_ = OperationType::OP_COMMIT;
-  record.tranc_id_ = tranc_id;
-  record.record_len_ = sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t);
-  return record;
+  // TODO: Lab 5.3 实现提交事务的Record
+  return {};
 }
 Record Record::rollbackRecord(uint64_t tranc_id) {
-  Record record;
-  record.operation_type_ = OperationType::OP_ROLLBACK;
-  record.tranc_id_ = tranc_id;
-  record.record_len_ = sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t);
-  return record;
+  // TODO: Lab 5.3 实现回滚事务的Record
+  return {};
 }
 Record Record::putRecord(uint64_t tranc_id, const std::string &key,
                          const std::string &value) {
-  Record record;
-  record.operation_type_ = OperationType::OP_PUT;
-  record.tranc_id_ = tranc_id;
-  record.key_ = key;
-  record.value_ = value;
-  record.record_len_ = sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t) +
-                       sizeof(uint16_t) + key.size() + sizeof(uint16_t) +
-                       value.size();
-  return record;
+  // TODO: Lab 5.3 实现插入键值对的Record
+  return {};
 }
 Record Record::deleteRecord(uint64_t tranc_id, const std::string &key) {
-  Record record;
-  record.operation_type_ = OperationType::OP_DELETE;
-  record.tranc_id_ = tranc_id;
-  record.key_ = key;
-  record.record_len_ = sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t) +
-                       sizeof(uint16_t) + key.size();
-  return record;
+  // TODO: Lab 5.3 实现删除键值对的Record
+  return {};
 }
 
 std::vector<uint8_t> Record::encode() const {
