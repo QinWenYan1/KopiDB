@@ -1137,12 +1137,15 @@ TEST_F(SSTTest, AuditDifferentKeyCanStartBlockAfterLargeEntry) {
   ASSERT_NO_THROW(builder.add("b", "small", 2));
   auto cache = std::make_shared<BlockCache>(16, 2);
   auto sst = builder.build(1, "test_data/audit-large-entry.sst", cache);
+  EXPECT_EQ(sst->num_blocks(), 2u);
   auto a = sst->get("a", 0);
   ASSERT_TRUE(a.is_valid());
   EXPECT_EQ(a->second, large);
+  EXPECT_EQ(a.get_cur_tranc_id(), 1u);
   auto b = sst->get("b", 0);
   ASSERT_TRUE(b.is_valid());
   EXPECT_EQ(b->second, "small");
+  EXPECT_EQ(b.get_cur_tranc_id(), 2u);
 }
 
 int main(int argc, char **argv) {

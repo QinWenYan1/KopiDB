@@ -1,6 +1,6 @@
 # KopiDB 全局问题账本
 
-最后更新：2026-11-02。用户已确认 A1～A4 的五阶段修复计划，见 [PLAN.md](PLAN.md)。A1、A2、A3 已解决；A3 最新适用 LSM 回归 117/117 通过。A4 已复测并进入 issue 与函数草案，待用户实现。
+最后更新：2026-11-02。A1～A4 均已解决，五阶段计划全部验收，见 [PLAN.md](PLAN.md)。最终 8 个测试目标共 291/291 通过；后续 Lab 用例未计入通过数，源码保留。
 
 本文件持续记录全局发现，规则见 [audit-to-plan](skills/audit-to-plan/SKILL.md)。选择问题开始处理时，在 [PLAN.md](PLAN.md) 按编号展开执行步骤，并在这里更新状态和计划链接；验收后保留原条目，补充解决日期与证据。项目现状和全局约定见 [STATE.md](STATE.md)。
 
@@ -21,7 +21,7 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 | [A1](#a1) | [已解决](PLAN.md#stage-a1) | P1 | 写文件失败仍报告成功，刷盘误移除内存数据 | StdFile::write/create、FileObj::create_and_write 的错误传递 | 45～90 分钟 |
 | [A2](#a2) | [已解决](PLAN.md#stage-a2) | P1 | RC/RR/SERIALIZABLE 可以读到其他 RU 事务的未提交版本，RR 缓存可延续错误 | TranContext::get、Engine 读取策略、TranManager 状态查询的必要联动 | 2～4 小时 |
 | [A3](#a3) | [已解决](PLAN.md#stage-a3) | P1 | compaction 最后一批刚好落盘后，又构建空 SST 并抛异常 | LSMEngine::gen_sst_from_iter 的收尾判空 | 20～40 分钟 |
-| [A4](#a4) | [处理中：正常换块](PLAN.md#stage-a4) | P2 | 大记录之后不同 key 无法正常换块，被提前的偏移检查拒绝 | Block::add_entry 的检查顺序，验证 SSTBuilder::add 衔接 | 20～40 分钟 |
+| [A4](#a4) | [已解决](PLAN.md#stage-a4) | P2 | 大记录之后不同 key 无法正常换块，被提前的偏移检查拒绝 | Block::add_entry 的检查顺序，验证 SSTBuilder::add 衔接 | 20～40 分钟 |
 | [A5](#a5) | 已确认排期（改进建议） | 待定 | 公开写入接口校验空 key／空 value，避免误用保留标记 | LSM／TranContext 写入口及批量参数预检查 | 未估时 |
 
 A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 → A2 → A3 → A4 → 整体验收推进。A5 是接口约束改进建议，已确认随目录 5.2.3 的公开入口初始化整合处理，不计为第五项已确认缺陷，也未加入当前 PLAN。每进入一个新修复问题，先在聊天中写 issue 草稿供用户手动发布，再逐函数推进；没有自动创建远程 issue。具体执行与验收标准维护在 PLAN。
@@ -114,6 +114,8 @@ A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 
 
 验收：大记录后不同 key 正常进入新块并可读回；原有同 key 超限保护仍成立。
 
+2026-11-02 已解决：用户将容量判断移到偏移与条目数检查之前，保留最前面的单条长度检查。助手新增 BlockTest.FullBlockReturnsFalseWithoutChangingRecords，验证返回 false 不改变旧块编码、旧值仍可读取；新增 FullBlockStillRejectsUnencodableKeyAndValueLengths，验证满块也不能掩盖非法单条长度；扩展原 SST 回归检查块数为 2 及两条记录的真实版本。构建成功，完整 Block 37/37、SST 29/29 通过，旧的强制写入偏移边界和合法同 key 版本用例也通过。日志、配置、命令和结果：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a4-final-review-u_gt1j45`，两个套件各在独立目录运行。业务代码由用户修改；第 176 行旧注释仍需用户同步为“非强制写入且非空块容量不足时返回 false”，已在聊天指出，不作为功能缺陷重新记账。
+
 <a id="a5"></a>
 
 ### A5：明确公开写入接口对空 key／空 value 的处理策略
@@ -129,6 +131,18 @@ A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 
 边界：底层仍需允许合法墓碑和内部事务标记，不把拒绝空数据的检查机械加到 SkipList、MemTable、Block 或 SST。若未来需要保存普通空字符串值，需单独讨论记录类型表示，不在当前 A2 中修改编码。
 
 ## 验证记录
+
+<a id="final-regression-2026-11-02"></a>
+
+2026-11-02 A1～A4 最终回归：8 个目标均重新构建成功。Block 37/37、SST 29/29 为同一轮 A4 验收结果，随后运行 SkipList 31/31、MemTable 49/49、File/Bloom 15/15、BlockCache 7/7、BlockMeta 6/6、适用 LSM 117/117；总计 **291/291 通过**，无禁用用例。本轮新增 2 个 Block 用例并扩展原 SST 回归，全部针对已确认的容量／编码约定；未改业务源码。
+
+- 每个测试目标在独立临时目录复制 config.toml，并以绝对路径运行已构建二进制。构建／测试期间源码、测试和配置哈希未变化。
+- 未运行的 11 个 LSM 用例属于 LSMTest：BasicOperations、Persistence、LargeScaleOperations、IteratorOperations、MixedOperations、MonotonyPredicate、TranContextTest、Recover、BigPersistence、BigPersistence2、SmallConfigLargeDataPersistent；这些仍依赖后续公开入口初始化／WAL／恢复工作，没有删除或禁用源码。
+- test_compact 未运行：当前夹具调用 init_new_wal，相关存储 compaction 回归已由 test_lsm 验证。test_wal、test_redis、test_wisckey 不在本轮已完成模块验收范围；没有将其未运行计为失败，也没有宣称相应能力已完成。
+- 证据目录：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a4-final-review-u_gt1j45`。含 8 份构建日志、各目标的配置／command.json／results.json／test.log、excluded.json、summary.json，以及前后源码哈希。
+- 已核对并提示两处旧注释：block.cpp:176 的 force_write 条件写反、engine.cpp:856 的 getter 说明过时。用户负责业务文件中的注释整理，不作为新功能缺陷记账。本轮通过不代表完整串行化、完整线程安全或崩溃恢复已经实现。
+
+以下为首次审计及历史基线：
 
 - 原混合隔离用例和新增 3 个问题用例均构建成功并实际运行，4 项均复现失败；未修改业务代码或削弱断言。
 - 完整 File/Bloom 工具测试 11/11、BlockCache 7/7、BlockMeta 6/6，共 24/24 通过。

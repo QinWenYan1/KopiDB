@@ -173,7 +173,7 @@ bool Block::add_entry(const std::string &key, const std::string &value,
   // 每条 entry 格式:
   // [key_len:uint16_t][key][value_len:uint16_t][value][tranc_id:uint64_t]
   //
-  // 若 force_write 且当前容量不足则返回 false
+  // 非强制写入且非空块容量不足时返回 false，让 SSTBuilder 换块
   // 成功添加后记录偏移到 offsets, 返回 true
   //
   // 本条 entry 字节数：

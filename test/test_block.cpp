@@ -251,6 +251,43 @@ TEST_F(BlockTest, ForceWriteWithinEncodingLimitsStillSucceeds) {
             std::make_optional(std::string(20, 'o')));
 }
 
+// 目的：通知 SSTBuilder 换块时不能先修改旧块，旧记录仍应完整可读。
+// 场景：第一条合法大记录使下一条起始偏移超过 16 位；不同 key 允许换块，
+// 应返回 false 而非抛异常，并保留旧块的编码内容。
+TEST_F(BlockTest, FullBlockReturnsFalseWithoutChangingRecords) {
+  Block block(4096);
+  const std::string large(65530, 'v');
+  ASSERT_TRUE(block.add_entry("a", large, 7, false));
+  const auto before = block.encode();
+
+  ASSERT_FALSE(block.add_entry("b", "small", 8, false));
+  EXPECT_EQ(block.size(), 1u);
+  EXPECT_EQ(block.encode(), before);
+  auto decoded = Block::decode(before);
+  EXPECT_EQ(decoded->get_value_binary("a", 7), std::make_optional(large));
+  EXPECT_FALSE(decoded->get_value_binary("b", 0));
+}
+
+// 目的：调整容量检查顺序后，不能把本条记录的非法长度误报为可换块重试。
+// 场景：旧块已经超过目标容量，此时传入 65536 字节的 key 或 value；
+// 不论是否强制写入都应抛 length_error，且旧记录保持不变。
+TEST_F(BlockTest, FullBlockStillRejectsUnencodableKeyAndValueLengths) {
+  Block block(4096);
+  ASSERT_TRUE(block.add_entry("a", std::string(65530, 'v'), 7, false));
+  const auto before = block.encode();
+  const std::string oversized(65536, 'x');
+
+  for (bool force_write : {false, true}) {
+    SCOPED_TRACE(force_write);
+    EXPECT_THROW(block.add_entry(oversized, "v", 8, force_write),
+                 std::length_error);
+    EXPECT_EQ(block.encode(), before);
+    EXPECT_THROW(block.add_entry("a", oversized, 8, force_write),
+                 std::length_error);
+    EXPECT_EQ(block.encode(), before);
+  }
+}
+
 // 测试迭代器
 TEST_F(BlockTest, IteratorTest) {
   // 使用 make_shared 创建 Block
