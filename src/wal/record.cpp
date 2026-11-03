@@ -68,11 +68,46 @@ Record Record::rollbackRecord(uint64_t tranc_id) {
   return record;
 }
 
+// Lab 5.3 实现插入键值对的Record
 Record Record::putRecord(uint64_t tranc_id, const std::string &key,
                          const std::string &value) {
-  // TODO: Lab 5.3 实现插入键值对的Record
-  return {};
+  constexpr size_t max_length = std::numeric_limits<uint16_t>::max();
+
+  // key_len 和 value_len 都用 uint16_t 编码
+  // 先限制各字段长度，再计算总长，避免超大输入在相加时发生溢出
+  if (key.size() > max_length || value.size() > max_length)
+    throw std::length_error(
+        "Record::putRecord: key or value exceeds uint16_t length");
+
+  // 固定部分包括：总长度、事务 ID、操作类型、key 长度、value 长度
+  // key/value 的内容另行计入；总长度字段自身也包含在内
+  constexpr size_t fixed_length =  
+    sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t) +
+    sizeof(uint16_t) + sizeof(uint16_t);
+  
+  const size_t total_length = fixed_length + key.size() + value.size(); 
+
+  // 即使 key/value 各自能装进长度字段，整条记录仍可能超过 65535B
+  // 必须在转成 uint16_t 之前拒绝，否则编码时会使用错误的总长度
+  if (total_length > max_length)
+    throw std::length_error(
+        "Record::putRecord: total record length exceeds uint16_t");
+
+  Record record; 
+  record.tranc_id_ = tranc_id; 
+  record.operation_type_ = OperationType::OP_PUT;
+  
+  // Record 保存自己的字符串副本，调用方之后修改原字符串不会影响它
+  // std::string 赋值按完整长度复制，也能保留内容中的 '\\0'
+  record.key_ = key; 
+  record.value_ = value; 
+
+  // 已确认总长度可以表示，此时转换不会截断
+  record.record_len_ = static_cast<uint16_t>(total_length); 
+  return record; 
+  
 }
+
 Record Record::deleteRecord(uint64_t tranc_id, const std::string &key) {
   // TODO: Lab 5.3 实现删除键值对的Record
   return {};
