@@ -145,115 +145,50 @@ Record Record::deleteRecord(uint64_t tranc_id, const std::string &key) {
 }
 
 std::vector<uint8_t> Record::encode() const {
-  std::vector<uint8_t> record;
+  std::vector<uint8_t> data; 
 
-  size_t key_offset = sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t);
-  // 记录长度本身(16) + 事务id(64) +
-  // 操作类型(8), 固有的编码部分
+  // 创建记录时已经计算好总长度，一次预留足够的容量
+  // reserve 不改变 size；后面的 push_back/insert 才真正追加字节
+  data.reserve(record_len_); 
 
-  record.resize(record_len_, 0);
+  // 将 value 拆成 byte_count 个字节，依次追加到 data
+  // byte_count 决定写多少字节：长度字段写 2 字节，事务 ID 写 8 字节
+  //
+  // 例如 value 的末尾是：00010010 00110100，byte_count = 2
+  // 第一次取出最右边的 00110100，写入数组，然后将 value 右移 8 位
+  // 第二次取出剩下的   00010010，写入数组
+  // 最终数组中的顺序是：[00110100] [00010010]
+  auto append_uint = [&data](uint64_t value, size_t byte_count){
+    for (size_t i = 0; i < byte_count; ++i){
+      // 掩码末尾的八个 1 保留 value 最右边的 8 位
+      // 其他位置清零，再将得到的这一个字节写入数组
+      data.push_back(static_cast<uint8_t>(value & 0xffu)); 
 
-  // 编码 record_len
-  std::memcpy(record.data(), &record_len_, sizeof(uint16_t));
+      // 将刚才已经写完的 8 位移出去，让下一个字节来到最右边
+      value >>= 8; 
+    }
+  }; 
 
-  // 编码 tranc_id
-  std::memcpy(record.data() + sizeof(uint16_t), &tranc_id_, sizeof(uint64_t));
+  // 字符串先写 2 字节长度，再追加全部内容
+  // 创建函数已检查长度可以用 uint16_t 表示
+  // 按 begin/end 复制会保留内嵌空字节，不依赖字符串结束符
+  auto append_string = [&data, &append_uint](const std::string &text){
+    append_uint(static_cast<uint16_t>(text.size()), sizeof(uint16_t)); 
+    data.insert(data.end(), text.begin(), text.end()); 
+  }; 
 
-  // 编码 operation_type
-  auto type_byte = static_cast<uint8_t>(operation_type_);
-  std::memcpy(record.data() + sizeof(uint16_t) + sizeof(uint64_t), &type_byte,
-              sizeof(uint8_t));
+  // 所有记录都有公共头：总长度、事务 ID、操作类型
+  // 操作类型固定占 1 字节，不使用枚举在内存中的大小
+  append_uint(record_len_, sizeof(uint16_t)); 
 
-  if (this->operation_type_ == OperationType::OP_PUT) {
-    uint16_t key_len = key_.size();
-    std::memcpy(record.data() + key_offset, &key_len, sizeof(uint16_t));
-    std::memcpy(record.data() + key_offset + sizeof(uint16_t), key_.data(),
-                key_.size());
 
-    size_t value_offset = key_offset + sizeof(uint16_t) + key_.size();
 
-    uint16_t value_len = value_.size();
-    std::memcpy(record.data() + value_offset, &value_len, sizeof(uint16_t));
-    std::memcpy(record.data() + value_offset + sizeof(uint16_t), value_.data(),
-                value_.size());
-  } else if (this->operation_type_ == OperationType::OP_DELETE) {
-    uint16_t key_len = key_.size();
-    std::memcpy(record.data() + key_offset, &key_len, sizeof(uint16_t));
-    std::memcpy(record.data() + key_offset + sizeof(uint16_t), key_.data(),
-                key_.size());
-  }
 
-  return record;
+  return {}; 
 }
 
 std::vector<Record> Record::decode(const std::vector<uint8_t> &data) {
-  if (data.size() < sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t)) {
-    return {};
-  }
-
-  std::vector<Record> records;
-  size_t pos = 0;
-
-  while (pos < data.size()) {
-    // 读取 record_len
-    uint16_t record_len;
-    std::memcpy(&record_len, data.data() + pos, sizeof(uint16_t));
-    pos += sizeof(uint16_t);
-
-    // 检查数据长度是否足够
-    if (data.size() < record_len) {
-      throw std::runtime_error("Data length does not match record length");
-    }
-
-    // 读取 tranc_id
-    uint64_t tranc_id;
-    std::memcpy(&tranc_id, data.data() + pos, sizeof(uint64_t));
-    pos += sizeof(uint64_t);
-
-    // 读取 operation_type
-    uint8_t op_type = data[pos++];
-    OperationType operation_type = static_cast<OperationType>(op_type);
-
-    Record record;
-    record.tranc_id_ = tranc_id;
-    record.operation_type_ = operation_type;
-    record.record_len_ = record_len;
-
-    if (operation_type == OperationType::OP_PUT) {
-      // 读取 key_len
-      uint16_t key_len;
-      std::memcpy(&key_len, data.data() + pos, sizeof(uint16_t));
-      pos += sizeof(uint16_t);
-
-      // 读取 key
-      record.key_ = std::string(
-          reinterpret_cast<const char *>(data.data() + pos), key_len);
-      pos += key_len;
-
-      // 读取 value_len
-      uint16_t value_len;
-      std::memcpy(&value_len, data.data() + pos, sizeof(uint16_t));
-      pos += sizeof(uint16_t);
-
-      // 读取 value
-      record.value_ = std::string(
-          reinterpret_cast<const char *>(data.data() + pos), value_len);
-      pos += value_len;
-    } else if (operation_type == OperationType::OP_DELETE) {
-      // 读取 key_len
-      uint16_t key_len;
-      std::memcpy(&key_len, data.data() + pos, sizeof(uint16_t));
-      pos += sizeof(uint16_t);
-
-      // 读取 key
-      record.key_ = std::string(
-          reinterpret_cast<const char *>(data.data() + pos), key_len);
-      pos += key_len;
-    }
-
-    records.push_back(record);
-  }
-  return records;
+ 
 }
 void Record::print() const {
   std::cout << "Record: tranc_id=" << tranc_id_
