@@ -4,7 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-
+#include <limits>
+#include <stdexcept>
 namespace tiny_lsm {
 
 // Lab 5.3 实现创建事务的Record
@@ -110,7 +111,39 @@ Record Record::putRecord(uint64_t tranc_id, const std::string &key,
 
 // Lab 5.3 实现删除键值对的Record
 Record Record::deleteRecord(uint64_t tranc_id, const std::string &key) {
+  constexpr size_t max_length = std::numeric_limits<uint16_t>::max();
+
+  // key 的长度需要写入 uint16_t 字段。
+  // 先检查字段长度，再计算整条记录的长度。
+  if (key.size() > max_length) 
+    throw std::length_error(
+        "Record::deleteRecord: key exceeds uint16_t length");
   
+  // DELETE 只包含公共头、key 长度和 key 内容
+  // 不需要 value 长度字段，因此固定开销为 13B
+  constexpr size_t fixed_length =  
+  sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t) +
+  sizeof(uint16_t);
+
+  const size_t total_length = fixed_length + key.size(); 
+
+  // 总长度字段也只有 uint16_t，必须连同固定开销一起检查
+  // 例如 key 占 65523B 时，总长为 65536B，已经无法表示
+  if (total_length > max_length) 
+    throw std::length_error(
+        "Record::deleteRecord: total record length exceeds uint16_t");
+
+  Record record; 
+  record.tranc_id_ = tranc_id; 
+  record.operation_type_ = OperationType::OP_DELETE;
+
+  // 保存待删除 key 的独立副本；value_ 默认保持为空
+  record.key_ = key; 
+
+  // 已确认总长度能够表示，此时转换不会截断
+  record.record_len_ = static_cast<uint16_t>(total_length); 
+
+  return record; 
 }
 
 std::vector<uint8_t> Record::encode() const {
