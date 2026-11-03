@@ -2,11 +2,15 @@
 #include "wal/record.h"
 #include "lsm/engine.h"
 #include "wal/wal.h"
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
 
 using namespace testing;
 using namespace ::tiny_lsm;
@@ -79,6 +83,88 @@ TEST(RecordTest, RollbackRecordPreservesFullWidthId) {
     const auto record = Record::rollbackRecord(id);
     EXPECT_EQ(record.getTrancId(), id);
   }
+}
+
+// 场景：调用方创建写入记录后复用自己的字符串缓冲区。
+// 记录必须保存独立副本，同时保留 PUT 类型和完整事务 ID。
+TEST(RecordTest, PutRecordPreservesFieldsAndOwnsStrings) {
+  std::string key = "original-key";
+  std::string value = "original-value";
+  const auto id = std::numeric_limits<uint64_t>::max();
+  const auto record = Record::putRecord(id, key, value);
+
+  key.assign("changed-key");
+  value.clear();
+
+  EXPECT_EQ(record.getTrancId(), id);
+  EXPECT_EQ(record.getOperationType(), OperationType::OP_PUT);
+  EXPECT_EQ(record.getKey(), "original-key");
+  EXPECT_EQ(record.getValue(), "original-value");
+}
+
+// 场景：Record 层接收零长度字符串，完整保留传入的操作内容。
+// 即使 value 为空，记录类型仍为 PUT；公开 API 的输入限制由上层决定。
+TEST(RecordTest, PutRecordPreservesEmptyStrings) {
+  const std::pair<std::string, std::string> cases[] = {
+      {"", ""}, {"", "value"}, {"key", ""}};
+  for (const auto &[key, value] : cases) {
+    SCOPED_TRACE("key size=" + std::to_string(key.size()) +
+                 ", value size=" + std::to_string(value.size()));
+    const auto record = Record::putRecord(0, key, value);
+    EXPECT_EQ(record.getTrancId(), uint64_t{0});
+    EXPECT_EQ(record.getOperationType(), OperationType::OP_PUT);
+    EXPECT_EQ(record.getKey(), key);
+    EXPECT_EQ(record.getValue(), value);
+  }
+}
+
+// 场景：key/value 是带有空字节的二进制内容，不能按 C 字符串提前截断。
+TEST(RecordTest, PutRecordPreservesEmbeddedNulls) {
+  const std::string key("k\0x", 3);
+  const std::string value("\0v\0z\0", 5);
+  const auto record = Record::putRecord(7, key, value);
+
+  EXPECT_EQ(record.getKey(), key);
+  EXPECT_EQ(record.getValue(), value);
+  EXPECT_EQ(record.getOperationType(), OperationType::OP_PUT);
+}
+
+// 场景：PUT 的固定字段占 15B，key/value 合计 65520B 时总长恰好为 65535B。
+// 覆盖长度集中在一侧以及分摊到两侧，合法边界必须完整保留。
+TEST(RecordTest, PutRecordAcceptsLargestRecord) {
+  const std::pair<std::size_t, std::size_t> sizes[] = {
+      {1, 65519}, {65519, 1}, {0, 65520}, {65520, 0}, {32760, 32760}};
+  for (const auto &[key_size, value_size] : sizes) {
+    SCOPED_TRACE("key size=" + std::to_string(key_size) +
+                 ", value size=" + std::to_string(value_size));
+    const std::string key(key_size, 'k');
+    const std::string value(value_size, 'v');
+    const auto record = Record::putRecord(7, key, value);
+    EXPECT_EQ(record.getKey(), key);
+    EXPECT_EQ(record.getValue(), value);
+    EXPECT_EQ(record.getOperationType(), OperationType::OP_PUT);
+  }
+}
+
+// 场景：每个字符串单独都能用 uint16_t 表示，但整条记录已经放不下。
+// 检查恰好超出 1B、两字段合计超限，以及字段本身达到 65535B 的情况。
+TEST(RecordTest, PutRecordRejectsTotalLengthOverflow) {
+  const std::pair<std::size_t, std::size_t> sizes[] = {
+      {1, 65520}, {65520, 1}, {40000, 40000}, {65535, 0}, {0, 65535}};
+  for (const auto &[key_size, value_size] : sizes) {
+    SCOPED_TRACE("key size=" + std::to_string(key_size) +
+                 ", value size=" + std::to_string(value_size));
+    const std::string key(key_size, 'k');
+    const std::string value(value_size, 'v');
+    EXPECT_THROW(Record::putRecord(7, key, value), std::length_error);
+  }
+}
+
+// 场景：单个字段达到 65536B，长度字段已经无法表示，必须明确拒绝。
+TEST(RecordTest, PutRecordRejectsFieldLengthOverflow) {
+  const std::string oversized(65536, 'x');
+  EXPECT_THROW(Record::putRecord(7, oversized, "v"), std::length_error);
+  EXPECT_THROW(Record::putRecord(7, "k", oversized), std::length_error);
 }
 
 class MockWAL : public WAL {

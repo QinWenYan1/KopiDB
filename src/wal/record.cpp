@@ -108,9 +108,9 @@ Record Record::putRecord(uint64_t tranc_id, const std::string &key,
   
 }
 
+// Lab 5.3 实现删除键值对的Record
 Record Record::deleteRecord(uint64_t tranc_id, const std::string &key) {
-  // TODO: Lab 5.3 实现删除键值对的Record
-  return {};
+  
 }
 
 std::vector<uint8_t> Record::encode() const {
