@@ -58,6 +58,29 @@ TEST(RecordTest, CommitRecordPreservesFullWidthId) {
   }
 }
 
+// 场景：构造取消某笔事务的日志记录，必须明确标记为 ROLLBACK。
+// 只记录被取消事务的 ID，不在这条记录里携带 key/value 或旧值。
+TEST(RecordTest, RollbackRecordInitializesTransactionRollback) {
+  const auto record = Record::rollbackRecord(7);
+
+  EXPECT_EQ(record.getTrancId(), uint64_t{7});
+  EXPECT_EQ(record.getOperationType(), OperationType::OP_ROLLBACK);
+  EXPECT_TRUE(record.getKey().empty());
+  EXPECT_TRUE(record.getValue().empty());
+}
+
+// 场景：回滚记录必须准确指向原事务，不能丢失 ID 的高位。
+// 覆盖与 CREATE、COMMIT 相同的边界，验证三种状态记录一致保留 ID。
+TEST(RecordTest, RollbackRecordPreservesFullWidthId) {
+  const uint64_t ids[] = {0, uint64_t{1} << 32, 0xFEDCBA9876543210ULL,
+                          std::numeric_limits<uint64_t>::max()};
+  for (uint64_t id : ids) {
+    SCOPED_TRACE(id);
+    const auto record = Record::rollbackRecord(id);
+    EXPECT_EQ(record.getTrancId(), id);
+  }
+}
+
 class MockWAL : public WAL {
 public:
   MockWAL(const std::string &log_path, size_t buffer_size,
