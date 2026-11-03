@@ -33,41 +33,41 @@ Record Record::createRecord(uint64_t tranc_id) {
 }
 
 // Lab 5.3 实现提交事务的Record
-Record Record::commitRecord(uint64_t tranc_id) { 
+Record Record::commitRecord(uint64_t tranc_id) {
   // 提交记录描述“提交哪一笔事务”，不携带具体的 key/value
   // 两个字符串成员默认构造为空
-  Record record; 
+  Record record;
 
   // 使用与该事务的 CREATE、PUT、DELETE 记录相同的 ID
   // 后续读取日志时，才能知道这条提交记录对应哪些操作
-  record.tranc_id_ = tranc_id; 
-  record.operation_type_ = OperationType::OP_COMMIT; 
+  record.tranc_id_ = tranc_id;
+  record.operation_type_ = OperationType::OP_COMMIT;
 
   // COMMIT 只有公共头，没有 key/value 负载
   // 编码总长度包含长度字段自身：
   // record_len(2B) + tranc_id(8B) + operation_type(1B) = 11B
-  record.record_len_ = sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t); 
-  return record; 
-
+  record.record_len_ = sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t);
+  return record;
 }
 
 // Lab 5.3 实现回滚事务的Record
 Record Record::rollbackRecord(uint64_t tranc_id) {
   // 回滚记录说明“取消哪一笔事务”，不携带具体的 key/value
   // 两个字符串成员默认构造为空
-  Record record; 
+  Record record;
 
   // 保存被取消事务的 ID，使这条回滚记录能够关联到
   // 同一事务之前的 CREATE、PUT、DELETE 等记录
-  record.tranc_id_ = tranc_id; 
-  record.operation_type_ = OperationType::OP_ROLLBACK; 
+  record.tranc_id_ = tranc_id;
+  record.operation_type_ = OperationType::OP_ROLLBACK;
 
   // ROLLBACK 与 CREATE、COMMIT 一样，只包含公共头
   // 总长度包含长度字段自身：
   // record_len(2B) + tranc_id(8B) + operation_type(1B) = 11B
-  record.record_len_ = sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t); 
-  return record; 
+  record.record_len_ = sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t);
+  return record;
 }
+
 Record Record::putRecord(uint64_t tranc_id, const std::string &key,
                          const std::string &value) {
   // TODO: Lab 5.3 实现插入键值对的Record
