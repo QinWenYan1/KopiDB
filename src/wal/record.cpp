@@ -82,11 +82,11 @@ Record Record::putRecord(uint64_t tranc_id, const std::string &key,
 
   // 固定部分包括：总长度、事务 ID、操作类型、key 长度、value 长度
   // key/value 的内容另行计入；总长度字段自身也包含在内
-  constexpr size_t fixed_length =  
-    sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t) +
-    sizeof(uint16_t) + sizeof(uint16_t);
-  
-  const size_t total_length = fixed_length + key.size() + value.size(); 
+  constexpr size_t fixed_length = sizeof(uint16_t) + sizeof(uint64_t) +
+                                  sizeof(uint8_t) + sizeof(uint16_t) +
+                                  sizeof(uint16_t);
+
+  const size_t total_length = fixed_length + key.size() + value.size();
 
   // 即使 key/value 各自能装进长度字段，整条记录仍可能超过 65535B
   // 必须在转成 uint16_t 之前拒绝，否则编码时会使用错误的总长度
@@ -94,19 +94,18 @@ Record Record::putRecord(uint64_t tranc_id, const std::string &key,
     throw std::length_error(
         "Record::putRecord: total record length exceeds uint16_t");
 
-  Record record; 
-  record.tranc_id_ = tranc_id; 
+  Record record;
+  record.tranc_id_ = tranc_id;
   record.operation_type_ = OperationType::OP_PUT;
-  
+
   // Record 保存自己的字符串副本，调用方之后修改原字符串不会影响它
   // std::string 赋值按完整长度复制，也能保留内容中的 '\\0'
-  record.key_ = key; 
-  record.value_ = value; 
+  record.key_ = key;
+  record.value_ = value;
 
   // 已确认总长度可以表示，此时转换不会截断
-  record.record_len_ = static_cast<uint16_t>(total_length); 
-  return record; 
-  
+  record.record_len_ = static_cast<uint16_t>(total_length);
+  return record;
 }
 
 // Lab 5.3 实现删除键值对的Record
@@ -115,35 +114,34 @@ Record Record::deleteRecord(uint64_t tranc_id, const std::string &key) {
 
   // key 的长度需要写入 uint16_t 字段。
   // 先检查字段长度，再计算整条记录的长度。
-  if (key.size() > max_length) 
+  if (key.size() > max_length)
     throw std::length_error(
         "Record::deleteRecord: key exceeds uint16_t length");
-  
+
   // DELETE 只包含公共头、key 长度和 key 内容
   // 不需要 value 长度字段，因此固定开销为 13B
-  constexpr size_t fixed_length =  
-  sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t) +
-  sizeof(uint16_t);
+  constexpr size_t fixed_length =
+      sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t) + sizeof(uint16_t);
 
-  const size_t total_length = fixed_length + key.size(); 
+  const size_t total_length = fixed_length + key.size();
 
   // 总长度字段也只有 uint16_t，必须连同固定开销一起检查
   // 例如 key 占 65523B 时，总长为 65536B，已经无法表示
-  if (total_length > max_length) 
+  if (total_length > max_length)
     throw std::length_error(
         "Record::deleteRecord: total record length exceeds uint16_t");
 
-  Record record; 
-  record.tranc_id_ = tranc_id; 
+  Record record;
+  record.tranc_id_ = tranc_id;
   record.operation_type_ = OperationType::OP_DELETE;
 
   // 保存待删除 key 的独立副本；value_ 默认保持为空
-  record.key_ = key; 
+  record.key_ = key;
 
   // 已确认总长度能够表示，此时转换不会截断
-  record.record_len_ = static_cast<uint16_t>(total_length); 
+  record.record_len_ = static_cast<uint16_t>(total_length);
 
-  return record; 
+  return record;
 }
 
 std::vector<uint8_t> Record::encode() const {
