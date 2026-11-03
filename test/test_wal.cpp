@@ -35,6 +35,29 @@ TEST(RecordTest, CreateRecordPreservesFullWidthId) {
   }
 }
 
+// 场景：提交路径生成 COMMIT 记录，日志通过事务 ID 将它关联到前面的操作。
+// 验证它与 CREATE 的类型不同，且不会多带一份 key/value。
+TEST(RecordTest, CommitRecordInitializesTransactionCommit) {
+  const auto record = Record::commitRecord(7);
+
+  EXPECT_EQ(record.getTrancId(), uint64_t{7});
+  EXPECT_EQ(record.getOperationType(), OperationType::OP_COMMIT);
+  EXPECT_TRUE(record.getKey().empty());
+  EXPECT_TRUE(record.getValue().empty());
+}
+
+// 场景：提交记录必须保留原事务 ID，尤其不能将大 ID 截断后关联到其他事务。
+// 与开始记录采用相同边界，检查完整 uint64_t 范围内的代表值。
+TEST(RecordTest, CommitRecordPreservesFullWidthId) {
+  const uint64_t ids[] = {0, uint64_t{1} << 32, 0xFEDCBA9876543210ULL,
+                          std::numeric_limits<uint64_t>::max()};
+  for (uint64_t id : ids) {
+    SCOPED_TRACE(id);
+    const auto record = Record::commitRecord(id);
+    EXPECT_EQ(record.getTrancId(), id);
+  }
+}
+
 class MockWAL : public WAL {
 public:
   MockWAL(const std::string &log_path, size_t buffer_size,

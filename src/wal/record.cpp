@@ -51,10 +51,22 @@ Record Record::commitRecord(uint64_t tranc_id) {
 
 }
 
-
+// Lab 5.3 实现回滚事务的Record
 Record Record::rollbackRecord(uint64_t tranc_id) {
-  // TODO: Lab 5.3 实现回滚事务的Record
-  return {};
+  // 回滚记录说明“取消哪一笔事务”，不携带具体的 key/value
+  // 两个字符串成员默认构造为空
+  Record record; 
+
+  // 保存被取消事务的 ID，使这条回滚记录能够关联到
+  // 同一事务之前的 CREATE、PUT、DELETE 等记录
+  record.tranc_id_ = tranc_id; 
+  record.operation_type_ = OperationType::OP_ROLLBACK; 
+
+  // ROLLBACK 与 CREATE、COMMIT 一样，只包含公共头
+  // 总长度包含长度字段自身：
+  // record_len(2B) + tranc_id(8B) + operation_type(1B) = 11B
+  record.record_len_ = sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t); 
+  return record; 
 }
 Record Record::putRecord(uint64_t tranc_id, const std::string &key,
                          const std::string &value) {
