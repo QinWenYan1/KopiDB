@@ -33,7 +33,25 @@ Record Record::createRecord(uint64_t tranc_id) {
 }
 
 // Lab 5.3 实现提交事务的Record
-Record Record::commitRecord(uint64_t tranc_id) { return {}; }
+Record Record::commitRecord(uint64_t tranc_id) { 
+  // 提交记录描述“提交哪一笔事务”，不携带具体的 key/value
+  // 两个字符串成员默认构造为空
+  Record record; 
+
+  // 使用与该事务的 CREATE、PUT、DELETE 记录相同的 ID
+  // 后续读取日志时，才能知道这条提交记录对应哪些操作
+  record.tranc_id_ = tranc_id; 
+  record.operation_type_ = OperationType::OP_COMMIT; 
+
+  // COMMIT 只有公共头，没有 key/value 负载
+  // 编码总长度包含长度字段自身：
+  // record_len(2B) + tranc_id(8B) + operation_type(1B) = 11B
+  record.record_len_ = sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t); 
+  return record; 
+
+}
+
+
 Record Record::rollbackRecord(uint64_t tranc_id) {
   // TODO: Lab 5.3 实现回滚事务的Record
   return {};
