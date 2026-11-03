@@ -172,6 +172,8 @@ std::vector<uint8_t> Record::encode() const {
   // 字符串先写 2 字节长度，再追加全部内容
   // 创建函数已检查长度可以用 uint16_t 表示
   // 按 begin/end 复制会保留内嵌空字节，不依赖字符串结束符
+  // 因为 insert() 读取的是字符串中的每个 char，而 char 可以转换成 uint8_t。
+  // 源容器和目标容器不需要类型相同
   auto append_string = [&data, &append_uint](const std::string &text){
     append_uint(static_cast<uint16_t>(text.size()), sizeof(uint16_t)); 
     data.insert(data.end(), text.begin(), text.end()); 
@@ -180,11 +182,19 @@ std::vector<uint8_t> Record::encode() const {
   // 所有记录都有公共头：总长度、事务 ID、操作类型
   // 操作类型固定占 1 字节，不使用枚举在内存中的大小
   append_uint(record_len_, sizeof(uint16_t)); 
+  append_uint(tranc_id_, sizeof(uint64_t));
+  data.push_back(static_cast<uint8_t>(operation_type_)); 
 
+  // PUT 和 DELETE 都需要指出操作的是哪个 key
+  // CREATE、COMMIT、ROLLBACK 只有公共头，到这里已经写完
+  if (operation_type_ == OperationType::OP_PUT || operation_type_ == OperationType::OP_DELETE)
+    append_string(key_); 
 
+  // 只有 PUT 携带 value；DELETE 连 value 的长度字段也不写
+  if (operation_type_ == OperationType::OP_PUT)
+    append_string(value_); 
 
-
-  return {}; 
+  return data; 
 }
 
 std::vector<Record> Record::decode(const std::vector<uint8_t> &data) {

@@ -227,6 +227,94 @@ TEST(RecordTest, DeleteRecordRejectsFieldLengthOverflow) {
   EXPECT_THROW(Record::deleteRecord(7, key), std::length_error);
 }
 
+// 场景：三类状态记录只有 11B 公共头，类型编号分别为 0、1、2。
+// ID 的八个字节互不相同，直接对照低位在前的固定样例，不依赖 decode。
+TEST(RecordTest, EncodeStateRecordsMatchKnownBytes) {
+  constexpr uint64_t id = 0x0102030405060708ULL;
+  std::vector<uint8_t> expected = {11, 0, 8, 7, 6, 5, 4, 3, 2, 1, 0};
+  EXPECT_EQ(Record::createRecord(id).encode(), expected);
+  expected.back() = 1;
+  EXPECT_EQ(Record::commitRecord(id).encode(), expected);
+  expected.back() = 2;
+  EXPECT_EQ(Record::rollbackRecord(id).encode(), expected);
+}
+
+// 场景：PUT(7, "a", "bc") 总长为 18B，按格式排列长度、ID、类型和字符串。
+TEST(RecordTest, EncodePutMatchesKnownBytes) {
+  const std::vector<uint8_t> expected = {
+      18, 0,                      // 整条记录长度
+      7, 0, 0, 0, 0, 0, 0, 0,   // 完整 8B 事务 ID
+      3,                          // PUT
+      1, 0, 97,                   // key 长度 1，内容 a
+      2, 0, 98, 99};              // value 长度 2，内容 bc
+  EXPECT_EQ(Record::putRecord(7, "a", "bc").encode(), expected);
+}
+
+// 场景：DELETE(7, "a") 总长为 14B，不能额外编码 value 的长度字段。
+TEST(RecordTest, EncodeDeleteMatchesKnownBytes) {
+  const std::vector<uint8_t> expected = {
+      14, 0, 7, 0, 0, 0, 0, 0, 0, 0, 4, 1, 0, 97};
+  EXPECT_EQ(Record::deleteRecord(7, "a").encode(), expected);
+}
+
+// 场景：空字符串仍需写入值为 0 的长度字段，PUT 与 DELETE 的布局不同。
+TEST(RecordTest, EncodePreservesZeroLengthFields) {
+  const std::vector<uint8_t> empty_put = {
+      15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0};
+  const std::vector<uint8_t> empty_delete = {
+      13, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0};
+  EXPECT_EQ(Record::putRecord(0, "", "").encode(), empty_put);
+  EXPECT_EQ(Record::deleteRecord(0, "").encode(), empty_delete);
+}
+
+// 场景：char 可能有符号，但转成 uint8_t 后应保存原始字节内容。
+// 同时检查空字节、最高位为 1 的字节，以及 uint64_t 最大 ID。
+TEST(RecordTest, EncodePreservesBinaryBytes) {
+  const std::string key("\0\x80\xff", 3);
+  const std::string value("\xff\0\x81", 3);
+  const std::vector<uint8_t> expected = {
+      21, 0,
+      255, 255, 255, 255, 255, 255, 255, 255,
+      3,
+      3, 0, 0, 128, 255,
+      3, 0, 255, 0, 129};
+  EXPECT_EQ(Record::putRecord(std::numeric_limits<uint64_t>::max(), key, value)
+                .encode(),
+            expected);
+}
+
+// 场景：长度超过 255 时需要第二个字节，不能只写最低 8 位。
+// key=258B、value=257B、总长=530B，对应长度字节分别为 [2,1]、[1,1]、[18,2]。
+TEST(RecordTest, EncodeLengthsUseTwoLittleEndianBytes) {
+  const std::string key(258, 'k');
+  const std::string value(257, 'v');
+  std::vector<uint8_t> expected = {
+      18, 2, 7, 0, 0, 0, 0, 0, 0, 0, 3, 2, 1};
+  expected.insert(expected.end(), 258, 107);
+  expected.push_back(1);
+  expected.push_back(1);
+  expected.insert(expected.end(), 257, 118);
+  EXPECT_EQ(Record::putRecord(7, key, value).encode(), expected);
+}
+
+// 场景：合法最大 PUT、DELETE 实际编码后都必须恰好为 65535B。
+// 对照固定头部和完整内容，验证工厂计算的总长以及每个字符串长度。
+TEST(RecordTest, EncodeLargestRecordsHaveExactLength) {
+  const auto put = Record::putRecord(7, "k", std::string(65519, 'v')).encode();
+  std::vector<uint8_t> expected_put = {
+      255, 255, 7, 0, 0, 0, 0, 0, 0, 0, 3, 1, 0, 107, 239, 255};
+  expected_put.insert(expected_put.end(), 65519, 118);
+  ASSERT_EQ(put.size(), std::size_t{65535});
+  EXPECT_EQ(put, expected_put);
+
+  const auto deletion = Record::deleteRecord(7, std::string(65522, 'k')).encode();
+  std::vector<uint8_t> expected_delete = {
+      255, 255, 7, 0, 0, 0, 0, 0, 0, 0, 4, 242, 255};
+  expected_delete.insert(expected_delete.end(), 65522, 107);
+  ASSERT_EQ(deletion.size(), std::size_t{65535});
+  EXPECT_EQ(deletion, expected_delete);
+}
+
 class MockWAL : public WAL {
 public:
   MockWAL(const std::string &log_path, size_t buffer_size,
