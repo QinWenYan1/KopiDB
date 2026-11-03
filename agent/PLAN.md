@@ -4,9 +4,9 @@
 
 章节：目录 **5.2.1「Record 编解码」**，文章标题 **Lab 5.3 WAL 日志编解码**。
 
-**进度：20%（1/5 阶段验收通过）**。按验收阶段数计算，不代表工时比例。阶段①已验收，阶段②的 putRecord 已通过代码检查及新增 6 项测试；独立 RecordTest 共 12/12 通过。实际编码长度在阶段③验证，当前进入 deleteRecord。
+**进度：40%（2/5 阶段验收通过）**。按验收阶段数计算，不代表工时比例。阶段①、②的五个创建函数均已验收，独立 RecordTest 共 18/18 通过。实际编码长度在阶段③验证，当前进入 encode。
 
-当前函数：`Record::deleteRecord(uint64_t tranc_id, const std::string &key)`，位于 [src/wal/record.cpp](../src/wal/record.cpp) 当前第 112 行。
+当前函数：`Record::encode() const`，位于 [src/wal/record.cpp](../src/wal/record.cpp) 当前第 149 行。
 
 ## 本轮目标
 
@@ -20,10 +20,10 @@
 
 - [Lab 5.3，lab-doc-2 分支](https://github.com/Vanilla-Beauty/tiny-lsm/blob/lab-doc-2/src/lab5/lab5.3-Record.md)：正文 2.1 要求五个静态创建函数，2.2 要求 encode/decode；本节仅处理字节数组，文件 I/O 在后续章节。
 - [作者 Record 参考，master 分支](https://github.com/Vanilla-Beauty/tiny-lsm/blob/master/src/wal/record.cpp)：2026-11-02 已读取，仅作为方案对照，未运行作者工程。
-- 本地 [record.cpp](../src/wal/record.cpp) 的 createRecord、commitRecord、rollbackRecord、putRecord 已由用户实现并检查通过，deleteRecord 仍为空函数，encode/decode 仍有参考函数体。七个函数均按 Lab 要求重新推导、逐个实现，不能把参考函数体视为本轮已完成。
+- 本地 [record.cpp](../src/wal/record.cpp) 的五个创建函数均已由用户实现并检查通过，encode/decode 仍有参考函数体。七个函数均按 Lab 要求重新推导、逐个实现，不能把参考函数体视为本轮已完成。
 - [record.h](../include/wal/record.h) 保留现有公开接口和拼写。getter、print、operator==/!= 仅联动复核，不列入必须重写的函数。
 - 已核对调用关系：TranContext 的创建、put、remove、commit 会构造 Record 并保存到 operations；当前仅保存在内存。rollbackRecord 是本节要求的记录类型，其后续调用接入按 STATE 排期处理。
-- 本轮测试加入 [test/test_wal.cpp](../test/test_wal.cpp) 的独立 `RecordTest` 测试组，目前已有 createRecord、commitRecord、rollbackRecord 各 2 项及 putRecord 6 项，共 12 项；只筛选该组运行，不构造 WAL 对象。新增测试使用 getter 逐字段核对，避免仅依赖现有 operator== 得出结论。
+- 本轮测试加入 [test/test_wal.cpp](../test/test_wal.cpp) 的独立 `RecordTest` 测试组，目前已有 createRecord、commitRecord、rollbackRecord 各 2 项及 putRecord、deleteRecord 各 6 项，共 18 项；只筛选该组运行，不构造 WAL 对象。新增测试使用 getter 逐字段核对，避免仅依赖现有 operator== 得出结论。
 
 ## 共同设计：在首个函数前讲清
 
@@ -50,16 +50,16 @@
 | 阶段 | 依次实现的函数／任务 | 验收标准 | 状态 |
 | --- | --- | --- | --- |
 | ① 事务状态记录 | createRecord → commitRecord → rollbackRecord | 三种记录的类型、完整 64 位 ID 正确；key/value 为空；长度计算代码检查正确，编码完成后验证为 11B | 已验收 |
-| ② 数据操作记录 | putRecord → deleteRecord | 保留对应 key/value；DELETE 不携带 value；合法边界可创建、字段或总长超限明确报错；零长度与二进制内容不被改写 | 进行中：putRecord 已检查，当前 deleteRecord |
-| ③ 编码 | encode | 五种记录字节布局正确，长度与实际输出一致；已知字节样例、字段边界和完整 64 位 ID 通过 | 待开始 |
+| ② 数据操作记录 | putRecord → deleteRecord | 保留对应 key/value；DELETE 不携带 value；合法边界可创建、字段或总长超限明确报错；零长度与二进制内容不被改写 | 已验收 |
+| ③ 编码 | encode | 五种记录字节布局正确，长度与实际输出一致；已知字节样例、字段边界和完整 64 位 ID 通过 | 进行中：当前 encode |
 | ④ 解码 | decode | 单条与多条混合流准确还原，顺序不变；空输入正确；截断、错误长度和未知类型明确拒绝 | 待开始 |
 | ⑤ 整体验收 | Record 测试及受影响事务回归、记录收尾 | 各类记录往返及已知字节对照通过；现有事务记录创建路径不回归；说明实际运行与尚未接通的范围 | 待开始 |
 
 ### 阶段①：事务状态记录
 
-- [x] `Record::createRecord()`：当前 record.cpp:16。类型、完整 ID、空 key/value 的 2 项测试通过；11B 长度计算代码检查正确，实际编码长度留待阶段③。
-- [x] `Record::commitRecord()`：当前 record.cpp:36。类型、完整 ID、空 key/value 的 2 项测试通过；11B 长度计算代码检查正确，实际编码长度留待阶段③。
-- [x] `Record::rollbackRecord()`：当前 record.cpp:54。类型、完整 ID、空 key/value 的 2 项测试通过；11B 长度计算代码检查正确，实际编码长度留待阶段③。
+- [x] `Record::createRecord()`：当前 record.cpp:17。类型、完整 ID、空 key/value 的 2 项测试通过；11B 长度计算代码检查正确，实际编码长度留待阶段③。
+- [x] `Record::commitRecord()`：当前 record.cpp:37。类型、完整 ID、空 key/value 的 2 项测试通过；11B 长度计算代码检查正确，实际编码长度留待阶段③。
+- [x] `Record::rollbackRecord()`：当前 record.cpp:55。类型、完整 ID、空 key/value 的 2 项测试通过；11B 长度计算代码检查正确，实际编码长度留待阶段③。
 - [x] 助手补充类型、ID 和无负载字段测试，三个函数各 2 项，共 6/6 通过。私有 record_len 不新增 getter，本阶段做计算检查，阶段③补充实际编码长度验证。
 
 2026-11-02 检查：`xmake build test_wal` 成功；在隔离临时目录运行 `--gtest_filter=RecordTest.*`，**2/2 通过**。覆盖普通事务开始记录，以及 0、超过 32 位、最高位为 1、uint64_t 最大值的 ID 原样保留。未调用 encode/decode，未运行后续 WAL／恢复用例或其他测试组。构建和测试前后 Record 源码、头文件、测试文件哈希一致。
@@ -76,9 +76,9 @@
 
 ### 阶段②：数据操作记录
 
-- [x] `Record::putRecord()`：当前 record.cpp:72。6 项新增测试通过，覆盖字段及独立副本、空字符串、内嵌空字节、合法总长边界、总长与字段超限。
-- [ ] `Record::deleteRecord()`：当前 record.cpp:112。
-- [ ] 助手覆盖普通字符串、零长度、内嵌空字节、恰好达到总长上限及超限；通过 getter 检查数据完整性。
+- [x] `Record::putRecord()`：当前 record.cpp:73。6 项新增测试通过，覆盖字段及独立副本、空字符串、内嵌空字节、合法总长边界、总长与字段超限。
+- [x] `Record::deleteRecord()`：当前 record.cpp:113。6 项新增测试通过，覆盖字段及 key 独立副本、空 key、内嵌空字节、65522B 合法 key、总长及字段超限。
+- [x] 助手覆盖普通字符串、零长度、内嵌空字节、恰好达到总长上限及超限；通过 getter 检查数据完整性。
 
 putRecord 调用链已核对：TranContext::put 在修改 MemTable 或 temp_map_ 前调用该工厂；长度超限若在工厂中抛出，本次操作不会追加到 operations，也不会应用到存储层。沿用现有格式，PUT 总长为 15 + key.size() + value.size()：key 为 1B 时，value 为 65519B 恰好达到 65535B，65520B 则超限。当前实现先检查字段与总长，再复制字符串和转换 uint16_t。
 
@@ -86,17 +86,21 @@ putRecord 调用链已核对：TranContext::put 在修改 MemTable 或 temp_map_
 
 证据目录：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-record-put-review-5c7ro_ep`。
 
-衔接提醒：record.cpp 尚未显式包含 limits，当前平台依靠其他头文件间接包含而编译通过；下一函数时由用户补上 limits、stdexcept。deleteRecord 当前为空且没有返回值，构建产生对应警告；它正是本轮下一待实现函数，不作为额外修复任务。DELETE 布局为公共头 11B + key 长度 2B + key，不编码 value 长度或内容，总长上限对应 key 最多 65522B。
+2026-11-03 阶段②验收：deleteRecord 实现正确，用户已补齐 limits、stdexcept。新增 6 项 DELETE 测试，`xmake build test_wal` 成功，原 deleteRecord 缺少返回值的警告已消失；隔离运行 `--gtest_filter=RecordTest.*`，**18/18 通过**。构建和测试前后 Record 源码、头文件、测试文件哈希一致。DELETE 布局为公共头 11B + key 长度 2B + key，不编码 value 长度或内容；已验证 key 为 65522B 时合法，65523B、65535B、65536B 时分别按总长或字段超限拒绝。未调用 encode/decode，未运行 WAL／恢复或其他测试组。
+
+证据目录：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-record-delete-review-okob8ucq`。
 
 ### 阶段③：编码
 
-- [ ] `Record::encode()`：当前 record.cpp:116。
+- [ ] `Record::encode()`：当前 record.cpp:149。
 - [ ] 五类记录用已知字节序列验证字段顺序、操作类型编码和小端整数。
 - [ ] 验证实际输出长度、字符串原始字节、uint64_t 较高位，以及前两阶段创建的边界记录。
 
+encode 草案：按已确定的小端规则逐字节追加整数，字符串追加长度和原始字节；用 reserve(record_len_) 一次预留容量，再按字段顺序 push_back/insert，避免手工计算多个偏移。CREATE／COMMIT／ROLLBACK 只有公共头；PUT／DELETE 写 key，只有 PUT 写 value。沿用前五个工厂函数的合法记录约定，下一阶段 decode 同样需验证记录有效性。当前 WAL::log 只有后续编码写入的 TODO，本轮直接通过 Record 测试验收字节输出，不提前实现 WAL 文件写入。
+
 ### 阶段④：解码
 
-- [ ] `Record::decode()`：当前 record.cpp:158。
+- [ ] `Record::decode()`：当前 record.cpp:191。
 - [ ] 单条、连续多条、混合操作、不同事务 ID 和重复 key 保持原顺序，不在编解码中去重或应用事务操作。
 - [ ] 每条记录独立检查头部、记录长度和负载范围；覆盖首条及后续记录截断、零／过小长度、字段长度矛盾、未知操作类型。
 - [ ] 只验证输入字节流的完整解码，不用本节测试替代崩溃恢复验收。

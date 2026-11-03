@@ -167,6 +167,66 @@ TEST(RecordTest, PutRecordRejectsFieldLengthOverflow) {
   EXPECT_THROW(Record::putRecord(7, "k", oversized), std::length_error);
 }
 
+// 场景：生成删除记录后，调用方复用 key 缓冲区。
+// 记录必须保留原 key、完整事务 ID 和 DELETE 类型，value 保持为空。
+TEST(RecordTest, DeleteRecordPreservesFieldsAndOwnsKey) {
+  std::string key = "original-key";
+  const auto id = std::numeric_limits<uint64_t>::max();
+  const auto record = Record::deleteRecord(id, key);
+  key.assign("changed-key");
+
+  EXPECT_EQ(record.getTrancId(), id);
+  EXPECT_EQ(record.getOperationType(), OperationType::OP_DELETE);
+  EXPECT_EQ(record.getKey(), "original-key");
+  EXPECT_TRUE(record.getValue().empty());
+}
+
+// 场景：Record 层按长度保存空 key，不在这里添加公开 API 的输入限制。
+TEST(RecordTest, DeleteRecordPreservesEmptyKey) {
+  const auto record = Record::deleteRecord(0, "");
+
+  EXPECT_EQ(record.getTrancId(), uint64_t{0});
+  EXPECT_EQ(record.getOperationType(), OperationType::OP_DELETE);
+  EXPECT_TRUE(record.getKey().empty());
+  EXPECT_TRUE(record.getValue().empty());
+}
+
+// 场景：待删除的 key 包含空字节，必须保存完整内容才能准确定位目标。
+TEST(RecordTest, DeleteRecordPreservesEmbeddedNulls) {
+  const std::string key("\0k\0z\0", 5);
+  const auto record = Record::deleteRecord(7, key);
+
+  EXPECT_EQ(record.getKey(), key);
+  EXPECT_EQ(record.getOperationType(), OperationType::OP_DELETE);
+  EXPECT_TRUE(record.getValue().empty());
+}
+
+// 场景：DELETE 固定字段占 13B，65522B 的 key 使记录恰好达到 65535B。
+// 验证合法上限能够创建，key 没有被截断或误当成 PUT 的长度限制。
+TEST(RecordTest, DeleteRecordAcceptsLargestRecord) {
+  const std::string key(65522, 'k');
+  const auto record = Record::deleteRecord(7, key);
+
+  EXPECT_EQ(record.getKey(), key);
+  EXPECT_EQ(record.getOperationType(), OperationType::OP_DELETE);
+  EXPECT_TRUE(record.getValue().empty());
+}
+
+// 场景：key 长度字段仍能表示，但加上 13B 固定字段后整条记录超限。
+TEST(RecordTest, DeleteRecordRejectsTotalLengthOverflow) {
+  for (std::size_t key_size : {std::size_t{65523}, std::size_t{65535}}) {
+    SCOPED_TRACE(key_size);
+    const std::string key(key_size, 'k');
+    EXPECT_THROW(Record::deleteRecord(7, key), std::length_error);
+  }
+}
+
+// 场景：key 本身达到 65536B，无法用 uint16_t 长度字段表示。
+TEST(RecordTest, DeleteRecordRejectsFieldLengthOverflow) {
+  const std::string key(65536, 'k');
+  EXPECT_THROW(Record::deleteRecord(7, key), std::length_error);
+}
+
 class MockWAL : public WAL {
 public:
   MockWAL(const std::string &log_path, size_t buffer_size,
