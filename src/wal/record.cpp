@@ -221,20 +221,19 @@ std::vector<Record> Record::decode(const std::vector<uint8_t> &data) {
     return value;
   }; 
 
+  // 读取一个字符串：先读 2B 长度，再按长度复制内容
+  // 两次读取都必须限制在当前记录内部
+  auto read_string = [&data, &pos, &read_uint](size_t record_end){
+    const size_t length = static_cast<size_t>(read_uint(sizeof(uint16_t), record_end)); 
 
-    // 读取一个字符串：先读 2B 长度，再按长度复制内容
-    // 两次读取都必须限制在当前记录内部
-    auto read_string = [&data, &pos, &read_uint](size_t record_end){
-      const size_t length = static_cast<size_t>(read_uint(sizeof(uint16_t), record_end)); 
+    // 即使 data 后面还有字节，也不能越过当前记录的结束位置
+    if (length > record_end - pos)
+      throw std::runtime_error("Record::decode: truncated string");
 
-      // 即使 data 后面还有字节，也不能越过当前记录的结束位置
-      if (length > record_end - pos)
-        throw std::runtime_error("Record::decode: truncated string");
-
-      std::string text(reinterpret_cast<const char*>(data.data() + pos), length); 
-      pos += length; 
-      return text; 
-    }; 
+    std::string text(reinterpret_cast<const char*>(data.data() + pos), length); 
+    pos += length; 
+    return text; 
+  }; 
 
   while (pos < data.size()){
     const size_t record_start = pos; 
@@ -278,7 +277,6 @@ std::vector<Record> Record::decode(const std::vector<uint8_t> &data) {
     default:
       throw std::runtime_error("Record::decode: record length does not match payload");
     }
-
 
     // 将字符串等内容移动进结果，避免再复制一份 key/value
     // 此时 pos 已指向下一条记录的起点
