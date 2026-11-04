@@ -7,9 +7,13 @@
 #include <fstream>
 #include <iostream>
 #include <vector>
+#include <filesystem>
+#include <limits>
+#include <stdexcept>
 
 namespace tiny_lsm {
 
+// Lab 5.4 实现WAL的初始化流程
 // 从零开始的初始化流程
 WAL::WAL(const std::string &log_dir, size_t buffer_size,
          uint64_t checkpoint_tranc_id, uint64_t clean_interval,
@@ -17,7 +21,48 @@ WAL::WAL(const std::string &log_dir, size_t buffer_size,
     : buffer_size_(buffer_size), checkpoint_tranc_id_(checkpoint_tranc_id),
       stop_cleaner_(false), clean_interval_(clean_interval),
       file_size_limit_(file_size_limit) {
-  // TODO: Lab 5.4 实现WAL的初始化流程
+
+  // 1. 准备日志目录
+  // 空字符串按当前目录处理，避免拼接成 "/wal.0"
+  // 目录已经存在时无需重新创建；创建失败则直接抛出异常
+  const std::filesystem::path dir = log_dir.empty() ? "." : log_dir;
+  std::filesystem::create_directories(dir); 
+
+  // 2. 找到新日志应使用的序号
+  // 没有旧日志时使用 wal.0
+  // 例如已有 wal.2、wal.10，则使用 wal.11
+  //
+  // 必须比较数字大小，不能按文件名字典序比较
+  // 这里仅检查文件名，不读取或重放旧日志
+  uint64_t next_seq = 0; 
+
+  for (const auto &entry : std::filesystem::directory_iterator(dir)) {
+    if (!entry.is_regular_file())
+      continue; 
+
+    const std::string name = entry.path().filename().string(); 
+    if (!name.starts_with("wal."))
+      continue; 
+
+    // 只把 "wal." 后面全部为数字的文件识别为日志
+    // 例如 wal.backup 不参与序号计算，也不会被修改
+    const std::string suffix = name.substr(4);
+    if (suffix.empty() || !std::all_of(suffix.begin(), suffix.end(), [](char ch){return ch>= '0' && ch <= '9'; }))
+      continue; 
+
+    // stoull 将十进制字符串转换成整数
+    // 数字超过它能表示的范围时，会直接抛出异常
+    const uint64_t seq = std::stoull(suffix); 
+
+    // 最大序号不能再加 1，否则会回绕到 0
+    // 导致后面重新选择已经存在的 wal.0
+    if(seq == std::numeric_limits<uint64_t>::max())
+      throw std::overflow_error("WAL: log file sequence exhausted");
+
+    next_seq = std::max(next_seq, seq + uint64_t{1}); 
+
+  }
+
   // ? 1. 设置 active_log_path_ = log_dir + "/wal.0"
   // ? 2. 用 FileObj::open(active_log_path_, true) 打开或创建 WAL 文件
   // ? 3. 启动清理线程: cleaner_thread_ = std::thread(&WAL::cleaner, this)
