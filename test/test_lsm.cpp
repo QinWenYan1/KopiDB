@@ -2468,13 +2468,17 @@ TEST_F(TranCommitTest, FlushesMultipleTablesUntilBelowTotalLimit) {
 }
 
 // 目的：刷盘编码失败会抛出异常，但不能把已经生效的提交误判为取消。
-// 场景：关闭 WiscKey 的默认配置下写入超出 uint16_t 编码长度的 value，
-//       检查已提交状态、内存数据保留、刷盘状态未登记以及不可重复提交。
+// 场景：每个 40000B value 都符合 Record 的长度限制，先在内存保留 k 的两个旧版本。
+//       再提交同 key 的第三个版本并触发刷盘；同 key 不能拆块，第三条在 Block 中
+//       的起始偏移超过 uint16_t 上限，制造真正发生在提交之后的刷盘编码失败。
+//       检查已提交状态、内存版本保留、刷盘状态未登记以及不可重复提交。
 TEST_F(TranCommitTest, FlushFailurePreservesCommittedStateAndMemory) {
   ASSERT_EQ(config->getWisckeyValueThreshold(), 0u);
+  const std::string value(40000, 'v');
+  engine->put("k", value, 1);
+  engine->put("k", value, 2);
   config->modify_lsm_per_mem_size_limit(128);
   config->modify_lsm_tol_mem_size_limit(256);
-  const std::string value(70000, 'v');
   TranContext context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
   context.put("k", value);
   EXPECT_THROW(context.commit(), std::length_error);
@@ -2484,6 +2488,8 @@ TEST_F(TranCommitTest, FlushFailurePreservesCommittedStateAndMemory) {
   EXPECT_TRUE(engine->ssts.empty());
   EXPECT_EQ(engine->get("k", 0),
             std::make_optional(std::make_pair(value, uint64_t{5})));
+  EXPECT_EQ(engine->get("k", 2),
+            std::make_optional(std::make_pair(value, uint64_t{2})));
   const auto operation_count = context.operations.size();
   EXPECT_FALSE(context.commit());
   EXPECT_EQ(context.operations.size(), operation_count);
