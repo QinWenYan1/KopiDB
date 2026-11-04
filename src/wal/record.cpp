@@ -221,6 +221,21 @@ std::vector<Record> Record::decode(const std::vector<uint8_t> &data) {
     return value;
   }; 
 
+
+    // 读取一个字符串：先读 2B 长度，再按长度复制内容
+    // 两次读取都必须限制在当前记录内部
+    auto read_string = [&data, &pos, &read_uint](size_t record_end){
+      const size_t length = static_cast<size_t>(read_uint(sizeof(uint16_t), record_end)); 
+
+      // 即使 data 后面还有字节，也不能越过当前记录的结束位置
+      if (length > record_end - pos)
+        throw std::runtime_error("Record::decode: truncated string");
+
+      std::string text(reinterpret_cast<const char*>(data.data() + pos), length); 
+      pos += length; 
+      return text; 
+    }; 
+
   while (pos < data.size()){
     const size_t record_start = pos; 
 
@@ -234,10 +249,46 @@ std::vector<Record> Record::decode(const std::vector<uint8_t> &data) {
       throw std::runtime_error("Record::decode: invalid record length");
     }
 
+    // 例如本条从下标 20 开始、长 14B，则只能读取下标 20～33
+    // 下标 34 已经属于下一条记录，不能拿来填补本条缺失的字段
+    const size_t record_end = record_start + record_len; 
+
+    Record record; 
+    record.record_len_ = record_len; 
+    record.tranc_id_ = read_uint(sizeof(uint64_t), record_end); 
+    record.operation_type_ = static_cast<OperationType>(read_uint(sizeof(uint8_t), record_end));
+
+    // 根据类型读取对应字段，顺序必须与 encode 一致
+    switch (record.operation_type_) {
+    case OperationType::OP_CREATE:
+    case OperationType::OP_COMMIT:
+    case OperationType::OP_ROLLBACK:
+      // 三种状态记录只有公共头，key/value 保持默认空字符串。
+      break; 
+
+    case OperationType::OP_PUT:
+      record.key_ = read_string(record_end); 
+      record.value_ = read_string(record_end); 
+      break; 
+
+    case OperationType::OP_DELETE:
+      record.key_ = read_string(record_end); 
+      break; 
     
+    default:
+      throw std::runtime_error("Record::decode: record length does not match payload");
+    }
+
+
+    // 将字符串等内容移动进结果，避免再复制一份 key/value
+    // 此时 pos 已指向下一条记录的起点
+    records.push_back(std::move(record)); 
   }
 
+  // 空输入不会进入循环，自然返回空数组
+  return records; 
 }
+
 void Record::print() const {
   std::cout << "Record: tranc_id=" << tranc_id_
             << ", operation_type=" << static_cast<int>(operation_type_)
