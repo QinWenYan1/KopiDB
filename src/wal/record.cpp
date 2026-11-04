@@ -6,6 +6,7 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 namespace tiny_lsm {
 
 // Lab 5.3 实现创建事务的Record
@@ -198,7 +199,44 @@ std::vector<uint8_t> Record::encode() const {
 }
 
 std::vector<Record> Record::decode(const std::vector<uint8_t> &data) {
- 
+  std::vector<Record> records; 
+  size_t pos = 0; // 下一次要读去的字节下标
+  constexpr size_t header_size = sizeof(uint16_t) + sizeof(uint64_t) +sizeof(uint8_t);
+
+  // 从 pos 开始读取 byte_count 个字节，还原成一个整数
+  // end 表示允许读取范围的结束位置：最多只能读到 end - 1
+  auto read_uint = [&data, &pos](size_t byte_count, size_t end){
+    // 前面的读取始终保证 pos 不超过 end
+    // 如果剩余字节不够，就不能继续访问 data[pos]
+    if (byte_count > end - pos)
+      throw std::runtime_error("Record::decode: truncated integer");
+
+    uint64_t value = 0; 
+    for (size_t i = 0; i < byte_count; ++i){
+      // 小端编码的第一个字节放在最低 8 位，第二个字节左移 8 位……
+      // 例如 [00110100][00010010]，拼回 00010010 00110100
+      // 先转成 uint64_t 再左移，才能正确放入事务 ID 的高位
+      value |= static_cast<uint64_t>(data[pos++]) << (8 * i); 
+    }
+    return value;
+  }; 
+
+  while (pos < data.size()){
+    const size_t record_start = pos; 
+
+    // 此时还不知道本条记录多长，先以整个 data 的末尾为边界
+    // 读取开头的 2 字节总长度；连这 2 字节都不够时会直接报错
+    const uint16_t record_len = static_cast<uint16_t>(read_uint(sizeof(uint16_t), data.size()));
+    
+    // 一条记录至少要包含 11B 公共头
+    // 声明的长度也不能超过从本条起点到 data 末尾的剩余字节
+    if (record_len < header_size || record_len > data.size() - record_start) {
+      throw std::runtime_error("Record::decode: invalid record length");
+    }
+
+    
+  }
+
 }
 void Record::print() const {
   std::cout << "Record: tranc_id=" << tranc_id_
