@@ -278,6 +278,14 @@ std::vector<Record> Record::decode(const std::vector<uint8_t> &data) {
       throw std::runtime_error("Record::decode: record length does not match payload");
     }
 
+    // 读完当前类型规定的全部字段后，
+    // 必须恰好到达这条记录声明的结束位置。
+    // 若还有字节剩余，说明总长度与字段内容不一致。
+    if (pos != record_end) {
+      throw std::runtime_error(
+          "Record::decode: record length does not match payload");
+    }
+
     // 将字符串等内容移动进结果，避免再复制一份 key/value
     // 此时 pos 已指向下一条记录的起点
     records.push_back(std::move(record)); 

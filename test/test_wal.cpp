@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 using namespace testing;
 using namespace ::tiny_lsm;
@@ -313,6 +314,201 @@ TEST(RecordTest, EncodeLargestRecordsHaveExactLength) {
   expected_delete.insert(expected_delete.end(), 65522, 107);
   ASSERT_EQ(deletion.size(), std::size_t{65535});
   EXPECT_EQ(deletion, expected_delete);
+}
+
+// 场景：没有日志字节时，没有任何记录需要还原。
+TEST(RecordTest, DecodeEmptyInputReturnsNoRecords) {
+  EXPECT_TRUE(Record::decode({}).empty());
+}
+
+// 场景：直接读取约定格式的状态记录，独立验证类型、完整 ID 和空负载。
+TEST(RecordTest, DecodeKnownStateRecords) {
+  const std::pair<uint8_t, OperationType> cases[] = {
+      {0, OperationType::OP_CREATE}, {1, OperationType::OP_COMMIT},
+      {2, OperationType::OP_ROLLBACK}};
+  for (const auto &[type_byte, type] : cases) {
+    SCOPED_TRACE(static_cast<unsigned>(type_byte));
+    const std::vector<uint8_t> data = {11, 0, 8, 7, 6, 5, 4, 3, 2, 1, type_byte};
+    const auto records = Record::decode(data);
+    ASSERT_EQ(records.size(), std::size_t{1});
+    EXPECT_EQ(records[0].getTrancId(), uint64_t{0x0102030405060708ULL});
+    EXPECT_EQ(records[0].getOperationType(), type);
+    EXPECT_TRUE(records[0].getKey().empty());
+    EXPECT_TRUE(records[0].getValue().empty());
+  }
+}
+
+// 场景：两条不同长度的 PUT、DELETE 连续存放，逐字段核对其还原结果。
+TEST(RecordTest, DecodeKnownPutAndDeleteBytes) {
+  const std::vector<uint8_t> data = {
+      18, 0, 7, 0, 0, 0, 0, 0, 0, 0, 3, 1, 0, 97, 2, 0, 98, 99,
+      14, 0, 8, 0, 0, 0, 0, 0, 0, 0, 4, 1, 0, 97};
+  const auto records = Record::decode(data);
+  ASSERT_EQ(records.size(), std::size_t{2});
+  EXPECT_EQ(records[0].getTrancId(), uint64_t{7});
+  EXPECT_EQ(records[0].getOperationType(), OperationType::OP_PUT);
+  EXPECT_EQ(records[0].getKey(), "a");
+  EXPECT_EQ(records[0].getValue(), "bc");
+  EXPECT_EQ(records[1].getTrancId(), uint64_t{8});
+  EXPECT_EQ(records[1].getOperationType(), OperationType::OP_DELETE);
+  EXPECT_EQ(records[1].getKey(), "a");
+  EXPECT_TRUE(records[1].getValue().empty());
+}
+
+// 场景：不同事务交错，重复 key、状态记录和零长度字段必须原样保留顺序。
+// 编解码负责保存记录，不在这里合并操作或丢弃回滚事务。
+TEST(RecordTest, DecodeMixedStreamPreservesOrderAndDuplicates) {
+  const std::vector<Record> expected = {
+      Record::createRecord(7), Record::putRecord(7, "a", "old"),
+      Record::putRecord(9, "a", "new"), Record::deleteRecord(7, "a"),
+      Record::commitRecord(9), Record::rollbackRecord(7),
+      Record::putRecord(0, "", ""), Record::deleteRecord(0, ""),
+      Record::putRecord(1, "", "value"), Record::putRecord(2, "key", "")};
+  std::vector<uint8_t> data;
+  for (const auto &record : expected) {
+    const auto bytes = record.encode();
+    data.insert(data.end(), bytes.begin(), bytes.end());
+  }
+  const auto records = Record::decode(data);
+  ASSERT_EQ(records.size(), expected.size());
+  for (std::size_t i = 0; i < records.size(); ++i) {
+    SCOPED_TRACE(i);
+    EXPECT_EQ(records[i].getTrancId(), expected[i].getTrancId());
+    EXPECT_EQ(records[i].getOperationType(), expected[i].getOperationType());
+    EXPECT_EQ(records[i].getKey(), expected[i].getKey());
+    EXPECT_EQ(records[i].getValue(), expected[i].getValue());
+    EXPECT_EQ(records[i].encode(), expected[i].encode());
+  }
+}
+
+// 场景：解码最大 ID 和包含空字节、高位字节的内容，结果拥有独立字符串。
+TEST(RecordTest, DecodeBinaryBytesOwnTheirStorage) {
+  std::vector<uint8_t> data = {
+      21, 0, 255, 255, 255, 255, 255, 255, 255, 255,
+      3, 3, 0, 0, 128, 255, 3, 0, 255, 0, 129};
+  const auto records = Record::decode(data);
+  ASSERT_EQ(records.size(), std::size_t{1});
+  data.assign(data.size(), 0);
+  EXPECT_EQ(records[0].getTrancId(), std::numeric_limits<uint64_t>::max());
+  EXPECT_EQ(records[0].getOperationType(), OperationType::OP_PUT);
+  EXPECT_EQ(records[0].getKey(), std::string("\0\x80\xff", 3));
+  EXPECT_EQ(records[0].getValue(), std::string("\xff\0\x81", 3));
+}
+
+// 场景：每条记录最多 65535B，但多条记录拼接后的输入可以超过这个长度。
+// 同时验证字符串长度高字节和后续记录的绝对边界。
+TEST(RecordTest, DecodeLargestRecordsRoundTrip) {
+  const std::vector<Record> expected = {
+      Record::putRecord(std::numeric_limits<uint64_t>::max(), "k",
+                        std::string(65519, 'v')),
+      Record::deleteRecord(7, std::string(65522, 'k'))};
+  std::vector<uint8_t> data;
+  for (const auto &record : expected) {
+    const auto bytes = record.encode();
+    data.insert(data.end(), bytes.begin(), bytes.end());
+  }
+  ASSERT_EQ(data.size(), std::size_t{131070});
+  const auto records = Record::decode(data);
+  ASSERT_EQ(records.size(), expected.size());
+  for (std::size_t i = 0; i < records.size(); ++i) {
+    SCOPED_TRACE(i);
+    EXPECT_EQ(records[i].getTrancId(), expected[i].getTrancId());
+    EXPECT_EQ(records[i].getOperationType(), expected[i].getOperationType());
+    EXPECT_EQ(records[i].getKey(), expected[i].getKey());
+    EXPECT_EQ(records[i].getValue(), expected[i].getValue());
+    EXPECT_EQ(records[i].encode(), expected[i].encode());
+  }
+}
+
+// 场景：首条记录在任意位置被截断，非空残片都必须明确报错。
+TEST(RecordTest, DecodeRejectsTruncatedFirstRecord) {
+  const std::vector<uint8_t> full = {
+      18, 0, 7, 0, 0, 0, 0, 0, 0, 0, 3, 1, 0, 97, 2, 0, 98, 99};
+  for (std::size_t size = 1; size < full.size(); ++size) {
+    SCOPED_TRACE(size);
+    const std::vector<uint8_t> truncated(full.begin(), full.begin() + size);
+    EXPECT_THROW(Record::decode(truncated), std::runtime_error);
+  }
+}
+
+// 场景：前一条完整、后一条截断，长度检查必须使用当前位置之后的剩余数据。
+TEST(RecordTest, DecodeRejectsTruncatedLaterRecord) {
+  const auto prefix = Record::createRecord(6).encode();
+  const std::vector<uint8_t> full = {
+      18, 0, 7, 0, 0, 0, 0, 0, 0, 0, 3, 1, 0, 97, 2, 0, 98, 99};
+  for (std::size_t size = 1; size < full.size(); ++size) {
+    SCOPED_TRACE(size);
+    auto data = prefix;
+    data.insert(data.end(), full.begin(), full.begin() + size);
+    EXPECT_THROW(Record::decode(data), std::runtime_error);
+  }
+}
+
+// 场景：总长为 0 或不足公共头大小时，不能接受，也不能让解析停滞。
+TEST(RecordTest, DecodeRejectsInvalidRecordLengths) {
+  for (uint8_t length = 0; length < 11; ++length) {
+    SCOPED_TRACE(static_cast<unsigned>(length));
+    const std::vector<uint8_t> data = {length, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0};
+    EXPECT_THROW(Record::decode(data), std::runtime_error);
+  }
+}
+
+// 场景：类型字段出现协议之外的编号，不能默认为无负载的状态记录。
+TEST(RecordTest, DecodeRejectsUnknownOperations) {
+  for (uint8_t type : {uint8_t{5}, uint8_t{255}}) {
+    SCOPED_TRACE(static_cast<unsigned>(type));
+    const std::vector<uint8_t> data = {11, 0, 7, 0, 0, 0, 0, 0, 0, 0, type};
+    EXPECT_THROW(Record::decode(data), std::runtime_error);
+  }
+}
+
+// 场景：本条记录的 key_len/value_len 缺失或只有 1B。
+// 后面即使还有完整记录，也不能借用下一条的字节来补齐长度字段。
+TEST(RecordTest, DecodeRejectsTruncatedStringLengthFields) {
+  const std::vector<std::vector<uint8_t>> malformed = {
+      {11, 0, 7, 0, 0, 0, 0, 0, 0, 0, 4},
+      {12, 0, 7, 0, 0, 0, 0, 0, 0, 0, 4, 1},
+      {13, 0, 7, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0},
+      {14, 0, 7, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 1}};
+  const auto tail = Record::createRecord(9).encode();
+  for (const auto &record : malformed) {
+    SCOPED_TRACE(record.size());
+    auto data = record;
+    data.insert(data.end(), tail.begin(), tail.end());
+    EXPECT_THROW(Record::decode(data), std::runtime_error);
+  }
+}
+
+// 场景：字符串声明 2B，本条内却只剩 1B；下一条记录的内容不能被越界读入。
+TEST(RecordTest, DecodeRejectsStringContentOutsideRecord) {
+  const std::vector<std::vector<uint8_t>> malformed = {
+      {14, 0, 7, 0, 0, 0, 0, 0, 0, 0, 4, 2, 0, 97},
+      {16, 0, 7, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 2, 0, 97}};
+  const auto tail = Record::createRecord(9).encode();
+  for (const auto &record : malformed) {
+    SCOPED_TRACE(record.size());
+    auto data = record;
+    data.insert(data.end(), tail.begin(), tail.end());
+    EXPECT_THROW(Record::decode(data), std::runtime_error);
+  }
+}
+
+// 场景：把首条记录声明的长度故意扩大，包住后一条完整记录。
+// 按类型读完字段后若仍有剩余字节，应拒绝长度矛盾，不能把剩余部分当新记录。
+TEST(RecordTest, DecodeRejectsUnconsumedBytesInsideRecord) {
+  const std::vector<Record> first_records = {
+      Record::createRecord(7), Record::commitRecord(7), Record::rollbackRecord(7),
+      Record::putRecord(7, "a", "bc"), Record::deleteRecord(7, "a")};
+  const auto tail = Record::createRecord(9).encode();
+  for (const auto &record : first_records) {
+    SCOPED_TRACE(static_cast<int>(record.getOperationType()));
+    auto data = record.encode();
+    data.insert(data.end(), tail.begin(), tail.end());
+    // 本测试的总长均小于 256，首条长度字段写入整个数组的长度。
+    data[0] = static_cast<uint8_t>(data.size());
+    data[1] = 0;
+    EXPECT_THROW(Record::decode(data), std::runtime_error);
+  }
 }
 
 class MockWAL : public WAL {
