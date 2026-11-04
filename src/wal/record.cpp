@@ -146,11 +146,11 @@ Record Record::deleteRecord(uint64_t tranc_id, const std::string &key) {
 }
 
 std::vector<uint8_t> Record::encode() const {
-  std::vector<uint8_t> data; 
+  std::vector<uint8_t> data;
 
   // 创建记录时已经计算好总长度，一次预留足够的容量
   // reserve 不改变 size；后面的 push_back/insert 才真正追加字节
-  data.reserve(record_len_); 
+  data.reserve(record_len_);
 
   // 将 value 拆成 byte_count 个字节，依次追加到 data
   // byte_count 决定写多少字节：长度字段写 2 字节，事务 ID 写 8 字节
@@ -159,89 +159,93 @@ std::vector<uint8_t> Record::encode() const {
   // 第一次取出最右边的 00110100，写入数组，然后将 value 右移 8 位
   // 第二次取出剩下的   00010010，写入数组
   // 最终数组中的顺序是：[00110100] [00010010]
-  auto append_uint = [&data](uint64_t value, size_t byte_count){
-    for (size_t i = 0; i < byte_count; ++i){
+  auto append_uint = [&data](uint64_t value, size_t byte_count) {
+    for (size_t i = 0; i < byte_count; ++i) {
       // 掩码末尾的八个 1 保留 value 最右边的 8 位
       // 其他位置清零，再将得到的这一个字节写入数组
-      data.push_back(static_cast<uint8_t>(value & 0xffu)); 
+      data.push_back(static_cast<uint8_t>(value & 0xffu));
 
       // 将刚才已经写完的 8 位移出去，让下一个字节来到最右边
-      value >>= 8; 
+      value >>= 8;
     }
-  }; 
+  };
 
   // 字符串先写 2 字节长度，再追加全部内容
   // 创建函数已检查长度可以用 uint16_t 表示
   // 按 begin/end 复制会保留内嵌空字节，不依赖字符串结束符
   // 因为 insert() 读取的是字符串中的每个 char，而 char 可以转换成 uint8_t。
   // 源容器和目标容器不需要类型相同
-  auto append_string = [&data, &append_uint](const std::string &text){
-    append_uint(static_cast<uint16_t>(text.size()), sizeof(uint16_t)); 
-    data.insert(data.end(), text.begin(), text.end()); 
-  }; 
+  auto append_string = [&data, &append_uint](const std::string &text) {
+    append_uint(static_cast<uint16_t>(text.size()), sizeof(uint16_t));
+    data.insert(data.end(), text.begin(), text.end());
+  };
 
   // 所有记录都有公共头：总长度、事务 ID、操作类型
   // 操作类型固定占 1 字节，不使用枚举在内存中的大小
-  append_uint(record_len_, sizeof(uint16_t)); 
+  append_uint(record_len_, sizeof(uint16_t));
   append_uint(tranc_id_, sizeof(uint64_t));
-  data.push_back(static_cast<uint8_t>(operation_type_)); 
+  data.push_back(static_cast<uint8_t>(operation_type_));
 
   // PUT 和 DELETE 都需要指出操作的是哪个 key
   // CREATE、COMMIT、ROLLBACK 只有公共头，到这里已经写完
-  if (operation_type_ == OperationType::OP_PUT || operation_type_ == OperationType::OP_DELETE)
-    append_string(key_); 
+  if (operation_type_ == OperationType::OP_PUT ||
+      operation_type_ == OperationType::OP_DELETE)
+    append_string(key_);
 
   // 只有 PUT 携带 value；DELETE 连 value 的长度字段也不写
   if (operation_type_ == OperationType::OP_PUT)
-    append_string(value_); 
+    append_string(value_);
 
-  return data; 
+  return data;
 }
 
 std::vector<Record> Record::decode(const std::vector<uint8_t> &data) {
-  std::vector<Record> records; 
+  std::vector<Record> records;
   size_t pos = 0; // 下一次要读去的字节下标
-  constexpr size_t header_size = sizeof(uint16_t) + sizeof(uint64_t) +sizeof(uint8_t);
+  constexpr size_t header_size =
+      sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t);
 
   // 从 pos 开始读取 byte_count 个字节，还原成一个整数
   // end 表示允许读取范围的结束位置：最多只能读到 end - 1
-  auto read_uint = [&data, &pos](size_t byte_count, size_t end){
+  auto read_uint = [&data, &pos](size_t byte_count, size_t end) {
     // 前面的读取始终保证 pos 不超过 end
     // 如果剩余字节不够，就不能继续访问 data[pos]
     if (byte_count > end - pos)
       throw std::runtime_error("Record::decode: truncated integer");
 
-    uint64_t value = 0; 
-    for (size_t i = 0; i < byte_count; ++i){
+    uint64_t value = 0;
+    for (size_t i = 0; i < byte_count; ++i) {
       // 小端编码的第一个字节放在最低 8 位，第二个字节左移 8 位……
       // 例如 [00110100][00010010]，拼回 00010010 00110100
       // 先转成 uint64_t 再左移，才能正确放入事务 ID 的高位
-      value |= static_cast<uint64_t>(data[pos++]) << (8 * i); 
+      value |= static_cast<uint64_t>(data[pos++]) << (8 * i);
     }
     return value;
-  }; 
+  };
 
   // 读取一个字符串：先读 2B 长度，再按长度复制内容
   // 两次读取都必须限制在当前记录内部
-  auto read_string = [&data, &pos, &read_uint](size_t record_end){
-    const size_t length = static_cast<size_t>(read_uint(sizeof(uint16_t), record_end)); 
+  auto read_string = [&data, &pos, &read_uint](size_t record_end) {
+    const size_t length =
+        static_cast<size_t>(read_uint(sizeof(uint16_t), record_end));
 
     // 即使 data 后面还有字节，也不能越过当前记录的结束位置
     if (length > record_end - pos)
       throw std::runtime_error("Record::decode: truncated string");
 
-    std::string text(reinterpret_cast<const char*>(data.data() + pos), length); 
-    pos += length; 
-    return text; 
-  }; 
+    std::string text(reinterpret_cast<const char *>(data.data() + pos), length);
+    pos += length;
+    return text;
+  };
 
-  while (pos < data.size()){
-    const size_t record_start = pos; 
+  while (pos < data.size()) {
+    const size_t record_start = pos;
 
     // 此时还不知道本条记录多长，先以整个 data 的末尾为边界
     // 读取开头的 2 字节总长度；连这 2 字节都不够时会直接报错
-    const uint16_t record_len = static_cast<uint16_t>(read_uint(sizeof(uint16_t), data.size()));
-    
+    const uint16_t record_len =
+        static_cast<uint16_t>(read_uint(sizeof(uint16_t), data.size()));
+
     // 一条记录至少要包含 11B 公共头
     // 声明的长度也不能超过从本条起点到 data 末尾的剩余字节
     if (record_len < header_size || record_len > data.size() - record_start) {
@@ -250,12 +254,13 @@ std::vector<Record> Record::decode(const std::vector<uint8_t> &data) {
 
     // 例如本条从下标 20 开始、长 14B，则只能读取下标 20～33
     // 下标 34 已经属于下一条记录，不能拿来填补本条缺失的字段
-    const size_t record_end = record_start + record_len; 
+    const size_t record_end = record_start + record_len;
 
-    Record record; 
-    record.record_len_ = record_len; 
-    record.tranc_id_ = read_uint(sizeof(uint64_t), record_end); 
-    record.operation_type_ = static_cast<OperationType>(read_uint(sizeof(uint8_t), record_end));
+    Record record;
+    record.record_len_ = record_len;
+    record.tranc_id_ = read_uint(sizeof(uint64_t), record_end);
+    record.operation_type_ =
+        static_cast<OperationType>(read_uint(sizeof(uint8_t), record_end));
 
     // 根据类型读取对应字段，顺序必须与 encode 一致
     switch (record.operation_type_) {
@@ -263,19 +268,20 @@ std::vector<Record> Record::decode(const std::vector<uint8_t> &data) {
     case OperationType::OP_COMMIT:
     case OperationType::OP_ROLLBACK:
       // 三种状态记录只有公共头，key/value 保持默认空字符串。
-      break; 
+      break;
 
     case OperationType::OP_PUT:
-      record.key_ = read_string(record_end); 
-      record.value_ = read_string(record_end); 
-      break; 
+      record.key_ = read_string(record_end);
+      record.value_ = read_string(record_end);
+      break;
 
     case OperationType::OP_DELETE:
-      record.key_ = read_string(record_end); 
-      break; 
-    
+      record.key_ = read_string(record_end);
+      break;
+
     default:
-      throw std::runtime_error("Record::decode: record length does not match payload");
+      throw std::runtime_error(
+          "Record::decode: record length does not match payload");
     }
 
     // 读完当前类型规定的全部字段后，
@@ -288,11 +294,11 @@ std::vector<Record> Record::decode(const std::vector<uint8_t> &data) {
 
     // 将字符串等内容移动进结果，避免再复制一份 key/value
     // 此时 pos 已指向下一条记录的起点
-    records.push_back(std::move(record)); 
+    records.push_back(std::move(record));
   }
 
   // 空输入不会进入循环，自然返回空数组
-  return records; 
+  return records;
 }
 
 void Record::print() const {
