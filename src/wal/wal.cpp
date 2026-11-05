@@ -4,6 +4,7 @@
 #include "spdlog/spdlog.h"
 #include "utils/files.h"
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -13,7 +14,6 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
-#include <chrono>
 
 namespace tiny_lsm {
 
@@ -239,17 +239,15 @@ void WAL::log(const std::vector<Record> &records, bool force_flush) {
 void WAL::cleaner() {
   // 构造函数只在 clean_interval_ != 0 时启动此线程
   // 将配置中的秒数转换成 wait_for 接收的时间间隔
-  const auto interval = std::chrono::seconds(clean_interval_ ); 
+  const auto interval = std::chrono::seconds(clean_interval_);
 
   // 等待结束的条件：析构函数已经请求停止
   // 放在循环外定义，后续每次等待都使用同一个判断
-  const auto should_stop = [this](){
-    return stop_cleaner_.load(); 
-  }; 
+  const auto should_stop = [this]() { return stop_cleaner_.load(); };
 
   // unique_lock 支持暂时解锁和重新加锁
   // 条件变量等待期间需要释放锁，所以这里使用 unique_lock
-  std::unique_lock<std::mutex> lock(mutex_); 
+  std::unique_lock<std::mutex> lock(mutex_);
 
   while (true) {
     // 1. 等待清理间隔，或者等待停止请求
@@ -264,13 +262,12 @@ void WAL::cleaner() {
     // should_stop 也会读到 true，不会再睡满整个间隔
 
     if (cleaner_cv_.wait_for(lock, interval, should_stop()))
-      return; 
-    
+      return;
+
     // 2. cleanWALFile() 内部会自行加锁
     // 调用前必须释放当前锁，避免重复获取 mutex_ 而死锁
     lock.unlock();
   }
-  
 }
 
 void WAL::cleanWALFile() {
