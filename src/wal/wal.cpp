@@ -181,12 +181,47 @@ void WAL::log(const std::vector<Record> &records, bool force_flush) {
     const auto bytes = record.encode(); 
     encoded.insert(encoded.end(), bytes.begin(), bytes.end()); 
   }
-  // ? 1. 加锁
-  // ? 2. 将 records 追加到 log_buffer_
-  // ? 3. 若 log_buffer_.size() < buffer_size_ 且 !force_flush 则直接返回
-  // ? 4. 否则将 log_buffer_ 中所有记录编码并写入 log_file_ (record.encode())
-  // ? 5. 调用 log_file_.sync() 确保落盘
-  // ? 6. 若文件大小超过 file_size_limit_ 则调用 reset_file() 滚动日志文件
+
+  try{
+    // 5. 如果旧文件已经达到轮换阈值，在本次写入前换文件
+    // file_size_limit_ == 0 表示关闭轮换
+    //
+    // 允许一批记录写完后稍微超过阈值
+    // 等下一次真正写入时再换文件，避免“日志已经写成功
+    // 却因为随后创建新文件失败而报告本次写入失败”
+    if (file_size_limit_ != 0){
+      const auto current_size = log_file_.size(); 
+
+      // 当前 FileObj 底层使用 tellg() 获取大小
+      // 获取失败返回 -1，转换成 size_t 后成为其最大值
+      // 不能把它当作正常的大文件而继续轮换
+      if (current_size == std::numeric_limits<size_t>::max())
+        throw std::runtime_error("WAL: failed to read log file size");
+
+      if (current_size >= file_size_limit_)
+        reset_file(); 
+    }
+
+    // 6. 追加字节，并检查写入结果
+    // append 返回 false 时，文件可能已经写入了部分内容
+    if (!log_file_.append(encoded))
+      throw std::runtime_error("WAL: failed to append log records");
+
+    // 7. 刷新文件流，并检查刷新结果
+    // append 成功不代表后续刷新也成功，两步都必须检查
+    // 这里沿用 FileObj::sync 的流刷新语义
+    if (!log_file_.sync())
+      throw std::runtime_error("WAL: failed to sync log file");
+  } catch (...) {
+    // 文件操作失败：保留缓冲，标记故障，原样抛出异常
+    // 后续调用不能把这批记录再次追加到可能已写入一半的文件中
+    write_failed_ = true; 
+    throw; 
+  }
+
+  // 8. 只有追加和刷新全部成功，才能移除已写出的记录
+  // clear 保留 vector 的容量，方便下一批记录复用
+  log_buffer_.clear(); 
 }
 
 void WAL::cleaner() {
