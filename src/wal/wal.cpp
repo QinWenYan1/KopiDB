@@ -2,6 +2,7 @@
 
 #include "wal/wal.h"
 #include "spdlog/spdlog.h"
+#include "utils/files.h"
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
@@ -11,6 +12,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <vector>
+#include <utility>
 
 namespace tiny_lsm {
 
@@ -305,19 +307,39 @@ void WAL::cleanWALFile() {
 }
 
 void WAL::reset_file() {
-  // wal文件格式为:
-  // wal.seq
-  // 当当前wal文件容量超出阈值后, 创建新的文件, 将seq自增
+  // 调用方 log() 已经持有 mutex_，这里不能再次加锁
+  // 本函数只负责切换文件，缓冲中的记录仍由 log() 写入
 
-  auto old_path = active_log_path_;
-  // 字符串处理获取seq
-  auto seq = std::stoi(old_path.substr(old_path.find_last_of(".") + 1));
-  seq++;
+  // 1. 取出当前日志序号
+  // active_log_path_ 由构造函数或本函数生成，
+  // 文件名格式已保证为 wal.<数字>，不需要重新扫描目录
+  //
+  // 例如 data/wal.3：
+  // filename() 得到 wal.3，substr(4) 得到 "3"
+  const std::filesystem::path current_path(active_log_path_); 
+  const uint64_t seq = std::stoull(current_path.filename().string().substr(4)); 
 
-  active_log_path_ = old_path.substr(0, old_path.find_last_of(".")) + "." +
-                     std::to_string(seq);
+  // 2. 序号达到上限时，不能继续加一，避免回绕到 wal.0。
+  if (seq == std::numeric_limits<uint64_t>::max())
+    throw std::overflow_error("WAL: log file sequence exhausted");
+  
+  // 3. 在同一个目录下生成下一日志文件的路径
+  // 例如 data/wal.3 → data/wal.4
+  std::string next_path = (current_path.parent_path() / ("wal." + std::to_string(seq + uint64_t{1}))).string(); 
 
-  // 创建新的文件
-  log_file_ = FileObj::create_and_write(active_log_path_, {});
+  // create_and_write 会截断已有文件
+  // 如果目标路径已经存在，明确报错，不能覆盖其中的内容
+  if (std::filesystem::exists(next_path)) 
+    throw std::runtime_error(
+        "WAL: next log file already exists: " + next_path);
+
+  // 4. 先用局部变量创建新文件，暂时不修改成员
+  // {} 表示新文件初始内容为空
+  //
+  // 如果创建失败，异常直接交给 log() 处理
+  // 当前路径和文件句柄仍然指向旧文件
+  auto next_file =FileObj::create_and_write(next_path, {});
+  
+
 }
 } // namespace tiny_lsm
