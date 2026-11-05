@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -81,8 +82,35 @@ WAL::WAL(const std::string &log_dir, size_t buffer_size,
     cleaner_thread_ = std::thread(&WAL::cleaner, this);
 }
 
-// TODO: Lab 5.4 实现WAL的清理流程
+// Lab 5.4 实现WAL的清理流程
 WAL::~WAL() {
+  // 1. 告诉清理线程：准备退出，不要再开始下一轮清理
+  //
+  // 后续 cleaner() 会在同一把 mutex_ 下检查停止标记并进入等待
+  // 修改标记时也持有这把锁，避免线程错过停止通知
+  {
+    std::lock_guard<std::mutex> lock(mutex_); 
+    stop_cleaner_ = true; 
+  }
+
+  // 2. 唤醒可能正在等待的清理线程
+  // 修改标记只是改变状态；通知才能让等待提前结束
+  // 如果线程尚未开始等待，它之后也会通过停止标记发现需要退出
+  cleaner_cv_.notify_all(); 
+
+  // 3. 等待清理线程真正退出，再继续关闭文件
+  //
+  // clean_interval == 0 时没有创建线程，不需要 join
+  // 线程函数已经执行完、但尚未 join 时，仍然需要回收
+  //
+  // 注意：这里不能持有 mutex_
+  // 否则清理线程可能正在等待这把锁，而我们又在等待它退出
+  // 双方互相等待，导致死锁
+  if (cleaner_thread_.joinable())
+    cleaner_thread_.join(); 
+
+  
+
   // ? 1. 强制将缓冲区所有内容刷盘: log({}, true)
   // ? 2. 加锁设置 stop_cleaner_ = true
   // ? 3. 等待清理线程结束: cleaner_thread_.join()
