@@ -267,8 +267,8 @@ void WAL::cleaner() {
     // 调用前必须释放当前锁，避免重复获取 mutex_ 而死锁
     lock.unlock();
 
-    try{
-      cleanWALFile(); 
+    try {
+      cleanWALFile();
     } catch (const std::exception &e) {
       // 清理可能因文件读取、解析或删除失败而抛异常。
       // 不能让异常逃出线程入口，否则会终止整个进程。
@@ -282,7 +282,6 @@ void WAL::cleaner() {
     // 如果清理期间收到停止请求，下一次 wait_for 会先检查条件
     // 直接返回 true，不会再等待完整的清理间隔
     lock.lock();
-
   }
 }
 
