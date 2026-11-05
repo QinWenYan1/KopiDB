@@ -251,6 +251,25 @@ void WAL::cleaner() {
   // 条件变量等待期间需要释放锁，所以这里使用 unique_lock
   std::unique_lock<std::mutex> lock(mutex_); 
 
+  while (true) {
+    // 1. 等待清理间隔，或者等待停止请求
+    //
+    // wait_for 等待时会自动释放 mutex_，其他线程仍能调用 log()
+    // 醒来检查条件时，它会重新获取 mutex_
+    //
+    // 返回 true：停止条件成立，立即退出
+    // 返回 false：等待时间已到，停止条件仍不成立，可以清理
+    //
+    // 即使停止通知发生在线程进入等待之前
+    // should_stop 也会读到 true，不会再睡满整个间隔
+
+    if (cleaner_cv_.wait_for(lock, interval, should_stop()))
+      return; 
+    
+    // 2. cleanWALFile() 内部会自行加锁
+    // 调用前必须释放当前锁，避免重复获取 mutex_ 而死锁
+    lock.unlock();
+  }
   
 }
 
