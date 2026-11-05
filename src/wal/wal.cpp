@@ -260,13 +260,29 @@ void WAL::cleaner() {
     //
     // 即使停止通知发生在线程进入等待之前
     // should_stop 也会读到 true，不会再睡满整个间隔
-
     if (cleaner_cv_.wait_for(lock, interval, should_stop()))
       return;
 
     // 2. cleanWALFile() 内部会自行加锁
     // 调用前必须释放当前锁，避免重复获取 mutex_ 而死锁
     lock.unlock();
+
+    try{
+      cleanWALFile(); 
+    } catch (const std::exception &e) {
+      // 清理可能因文件读取、解析或删除失败而抛异常。
+      // 不能让异常逃出线程入口，否则会终止整个进程。
+      // 记录本次失败，下一周期再尝试。
+      spdlog::error("WAL: failed to clean old log files: {}", e.what());
+    } catch (...) {
+      spdlog::error("WAL: unknown error while cleaning old log files");
+    }
+
+    // 3. 重新取锁，进入下一轮等待
+    // 如果清理期间收到停止请求，下一次 wait_for 会先检查条件
+    // 直接返回 true，不会再等待完整的清理间隔
+    lock.lock();
+
   }
 }
 
