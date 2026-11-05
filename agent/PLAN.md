@@ -1,12 +1,12 @@
 # KopiDB 当前任务：WAL 运行机制
 
-最后更新：2026-11-05。
+最后更新：2026-11-06。
 
 章节：目录 **5.2.2「WAL 运行机制」**，文章标题 **Lab 5.4 WAL 运行机制**。
 
-**进度：33.3%（2/6 阶段验收通过）**。按验收阶段数计算，不代表工时比例。阶段①基础生命周期、阶段②缓冲／写入／轮换已验收：WAL 27/27、Record 回归 38/38，共 65/65。当前进入阶段③；真实清理循环及其等待／唤醒尚未验收。
+**进度：33.3%（2/6 阶段验收通过）**。按验收阶段数计算，不代表工时比例。阶段①、②已验收；阶段③的 cleaner 编译错误已修复，新增等待／退出测试后，当前 WAL 29/29 通过。旧日志筛选与删除尚未验收，阶段③未完成。上一阶段的 Record 38/38 保留为历史回归结果，本轮未重跑该组。
 
-当前函数：[src/wal/wal.cpp](../src/wal/wal.cpp) 当前第 237 行的 `WAL::cleaner()`，完整草案在聊天中提供，由用户手写；头部补 chrono。reset_file 当前在第 309 行，已适配 uint64_t 序号、已有目标保护和创建成功后切换，并通过测试。
+当前函数：[src/wal/wal.cpp](../src/wal/wal.cpp) 当前第 288 行的 `WAL::cleanWALFile()`，完整草案在聊天中提供，由用户手写。cleaner 当前在第 239 行，wait_for 已正确接收 should_stop 函数对象，代码检查及等待／关闭测试通过。
 
 ## 本轮目标
 
@@ -76,7 +76,7 @@ WAL::set_checkpoint_tranc_id、TranContext 构造函数/get、已有事务状态
 | --- | --- | --- | --- |
 | ① 生命周期 | WAL 构造 → 析构 | 能创建并关闭 WAL；已有日志不被截断；初始化失败明确报错；线程和文件释放路径正确。含实际清理循环的关闭验证在阶段③补齐 | 已验收基础生命周期：7/7 |
 | ② 缓冲与写入 | log → flush → reset_file | 未达阈值可缓冲；达阈值、强制刷盘、正常关闭后记录可完整解码；重复空 flush 不重复写；轮换不丢记录、不覆盖文件；写失败明确上报 | 已验收：WAL 27/27，连同 Record 共 65/65 |
-| ③ 旧日志清理 | cleaner → cleanWALFile；复核 checkpoint setter | 只删除安全检查点覆盖的历史文件；活动文件及未完成范围保留；空目录／单文件正常；清理与写入并发不破坏文件；关闭能唤醒等待中的线程 | 进行中：当前 cleaner 草案 |
+| ③ 旧日志清理 | cleaner → cleanWALFile；复核 checkpoint setter | 只删除安全检查点覆盖的历史文件；活动文件及未完成范围保留；空目录／单文件正常；清理与写入并发不破坏文件；关闭能唤醒等待中的线程 | 进行中：cleaner 等待／退出通过；当前 cleanWALFile |
 | ④ 管理器接入 | TranManager::write_to_wal | 实际写入并刷新，返回真实结果；WAL 未初始化或写入失败不能伪装成功；新目录测试可显式接通组件 | 待开始 |
 | ⑤ 事务接入 | 私有日志辅助函数草案 → put → remove → commit → abort；复核构造/get | RU 先记录后写数据，暂存事务检查通过后写 COMMIT；冲突不写成功提交记录；取消结果与 ROLLBACK／回滚名单一致；重复结束不重复写；原有隔离与删除语义保持 | 待开始 |
 | ⑥ 整体验收 | WAL 文件测试、事务联调、受影响回归、文档收尾 | 实际文件内容、线程退出、写入失败、提交／回滚顺序均有验证；Record 与原有事务测试无回归；明确已测范围和后续恢复依赖 | 待开始 |
@@ -146,4 +146,16 @@ reset_file 草案：仅由持有 mutex_ 的 log 调用，本函数不重复加�
 
 cleaner 草案：使用 unique_lock 与 cleaner_cv_.wait_for，等待时释放 mutex_；停止谓词放在循环外定义，读取 stop_cleaner_。谓词为 true 则退出，超时才执行清理；调用自行加锁的 cleanWALFile 前解锁，结束后重新取锁进入下一次等待。清理异常记录后继续下一周期，避免异常逃出线程入口终止进程。析构原有的同锁停止标记、notify_one 和 join 与此配合。
 
-本轮仅给出 cleaner 草案，未执行其实现。cleanWALFile 仍需下一轮核对并适配记录解析、活动文件与检查点保护；cleaner 初次检查先验证等待期间写入与关闭唤醒，不提前宣称真实文件删除或并发清理正确。上一轮 Record 的完成结果与证据已保留到 STATE。
+2026-11-06 cleaner 初次检查：已填写代码，等待／解锁／异常处理／重新加锁的结构与方案一致，但 wait_for(lock, interval, should_stop()) 提前调用 lambda，第三参数实际为 bool。xmake build test_wal 失败，编译器报告 called object type 'bool' is not a function or function pointer，定位 wal.cpp:263。应改成 wait_for(lock, interval, should_stop)，交给条件变量按需调用谓词。本轮没有运行测试或执行旧二进制，助手未修改业务源码或测试。
+
+历史失败证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-cleaner-review-w8muy_vb`，含构建日志、返回码及前后源码哈希，构建期间源码和测试未变。该编译错误已在下面的复测中修复。
+
+2026-11-06 cleaner 复测：should_stop 参数已修正，解锁后调用 cleanWALFile、异常捕获和重新加锁正确。新增 2 项测试：60 秒清理间隔下前台 log 能完成，以及析构能够提前结束长等待；各预留 100ms 调度机会，用 5 秒上限避免依赖毫秒级调度精度。构建成功，隔离运行 **WAL 29/29 通过**，包括此前 27 项回归。测试未等待清理超时，不据此认定旧文件删除逻辑正确；清理异常分支仍为代码检查。cleaner 前的 TODO 标签可移除，不影响功能判断。
+
+证据目录：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-cleaner-wait-review-is2ady3p`。过滤器为 WALTest.Constructor*:WALTest.Destructor*:WALTest.Flush*:WALTest.Log*:WALTest.Rotation*:WALTest.Cleaner*；包含构建／测试日志、命令、JSON 和源码哈希。执行期间源码与测试未变，助手只补测试和文档，未改业务源码。
+
+cleanWALFile 草案：整轮持有 mutex_，确保活动文件、检查点和删除决策保持一致；逐个检查普通文件及纯数字 WAL 后缀，只处理序号小于当前活动文件的历史日志。复用 Record::decode 验证整份内容；任一记录 ID 大于 checkpoint_tranc_id_ 就保留整个文件，全部满足才关闭读取句柄并删除。空历史日志可删，损坏或读取失败的文件保留并报告，单个文件失败不阻碍检查其余文件。文件大小错误值沿用现有接口检查。
+
+取舍：该简单同步方案在清理期间会让 log 等待，等待周期本身仍会释放锁。打开与读取使用 FileObj；删除使用 std::filesystem::remove，因为当前 FileObj::del_file 丢弃删除结果，无法上报实际文件系统错误。本轮不扩展 FileObj 接口。该辅助函数是当前清理方案的配套实现，不新增独立 Lab 任务。
+
+本轮只给出 cleanWALFile 草案，尚未执行。下一轮验收检查点边界、活动／未来序号保护、损坏文件保留、实际周期清理及并发衔接，完成阶段③后再进入管理器接入。

@@ -1,6 +1,6 @@
 # KopiDB 项目状态
 
-最后核对：2026-11-05。当前目录 5.2.2「WAL 运行机制」（Lab 5.4）的计划见 [PLAN.md](PLAN.md)，问题事实、证据及处理状态见 [AUDIT.md](AUDIT.md)。
+最后核对：2026-11-06。当前目录 5.2.2「WAL 运行机制」（Lab 5.4）的计划见 [PLAN.md](PLAN.md)，问题事实、证据及处理状态见 [AUDIT.md](AUDIT.md)。
 
 本文件记录项目现状、已确认的设计、全局约定、验收边界和整体排期。代码与记录不一致时，先检查代码，再更新记录；不能把讨论通过的方案当作已经实现。[AUDIT.md](AUDIT.md) 是全局问题账本；[PLAN.md](PLAN.md) 只记录当前选定工作、执行顺序、TODO 与具体的验收场景。
 
@@ -16,7 +16,11 @@
 
 ## 当前进度
 
-2026-11-05 当前：目录 **5.2.2「WAL 运行机制」**（文章标题 Lab 5.4），进度 **33.3%（2/6 阶段验收通过）**。阶段①基础生命周期和阶段②缓冲／写入／轮换已验收；新增轮换 7 项测试后，构建成功，隔离运行 **WAL 27/27、Record 38/38，共 65/65 通过**。当前进入阶段③的 WAL::cleaner 草案，真实周期清理尚未验收；助手未修改业务源码。具体实现进度、测试范围和验收见 [PLAN.md](PLAN.md)。
+2026-11-06 当前：目录 **5.2.2「WAL 运行机制」**（文章标题 Lab 5.4），进度 **33.3%（2/6 阶段验收通过）**。阶段①、②已验收；阶段③ cleaner 的 wait_for 参数已修复，构建成功，新增等待／退出 2 项测试后，隔离运行 **WAL 29/29 通过**。当前进入 cleanWALFile 草案，旧日志筛选删除尚未验收，阶段③未完成。助手只补测试和维护文档，未修改业务源码。具体进度与验收见 [PLAN.md](PLAN.md)。
+
+历史构建失败：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-cleaner-review-w8muy_vb`，原因是 wait_for 收到了 should_stop() 返回的 bool，现已改为 should_stop 谓词对象。
+
+cleaner 复测证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-cleaner-wait-review-is2ady3p`，WAL 29/29。新增测试验证 60 秒清理间隔下前台写入及提前关闭，各预留 100ms 调度机会；没有等待旧文件清理超时，不作为删除规则或清理异常分支的运行验收。源码与测试在构建／运行期间哈希一致。本轮未重跑 Record，上一阶段 38/38 保留为历史结果。
 
 构造验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-constructor-review-97qgp25k`。首次 5 项测试关闭后台清理，验证文件创建／保留与失败传播。
 

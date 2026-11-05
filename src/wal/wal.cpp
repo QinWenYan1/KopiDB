@@ -260,7 +260,7 @@ void WAL::cleaner() {
     //
     // 即使停止通知发生在线程进入等待之前
     // should_stop 也会读到 true，不会再睡满整个间隔
-    if (cleaner_cv_.wait_for(lock, interval, should_stop()))
+    if (cleaner_cv_.wait_for(lock, interval, should_stop))
       return;
 
     // 2. cleanWALFile() 内部会自行加锁

@@ -2,6 +2,7 @@
 #include "wal/record.h"
 #include "lsm/engine.h"
 #include "wal/wal.h"
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -9,6 +10,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -1110,6 +1112,39 @@ TEST_F(WALTest, RotationSerializesConcurrentBatches) {
   }
   EXPECT_FALSE(std::filesystem::exists(
       std::filesystem::path(test_dir) / ("wal." + std::to_string(worker_count))));
+}
+
+// 目的：清理线程等待较长间隔时，不应一直占着 mutex_ 阻止前台写入。
+// 预留短暂调度时间；5 秒上限远小于 60 秒清理间隔，不要求毫秒级调度精度。
+// 此用例不等待清理超时，不把旧文件删除逻辑纳入本轮验收。
+TEST_F(WALTest, CleanerWaitDoesNotBlockWriting) {
+  WAL wal(test_dir, 128, 0, 60, 0);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const std::vector<Record> records = {
+      Record::createRecord(1), Record::putRecord(1, "key", "value"),
+      Record::commitRecord(1)};
+
+  const auto start = std::chrono::steady_clock::now();
+  wal.log(records, true);
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_LT(elapsed, std::chrono::seconds(5));
+  EXPECT_EQ(read_wal_records(std::filesystem::path(test_dir) / "wal.0"), records);
+}
+
+// 目的：关闭 WAL 能提前结束长间隔等待，不必等待 60 秒后才能 join。
+// 配合已有的“创建后立即析构”测试，分别覆盖通知较早与线程有机会等待后的关闭。
+TEST_F(WALTest, CleanerShutdownInterruptsLongWait) {
+  auto wal = std::make_unique<WAL>(test_dir, 128, 0, 60, 0);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  const auto start = std::chrono::steady_clock::now();
+  wal.reset();
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_LT(elapsed, std::chrono::seconds(5));
+  EXPECT_TRUE(std::filesystem::is_regular_file(
+      std::filesystem::path(test_dir) / "wal.0"));
 }
 
 TEST_F(WALTest, LogAndFlush) {
