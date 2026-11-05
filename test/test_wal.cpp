@@ -547,6 +547,10 @@ public:
       : WAL(dir, buffer_size, 0, 0, file_size_limit) {}
 
   const std::vector<Record> &buffered_records() const { return log_buffer_; }
+  const std::string &active_path() const { return active_log_path_; }
+  std::vector<Record> active_file_records() {
+    return Record::decode(log_file_.read_to_slice(0, log_file_.size()));
+  }
   void close_file_for_test() { log_file_.close(); }
   void reopen_file_for_test() {
     log_file_ = FileObj::open(active_log_path_, false);
@@ -939,6 +943,173 @@ TEST_F(WALTest, DestructorPreservesCallerExceptionWhenFlushFails) {
 
   EXPECT_EQ(std::filesystem::file_size(std::filesystem::path(test_dir) / "wal.0"),
             0u);
+}
+
+// 目的：文件恰好达到阈值时，在下一批非空写入前轮换；空 flush 不创建新文件。
+// 连续跨三个文件，验证每批记录完整保留、顺序正确，旧文件没有被覆盖或删除。
+TEST_F(WALTest, RotationAtBoundaryPreservesAllFiles) {
+  WALBufferProbe wal(test_dir, 0, 22);
+  for (uint64_t id = 1; id <= 3; ++id) {
+    const std::vector<Record> batch = {
+        Record::createRecord(id), Record::commitRecord(id)};
+    const auto path = std::filesystem::path(test_dir) /
+                      ("wal." + std::to_string(id - 1));
+    wal.log(batch);
+    EXPECT_EQ(std::filesystem::file_size(path), 22u);
+    EXPECT_EQ(read_wal_records(path), batch);
+    EXPECT_EQ(wal.active_path(), path.string());
+    EXPECT_TRUE(wal.buffered_records().empty());
+
+    wal.flush();
+    EXPECT_FALSE(std::filesystem::exists(
+        std::filesystem::path(test_dir) / ("wal." + std::to_string(id))));
+  }
+
+  for (uint64_t id = 1; id <= 3; ++id) {
+    const std::vector<Record> expected = {
+        Record::createRecord(id), Record::commitRecord(id)};
+    EXPECT_EQ(read_wal_records(std::filesystem::path(test_dir) /
+                               ("wal." + std::to_string(id - 1))),
+              expected);
+  }
+}
+
+// 目的：单条记录超过轮换阈值仍应完整写入当前文件，不被拆开或拒绝。
+// 下一批才切换文件，两个文件都能独立解码完整记录。
+TEST_F(WALTest, RotationKeepsOversizedRecordWhole) {
+  WALBufferProbe wal(test_dir, 0, 16);
+  const auto large = Record::putRecord(7, "key", std::string(128, 'v'));
+  wal.log({large});
+  EXPECT_GT(std::filesystem::file_size(std::filesystem::path(test_dir) / "wal.0"),
+            16u);
+  EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(test_dir) / "wal.1"));
+
+  const auto commit = Record::commitRecord(7);
+  wal.log({commit});
+  EXPECT_EQ(read_wal_records(std::filesystem::path(test_dir) / "wal.0"),
+            std::vector<Record>{large});
+  EXPECT_EQ(read_wal_records(std::filesystem::path(test_dir) / "wal.1"),
+            std::vector<Record>{commit});
+}
+
+// 目的：构造与轮换都支持超过 int 范围的序号，避免构造成功后在 stoi 处失败。
+TEST_F(WALTest, RotationContinuesFullWidthSequence) {
+  const auto old_path = std::filesystem::path(test_dir) / "wal.3000000000";
+  const auto old = Record::createRecord(1);
+  FileObj::create_and_write(old_path.string(), old.encode());
+
+  WALBufferProbe wal(test_dir, 0, 11);
+  const auto first = Record::createRecord(2);
+  const auto second = Record::commitRecord(2);
+  wal.log({first});
+  wal.log({second});
+
+  EXPECT_EQ(read_wal_records(old_path), std::vector<Record>{old});
+  EXPECT_EQ(read_wal_records(std::filesystem::path(test_dir) / "wal.3000000001"),
+            std::vector<Record>{first});
+  EXPECT_EQ(read_wal_records(std::filesystem::path(test_dir) / "wal.3000000002"),
+            std::vector<Record>{second});
+}
+
+// 目的：下一文件名意外被占用时拒绝覆盖，保留原文件句柄、路径与待写记录。
+TEST_F(WALTest, RotationRejectsExistingTargetWithoutChangingState) {
+  WALBufferProbe wal(test_dir, 0, 11);
+  const auto first = Record::createRecord(3);
+  const auto pending = Record::commitRecord(3);
+  wal.log({first});
+  const auto original_path = wal.active_path();
+
+  const auto occupied = std::filesystem::path(test_dir) / "wal.1";
+  const auto unrelated = Record::createRecord(99);
+  FileObj::create_and_write(occupied.string(), unrelated.encode());
+
+  EXPECT_THROW(wal.log({pending}), std::runtime_error);
+  EXPECT_EQ(wal.active_path(), original_path);
+  EXPECT_EQ(wal.active_file_records(), std::vector<Record>{first});
+  EXPECT_EQ(wal.buffered_records(), std::vector<Record>{pending});
+  EXPECT_EQ(read_wal_records(occupied), std::vector<Record>{unrelated});
+}
+
+// 目的：目标尚不存在，但创建新文件实际失败时，也不能提前修改活动路径或句柄。
+// 重命名目录保留旧文件的打开句柄，同时使原目录下的新文件创建以 ENOENT 失败。
+TEST_F(WALTest, RotationCreateFailurePreservesOldHandleAndPath) {
+  const auto live = std::filesystem::path(test_dir) / "live";
+  const auto moved = std::filesystem::path(test_dir) / "moved";
+  WALBufferProbe wal(live.string(), 0, 11);
+  const auto first = Record::createRecord(5);
+  const auto pending = Record::commitRecord(5);
+  wal.log({first});
+  const auto original_path = wal.active_path();
+  std::filesystem::rename(live, moved);
+
+  EXPECT_THROW(wal.log({pending}), std::runtime_error);
+  EXPECT_EQ(wal.active_path(), original_path);
+  EXPECT_EQ(wal.active_file_records(), std::vector<Record>{first});
+  EXPECT_EQ(wal.buffered_records(), std::vector<Record>{pending});
+  EXPECT_EQ(read_wal_records(moved / "wal.0"), std::vector<Record>{first});
+  EXPECT_FALSE(std::filesystem::exists(live / "wal.1"));
+}
+
+// 目的：最后一个合法序号仍可写入，但再次轮换必须报错，不能回绕到 wal.0。
+TEST_F(WALTest, RotationRejectsExhaustedSequenceWithoutWrapping) {
+  const auto last = std::numeric_limits<uint64_t>::max();
+  const auto old_path = std::filesystem::path(test_dir) /
+                        ("wal." + std::to_string(last - 1));
+  FileObj::create_and_write(old_path.string(), Record::createRecord(1).encode());
+
+  WALBufferProbe wal(test_dir, 0, 11);
+  const auto first = Record::createRecord(2);
+  const auto pending = Record::commitRecord(2);
+  wal.log({first});
+  const auto original_path = wal.active_path();
+
+  EXPECT_THROW(wal.log({pending}), std::overflow_error);
+  EXPECT_EQ(wal.active_path(), original_path);
+  EXPECT_EQ(wal.active_file_records(), std::vector<Record>{first});
+  EXPECT_EQ(wal.buffered_records(), std::vector<Record>{pending});
+  EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(test_dir) / "wal.0"));
+}
+
+// 目的：并发写入每一批都触发下一次轮换时，文件切换与写入仍串行完成。
+// 每个文件恰好保存一个完整批次；线程先后不固定，但事务不能丢失或重复。
+TEST_F(WALTest, RotationSerializesConcurrentBatches) {
+  constexpr size_t worker_count = 4;
+  WAL wal(test_dir, 0, 0, 0, 1);
+  std::vector<std::exception_ptr> errors(worker_count);
+  std::vector<std::thread> workers;
+  for (size_t i = 0; i < worker_count; ++i) {
+    workers.emplace_back([&, i] {
+      try {
+        const uint64_t id = i + 1;
+        wal.log({Record::createRecord(id), Record::commitRecord(id)});
+      } catch (...) {
+        errors[i] = std::current_exception();
+      }
+    });
+  }
+  for (auto &worker : workers) {
+    worker.join();
+  }
+  for (const auto &error : errors) {
+    ASSERT_FALSE(error);
+  }
+
+  std::vector<bool> seen(worker_count, false);
+  for (size_t seq = 0; seq < worker_count; ++seq) {
+    const auto records = read_wal_records(std::filesystem::path(test_dir) /
+                                          ("wal." + std::to_string(seq)));
+    ASSERT_EQ(records.size(), 2u);
+    const auto id = records.front().getTrancId();
+    ASSERT_GE(id, 1u);
+    ASSERT_LE(id, worker_count);
+    EXPECT_FALSE(seen[id - 1]);
+    seen[id - 1] = true;
+    const std::vector<Record> expected = {
+        Record::createRecord(id), Record::commitRecord(id)};
+    EXPECT_EQ(records, expected);
+  }
+  EXPECT_FALSE(std::filesystem::exists(
+      std::filesystem::path(test_dir) / ("wal." + std::to_string(worker_count))));
 }
 
 TEST_F(WALTest, LogAndFlush) {

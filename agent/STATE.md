@@ -16,7 +16,7 @@
 
 ## 当前进度
 
-2026-11-05 当前：目录 **5.2.2「WAL 运行机制」**（文章标题 Lab 5.4），进度 **16.7%（1/6 阶段验收通过）**。阶段①基础生命周期已验收；阶段②的 log/flush 非轮换路径及析构剩余缓冲写出已验证，新增 5 项测试后，构建成功，隔离运行相关测试共 **19/19 通过**。当前进入 WAL::reset_file 草案，轮换尚未验收，阶段②未完成；助手未修改业务源码。具体实现进度、测试范围和验收见 [PLAN.md](PLAN.md)。
+2026-11-05 当前：目录 **5.2.2「WAL 运行机制」**（文章标题 Lab 5.4），进度 **33.3%（2/6 阶段验收通过）**。阶段①基础生命周期和阶段②缓冲／写入／轮换已验收；新增轮换 7 项测试后，构建成功，隔离运行 **WAL 27/27、Record 38/38，共 65/65 通过**。当前进入阶段③的 WAL::cleaner 草案，真实周期清理尚未验收；助手未修改业务源码。具体实现进度、测试范围和验收见 [PLAN.md](PLAN.md)。
 
 构造验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-constructor-review-97qgp25k`。首次 5 项测试关闭后台清理，验证文件创建／保留与失败传播。
 
@@ -24,7 +24,9 @@
 
 log 验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-log-review-ydt1n4rj`，构造／析构／新增 log 合计 14/14。覆盖条数缓冲、强制与零阈值写入、空输入不重复、混合／二进制记录、8 线程整批写入、实际关闭文件后的错误传播及故障后拒绝继续写；当时 flush 尚未接通，未触发轮换，未注入短写或单独的 sync 失败。
 
-flush 验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-flush-review-aicjsgnl`，相关测试共 19/19。新增验证显式 flush、不重复写、析构写出剩余缓冲、显式调用报告文件错误，以及析构在正常退出／异常展开时捕获文件写入失败。实际周期等待唤醒仍待 cleaner；轮换待 reset_file。本轮只在聊天中提供 reset_file 草案，未执行其新实现。
+flush 验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-flush-review-aicjsgnl`，相关测试共 19/19。新增验证显式 flush、不重复写、析构写出剩余缓冲、显式调用报告文件错误，以及析构在正常退出／异常展开时捕获文件写入失败。
+
+阶段②验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-rotation-review-o_a8yop6`，WAL 27/27、Record 38/38，共 65/65。轮换覆盖阈值、完整记录、大序号、已有目标、实际创建失败、序号耗尽及并发切换；旧日志和失败时原句柄／路径／缓冲保持正确。文件轮换为已选择方案的辅助功能，reset_file 不是 Lab 额外明列的必做函数。未测试恢复、磁盘短写或单独的 sync 故障；cleaner 本轮仅在聊天中给出实现草案。
 
 本轮范围包含 WAL 组件和 Lab 3.2 明列的事务日志接入。计划建议：暂存型事务提交时统一写日志；RU 的 put/remove 可能触发 SST 刷盘，先写新增日志再写引擎，取消时记录必要的 ROLLBACK。这些是待逐函数实施的方案，不代表已经实现。get 只联动复核；不重新改造迭代器或回滚名单。
 

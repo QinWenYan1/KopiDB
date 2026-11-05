@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
+#include <chrono>
 
 namespace tiny_lsm {
 
@@ -234,12 +235,23 @@ void WAL::log(const std::vector<Record> &records, bool force_flush) {
   log_buffer_.clear();
 }
 
+// TODO: Lab 5.4 实现WAL的清理线程
 void WAL::cleaner() {
-  // TODO: Lab 5.4 实现WAL的清理线程
-  // ? 循环:
-  // ?   1. sleep clean_interval_ 秒
-  // ?   2. 若 stop_cleaner_ 为 true 则退出
-  // ?   3. 调用 cleanWALFile() 清理已可以删除的旧 WAL 文件
+  // 构造函数只在 clean_interval_ != 0 时启动此线程
+  // 将配置中的秒数转换成 wait_for 接收的时间间隔
+  const auto interval = std::chrono::seconds(clean_interval_ ); 
+
+  // 等待结束的条件：析构函数已经请求停止
+  // 放在循环外定义，后续每次等待都使用同一个判断
+  const auto should_stop = [this](){
+    return stop_cleaner_.load(); 
+  }; 
+
+  // unique_lock 支持暂时解锁和重新加锁
+  // 条件变量等待期间需要释放锁，所以这里使用 unique_lock
+  std::unique_lock<std::mutex> lock(mutex_); 
+
+  
 }
 
 void WAL::cleanWALFile() {
