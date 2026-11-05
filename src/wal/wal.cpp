@@ -72,7 +72,7 @@ WAL::WAL(const std::string &log_dir, size_t buffer_size,
   active_log_path_ = (dir / ("wal." + std::to_string(next_seq))).string(); 
   log_file_ = FileObj::open(active_log_path_, true); 
 
-  // 4. 文件准备好之后，最后启动清理线程
+  // 4. 文件准备好之后，自动创建并启动新线程
   // clean_interval == 0 表示关闭周期清理
   //
   // 把线程启动放在最后：
