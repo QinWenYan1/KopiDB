@@ -853,6 +853,94 @@ TEST_F(WALTest, LogSizeFailureDoesNotRotateOrContinue) {
             0u);
 }
 
+// 目的：显式 flush 能写出尚未达到条数阈值的缓冲；空缓冲和重复 flush 不追加记录。
+TEST_F(WALTest, FlushDrainsPartialBufferWithoutDuplicates) {
+  WALBufferProbe wal(test_dir, 128);
+  const auto path = std::filesystem::path(test_dir) / "wal.0";
+  const std::vector<Record> pending = {
+      Record::createRecord(3), Record::putRecord(3, "key", "value"),
+      Record::commitRecord(3)};
+
+  wal.flush();
+  EXPECT_EQ(std::filesystem::file_size(path), 0u);
+  wal.log(pending);
+  ASSERT_EQ(std::filesystem::file_size(path), 0u);
+
+  wal.flush();
+  EXPECT_TRUE(wal.buffered_records().empty());
+  EXPECT_EQ(read_wal_records(path), pending);
+  const auto written_size = std::filesystem::file_size(path);
+
+  wal.flush();
+  EXPECT_EQ(std::filesystem::file_size(path), written_size);
+  EXPECT_EQ(read_wal_records(path), pending);
+}
+
+// 目的：显式 flush 不吞掉文件写入异常；失败后保留缓冲，后续 flush 继续报告故障。
+TEST_F(WALTest, FlushPropagatesFileFailure) {
+  WALBufferProbe wal(test_dir, 128);
+  const std::vector<Record> pending = {Record::createRecord(3)};
+  wal.log(pending);
+  wal.close_file_for_test();
+
+  EXPECT_THROW(wal.flush(), std::runtime_error);
+  EXPECT_EQ(wal.buffered_records(), pending);
+
+  wal.reopen_file_for_test();
+  EXPECT_THROW(wal.flush(), std::runtime_error);
+  EXPECT_EQ(wal.buffered_records(), pending);
+  EXPECT_EQ(std::filesystem::file_size(std::filesystem::path(test_dir) / "wal.0"),
+            0u);
+}
+
+// 目的：调用方没有显式 flush 时，正常析构仍写出不足阈值的剩余记录。
+// 分别覆盖未创建清理线程、已创建清理线程两条关闭路径，不依赖日志恢复函数。
+TEST_F(WALTest, DestructorFlushesPendingRecords) {
+  const std::vector<Record> pending = {
+      Record::createRecord(5), Record::putRecord(5, "key", "value"),
+      Record::commitRecord(5)};
+
+  for (uint64_t interval : {uint64_t{0}, uint64_t{60}}) {
+    SCOPED_TRACE(interval);
+    const auto dir = std::filesystem::path(test_dir) / std::to_string(interval);
+    const auto path = dir / "wal.0";
+    {
+      WAL wal(dir.string(), 128, 0, interval, 0);
+      wal.log(pending);
+      ASSERT_EQ(std::filesystem::file_size(path), 0u);
+    }
+    EXPECT_EQ(read_wal_records(path), pending);
+  }
+}
+
+// 目的：析构触发实际文件写入失败时，捕获异常并正常完成关闭，不终止进程。
+// 文件保持为空表示保存确实失败，不能把“析构没有抛异常”解释为持久化成功。
+TEST_F(WALTest, DestructorContainsFlushFailure) {
+  EXPECT_NO_THROW({
+    WALBufferProbe wal(test_dir, 128);
+    wal.log({Record::createRecord(7)});
+    wal.close_file_for_test();
+  });
+
+  EXPECT_EQ(std::filesystem::file_size(std::filesystem::path(test_dir) / "wal.0"),
+            0u);
+}
+
+// 目的：调用方已经抛出异常时，析构中的刷盘失败也不能盖掉原异常或终止进程。
+TEST_F(WALTest, DestructorPreservesCallerExceptionWhenFlushFails) {
+  EXPECT_THROW(
+      {
+        WALBufferProbe wal(test_dir, 128);
+        wal.log({Record::createRecord(9)});
+        wal.close_file_for_test();
+        throw std::logic_error("caller failure");
+      },
+      std::logic_error);
+
+  EXPECT_EQ(std::filesystem::file_size(std::filesystem::path(test_dir) / "wal.0"),
+            0u);
+}
+
 TEST_F(WALTest, LogAndFlush) {
   MockWAL wal(test_dir, 10, 100);
 
