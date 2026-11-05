@@ -558,6 +558,83 @@ protected:
   std::string test_dir = "test_wal_dir";
 };
 
+// 目的：新库的日志目录尚不存在时，构造函数创建目录和空的 wal.0。
+// 本组构造测试将清理间隔设为 0，不依赖尚未实现的析构线程回收。
+TEST_F(WALTest, ConstructorCreatesNestedDirectory) {
+  const auto log_dir = std::filesystem::path(test_dir) / "nested" / "logs";
+  {
+    WAL wal(log_dir.string(), 8, 0, 0, 4096);
+    ASSERT_TRUE(std::filesystem::is_regular_file(log_dir / "wal.0"));
+    EXPECT_EQ(std::filesystem::file_size(log_dir / "wal.0"), 0u);
+  }
+  EXPECT_TRUE(std::filesystem::is_regular_file(log_dir / "wal.0"));
+}
+
+// 目的：目录里已有日志时，从最大的数字序号继续，旧文件内容保持原样。
+// wal.9 的字典序大于 wal.3000000000，但数字序号更小；大序号也超过 int 范围。
+// wal.backup、wal.4000000000.bak 和 wal. 都不是合法序号，不应被误解析。
+TEST_F(WALTest, ConstructorPreservesFilesAndUsesNumericSequence) {
+  const std::vector<std::string> names = {
+      "wal.9", "wal.10", "wal.3000000000", "wal.backup",
+      "wal.4000000000.bak", "wal.", "unrelated"};
+  const std::vector<uint8_t> original = {17, 0, 34, 255};
+  for (const auto &name : names) {
+    FileObj::create_and_write(test_dir + "/" + name, original);
+  }
+
+  {
+    WAL wal(test_dir, 8, 0, 0, 4096);
+    const auto new_path = std::filesystem::path(test_dir) / "wal.3000000001";
+    ASSERT_TRUE(std::filesystem::is_regular_file(new_path));
+    EXPECT_EQ(std::filesystem::file_size(new_path), 0u);
+    EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(test_dir) /
+                                         "wal.0"));
+  }
+
+  for (const auto &name : names) {
+    SCOPED_TRACE(name);
+    auto file = FileObj::open(test_dir + "/" + name);
+    EXPECT_EQ(file.read_to_slice(0, file.size()), original);
+  }
+}
+
+// 目的：传入的目录路径实际是普通文件时，应明确失败，不能破坏原文件。
+TEST_F(WALTest, ConstructorRejectsFileUsedAsDirectory) {
+  const auto path = test_dir + "/not_a_directory";
+  const std::vector<uint8_t> original = {1, 2, 3};
+  FileObj::create_and_write(path, original);
+
+  EXPECT_THROW((WAL(path, 8, 0, 0, 4096)),
+               std::filesystem::filesystem_error);
+
+  auto file = FileObj::open(path);
+  EXPECT_EQ(file.read_to_slice(0, file.size()), original);
+}
+
+// 目的：目录可以访问，但目标日志路径已被子目录占用，文件打开必须报告失败。
+// 这个场景直接覆盖 FileObj::open 的失败传播，不依赖运行用户的权限设置。
+TEST_F(WALTest, ConstructorReportsLogOpenFailure) {
+  const auto occupied = std::filesystem::path(test_dir) / "wal.0";
+  std::filesystem::create_directory(occupied);
+
+  EXPECT_THROW((WAL(test_dir, 8, 0, 0, 4096)), std::runtime_error);
+  EXPECT_TRUE(std::filesystem::is_directory(occupied));
+}
+
+// 目的：已有序号达到 uint64_t 上限时，拒绝继续创建，避免加一回绕覆盖 wal.0。
+TEST_F(WALTest, ConstructorRejectsExhaustedSequence) {
+  const std::vector<uint8_t> original = {4, 5, 6};
+  const auto last_path = test_dir + "/wal." +
+                         std::to_string(std::numeric_limits<uint64_t>::max());
+  FileObj::create_and_write(last_path, original);
+
+  EXPECT_THROW((WAL(test_dir, 8, 0, 0, 4096)), std::overflow_error);
+  EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(test_dir) /
+                                       "wal.0"));
+  auto file = FileObj::open(last_path);
+  EXPECT_EQ(file.read_to_slice(0, file.size()), original);
+}
+
 TEST_F(WALTest, LogAndFlush) {
   MockWAL wal(test_dir, 10, 100);
 
