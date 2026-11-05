@@ -339,7 +339,16 @@ void WAL::reset_file() {
   // 如果创建失败，异常直接交给 log() 处理
   // 当前路径和文件句柄仍然指向旧文件
   auto next_file =FileObj::create_and_write(next_path, {});
-  
 
+  // 5. 创建成功后，再切换成员
+  //
+  // FileObj 的移动赋值已声明 noexcept，接管新文件句柄
+  // 同时释放旧句柄；释放句柄不会删除旧日志文件
+  log_file_ = std::move(next_file); 
+
+  // swap 不需要重新分配字符串内存
+  // 避免已经换好文件句柄，却在复制新路径时因分配失败而中断
+  // 交换后，active_log_path_ 保存新路径，next_path 保存旧路径
+  active_log_path_.swap(next_path); 
 }
 } // namespace tiny_lsm
