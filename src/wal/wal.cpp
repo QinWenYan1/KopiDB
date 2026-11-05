@@ -109,14 +109,22 @@ WAL::~WAL() {
   if (cleaner_thread_.joinable())
     cleaner_thread_.join(); 
 
-  
-
-  // ? 1. 强制将缓冲区所有内容刷盘: log({}, true)
-  // ? 2. 加锁设置 stop_cleaner_ = true
-  // ? 3. 等待清理线程结束: cleaner_thread_.join()
-  // ? 4. 显式关闭文件: log_file_.close()
-
+  // 4. 尝试将尚在缓冲区中的日志全部写入文件
+  // flush() 自己负责加锁，这里不再持有 mutex_
   //
+  // 析构期间不能让刷盘异常直接逃出去，否则可能终止程序
+  // 失败时记录错误，随后仍然关闭文件
+  // 这不表示日志保存成功，调用方需要检查结果时应显式调用 flush()
+  try{
+    flush(); 
+  } catch (const std::exception &e){
+    spdlog::error("WAL: failed to flush during destruction: {}", e.what());
+  } catch (...){
+    spdlog::error("WAL: unknown flush error during destruction");
+  }
+
+  // 5. 清理线程已经退出，最后释放文件资源
+  log_file_.close(); 
 }
 
 std::map<uint64_t, std::vector<Record>>
