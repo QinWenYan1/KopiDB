@@ -46,7 +46,6 @@ private:
   void cleanWALFile();
   void reset_file();
 
-
 protected:
   std::string active_log_path_;
   FileObj log_file_;
