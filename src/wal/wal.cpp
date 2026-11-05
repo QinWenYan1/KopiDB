@@ -11,8 +11,8 @@
 #include <limits>
 #include <mutex>
 #include <stdexcept>
-#include <vector>
 #include <utility>
+#include <vector>
 
 namespace tiny_lsm {
 
@@ -153,7 +153,7 @@ void WAL::flush() {
   //
   // 写入失败时，让异常自然传给调用者
   // 析构函数调用 flush() 时，已有自己的异常捕获
-  log({}, true); 
+  log({}, true);
 }
 
 void WAL::set_checkpoint_tranc_id(uint64_t checkpoint_tranc_id) {
@@ -316,39 +316,40 @@ void WAL::reset_file() {
   //
   // 例如 data/wal.3：
   // filename() 得到 wal.3，substr(4) 得到 "3"
-  const std::filesystem::path current_path(active_log_path_); 
-  const uint64_t seq = std::stoull(current_path.filename().string().substr(4)); 
+  const std::filesystem::path current_path(active_log_path_);
+  const uint64_t seq = std::stoull(current_path.filename().string().substr(4));
 
   // 2. 序号达到上限时，不能继续加一，避免回绕到 wal.0。
   if (seq == std::numeric_limits<uint64_t>::max())
     throw std::overflow_error("WAL: log file sequence exhausted");
-  
+
   // 3. 在同一个目录下生成下一日志文件的路径
   // 例如 data/wal.3 → data/wal.4
-  std::string next_path = (current_path.parent_path() / ("wal." + std::to_string(seq + uint64_t{1}))).string(); 
+  std::string next_path = (current_path.parent_path() /
+                           ("wal." + std::to_string(seq + uint64_t{1})))
+                              .string();
 
   // create_and_write 会截断已有文件
   // 如果目标路径已经存在，明确报错，不能覆盖其中的内容
-  if (std::filesystem::exists(next_path)) 
-    throw std::runtime_error(
-        "WAL: next log file already exists: " + next_path);
+  if (std::filesystem::exists(next_path))
+    throw std::runtime_error("WAL: next log file already exists: " + next_path);
 
   // 4. 先用局部变量创建新文件，暂时不修改成员
   // {} 表示新文件初始内容为空
   //
   // 如果创建失败，异常直接交给 log() 处理
   // 当前路径和文件句柄仍然指向旧文件
-  auto next_file =FileObj::create_and_write(next_path, {});
+  auto next_file = FileObj::create_and_write(next_path, {});
 
   // 5. 创建成功后，再切换成员
   //
   // FileObj 的移动赋值已声明 noexcept，接管新文件句柄
   // 同时释放旧句柄；释放句柄不会删除旧日志文件
-  log_file_ = std::move(next_file); 
+  log_file_ = std::move(next_file);
 
   // swap 不需要重新分配字符串内存
   // 避免已经换好文件句柄，却在复制新路径时因分配失败而中断
   // 交换后，active_log_path_ 保存新路径，next_path 保存旧路径
-  active_log_path_.swap(next_path); 
+  active_log_path_.swap(next_path);
 }
 } // namespace tiny_lsm
