@@ -39,6 +39,10 @@ private:
   // 例如清理间隔为 60 秒，析构时可以立即通知它退出
   // 不必等满剩下的时间。后续 cleaner() 会使用它等待
   std::condition_variable cleaner_cv_; 
+  // 文件操作失败后，禁止继续追加日志
+  // 因为失败时可能已经写入一部分，重新写整批会造成重复或损坏
+  // 由 mutex_ 保护，不需要使用 atomic
+  bool write_failed_ = false;
   void cleanWALFile();
   void reset_file();
 

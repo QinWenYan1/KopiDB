@@ -559,7 +559,7 @@ protected:
 };
 
 // 目的：新库的日志目录尚不存在时，构造函数创建目录和空的 wal.0。
-// 本组构造测试将清理间隔设为 0，不依赖尚未实现的析构线程回收。
+// 本组构造测试将清理间隔设为 0，单独验证文件初始化路径。
 TEST_F(WALTest, ConstructorCreatesNestedDirectory) {
   const auto log_dir = std::filesystem::path(test_dir) / "nested" / "logs";
   {
@@ -633,6 +633,33 @@ TEST_F(WALTest, ConstructorRejectsExhaustedSequence) {
                                        "wal.0"));
   auto file = FileObj::open(last_path);
   EXPECT_EQ(file.read_to_slice(0, file.size()), original);
+}
+
+// 目的：构造函数实际创建线程后，离开作用域能够正常完成，不能因漏掉 join 而终止。
+// 当前 cleaner 仍为空桩，因此这里只验证线程对象的回收；等待唤醒在阶段③验收。
+TEST_F(WALTest, DestructorJoinsStartedCleaner) {
+  const auto log_path = std::filesystem::path(test_dir) / "wal.0";
+  {
+    WAL wal(test_dir, 8, 0, 60, 4096);
+    ASSERT_TRUE(std::filesystem::is_regular_file(log_path));
+  }
+
+  auto file = FileObj::open(log_path.string());
+  EXPECT_EQ(file.size(), 0u);
+}
+
+// 目的：调用方抛出异常时，栈上 WAL 仍应回收已创建的线程，原异常正常到达调用方。
+// 不把这个场景当作“刷盘异常处理已验证”；flush 的 I/O 失败测试属于阶段②。
+TEST_F(WALTest, DestructorHandlesExceptionUnwinding) {
+  EXPECT_THROW(
+      {
+        WAL wal(test_dir, 8, 0, 60, 4096);
+        throw std::logic_error("caller failure");
+      },
+      std::logic_error);
+
+  EXPECT_TRUE(std::filesystem::is_regular_file(
+      std::filesystem::path(test_dir) / "wal.0"));
 }
 
 TEST_F(WALTest, LogAndFlush) {

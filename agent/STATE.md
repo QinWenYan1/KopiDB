@@ -16,9 +16,11 @@
 
 ## 当前进度
 
-2026-11-05 当前：目录 **5.2.2「WAL 运行机制」**（文章标题 Lab 5.4），进度 **0%（0/6 阶段验收通过）**。用户已实现 WAL 构造函数，代码检查通过；助手补充构造相关 5 项测试，构建成功，隔离执行 **5/5 通过**。覆盖目录创建、旧日志保留、数字序号、打开失败和序号耗尽，全部关闭后台清理。当前进入析构函数，阶段①尚未完成；助手未修改业务源码。具体实现进度、测试范围和验收见 [PLAN.md](PLAN.md)。
+2026-11-05 当前：目录 **5.2.2「WAL 运行机制」**（文章标题 Lab 5.4），进度 **16.7%（1/6 阶段验收通过）**。用户已实现构造和析构，阶段①基础生命周期检查通过；助手新增析构相关 2 项测试，构建成功，隔离执行构造／析构合计 **7/7 通过**。当前进入阶段②的 WAL::log 草案。实际缓冲写出和清理等待唤醒分别在阶段②、③验收；助手未修改业务源码。具体实现进度、测试范围和验收见 [PLAN.md](PLAN.md)。
 
-构造验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-constructor-review-97qgp25k`。仅运行 WALTest.Constructor*；后台线程关闭、缓冲写入与恢复不包含在这 5 项通过结果中。析构及 cleaner_cv_ 条件变量本轮只在聊天中给出草案。
+构造验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-constructor-review-97qgp25k`。首次 5 项测试关闭后台清理，验证文件创建／保留与失败传播。
+
+生命周期验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-destructor-review-f3gww5ce`。WALTest.Constructor*:WALTest.Destructor* 共 7/7；新增验证真实线程创建后的正常析构和调用方异常展开。当前 cleaner 仍为空桩、flush 尚未写入，因此不能据此声称周期唤醒、剩余日志持久化或刷盘异常已通过测试。已采用 notify_one 唤醒唯一清理线程。log 与 write_failed_ 本轮仅在聊天中给出草案。
 
 本轮范围包含 WAL 组件和 Lab 3.2 明列的事务日志接入。计划建议：暂存型事务提交时统一写日志；RU 的 put/remove 可能触发 SST 刷盘，先写新增日志再写引擎，取消时记录必要的 ROLLBACK。这些是待逐函数实施的方案，不代表已经实现。get 只联动复核；不重新改造迭代器或回滚名单。
 

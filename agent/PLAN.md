@@ -4,9 +4,9 @@
 
 章节：目录 **5.2.2「WAL 运行机制」**，文章标题 **Lab 5.4 WAL 运行机制**。
 
-**进度：0%（0/6 阶段验收通过）**。按验收阶段数计算，不代表工时比例。当前阶段①中，构造函数已完成代码检查及关闭后台清理条件下的 5 项测试；析构尚未实现，阶段①不能计为完成。
+**进度：16.7%（1/6 阶段验收通过）**。按验收阶段数计算，不代表工时比例。阶段①基础生命周期已验收：构造／析构相关 7/7 通过。析构的实际日志刷出属于阶段②，真实清理循环的等待／唤醒属于阶段③，不包含在这 7 项结果中。
 
-当前函数：[src/wal/wal.cpp](../src/wal/wal.cpp) 当前第 85 行的 `WAL::~WAL()`，完整草案在聊天中提供，由用户手写。需在 [include/wal/wal.h](../include/wal/wal.h) 第 36 行 private 区域新增 cleaner_cv_ 条件变量；该头文件已有 condition_variable include。构造函数当前在 wal.cpp:18，已通过本轮局部验证。
+当前函数：[src/wal/wal.cpp](../src/wal/wal.cpp) 当前第 155 行的 `WAL::log(...)`，完整草案在聊天中提供，由用户手写。需在 [include/wal/wal.h](../include/wal/wal.h) 当前第 41 行 cleaner_cv_ 后新增私有 write_failed_ = false，由 mutex_ 保护；这是计划中已列明的 WAL 写入故障状态。析构当前在 wal.cpp:86，已检查通过。
 
 ## 本轮目标
 
@@ -72,8 +72,8 @@ WAL::set_checkpoint_tranc_id、TranContext 构造函数/get、已有事务状态
 
 | 阶段 | 依次处理的函数／任务 | 验收标准 | 状态 |
 | --- | --- | --- | --- |
-| ① 生命周期 | WAL 构造 → 析构 | 能创建并关闭 WAL；已有日志不被截断；初始化失败明确报错；线程和文件释放路径正确。含实际清理循环的关闭验证在阶段③补齐 | 进行中：构造测试 5/5；析构待实现 |
-| ② 缓冲与写入 | log → flush → reset_file | 未达阈值可缓冲；达阈值、强制刷盘、正常关闭后记录可完整解码；重复空 flush 不重复写；轮换不丢记录、不覆盖文件；写失败明确上报 | 待开始 |
+| ① 生命周期 | WAL 构造 → 析构 | 能创建并关闭 WAL；已有日志不被截断；初始化失败明确报错；线程和文件释放路径正确。含实际清理循环的关闭验证在阶段③补齐 | 已验收基础生命周期：7/7 |
+| ② 缓冲与写入 | log → flush → reset_file | 未达阈值可缓冲；达阈值、强制刷盘、正常关闭后记录可完整解码；重复空 flush 不重复写；轮换不丢记录、不覆盖文件；写失败明确上报 | 进行中：log 草案待实现 |
 | ③ 旧日志清理 | cleaner → cleanWALFile；复核 checkpoint setter | 只删除安全检查点覆盖的历史文件；活动文件及未完成范围保留；空目录／单文件正常；清理与写入并发不破坏文件；关闭能唤醒等待中的线程 | 待开始 |
 | ④ 管理器接入 | TranManager::write_to_wal | 实际写入并刷新，返回真实结果；WAL 未初始化或写入失败不能伪装成功；新目录测试可显式接通组件 | 待开始 |
 | ⑤ 事务接入 | 私有日志辅助函数草案 → put → remove → commit → abort；复核构造/get | RU 先记录后写数据，暂存事务检查通过后写 COMMIT；冲突不写成功提交记录；取消结果与 ROLLBACK／回滚名单一致；重复结束不重复写；原有隔离与删除语义保持 | 待开始 |
@@ -95,7 +95,7 @@ WAL::set_checkpoint_tranc_id、TranContext 构造函数/get、已有事务状态
 
 ## 当前 TODO
 
-- [ ] ① 生命周期。
+- [x] ① 基础生命周期（7/7；实际刷盘、等待唤醒分别在阶段②、③验收）。
 - [ ] ② 缓冲与写入。
 - [ ] ③ 旧日志清理。
 - [ ] ④ 管理器接入。
@@ -104,7 +104,7 @@ WAL::set_checkpoint_tranc_id、TranContext 构造函数/get、已有事务状态
 
 2026-11-04 构造函数草案：按成员声明顺序初始化配置与停止标记；空目录参数归一为当前目录，创建所需目录；扫描普通文件中 wal.<纯数字序号>，取最大序号加一，无旧日志时使用 wal.0；使用 uint64_t 序号，无法再递增时明确报错；打开新文件后最后启动清理线程，clean_interval=0 不启动线程。沿用 FileObj 的异常上报，不吞掉初始化失败。
 
-阶段依赖：当前析构仍为空桩，std::thread 即使已执行完函数，只要尚未 join/detach 就仍然 joinable，销毁时会 terminate。构造检查先用 clean_interval=0 验证目录、文件与失败路径，不运行原 WALTest 中启动清理线程的用例；下一轮实现析构后再测试线程生命周期，阶段③补实际等待唤醒。该依赖不算已通过，也不引入临时析构或泄漏对象来规避。
+历史阶段依赖：构造初次验收时析构仍为空桩，std::thread 即使已执行完函数，只要尚未 join/detach 就仍然 joinable，销毁时会 terminate。因此构造检查先用 clean_interval=0 验证目录、文件与失败路径，随后才验收创建线程后的析构。当前析构已实现，真实等待唤醒仍在阶段③补齐。
 
 2026-11-05 构造检查：目录创建、纯数字日志名筛选、uint64_t 序号与溢出检查、旧日志保留、最后启动线程均符合方案。初始化列表仍沿用原骨架的文字顺序，当前成员初始化互不依赖，不影响结果；建议按头文件声明顺序整理，不作为阻塞问题。
 
@@ -112,6 +112,12 @@ WAL::set_checkpoint_tranc_id、TranContext 构造函数/get、已有事务状态
 
 证据目录：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-constructor-review-97qgp25k`，含构建日志、执行命令、GoogleTest JSON、运行日志、汇总和源码哈希。空目录参数归一逻辑本轮仅代码检查；实际后台线程关闭依赖下一函数。
 
-析构草案顺序：在 mutex_ 下设置停止标记，解锁后 notify_all，随后 join 清理线程，再调用自行加锁的 flush，最后 close。flush 异常被记录，关闭流程继续；不持有 mutex_ 等待线程，以免线程无法取锁退出。cleaner_cv_ 为私有成员，后续 cleaner 使用同一 mutex_ 配合谓词等待，避免遗漏停止通知。构造时关闭后台清理或线程已经结束但尚未 join 的情况，都由 joinable 检查正确处理。
+析构实现顺序：在 mutex_ 下设置停止标记，解锁后 notify_one，随后 join 清理线程，再调用自行加锁的 flush，最后 close。只有一条清理线程等待，用户采用 notify_one，当前设计下与 notify_all 都正确。flush 异常被记录，关闭流程继续；不持有 mutex_ 等待线程，以免线程无法取锁退出。cleaner_cv_ 为私有成员，后续 cleaner 使用同一 mutex_ 配合谓词等待，避免遗漏停止通知。构造时关闭后台清理或线程已经结束但尚未 join 的情况，都由 joinable 检查正确处理。
 
-析构及条件变量本轮仅提供草案，未执行其实现。flush/log 仍为桩，剩余缓冲的真实写入待阶段②验收；实际条件变量等待／唤醒待阶段③。上一轮 Record 的完成结果与证据已保留到 STATE。
+2026-11-05 析构检查：用户已正确实现停止标记、notify_one、join、flush 异常捕获和关闭文件；条件变量位置及头文件依赖正确。新增 2 项测试验证创建真实 std::thread 后正常离开作用域，以及调用方抛出 logic_error 时的栈展开。xmake build test_wal 成功，隔离运行 WALTest.Constructor*:WALTest.Destructor*，**7/7 通过**。cleaner 仍为空桩，所以只证明线程对象正确回收，不能证明实际周期等待能提前唤醒。flush 仍为桩，刷盘失败 catch 路径本轮仅代码检查。
+
+证据目录：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-destructor-review-f3gww5ce`，包含构建日志、测试命令、GoogleTest JSON、运行日志、汇总和前后源码哈希。构建／测试期间源码和测试未变；助手只新增测试及维护文档，未修改业务源码。
+
+log 草案：同一锁下检查 write_failed_、追加 Record、判断空缓冲和条数阈值；先在内存中合并编码，再执行文件操作。若原文件已达到非零轮换阈值，先 reset_file，然后检查 append 和 sync 的结果，全部成功后才 clear 缓冲。I/O 阶段发生异常则标记故障并原样抛出，后续调用拒绝继续写，防止在部分写入后整批重放。沿用现有 FileObj 时，size 的失败值也需拒绝，不能被当作超大文件而触发轮换。
+
+本轮仅给出 log 草案及 write_failed_ 成员，未运行它们。reset_file 仍是参考函数体，在本阶段后续轮次独立实现；log 初次验收先覆盖不触发轮换的路径。上一轮 Record 的完成结果与证据已保留到 STATE。
