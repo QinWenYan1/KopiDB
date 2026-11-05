@@ -69,8 +69,8 @@ WAL::WAL(const std::string &log_dir, size_t buffer_size,
   // FileObj::open(path, true) 会截断已有文件
   // 所以前面先选出超过所有旧日志的序号，避免覆盖旧内容
   // 打开失败时异常直接向上传递，构造不会假装成功
-  active_log_path_ = (dir / ("wal." + std::to_string(next_seq))).string(); 
-  log_file_ = FileObj::open(active_log_path_, true); 
+  active_log_path_ = (dir / ("wal." + std::to_string(next_seq))).string();
+  log_file_ = FileObj::open(active_log_path_, true);
 
   // 4. 文件准备好之后，自动创建并启动新线程
   // clean_interval == 0 表示关闭周期清理
@@ -78,8 +78,7 @@ WAL::WAL(const std::string &log_dir, size_t buffer_size,
   // 把线程启动放在最后：
   // 前面的目录操作或文件打开若失败，此时还没有线程需要回收
   if (clean_interval_ != 0)
-    cleaner_thread_ = std::thread(&WAL::cleaner, this); 
-
+    cleaner_thread_ = std::thread(&WAL::cleaner, this);
 }
 
 // TODO: Lab 5.4 实现WAL的清理流程
@@ -89,8 +88,7 @@ WAL::~WAL() {
   // ? 3. 等待清理线程结束: cleaner_thread_.join()
   // ? 4. 显式关闭文件: log_file_.close()
 
-  // 
-  
+  //
 }
 
 std::map<uint64_t, std::vector<Record>>
