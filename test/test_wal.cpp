@@ -4,12 +4,14 @@
 #include "wal/wal.h"
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -534,6 +536,30 @@ public:
   uint64_t get_checkpoint_tranc_id() { return checkpoint_tranc_id_; }
 };
 
+namespace {
+
+// 只用于测试：关闭后台清理，观察缓冲，并通过关闭文件制造真实 I/O 失败。
+// 不替换 WAL 的非虚函数，也不修改业务类的公开接口。
+class WALBufferProbe : public WAL {
+public:
+  WALBufferProbe(const std::string &dir, size_t buffer_size,
+                 uint64_t file_size_limit = 0)
+      : WAL(dir, buffer_size, 0, 0, file_size_limit) {}
+
+  const std::vector<Record> &buffered_records() const { return log_buffer_; }
+  void close_file_for_test() { log_file_.close(); }
+  void reopen_file_for_test() {
+    log_file_ = FileObj::open(active_log_path_, false);
+  }
+};
+
+std::vector<Record> read_wal_records(const std::filesystem::path &path) {
+  auto file = FileObj::open(path.string());
+  return Record::decode(file.read_to_slice(0, file.size()));
+}
+
+} // namespace
+
 class WALTest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -660,6 +686,171 @@ TEST_F(WALTest, DestructorHandlesExceptionUnwinding) {
 
   EXPECT_TRUE(std::filesystem::is_regular_file(
       std::filesystem::path(test_dir) / "wal.0"));
+}
+
+// 目的：缓冲阈值按记录条数计算；大 value 不应让未满的记录缓冲提前写出。
+// 第三条记录刚好达到阈值时，前面缓冲的记录与新记录按顺序完整写入。
+TEST_F(WALTest, LogBuffersUntilRecordCountThreshold) {
+  WALBufferProbe wal(test_dir, 3, 4096);
+  const auto path = std::filesystem::path(test_dir) / "wal.0";
+  const std::vector<Record> pending = {
+      Record::createRecord(7), Record::putRecord(7, "key", std::string(1024, 'v'))};
+
+  wal.log(pending);
+  EXPECT_EQ(wal.buffered_records(), pending);
+  EXPECT_EQ(std::filesystem::file_size(path), 0u);
+
+  const auto commit = Record::commitRecord(7);
+  wal.log({commit});
+  EXPECT_TRUE(wal.buffered_records().empty());
+  auto expected = pending;
+  expected.push_back(commit);
+  EXPECT_EQ(read_wal_records(path), expected);
+}
+
+// 目的：强制写入必须包含旧缓冲和新批次，保留不同事务、重复 key 的输入顺序。
+// 混合五类记录及内嵌空字节，验证真实文件内容可以被完整解码。
+TEST_F(WALTest, LogForceWritesBufferedAndNewRecordsInOrder) {
+  WALBufferProbe wal(test_dir, 128);
+  const auto path = std::filesystem::path(test_dir) / "wal.0";
+  const std::vector<Record> pending = {
+      Record::createRecord(7), Record::putRecord(7, "key", "old")};
+  const std::vector<Record> incoming = {
+      Record::createRecord(8), Record::deleteRecord(8, "key"),
+      Record::rollbackRecord(8),
+      Record::putRecord(7, "key", std::string("new\0value", 9)),
+      Record::commitRecord(7)};
+
+  wal.log(pending);
+  wal.log(incoming, true);
+
+  auto expected = pending;
+  expected.insert(expected.end(), incoming.begin(), incoming.end());
+  EXPECT_EQ(read_wal_records(path), expected);
+  EXPECT_TRUE(wal.buffered_records().empty());
+}
+
+// 目的：没有新增记录时也能强制写出旧缓冲；成功后重复调用不能重复追加。
+// 这里只调用 log({}, true)，显式 flush 的接通在下一函数验收。
+TEST_F(WALTest, LogEmptyForceDrainsBufferWithoutDuplicates) {
+  WALBufferProbe wal(test_dir, 128);
+  const auto path = std::filesystem::path(test_dir) / "wal.0";
+  const std::vector<Record> pending = {
+      Record::createRecord(11), Record::putRecord(11, "key", "value"),
+      Record::commitRecord(11)};
+
+  wal.log(pending);
+  ASSERT_EQ(std::filesystem::file_size(path), 0u);
+  wal.log({}, true);
+  EXPECT_TRUE(wal.buffered_records().empty());
+  EXPECT_EQ(read_wal_records(path), pending);
+
+  const auto written_size = std::filesystem::file_size(path);
+  wal.log({}, true);
+  wal.log({});
+  EXPECT_EQ(std::filesystem::file_size(path), written_size);
+  EXPECT_EQ(read_wal_records(path), pending);
+}
+
+// 目的：缓冲阈值为 0 时，每次非空调用立即写入，后一次追加不能覆盖前一次。
+TEST_F(WALTest, LogZeroThresholdAppendsEachCall) {
+  WALBufferProbe wal(test_dir, 0);
+  const auto path = std::filesystem::path(test_dir) / "wal.0";
+  const auto begin = Record::createRecord(1);
+  const auto put = Record::putRecord(1, "k", "v");
+
+  wal.log({});
+  EXPECT_EQ(std::filesystem::file_size(path), 0u);
+  wal.log({begin});
+  EXPECT_EQ(read_wal_records(path), std::vector<Record>{begin});
+  wal.log({put});
+  const std::vector<Record> expected = {begin, put};
+  EXPECT_EQ(read_wal_records(path), expected);
+  EXPECT_TRUE(wal.buffered_records().empty());
+}
+
+// 目的：多个线程共享 WAL 时，每个调用的整批记录完整写入，不交错、不丢失或重复。
+// 不规定线程之间的先后顺序，只核对每批内部顺序及最终记录集合。
+TEST_F(WALTest, LogConcurrentBatchesStayComplete) {
+  constexpr size_t worker_count = 8;
+  WAL wal(test_dir, 0, 0, 0, 0);
+  std::vector<std::vector<Record>> batches;
+  for (size_t i = 0; i < worker_count; ++i) {
+    const uint64_t id = i + 1;
+    batches.push_back({Record::createRecord(id),
+                       Record::putRecord(id, "key-" + std::to_string(id), "v"),
+                       Record::commitRecord(id)});
+  }
+
+  std::vector<std::exception_ptr> errors(worker_count);
+  std::vector<std::thread> workers;
+  for (size_t i = 0; i < worker_count; ++i) {
+    workers.emplace_back([&, i] {
+      try {
+        wal.log(batches[i], true);
+      } catch (...) {
+        errors[i] = std::current_exception();
+      }
+    });
+  }
+  for (auto &worker : workers) {
+    worker.join();
+  }
+  for (const auto &error : errors) {
+    ASSERT_FALSE(error);
+  }
+
+  const auto actual = read_wal_records(std::filesystem::path(test_dir) / "wal.0");
+  ASSERT_EQ(actual.size(), worker_count * 3);
+  std::vector<bool> seen(worker_count, false);
+  for (size_t offset = 0; offset < actual.size(); offset += 3) {
+    const auto id = actual[offset].getTrancId();
+    ASSERT_GE(id, 1u);
+    ASSERT_LE(id, worker_count);
+    EXPECT_FALSE(seen[id - 1]);
+    seen[id - 1] = true;
+    for (size_t j = 0; j < 3; ++j) {
+      EXPECT_EQ(actual[offset + j], batches[id - 1][j]);
+    }
+  }
+}
+
+// 目的：关闭文件后触发追加失败，缓冲必须保留，并拒绝继续接受新记录。
+// 即使测试重新打开文件，也不能让失败的 WAL 悄悄重试，避免部分写入后的重复追加。
+TEST_F(WALTest, LogAppendFailureStopsFurtherWrites) {
+  WALBufferProbe wal(test_dir, 128);
+  const std::vector<Record> pending = {Record::createRecord(1)};
+  wal.log(pending);
+  wal.close_file_for_test();
+
+  EXPECT_THROW(wal.log({}, true), std::runtime_error);
+  EXPECT_EQ(wal.buffered_records(), pending);
+
+  wal.reopen_file_for_test();
+  EXPECT_THROW(wal.log({Record::createRecord(2)}), std::runtime_error);
+  EXPECT_THROW(wal.log({}, true), std::runtime_error);
+  EXPECT_EQ(wal.buffered_records(), pending);
+  EXPECT_EQ(std::filesystem::file_size(std::filesystem::path(test_dir) / "wal.0"),
+            0u);
+}
+
+// 目的：启用文件大小检查时，获取大小失败不能被当作“文件超大”而执行轮换。
+// 验证 size_t 错误值的检查，并确认失败后仍然拒绝继续追加。
+TEST_F(WALTest, LogSizeFailureDoesNotRotateOrContinue) {
+  WALBufferProbe wal(test_dir, 128, 4096);
+  const std::vector<Record> pending = {Record::createRecord(1)};
+  wal.log(pending);
+  wal.close_file_for_test();
+
+  EXPECT_THROW(wal.log({}, true), std::runtime_error);
+  EXPECT_EQ(wal.buffered_records(), pending);
+  EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(test_dir) / "wal.1"));
+
+  wal.reopen_file_for_test();
+  EXPECT_THROW(wal.log({Record::createRecord(2)}, true), std::runtime_error);
+  EXPECT_EQ(wal.buffered_records(), pending);
+  EXPECT_EQ(std::filesystem::file_size(std::filesystem::path(test_dir) / "wal.0"),
+            0u);
 }
 
 TEST_F(WALTest, LogAndFlush) {

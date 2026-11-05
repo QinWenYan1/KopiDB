@@ -16,11 +16,13 @@
 
 ## 当前进度
 
-2026-11-05 当前：目录 **5.2.2「WAL 运行机制」**（文章标题 Lab 5.4），进度 **16.7%（1/6 阶段验收通过）**。用户已实现构造和析构，阶段①基础生命周期检查通过；助手新增析构相关 2 项测试，构建成功，隔离执行构造／析构合计 **7/7 通过**。当前进入阶段②的 WAL::log 草案。实际缓冲写出和清理等待唤醒分别在阶段②、③验收；助手未修改业务源码。具体实现进度、测试范围和验收见 [PLAN.md](PLAN.md)。
+2026-11-05 当前：目录 **5.2.2「WAL 运行机制」**（文章标题 Lab 5.4），进度 **16.7%（1/6 阶段验收通过）**。阶段①基础生命周期已验收；用户已实现阶段②的 WAL::log 与 write_failed_，助手新增 7 项非轮换写入测试，构建成功，隔离运行构造／析构／log 共 **14/14 通过**。当前进入 WAL::flush 草案，阶段②尚未完成；助手未修改业务源码。具体实现进度、测试范围和验收见 [PLAN.md](PLAN.md)。
 
 构造验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-constructor-review-97qgp25k`。首次 5 项测试关闭后台清理，验证文件创建／保留与失败传播。
 
-生命周期验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-destructor-review-f3gww5ce`。WALTest.Constructor*:WALTest.Destructor* 共 7/7；新增验证真实线程创建后的正常析构和调用方异常展开。当前 cleaner 仍为空桩、flush 尚未写入，因此不能据此声称周期唤醒、剩余日志持久化或刷盘异常已通过测试。已采用 notify_one 唤醒唯一清理线程。log 与 write_failed_ 本轮仅在聊天中给出草案。
+生命周期验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-destructor-review-f3gww5ce`。WALTest.Constructor*:WALTest.Destructor* 共 7/7；新增验证真实线程创建后的正常析构和调用方异常展开。cleaner 仍为空桩，实际周期等待唤醒在阶段③验收；已采用 notify_one 唤醒唯一清理线程。
+
+log 验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-log-review-ydt1n4rj`，构造／析构／新增 log 合计 14/14。覆盖条数缓冲、强制与零阈值写入、空输入不重复、混合／二进制记录、8 线程整批写入、实际关闭文件后的错误传播及故障后拒绝继续写；未触发轮换，未注入短写或单独的 sync 失败。flush 尚未接通，因此显式 flush 与析构剩余缓冲写入未计为通过。本轮只在聊天中给出 flush 草案，下一轮检查。
 
 本轮范围包含 WAL 组件和 Lab 3.2 明列的事务日志接入。计划建议：暂存型事务提交时统一写日志；RU 的 put/remove 可能触发 SST 刷盘，先写新增日志再写引擎，取消时记录必要的 ROLLBACK。这些是待逐函数实施的方案，不代表已经实现。get 只联动复核；不重新改造迭代器或回滚名单。
 

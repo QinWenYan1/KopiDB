@@ -139,12 +139,19 @@ WAL::recover(const std::string &log_dir, uint64_t checkpoint_tranc_id) {
   return {};
 }
 
+// Lab 5.4 强制刷盘
 // commit 时强制写入
 void WAL::flush() {
-  // TODO: Lab 5.4 强制刷盘
-  // ? 当前实现仅需加锁保证当前写入完成即可
-  // ? 若 log() 中使用了缓冲区, 这里需要确保缓冲区内容全部落盘
-  std::lock_guard<std::mutex> lock(mutex_);
+  // 本次不新增记录，只要求写出缓冲区中已有的记录
+  // {}   ：传入空的记录数组
+  // true ：强制写入，不再等待缓冲达到条数阈值
+  //
+  // log() 已经负责加锁、编码、写入、刷新和成功后清空缓冲
+  // 这里不能再加 mutex_，否则 log() 会重复获取同一把锁而死锁
+  //
+  // 写入失败时，让异常自然传给调用者
+  // 析构函数调用 flush() 时，已有自己的异常捕获
+  log({}, true); 
 }
 
 void WAL::set_checkpoint_tranc_id(uint64_t checkpoint_tranc_id) {
