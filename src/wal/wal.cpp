@@ -156,41 +156,42 @@ void WAL::set_checkpoint_tranc_id(uint64_t checkpoint_tranc_id) {
 void WAL::log(const std::vector<Record> &records, bool force_flush) {
   // 1. 缓冲区、文件写入和轮换使用同一把锁
   // 防止两个线程同时修改缓冲，或者同时向同一个文件追加数据
-  std::lock_guard<std::mutex> lock(mutex_); 
+  std::lock_guard<std::mutex> lock(mutex_);
 
   // 之前发生过文件操作错误，不能继续向不确定的文件尾部追加
   // 这个判断也让后续 flush 能报告此前的失败
-  if (write_failed_) 
+  if (write_failed_)
     throw std::runtime_error("WAL: previous file operation failed");
-  
+
   // 2. 将本次记录追加到已有缓冲后面，保持输入顺序
   // records 为空时不追加，但 force_flush 仍可要求写出旧缓冲
-  log_buffer_.insert(log_buffer_.end(), records.begin(), records.end()); 
+  log_buffer_.insert(log_buffer_.end(), records.begin(), records.end());
 
   // 3. 没有记录就不需要写文件
   // 未达到条数阈值且没有强制要求时，继续保留在缓冲中
   // buffer_size_ == 0 时，非空缓冲会直接进入写入流程
-  if (log_buffer_.empty() || (!force_flush && log_buffer_.size() < buffer_size_))
-    return; 
+  if (log_buffer_.empty() ||
+      (!force_flush && log_buffer_.size() < buffer_size_))
+    return;
 
   // 4. 先在内存中编码完整批次，再开始操作文件
   // 这样编码或分配内存失败时，文件还没有被修改
   // 合并成一份字节数组，只调用一次 append，减少文件操作次数
-  std::vector<uint8_t> encoded; 
-  for (const auto &record : log_buffer_){
-    const auto bytes = record.encode(); 
-    encoded.insert(encoded.end(), bytes.begin(), bytes.end()); 
+  std::vector<uint8_t> encoded;
+  for (const auto &record : log_buffer_) {
+    const auto bytes = record.encode();
+    encoded.insert(encoded.end(), bytes.begin(), bytes.end());
   }
 
-  try{
+  try {
     // 5. 如果旧文件已经达到轮换阈值，在本次写入前换文件
     // file_size_limit_ == 0 表示关闭轮换
     //
     // 允许一批记录写完后稍微超过阈值
     // 等下一次真正写入时再换文件，避免“日志已经写成功
     // 却因为随后创建新文件失败而报告本次写入失败”
-    if (file_size_limit_ != 0){
-      const auto current_size = log_file_.size(); 
+    if (file_size_limit_ != 0) {
+      const auto current_size = log_file_.size();
 
       // 当前 FileObj 底层使用 tellg() 获取大小
       // 获取失败返回 -1，转换成 size_t 后成为其最大值
@@ -199,7 +200,7 @@ void WAL::log(const std::vector<Record> &records, bool force_flush) {
         throw std::runtime_error("WAL: failed to read log file size");
 
       if (current_size >= file_size_limit_)
-        reset_file(); 
+        reset_file();
     }
 
     // 6. 追加字节，并检查写入结果
@@ -215,13 +216,13 @@ void WAL::log(const std::vector<Record> &records, bool force_flush) {
   } catch (...) {
     // 文件操作失败：保留缓冲，标记故障，原样抛出异常
     // 后续调用不能把这批记录再次追加到可能已写入一半的文件中
-    write_failed_ = true; 
-    throw; 
+    write_failed_ = true;
+    throw;
   }
 
   // 8. 只有追加和刷新全部成功，才能移除已写出的记录
   // clear 保留 vector 的容量，方便下一批记录复用
-  log_buffer_.clear(); 
+  log_buffer_.clear();
 }
 
 void WAL::cleaner() {
