@@ -89,14 +89,14 @@ WAL::~WAL() {
   // 后续 cleaner() 会在同一把 mutex_ 下检查停止标记并进入等待
   // 修改标记时也持有这把锁，避免线程错过停止通知
   {
-    std::lock_guard<std::mutex> lock(mutex_); 
-    stop_cleaner_ = true; 
+    std::lock_guard<std::mutex> lock(mutex_);
+    stop_cleaner_ = true;
   }
 
   // 2. 唤醒可能正在等待的清理线程
   // 修改标记只是改变状态；通知才能让等待提前结束
   // 如果线程尚未开始等待，它之后也会通过停止标记发现需要退出
-  cleaner_cv_.notify_one(); 
+  cleaner_cv_.notify_one();
 
   // 3. 等待清理线程真正退出，再继续关闭文件
   //
@@ -107,7 +107,7 @@ WAL::~WAL() {
   // 否则清理线程可能正在等待这把锁，而我们又在等待它退出
   // 双方互相等待，导致死锁
   if (cleaner_thread_.joinable())
-    cleaner_thread_.join(); 
+    cleaner_thread_.join();
 
   // 4. 尝试将尚在缓冲区中的日志全部写入文件
   // flush() 自己负责加锁，这里不再持有 mutex_
@@ -115,16 +115,16 @@ WAL::~WAL() {
   // 析构期间不能让刷盘异常直接逃出去，否则可能终止程序
   // 失败时记录错误，随后仍然关闭文件
   // 这不表示日志保存成功，调用方需要检查结果时应显式调用 flush()
-  try{
-    flush(); 
-  } catch (const std::exception &e){
+  try {
+    flush();
+  } catch (const std::exception &e) {
     spdlog::error("WAL: failed to flush during destruction: {}", e.what());
-  } catch (...){
+  } catch (...) {
     spdlog::error("WAL: unknown flush error during destruction");
   }
 
   // 5. 清理线程已经退出，最后释放文件资源
-  log_file_.close(); 
+  log_file_.close();
 }
 
 std::map<uint64_t, std::vector<Record>>
