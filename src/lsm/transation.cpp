@@ -54,42 +54,42 @@ TranContext::TranContext(uint64_t tranc_id, std::shared_ptr<LSMEngine> engine,
   operations.emplace_back(Record::createRecord(tranc_id_));
 }
 
-
 void TranContext::persist_pending_wal_() {
   const auto record_count = operations.size();
 
   // 1. 已写条数不能大于当前记录总数
   // 例如清空 operations 却忘记同步计数，就会破坏这个关系
   // 明确报告内部状态错误，避免后面构造越界的迭代器区间
-  if (wal_written_count_ > record_count) 
+  if (wal_written_count_ > record_count)
     throw std::logic_error(
         "TranContext::persist_pending_wal_: invalid WAL record count");
-  
-  
+
   // 2. 没有新增记录，不需要再次发送
   // operations 为空且计数为 0 时，也自然在这里返回
   if (wal_written_count_ == record_count)
-    return; 
+    return;
 
   // 3. 上下文保存的是管理器的 weak_ptr
   // 取得 shared_ptr，保证本次日志调用期间管理器仍然有效
-  auto manager = tranManager_.lock(); 
+  auto manager = tranManager_.lock();
   if (!manager)
-      throw std::logic_error("TranContext::persist_pending_wal_: transaction manager has expired"); 
-  bool success = false; 
+    throw std::logic_error(
+        "TranContext::persist_pending_wal_: transaction manager has expired");
+  bool success = false;
 
   if (wal_written_count_ == 0) {
     // 4. 首次发送：全部记录都尚未写出
     // 直接传原数组，避免额外复制整批记录
-    success = manager->write_to_wal(operations); 
+    success = manager->write_to_wal(operations);
   } else {
     // 5. 后续发送：只取尚未写出的后缀
     //
     // 例如总共 3 条、已经写出 2 条
     // 就取 [begin + 2, end)，仅发送最后一条
     // 保留原 operations，通过副本适配现有 vector 接口
-    const std::vector<Record> pending(operations.begin() + wal_written_count_, operations.end()); 
-    success = manager->write_to_wal(pending); 
+    const std::vector<Record> pending(operations.begin() + wal_written_count_,
+                                      operations.end());
+    success = manager->write_to_wal(pending);
   }
 
   // 6. 写入没有确认成功，停止当前流程
@@ -100,9 +100,7 @@ void TranContext::persist_pending_wal_() {
 
   // 7. 全部新增记录写入成功，才推进已写位置
   // 这里只记录日志进度，不改变事务的提交或回滚状态
-  wal_written_count_ = record_count; 
-
-  
+  wal_written_count_ = record_count;
 }
 
 // Lab 5.2 put 实现
