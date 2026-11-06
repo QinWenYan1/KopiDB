@@ -1479,8 +1479,10 @@ TEST_F(LSMTest, TranContextPutStagesWritesAndRecordsOperations) {
 TEST_F(LSMTest, TranContextPutReadUncommittedWritesOwnVersion) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
   auto manager = bind_test_manager(engine);
+  // RU put 已接入预写日志：提供真实管理器，并在新测试目录初始化 WAL。
+  manager->init_new_wal();
   engine->put("k", "old", 3);
-  TranContext context(7, engine, nullptr, IsolationLevel::READ_UNOP_COMMITTED);
+  TranContext context(7, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
 
   context.put("k", "first");
   EXPECT_EQ(engine->get("k", 0),

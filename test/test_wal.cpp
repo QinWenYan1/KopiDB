@@ -1380,6 +1380,130 @@ TEST_F(TranManagerWALTest, FileFailureReturnsFalseAndPreservesPreviousLogs) {
   EXPECT_EQ(manager->get_checkpoint_tranc_id(), 0u);
 }
 
+// 通过公开事务接口验收 WAL 接入；每个测试使用新目录，不调用尚未实现的启动恢复。
+class TranPutWALTest : public WALTest {
+protected:
+  void SetUp() override {
+    WALTest::SetUp();
+    engine = std::make_shared<LSMEngine>(test_dir);
+    manager = std::make_shared<TranManager>(test_dir);
+    manager->set_engine(engine);
+    engine->set_tran_manager(manager);
+    manager->init_new_wal();
+  }
+
+  void TearDown() override {
+    manager.reset();
+    engine.reset();
+    WALTest::TearDown();
+  }
+
+  std::shared_ptr<LSMEngine> engine;
+  std::shared_ptr<TranManager> manager;
+};
+
+// 目的：公开 put 的记录长度检查先于 WAL 和引擎写入，非法输入不留下半条操作记录。
+// 正常写入的先后顺序由代码检查，以及后面的 WAL 故障不改数据用例共同验证。
+TEST_F(TranPutWALTest, OversizedRecordDoesNotChangeWalOrEngine) {
+  auto transaction = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  const auto path = std::filesystem::path(test_dir) / "wal.0";
+  EXPECT_THROW(transaction->put("key", std::string(65536, 'v')), std::length_error);
+  EXPECT_EQ(std::filesystem::file_size(path), 0u);
+  EXPECT_FALSE(engine->get("key", 0));
+  ASSERT_EQ(transaction->operations.size(), 1u);
+  EXPECT_EQ(transaction->operations.front().getOperationType(), OperationType::OP_CREATE);
+}
+
+// 目的：同一 RU 事务多次 put 时只发送新增记录，CREATE 与旧 PUT 不会被重复写入。
+// operations 保留完整历史；写出 WAL 不等于提交，严格读取仍排除这笔活跃事务。
+TEST_F(TranPutWALTest, RepeatedPutsWriteOnlyNewRecords) {
+  auto transaction = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  const auto id = transaction->tranc_id_;
+  const auto path = std::filesystem::path(test_dir) / "wal.0";
+  std::vector<Record> expected = {Record::createRecord(id)};
+
+  transaction->put("key", "first");
+  expected.push_back(Record::putRecord(id, "key", "first"));
+  EXPECT_EQ(read_wal_records(path), expected);
+  transaction->put("key", "last");
+  expected.push_back(Record::putRecord(id, "key", "last"));
+  EXPECT_EQ(read_wal_records(path), expected);
+  transaction->put("new", "created");
+  expected.push_back(Record::putRecord(id, "new", "created"));
+
+  EXPECT_EQ(read_wal_records(path), expected);
+  EXPECT_EQ(transaction->operations, expected);
+  EXPECT_FALSE(transaction->isCommited);
+  EXPECT_FALSE(transaction->isAborted);
+  EXPECT_EQ(engine->get("key", 0),
+            std::make_optional(std::make_pair(std::string("last"), id)));
+  EXPECT_FALSE(engine->get("key", 0, true));
+}
+
+// 目的：暂存型事务的 put 不提前写 WAL 或修改引擎，重复 key 仍保留最后一次暂存值。
+TEST_F(TranPutWALTest, StagedLevelsDoNotWriteWalBeforeCommit) {
+  const auto base_id = manager->getNextTransactionId();
+  engine->put("existing", "old", base_id);
+  const auto path = std::filesystem::path(test_dir) / "wal.0";
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                    IsolationLevel::REPEATABLE_READ,
+                    IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    auto transaction = manager->new_tranc(level);
+    transaction->put("existing", "first");
+    transaction->put("existing", "last");
+    transaction->put("new", "pending");
+
+    EXPECT_EQ(std::filesystem::file_size(path), 0u);
+    EXPECT_EQ(transaction->operations.size(), 4u);
+    EXPECT_EQ(transaction->temp_map_.at("existing"), "last");
+    EXPECT_EQ(transaction->get("existing"), std::make_optional(std::string("last")));
+    EXPECT_EQ(engine->get("existing", 0),
+              std::make_optional(std::make_pair(std::string("old"), base_id)));
+    EXPECT_FALSE(engine->get("new", 0));
+  }
+}
+
+// 目的：有管理器但 WAL 未初始化时，RU put 明确失败，不能先把数据写入内存。
+TEST_F(TranPutWALTest, MissingWalDoesNotApplyWrite) {
+  const auto dir = (std::filesystem::path(test_dir) / "without_wal").string();
+  auto other_engine = std::make_shared<LSMEngine>(dir);
+  auto other_manager = std::make_shared<TranManager>(dir);
+  other_manager->set_engine(other_engine);
+  other_engine->set_tran_manager(other_manager);
+  auto transaction = other_manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+
+  EXPECT_THROW(transaction->put("blocked", "value"), std::runtime_error);
+  EXPECT_FALSE(other_engine->get("blocked", 0));
+  EXPECT_FALSE(transaction->isCommited);
+  EXPECT_FALSE(transaction->isAborted);
+  EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(dir) / "wal.0"));
+}
+
+// 目的：已成功写过日志后，后续真实 WAL 文件故障不能覆盖旧值或新增数据。
+// 填满 wal.0 并占用 wal.1，触发轮换失败；后续请求也不能绕过故障状态写引擎。
+TEST_F(TranPutWALTest, WalFailurePreservesEarlierValueAndRejectsNewWrite) {
+  auto transaction = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  const auto id = transaction->tranc_id_;
+  transaction->put("key", "before");
+  auto padding_transaction = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  padding_transaction->put("padding", std::string(5000, 'v'));
+  const auto dir = std::filesystem::path(test_dir);
+  const auto successful = read_wal_records(dir / "wal.0");
+  ASSERT_GT(std::filesystem::file_size(dir / "wal.0"), 4096u);
+  const std::vector<Record> occupied = {Record::createRecord(99)};
+  write_wal_records(dir / "wal.1", occupied);
+
+  EXPECT_THROW(transaction->put("key", "after"), std::runtime_error);
+  EXPECT_THROW(transaction->put("new", "blocked"), std::runtime_error);
+  EXPECT_EQ(engine->get("key", 0),
+            std::make_optional(std::make_pair(std::string("before"), id)));
+  EXPECT_FALSE(engine->get("new", 0));
+  EXPECT_EQ(read_wal_records(dir / "wal.0"), successful);
+  EXPECT_EQ(read_wal_records(dir / "wal.1"), occupied);
+  EXPECT_FALSE(transaction->isCommited);
+}
+
 TEST_F(WALTest, LogAndFlush) {
   MockWAL wal(test_dir, 10, 100);
 

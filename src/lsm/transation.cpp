@@ -109,8 +109,8 @@ void TranContext::persist_pending_wal_() {
 void TranContext::put(const std::string &key, const std::string &value) {
   spdlog::trace("TranContext--put({}, {}), tranc_id={}", key, value, tranc_id_);
 
-  // 1. 检查开关标记
-  //    已经结束的事务不能继续接受写入
+  // 1. 已经提交或回滚的事务不能继续写入
+  // 必须先检查，避免给已结束的事务追加记录
   if (isCommited || isAborted)
     throw std::logic_error(
         "TranContext::put: transaction has already finished");
@@ -120,11 +120,19 @@ void TranContext::put(const std::string &key, const std::string &value) {
       (isolation_level_ == IsolationLevel::READ_UNOP_COMMITTED);
 
   // 3. 所有隔离级别都记录本次操作，供后续 WAL 使用
-  //    0这里只追加内存记录，不执行日志持久化
+  // RU 在下面立即写 WAL；其他级别等 commit 再统一写出
   operations.emplace_back(Record::putRecord(tranc_id_, key, value));
 
   // 4. 开始写入，有两种方式：立即写入 vs 暂存于上下文
   if (write_immediately) {
+    // RU 会立即修改引擎，因此必须先写出对应日志。
+    //
+    // 第一次会连同 CREATE 一起发送；
+    // 后续只发送新增记录，已写条数由辅助函数维护。
+    //
+    // 日志写入失败时，辅助函数抛异常，本次 put 在这里结束，
+    // 后面的 engine_->put 不会执行。
+    persist_pending_wal_();
     // 使用本事务的 ID 写入；底层查询此时就可能读到它
     engine_->put(key, value, tranc_id_);
 
