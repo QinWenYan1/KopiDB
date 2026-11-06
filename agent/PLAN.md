@@ -4,9 +4,9 @@
 
 章节：目录 **5.2.2「WAL 运行机制」**，文章标题 **Lab 5.4 WAL 运行机制**。
 
-**进度：50%（3/6 阶段验收通过）**。按验收阶段数计算，不代表工时比例。阶段①～③已验收；阶段④ write_to_wal 已填写并通过构建，但新增管理器接入测试仅 3/4 通过：标准异常分支遗漏 return false，导致写入失败仍返回 true。先修正当前函数，再进入阶段⑤。
+**进度：66.7%（4/6 阶段验收通过）**。按验收阶段数计算，不代表工时比例。阶段①～④已验收；write_to_wal 的标准异常分支已补 return false，构建成功，管理器接入测试复测 4/4 通过。当前进入阶段⑤，先实现私有日志辅助函数，事务调用方尚未接通。
 
-当前函数：[src/lsm/transation.cpp](../src/lsm/transation.cpp) 当前第 960 行的 `TranManager::write_to_wal(...)`。第 978 行开始的 catch(const std::exception &e) 在错误日志之后需要补 return false；当前会继续执行末尾的成功返回。助手未修改业务源码，阶段⑤尚未开始。
+当前函数：新增 `void TranContext::persist_pending_wal_()`。声明与 wal_written_count_ 成员放在 [include/lsm/transaction.h](../include/lsm/transaction.h) 当前第 66 行的 private 区域，并补 cstddef；定义放在 [src/lsm/transation.cpp](../src/lsm/transation.cpp) 当前第 57 行的 put 注释之前。本轮只在聊天中给出辅助函数，后续再按顺序接入 put/remove/commit/abort。
 
 ## 本轮目标
 
@@ -47,7 +47,7 @@
 - WAL::cleanWALFile()：明确活动文件、检查点和完整记录的删除规则。
 - TranContext::put()/remove()/commit()/abort()：接入预写日志，保留已经验证的 MVCC、冲突检查和回滚名单方案。
 - 头文件只补必要的私有状态。建议增加清理线程的唤醒条件变量、WAL 写入故障状态，以及 TranContext 已写日志的位置。
-- 建议新增一个私有辅助函数 `TranContext::persist_pending_wal_()`，只发送 operations 中尚未写入的部分；名称与签名为草案。它直接消除 put/remove/commit/abort 的重复处理，单独一轮讲解。
+- 新增私有辅助函数 `void TranContext::persist_pending_wal_()`，通过 std::size_t wal_written_count_ 记录已写前缀，只发送 operations 中尚未写入的部分。成功推进计数，失败抛异常；该函数不修改事务结束状态，单独一轮讲解。
 
 范围澄清：reset_file 并非 Lab 单独明列的必做函数，文件大小限制与轮换是可选方案。我们已经选择轮换且 log 会调用它，因此需要配套适配；不是看到骨架有辅助函数就要求全部重写。cleanWALFile 同样按当前清理方案检查必要改动，合理的参考代码可以沿用。
 
@@ -77,8 +77,8 @@ WAL::set_checkpoint_tranc_id、TranContext 构造函数/get、已有事务状态
 | ① 生命周期 | WAL 构造 → 析构 | 能创建并关闭 WAL；已有日志不被截断；初始化失败明确报错；线程和文件释放路径正确。含实际清理循环的关闭验证在阶段③补齐 | 已验收基础生命周期：7/7 |
 | ② 缓冲与写入 | log → flush → reset_file | 未达阈值可缓冲；达阈值、强制刷盘、正常关闭后记录可完整解码；重复空 flush 不重复写；轮换不丢记录、不覆盖文件；写失败明确上报 | 已验收：WAL 27/27，连同 Record 共 65/65 |
 | ③ 旧日志清理 | cleaner → cleanWALFile；复核 checkpoint setter | 只删除安全检查点覆盖的历史文件；活动文件及未完成范围保留；空目录／单文件正常；清理与写入并发不破坏文件；关闭能唤醒等待中的线程 | 已验收：WAL 33/33，连同 Record 共 71/71 |
-| ④ 管理器接入 | TranManager::write_to_wal | 实际写入并刷新，返回真实结果；WAL 未初始化或写入失败不能伪装成功；新目录测试可显式接通组件 | 进行中：3/4，通过构建；待补标准异常分支的失败返回 |
-| ⑤ 事务接入 | 私有日志辅助函数草案 → put → remove → commit → abort；复核构造/get | RU 先记录后写数据，暂存事务检查通过后写 COMMIT；冲突不写成功提交记录；取消结果与 ROLLBACK／回滚名单一致；重复结束不重复写；原有隔离与删除语义保持 | 待开始 |
+| ④ 管理器接入 | TranManager::write_to_wal | 实际写入并刷新，返回真实结果；WAL 未初始化或写入失败不能伪装成功；新目录测试可显式接通组件 | 已验收：修正后 4/4 通过 |
+| ⑤ 事务接入 | 私有日志辅助函数 → put → remove → commit → abort；复核构造/get | RU 先记录后写数据，暂存事务检查通过后写 COMMIT；冲突不写成功提交记录；取消结果与 ROLLBACK／回滚名单一致；重复结束不重复写；原有隔离与删除语义保持 | 进行中：辅助函数草案待实现 |
 | ⑥ 整体验收 | WAL 文件测试、事务联调、受影响回归、文档收尾 | 实际文件内容、线程退出、写入失败、提交／回滚顺序均有验证；Record 与原有事务测试无回归；明确已测范围和后续恢复依赖 | 待开始 |
 
 同一行有多个函数，也分多轮给出实现。顺序沿 Lab 3.1 → 3.2；reset_file、cleanWALFile 和私有日志辅助函数在其直接使用阶段补齐。前面函数依赖后面尚未实现的功能时只标记代码检查完成，不把依赖场景提前算作通过。
@@ -100,7 +100,7 @@ WAL::set_checkpoint_tranc_id、TranContext 构造函数/get、已有事务状态
 - [x] ① 基础生命周期（7/7；实际刷盘、等待唤醒分别在阶段②、③验收）。
 - [x] ② 缓冲与写入（包含轮换和文件失败路径；WAL 27/27）。
 - [x] ③ 旧日志清理（含真实周期清理、检查点 setter 与并发衔接）。
-- [ ] ④ 管理器接入。
+- [x] ④ 管理器接入（标准异常失败返回已修复，4/4 通过）。
 - [ ] ⑤ 事务接入。
 - [ ] ⑥ 整体验收。
 
@@ -172,4 +172,14 @@ write_to_wal 方案：未初始化 WAL 时记录错误并返回 false；通过 l
 
 xmake build test_wal 成功；隔离运行 TranManagerWALTest.*，**3/4 通过**。失败测试先写入超过 4096B 的 wal.0，再预先占用 wal.1，使 WAL::reset_file 实际抛出 runtime_error；管理器捕获后仍返回 true。随后普通请求及空请求遇到 WAL 故障状态，也错误返回 true。旧日志内容和检查点断言通过，问题定位在返回值传播。未运行其他测试组或开始下一函数。
 
-证据目录：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-manager-wal-review-z3trnuq8`，包含构建／测试日志、命令、JSON、汇总及源码哈希。执行期间源码与测试未变；助手只补测试和文档，未修改业务源码。待用户补齐失败返回后复测。
+历史失败证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-manager-wal-review-z3trnuq8`，包含构建／测试日志、命令、JSON、汇总及源码哈希。执行期间源码与测试未变；助手只补测试和文档，未修改业务源码。
+
+2026-11-06 阶段④复测：用户已在标准异常分支补 return false。xmake build test_wal 成功，隔离运行 TranManagerWALTest.*，**4/4 通过**。缺失 WAL、小批次强制写入、空批次和真实文件操作失败均符合接口约定；失败后普通／空请求不再伪装成功。未新增或修改测试断言，未运行其他测试组，也未改变事务调用方。
+
+复测证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-manager-wal-retest-numof9mf`，包含构建／测试日志、命令、JSON 和源码哈希；构建／运行期间相关源码及测试未变，助手未修改业务源码。
+
+阶段⑤辅助函数方案：wal_written_count_ 初始为 0，表示 operations 已成功写出前缀的长度；无新增记录时直接返回。检查计数不能超出记录数，随后取得管理器；首次发送直接传完整 operations，避免额外复制，后续用现有 vector 接口复制未写后缀。write_to_wal 成功后才更新计数，失败抛 runtime_error，管理器失效抛 logic_error，计数不前移。该计数不表示事务已经提交，也不是失败后自动重试的许可；可能发生部分写入的 I/O 故障仍由 WAL 的故障状态阻止后续追加。
+
+必要联动已明确：同一个上下文仍由调用方串行使用；运行中 operations 只追加，后续 abort 结束时若清空它，也同步将计数归零。RU 的 put/remove 追加记录后、写入引擎前调用辅助函数；暂存事务在 commit 冲突检查通过后发送；已发送记录的事务取消时追加并发送 ROLLBACK。COMMIT 已确认写出后的状态处理继续遵循本计划第 7 条，辅助函数本身不登记提交或回滚。
+
+本轮只提供辅助函数及声明／成员草案，尚未修改业务源码，也没有宣称其行为通过测试。私有函数接入前先检查构建与实现；实际前缀去重和失败不推进的行为测试随后续公开事务方法接入验证，不为测试扩大公开接口。

@@ -16,9 +16,11 @@
 
 ## 当前进度
 
-2026-11-06 当前：目录 **5.2.2「WAL 运行机制」**（文章标题 Lab 5.4），进度 **50%（3/6 阶段验收通过）**。阶段①～③已验收；阶段④ write_to_wal 已填写并通过构建，但新增接入测试 **3/4 通过**。标准异常 catch 分支遗漏 return false，导致文件写入失败仍报告 true；先修正当前函数，阶段⑤尚未开始。助手只补测试和维护文档，未修改业务源码。具体进度与定位见 [PLAN.md](PLAN.md)。
+2026-11-06 当前：目录 **5.2.2「WAL 运行机制」**（文章标题 Lab 5.4），进度 **66.7%（4/6 阶段验收通过）**。阶段④ write_to_wal 的失败返回已修正，构建成功，管理器接入测试复测 **4/4 通过**。当前进入阶段⑤，先给出 TranContext 私有日志辅助函数及已写条数成员，尚未接通事务写入／结束方法；助手未修改业务源码。具体进度与验收见 [PLAN.md](PLAN.md)。
 
-管理器接入检查证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-manager-wal-review-z3trnuq8`。仅运行 TranManagerWALTest.* 四项；未初始化、小批次强制写入和空批次通过，实际轮换失败的返回值测试失败，原日志和检查点保持正确。构建／运行期间源码及测试哈希一致，修正点为 transation.cpp:978 的标准异常分支。
+管理器接入历史失败：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-manager-wal-review-z3trnuq8`，初测 3/4，标准异常分支漏掉失败返回；原日志和检查点保持正确。
+
+阶段④复测证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-manager-wal-retest-numof9mf`，TranManagerWALTest.* **4/4 通过**。测试断言未改动，构建／运行期间源码及测试哈希一致；本轮没有重跑其他套件。新增辅助函数只负责发送 operations 未写前缀之后的记录，成功后更新计数，不登记事务状态；实现及调用方接入仍在阶段⑤逐函数推进。
 
 历史构建失败：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-cleaner-review-w8muy_vb`，原因是 wait_for 收到了 should_stop() 返回的 bool，现已改为 should_stop 谓词对象。
 
