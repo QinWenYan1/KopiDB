@@ -1,6 +1,7 @@
 #include "logger/logger.h"
 #include "wal/record.h"
 #include "lsm/engine.h"
+#include "lsm/transaction.h"
 #include "wal/wal.h"
 #include <chrono>
 #include <cstddef>
@@ -1310,6 +1311,73 @@ TEST_F(WALTest, CleanupCoordinatesWithWritesRotationAndCheckpointUpdates) {
         Record::createRecord(id), Record::commitRecord(id)};
     EXPECT_EQ(read_wal_records(dir / ("wal." + std::to_string(i + 1))), expected);
   }
+}
+
+// 管理器与 WAL 的桥接测试：只在新建测试目录初始化 WAL，避免依赖尚未实现的恢复入口。
+class TranManagerWALTest : public WALTest {};
+
+// 目的：未初始化 WAL 时，空／非空写入都报告失败，不解引用空指针或伪装成功。
+TEST_F(TranManagerWALTest, MissingWalReturnsFalse) {
+  auto manager = std::make_shared<TranManager>(test_dir);
+  EXPECT_FALSE(manager->write_to_wal({}));
+  EXPECT_FALSE(manager->write_to_wal({Record::createRecord(1)}));
+  EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(test_dir) / "wal.0"));
+}
+
+// 目的：不到 128 条的批次也必须立即写出；读取真实文件验证 force_flush 生效。
+// 只写日志不能推进 SST 检查点或分配新事务 ID。
+TEST_F(TranManagerWALTest, ForcesSmallBatchWithoutAdvancingTransactionState) {
+  auto manager = std::make_shared<TranManager>(test_dir);
+  manager->init_new_wal();
+  const std::vector<Record> records = {
+      Record::createRecord(7), Record::putRecord(7, "key", "value"),
+      Record::commitRecord(7)};
+
+  ASSERT_TRUE(manager->write_to_wal(records));
+  EXPECT_EQ(read_wal_records(std::filesystem::path(test_dir) / "wal.0"), records);
+  EXPECT_EQ(manager->get_checkpoint_tranc_id(), 0u);
+  EXPECT_EQ(manager->get_max_flushed_tranc_id(), 0u);
+  EXPECT_EQ(manager->getNextTransactionId(), 1u);
+}
+
+// 目的：已初始化且无故障时，空批次允许成功，不产生额外或重复的日志记录。
+TEST_F(TranManagerWALTest, EmptyBatchDoesNotDuplicateRecords) {
+  auto manager = std::make_shared<TranManager>(test_dir);
+  manager->init_new_wal();
+  const auto path = std::filesystem::path(test_dir) / "wal.0";
+  ASSERT_TRUE(manager->write_to_wal({}));
+  EXPECT_EQ(std::filesystem::file_size(path), 0u);
+
+  const std::vector<Record> records = {
+      Record::createRecord(1), Record::commitRecord(1)};
+  ASSERT_TRUE(manager->write_to_wal(records));
+  const auto written_size = std::filesystem::file_size(path);
+  ASSERT_TRUE(manager->write_to_wal({}));
+  EXPECT_EQ(std::filesystem::file_size(path), written_size);
+  EXPECT_EQ(read_wal_records(path), records);
+}
+
+// 目的：WAL 真正抛出文件操作异常时，管理器必须返回 false，而不是只记录错误后返回 true。
+// 先写满 wal.0，再占用 wal.1 触发轮换失败；验证旧数据保留，后续故障也继续报告失败。
+TEST_F(TranManagerWALTest, FileFailureReturnsFalseAndPreservesPreviousLogs) {
+  auto manager = std::make_shared<TranManager>(test_dir);
+  manager->init_new_wal();
+  const auto dir = std::filesystem::path(test_dir);
+  const std::vector<Record> successful = {
+      Record::createRecord(1), Record::putRecord(1, "key", std::string(5000, 'v')),
+      Record::commitRecord(1)};
+  ASSERT_TRUE(manager->write_to_wal(successful));
+  ASSERT_GT(std::filesystem::file_size(dir / "wal.0"), 4096u);
+
+  const std::vector<Record> occupied = {Record::createRecord(99)};
+  write_wal_records(dir / "wal.1", occupied);
+  EXPECT_FALSE(manager->write_to_wal({Record::createRecord(2)}));
+  EXPECT_FALSE(manager->write_to_wal({Record::createRecord(3)}));
+  EXPECT_FALSE(manager->write_to_wal({}));
+
+  EXPECT_EQ(read_wal_records(dir / "wal.0"), successful);
+  EXPECT_EQ(read_wal_records(dir / "wal.1"), occupied);
+  EXPECT_EQ(manager->get_checkpoint_tranc_id(), 0u);
 }
 
 TEST_F(WALTest, LogAndFlush) {

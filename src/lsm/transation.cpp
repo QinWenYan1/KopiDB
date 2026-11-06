@@ -980,6 +980,7 @@ bool TranManager::write_to_wal(const std::vector<Record> &records) {
     // 上层收到 false 后，不能直接登记事务提交成功
     spdlog::error("TranManager--write_to_wal(): Exception occurred: {}",
                   e.what());
+    return false; 
   } catch (...) {
     // 无法取得具体错误信息时，也明确报告失败
     spdlog::error(

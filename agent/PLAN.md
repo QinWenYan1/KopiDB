@@ -4,9 +4,9 @@
 
 章节：目录 **5.2.2「WAL 运行机制」**，文章标题 **Lab 5.4 WAL 运行机制**。
 
-**进度：50%（3/6 阶段验收通过）**。按验收阶段数计算，不代表工时比例。阶段①～③已验收：本轮真实周期清理、检查点更新及并发衔接通过，WAL 33/33、Record 38/38，共 71/71。当前进入阶段④，事务管理器的日志接入尚未验收；恢复不属于本轮已完成范围。
+**进度：50%（3/6 阶段验收通过）**。按验收阶段数计算，不代表工时比例。阶段①～③已验收；阶段④ write_to_wal 已填写并通过构建，但新增管理器接入测试仅 3/4 通过：标准异常分支遗漏 return false，导致写入失败仍返回 true。先修正当前函数，再进入阶段⑤。
 
-当前函数：[src/lsm/transation.cpp](../src/lsm/transation.cpp) 当前第 958 行的 `TranManager::write_to_wal(...)`。本轮在聊天中给出实现，由用户手写；已有参考函数体仍缺少 WAL 未初始化检查。cleanWALFile 当前在 wal.cpp:288，已通过验收；set_checkpoint_tranc_id 使用同一把锁，联动复核与测试通过，无需重写。
+当前函数：[src/lsm/transation.cpp](../src/lsm/transation.cpp) 当前第 960 行的 `TranManager::write_to_wal(...)`。第 978 行开始的 catch(const std::exception &e) 在错误日志之后需要补 return false；当前会继续执行末尾的成功返回。助手未修改业务源码，阶段⑤尚未开始。
 
 ## 本轮目标
 
@@ -77,7 +77,7 @@ WAL::set_checkpoint_tranc_id、TranContext 构造函数/get、已有事务状态
 | ① 生命周期 | WAL 构造 → 析构 | 能创建并关闭 WAL；已有日志不被截断；初始化失败明确报错；线程和文件释放路径正确。含实际清理循环的关闭验证在阶段③补齐 | 已验收基础生命周期：7/7 |
 | ② 缓冲与写入 | log → flush → reset_file | 未达阈值可缓冲；达阈值、强制刷盘、正常关闭后记录可完整解码；重复空 flush 不重复写；轮换不丢记录、不覆盖文件；写失败明确上报 | 已验收：WAL 27/27，连同 Record 共 65/65 |
 | ③ 旧日志清理 | cleaner → cleanWALFile；复核 checkpoint setter | 只删除安全检查点覆盖的历史文件；活动文件及未完成范围保留；空目录／单文件正常；清理与写入并发不破坏文件；关闭能唤醒等待中的线程 | 已验收：WAL 33/33，连同 Record 共 71/71 |
-| ④ 管理器接入 | TranManager::write_to_wal | 实际写入并刷新，返回真实结果；WAL 未初始化或写入失败不能伪装成功；新目录测试可显式接通组件 | 进行中：当前 write_to_wal 草案 |
+| ④ 管理器接入 | TranManager::write_to_wal | 实际写入并刷新，返回真实结果；WAL 未初始化或写入失败不能伪装成功；新目录测试可显式接通组件 | 进行中：3/4，通过构建；待补标准异常分支的失败返回 |
 | ⑤ 事务接入 | 私有日志辅助函数草案 → put → remove → commit → abort；复核构造/get | RU 先记录后写数据，暂存事务检查通过后写 COMMIT；冲突不写成功提交记录；取消结果与 ROLLBACK／回滚名单一致；重复结束不重复写；原有隔离与删除语义保持 | 待开始 |
 | ⑥ 整体验收 | WAL 文件测试、事务联调、受影响回归、文档收尾 | 实际文件内容、线程退出、写入失败、提交／回滚顺序均有验证；Record 与原有事务测试无回归；明确已测范围和后续恢复依赖 | 待开始 |
 
@@ -166,4 +166,10 @@ cleanWALFile 草案：整轮持有 mutex_，确保活动文件、检查点和删
 
 阶段④资料与调用核对：Lab 3.2 给出 write_to_wal 作为事务日志接入的辅助接口，我们沿用现有接口。作者参考以 wal->log(records, true) 强制写入，将标准异常转为 false。本地 wal 由 init_new_wal 在启动阶段初始化；不假设运行中可以并发重新初始化或替换它，正常并发日志写入由 WAL 自身的 mutex_ 保护。
 
-write_to_wal 草案：保留现有 trace 埋点；未初始化 WAL 时记录错误并返回 false；通过 log(records, true) 写入并刷新，日志调用中的异常转为 false，正常返回才报告 true。空 records 也交给 log，以便强制写出已有缓冲。该函数不登记提交／回滚、不推进 SST 检查点；后续事务函数依据返回结果处理自身状态。业务函数本轮未修改或测试，初始化入口与恢复流程继续按 STATE 排期。
+write_to_wal 方案：未初始化 WAL 时记录错误并返回 false；通过 log(records, true) 写入并刷新，日志调用中的异常转为 false，正常返回才报告 true。空 records 也交给 log，以便强制写出已有缓冲。该函数不登记提交／回滚、不推进 SST 检查点；后续事务函数依据返回结果处理自身状态。
+
+2026-11-06 管理器检查：未初始化检查、强制写入及 catch(...) 的失败返回正确；catch(const std::exception &e) 缺少 return false。助手在 test/test_wal.cpp 增加 TranManagerWALTest 四项：未初始化时空／非空请求失败；小批次立即写出且不推进检查点／分配器；空批次不产生重复记录；真实文件轮换失败返回 false 并保留原日志。夹具仅在全新目录调用现有 init_new_wal，不以此验收下一章的恢复初始化。
+
+xmake build test_wal 成功；隔离运行 TranManagerWALTest.*，**3/4 通过**。失败测试先写入超过 4096B 的 wal.0，再预先占用 wal.1，使 WAL::reset_file 实际抛出 runtime_error；管理器捕获后仍返回 true。随后普通请求及空请求遇到 WAL 故障状态，也错误返回 true。旧日志内容和检查点断言通过，问题定位在返回值传播。未运行其他测试组或开始下一函数。
+
+证据目录：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-manager-wal-review-z3trnuq8`，包含构建／测试日志、命令、JSON、汇总及源码哈希。执行期间源码与测试未变；助手只补测试和文档，未修改业务源码。待用户补齐失败返回后复测。

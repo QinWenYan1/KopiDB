@@ -16,7 +16,9 @@
 
 ## 当前进度
 
-2026-11-06 当前：目录 **5.2.2「WAL 运行机制」**（文章标题 Lab 5.4），进度 **50%（3/6 阶段验收通过）**。阶段①～③已验收；本轮新增真实周期清理 4 项测试，构建成功，隔离运行 **WAL 33/33、Record 38/38，共 71/71 通过**。检查点 setter 联动复核通过，无需修改。当前进入阶段④的 TranManager::write_to_wal 草案；事务日志接入及恢复尚未验收。助手只补测试和维护文档，未修改业务源码。具体进度与验收见 [PLAN.md](PLAN.md)。
+2026-11-06 当前：目录 **5.2.2「WAL 运行机制」**（文章标题 Lab 5.4），进度 **50%（3/6 阶段验收通过）**。阶段①～③已验收；阶段④ write_to_wal 已填写并通过构建，但新增接入测试 **3/4 通过**。标准异常 catch 分支遗漏 return false，导致文件写入失败仍报告 true；先修正当前函数，阶段⑤尚未开始。助手只补测试和维护文档，未修改业务源码。具体进度与定位见 [PLAN.md](PLAN.md)。
+
+管理器接入检查证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-manager-wal-review-z3trnuq8`。仅运行 TranManagerWALTest.* 四项；未初始化、小批次强制写入和空批次通过，实际轮换失败的返回值测试失败，原日志和检查点保持正确。构建／运行期间源码及测试哈希一致，修正点为 transation.cpp:978 的标准异常分支。
 
 历史构建失败：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-cleaner-review-w8muy_vb`，原因是 wait_for 收到了 should_stop() 返回的 bool，现已改为 should_stop 谓词对象。
 
