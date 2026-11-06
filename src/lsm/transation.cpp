@@ -160,7 +160,8 @@ std::optional<std::string> TranContext::get(const std::string &key) {
   // 读已提交、可重复读及当前 SERIALIZABLE 分支传 true
   // 让 Engine 在查找过程中排除活跃事务的记录
   // 无论传什么，已经回滚的记录都会被排除
-  const bool require_committed = isolation_level_ != IsolationLevel::READ_UNOP_COMMITTED; 
+  const bool require_committed =
+      isolation_level_ != IsolationLevel::READ_UNOP_COMMITTED;
 
   std::optional<std::pair<std::string, uint64_t>> query;
 
@@ -961,8 +962,7 @@ bool TranManager::write_to_wal(const std::vector<Record> &records) {
   // 没有 WAL 时不能报告成功，否则上层会误以为日志已经写出
   // 此处也避免直接解引用空 shared_ptr
   if (!wal) {
-    spdlog::error(
-        "TranManager--write_to_wal(): WAL is not initialized");
+    spdlog::error("TranManager--write_to_wal(): WAL is not initialized");
     return false;
   }
 
@@ -974,8 +974,8 @@ bool TranManager::write_to_wal(const std::vector<Record> &records) {
     //
     // records 为空时也交给 log：它仍可能需要写出已有缓冲
     // WAL::log 内部负责加锁、写入和错误检查
-    wal->log(records, true); 
-  } catch (const std::exception &e){
+    wal->log(records, true);
+  } catch (const std::exception &e) {
     // 3. 将日志调用中的标准异常转换为失败结果
     // 上层收到 false 后，不能直接登记事务提交成功
     spdlog::error("TranManager--write_to_wal(): Exception occurred: {}",
