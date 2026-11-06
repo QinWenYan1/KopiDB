@@ -4,6 +4,7 @@
 #include "memtable/memtable.h"
 #include "spdlog/spdlog.h"
 #include "utils/files.h"
+#include "wal/record.h"
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -273,7 +274,7 @@ std::optional<std::string> TranContext::get(const std::string &key) {
 
 // Lab 5.2 commit 实现
 // commit() 提交流程：
-// 检查是否允许提交 -> 应用修改 -> 登记提交完成 -> 按容量冻结、刷盘。
+// 检查冲突 → 写出 COMMIT → 应用数据 → 登记完成 → 按容量冻结、刷盘
 // 冲突时取消整笔事务；暂存修改尚未写入，因此不需要恢复数据库旧值。
 // 当前阶段不写 WAL；同一个 TranContext 的操作由调用者串行执行。
 bool TranContext::commit(bool test_fail) {
@@ -294,6 +295,18 @@ bool TranContext::commit(bool test_fail) {
   if (!manager || !engine_)
     throw std::logic_error(
         "TranContext::commit: missing transaction manager or engine");
+
+  // 如果上次结束流程异常退出，operations 中可能已经留下结束记录
+  // 写日志报错不等于文件中一个字节也没写入
+  // 因此不能自动再次提交，或者在已有回滚记录后追加 COMMIT
+  for (const auto &record : operations){
+    const auto type = record.getOperationType(); 
+    if (type == OperationType::OP_COMMIT ||
+        type == OperationType::OP_ROLLBACK ){
+      throw std::logic_error(
+          "TranContext::commit: previous ending attempt did not finish");
+    }
+  }
 
   // 准备常用数据
   const auto &config = TomlConfig::getInstance();
@@ -407,27 +420,49 @@ bool TranContext::commit(bool test_fail) {
     return false;
   }
 
-  // 6. 检查全部通过后，才开始应用修改
-  // operations 是内存中的操作记录，目前不会调用 write_to_wal
+  // 6. 检查通过后，追加 COMMIT 并强制写出尚未发送的日志。
+  //
+  // 暂存型事务：发送 CREATE、数据操作和 COMMIT
+  // RU：之前的数据操作已写出，这里通常只发送新增的 COMMIT
+  //
+  // 写入未确认成功时，辅助函数抛异常；
+  // 后面的数据应用、结束标记和提交登记都不会执行。
   operations.emplace_back(Record::commitRecord(tranc_id_));
+  persist_pending_wal_(); 
 
-  if (!write_immediately) {
-    for (const auto &[key, value] : temp_map_) {
-      // 外层已经持锁，使用不自行加锁的 put_
-      // 空 value 也写入，表示删除这个 key
-      mem.put_(key, value, tranc_id_);
+  // 7. COMMIT 已确认写出，先记住这个提交决定
+  // 后续即使内存处理失败，也不能再允许 abort 改成回滚
+  //
+  // 其他事务的严格读取仍由管理器的活跃表控制：
+  // 下面写完数据并登记完成之后，才从活跃表移出
+  // commit() 也只有正常走完整个流程才返回 true
+  isCommited = true;
+
+  try {
+    // 7. 应用暂存修改。RU 已经写过数据，不重复应用
+    // 已经持有内存表锁，使用不自行加锁的 put_
+    // 空 value 表示删除，也必须写入
+    if (!write_immediately) {
+      for (const auto &[key, value] : temp_map_) {
+        // 外层已经持锁，使用不自行加锁的 put_
+        // 空 value 也写入，表示删除这个 key
+        mem.put_(key, value, tranc_id_);
+      }
     }
+
+    // 所有隔离级别都补上结束标记
+    // 后续刷盘识别这个标记，通过 Engine 通知管理器对应事务已刷盘
+    mem.put_("", "", tranc_id_);
+
+    // 先登记提交完成，再允许刷盘线程处理这些数据
+    // 否则标记可能已经刷出，管理器却还没有这笔事务的结束登记
+    manager->add_ready_to_flush_tranc_id(tranc_id_,
+                                        TransactionState::OP_COMMITTED);
+
+    
+
   }
 
-  // 所有隔离级别都补上结束标记
-  // 后续刷盘识别这个标记，通过 Engine 通知管理器对应事务已刷盘
-  mem.put_("", "", tranc_id_);
-
-  // 先登记提交完成，再允许刷盘线程处理这些数据
-  // 否则标记可能已经刷出，管理器却还没有这笔事务的结束登记
-  manager->add_ready_to_flush_tranc_id(tranc_id_,
-                                       TransactionState::OP_COMMITTED);
-  isCommited = true;
 
   try {
     // 7. 写完整笔事务及结束标记后，检查单表容量
