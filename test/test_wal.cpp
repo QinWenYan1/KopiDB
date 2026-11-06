@@ -1504,6 +1504,125 @@ TEST_F(TranPutWALTest, WalFailurePreservesEarlierValueAndRejectsNewWrite) {
   EXPECT_FALSE(transaction->isCommited);
 }
 
+// 删除日志测试复用已初始化 Engine、TranManager 和 WAL 的事务夹具。
+class TranRemoveWALTest : public TranPutWALTest {};
+
+// 目的：第一次操作就是 remove 时，日志包含 CREATE 和 DELETE，内存写入对应版本的墓碑。
+// 该事务尚未提交，严格读取仍可见旧值；历史版本也不能被物理删除。
+TEST_F(TranRemoveWALTest, FirstRemoveWritesBeginAndDeleteRecord) {
+  const auto base_id = manager->getNextTransactionId();
+  engine->put("existing", "old", base_id);
+  auto transaction = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  const auto id = transaction->tranc_id_;
+
+  transaction->remove("existing");
+  const std::vector<Record> expected = {
+      Record::createRecord(id), Record::deleteRecord(id, "existing")};
+  EXPECT_EQ(read_wal_records(std::filesystem::path(test_dir) / "wal.0"), expected);
+  EXPECT_EQ(transaction->operations, expected);
+  EXPECT_TRUE(transaction->temp_map_.empty());
+  EXPECT_FALSE(engine->get("existing", 0));
+  EXPECT_EQ(engine->memtable.get_record("existing", 0),
+            std::make_optional(std::make_pair(std::string{}, id)));
+  EXPECT_EQ(engine->get("existing", base_id),
+            std::make_optional(std::make_pair(std::string("old"), base_id)));
+  EXPECT_EQ(engine->get("existing", 0, true),
+            std::make_optional(std::make_pair(std::string("old"), base_id)));
+  EXPECT_FALSE(transaction->isCommited);
+}
+
+// 目的：put/remove 共用同一个日志进度，交替调用不会重发 CREATE 或此前的操作。
+// 重复删除不存在的 key 仍是新的删除请求，按调用顺序保留在日志中。
+TEST_F(TranRemoveWALTest, MixedOperationsPreserveOrderWithoutResendingPrefix) {
+  auto transaction = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  const auto id = transaction->tranc_id_;
+  transaction->remove("missing");
+  transaction->put("key", "first");
+  transaction->remove("key");
+  transaction->put("key", "last");
+  transaction->remove("missing");
+
+  const std::vector<Record> expected = {
+      Record::createRecord(id), Record::deleteRecord(id, "missing"),
+      Record::putRecord(id, "key", "first"), Record::deleteRecord(id, "key"),
+      Record::putRecord(id, "key", "last"), Record::deleteRecord(id, "missing")};
+  EXPECT_EQ(read_wal_records(std::filesystem::path(test_dir) / "wal.0"), expected);
+  EXPECT_EQ(transaction->operations, expected);
+  EXPECT_EQ(engine->get("key", 0),
+            std::make_optional(std::make_pair(std::string("last"), id)));
+  EXPECT_FALSE(engine->get("missing", 0));
+  EXPECT_EQ(engine->memtable.get_record("missing", 0),
+            std::make_optional(std::make_pair(std::string{}, id)));
+}
+
+// 目的：暂存型删除保留空值墓碑，覆盖本事务的暂存值和读缓存；提交前不写 WAL 或引擎。
+TEST_F(TranRemoveWALTest, StagedDeletesStayLocalBeforeCommit) {
+  const auto base_id = manager->getNextTransactionId();
+  engine->put("existing", "old", base_id);
+  const auto path = std::filesystem::path(test_dir) / "wal.0";
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                    IsolationLevel::REPEATABLE_READ,
+                    IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    auto transaction = manager->new_tranc(level);
+    ASSERT_EQ(transaction->get("existing"), std::make_optional(std::string("old")));
+    transaction->put("existing", "pending");
+    transaction->remove("existing");
+    transaction->remove("missing");
+
+    EXPECT_EQ(transaction->temp_map_.at("existing"), "");
+    EXPECT_EQ(transaction->temp_map_.at("missing"), "");
+    EXPECT_FALSE(transaction->get("existing"));
+    EXPECT_FALSE(transaction->get("missing"));
+    EXPECT_EQ(transaction->operations.size(), 4u);
+    EXPECT_EQ(std::filesystem::file_size(path), 0u);
+    EXPECT_EQ(engine->get("existing", 0),
+              std::make_optional(std::make_pair(std::string("old"), base_id)));
+    EXPECT_FALSE(engine->memtable.get_record("missing", 0));
+  }
+}
+
+// 目的：WAL 未初始化时，删除已有或不存在的 key 都应失败，不能先写入墓碑。
+TEST_F(TranRemoveWALTest, MissingWalDoesNotApplyTombstone) {
+  const auto dir = (std::filesystem::path(test_dir) / "without_wal").string();
+  auto other_engine = std::make_shared<LSMEngine>(dir);
+  auto other_manager = std::make_shared<TranManager>(dir);
+  other_manager->set_engine(other_engine);
+  other_engine->set_tran_manager(other_manager);
+  const auto base_id = other_manager->getNextTransactionId();
+  other_engine->put("existing", "old", base_id);
+  auto transaction = other_manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+
+  EXPECT_THROW(transaction->remove("existing"), std::runtime_error);
+  EXPECT_THROW(transaction->remove("missing"), std::runtime_error);
+  EXPECT_EQ(other_engine->memtable.get_record("existing", 0),
+            std::make_optional(std::make_pair(std::string("old"), base_id)));
+  EXPECT_FALSE(other_engine->memtable.get_record("missing", 0));
+  EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(dir) / "wal.0"));
+}
+
+// 目的：真实 WAL 轮换失败时，remove 不得删除此前成功写入的值，也不能新增墓碑。
+TEST_F(TranRemoveWALTest, WalFailurePreservesValueAndDoesNotCreateTombstone) {
+  auto transaction = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  const auto id = transaction->tranc_id_;
+  transaction->put("existing", "before");
+  auto padding_transaction = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  padding_transaction->put("padding", std::string(5000, 'v'));
+  const auto dir = std::filesystem::path(test_dir);
+  const auto successful = read_wal_records(dir / "wal.0");
+  ASSERT_GT(std::filesystem::file_size(dir / "wal.0"), 4096u);
+  const std::vector<Record> occupied = {Record::createRecord(99)};
+  write_wal_records(dir / "wal.1", occupied);
+
+  EXPECT_THROW(transaction->remove("existing"), std::runtime_error);
+  EXPECT_THROW(transaction->remove("missing"), std::runtime_error);
+  EXPECT_EQ(engine->memtable.get_record("existing", 0),
+            std::make_optional(std::make_pair(std::string("before"), id)));
+  EXPECT_FALSE(engine->memtable.get_record("missing", 0));
+  EXPECT_EQ(read_wal_records(dir / "wal.0"), successful);
+  EXPECT_EQ(read_wal_records(dir / "wal.1"), occupied);
+}
+
 TEST_F(WALTest, LogAndFlush) {
   MockWAL wal(test_dir, 10, 100);
 

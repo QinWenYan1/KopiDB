@@ -4,9 +4,9 @@
 
 章节：目录 **5.2.2「WAL 运行机制」**，文章标题 **Lab 5.4 WAL 运行机制**。
 
-**进度：66.7%（4/6 阶段验收通过）**。按验收阶段数计算，不代表工时比例。阶段①～④已验收；阶段⑤ put 已接入日志辅助函数并通过相关测试，本轮 12/12。当前进入 remove，commit/abort 尚未接通，阶段⑤仍未完成。
+**进度：66.7%（4/6 阶段验收通过）**。按验收阶段数计算，不代表工时比例。阶段①～④已验收；阶段⑤ put/remove 已接入日志辅助函数，相关测试本轮 21/21 通过。当前进入 commit，abort 仍待后续，阶段⑤未完成。
 
-当前函数：[src/lsm/transation.cpp](../src/lsm/transation.cpp) 当前第 151 行的 `TranContext::remove()`，本轮在聊天中给出 WAL 接入实现，由用户手写。put 当前在第 109 行，RU 已先调用 persist_pending_wal_ 再写引擎，测试通过；第 122～123 行旧注释建议更新为“先保存操作，RU 立即写出，其他级别提交时写出”，不阻塞功能推进。
+当前函数：[src/lsm/transation.cpp](../src/lsm/transation.cpp) 当前第 279 行的 `TranContext::commit()`，连同第 274 行起的旧说明替换为本轮 WAL 接入草案，由用户手写。remove 当前在第 151 行，预写顺序与墓碑语义已验证；put 的旧注释已更新。
 
 ## 本轮目标
 
@@ -78,7 +78,7 @@ WAL::set_checkpoint_tranc_id、TranContext 构造函数/get、已有事务状态
 | ② 缓冲与写入 | log → flush → reset_file | 未达阈值可缓冲；达阈值、强制刷盘、正常关闭后记录可完整解码；重复空 flush 不重复写；轮换不丢记录、不覆盖文件；写失败明确上报 | 已验收：WAL 27/27，连同 Record 共 65/65 |
 | ③ 旧日志清理 | cleaner → cleanWALFile；复核 checkpoint setter | 只删除安全检查点覆盖的历史文件；活动文件及未完成范围保留；空目录／单文件正常；清理与写入并发不破坏文件；关闭能唤醒等待中的线程 | 已验收：WAL 33/33，连同 Record 共 71/71 |
 | ④ 管理器接入 | TranManager::write_to_wal | 实际写入并刷新，返回真实结果；WAL 未初始化或写入失败不能伪装成功；新目录测试可显式接通组件 | 已验收：修正后 4/4 通过 |
-| ⑤ 事务接入 | 私有日志辅助函数 → put → remove → commit → abort；复核构造/get | RU 先记录后写数据，暂存事务检查通过后写 COMMIT；冲突不写成功提交记录；取消结果与 ROLLBACK／回滚名单一致；重复结束不重复写；原有隔离与删除语义保持 | 进行中：辅助函数已由 put 调用验证；当前 remove |
+| ⑤ 事务接入 | 私有日志辅助函数 → put → remove → commit → abort；复核构造/get | RU 先记录后写数据，暂存事务检查通过后写 COMMIT；冲突不写成功提交记录；取消结果与 ROLLBACK／回滚名单一致；重复结束不重复写；原有隔离与删除语义保持 | 进行中：辅助函数、put/remove 已检查；当前 commit |
 | ⑥ 整体验收 | WAL 文件测试、事务联调、受影响回归、文档收尾 | 实际文件内容、线程退出、写入失败、提交／回滚顺序均有验证；Record 与原有事务测试无回归；明确已测范围和后续恢复依赖 | 待开始 |
 
 同一行有多个函数，也分多轮给出实现。顺序沿 Lab 3.1 → 3.2；reset_file、cleanWALFile 和私有日志辅助函数在其直接使用阶段补齐。前面函数依赖后面尚未实现的功能时只标记代码检查完成，不把依赖场景提前算作通过。
@@ -196,4 +196,18 @@ put 草案：保留已结束检查、Record::putRecord 长度检查、operations
 
 证据目录：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-tran-put-wal-review-ewczvi5p`，包含初稿测试编译失败日志、最终两个目标构建、wal/lsm 分目录测试命令／JSON／日志与源码哈希。最终构建及运行期间源码与测试未变，助手未修改业务源码。
 
-remove 草案：保留已结束检查、DELETE 记录构造和墓碑暂存语义；RU 先调用 persist_pending_wal_，日志成功后才调用 engine_->remove。其他级别继续把空字符串保存到 temp_map_，不提前写日志，不用 erase 丢失删除意图，也不恢复旧值备份。日志异常自然传给调用者，失败时该次引擎删除不执行。本轮仅给出草案，下一轮复核并测试。
+remove 实现：保留已结束检查、DELETE 记录构造和墓碑暂存语义；RU 先调用 persist_pending_wal_，日志成功后才调用 engine_->remove。其他级别继续把空字符串保存到 temp_map_，不提前写日志，不用 erase 丢失删除意图，也不恢复旧值备份。日志异常自然传给调用者，失败时该次引擎删除不执行。
+
+2026-11-06 remove 检查：新增 TranRemoveWALTest 五项，验证首次删除写 CREATE/DELETE、版本墓碑与历史值、put/remove 共用进度不重发前缀、暂存级别不提前写日志，以及缺少 WAL／真实轮换故障时不覆盖旧值或新增墓碑。旧 TranRemoveTest 夹具单独补初始化 WAL，原断言保留，未改公共存储夹具。
+
+构建 test_wal/test_lsm 成功；隔离运行 TranRemoveWALTest.*:TranPutWALTest.*:TranManagerWALTest.* **14/14**，TranRemoveTest.*:LSMTest.TranContextPut* **7/7**，共 **21/21 通过**。旧删除用例虽然调用现有 commit/abort，但只回归原有内存／状态语义，不代表这两个方法的 WAL 接入已完成。没有运行完整事务套件或恢复组。
+
+证据目录：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-tran-remove-wal-review-5su4zxi7`，包含两个目标构建、wal/lsm 各自命令／JSON／日志及源码哈希。构建／运行期间源码及测试未变；助手只补测试和文档，未修改业务源码。
+
+commit 草案保留现有真实版本比较、墓碑参与冲突判断、SERIALIZABLE 单键验证以及 SST→活跃表→冻结表的锁顺序。冲突在写 COMMIT 之前处理；当前可发生冲突的暂存分支还没有发送日志，直接登记 ABORTED，不回写旧值或生成成功提交记录。
+
+提交决定顺序：检查通过后追加 COMMIT，调用 persist_pending_wal_ 强制写出；未确认成功时抛异常，不应用暂存数据、不登记提交。确认成功后立即设置 isCommited，锁住本事务的提交决定，再应用暂存值／墓碑、写内存结束标记、登记管理器状态，最后冻结、解锁及按容量刷盘。对其他严格读取的可见性仍由管理器的活跃表控制，在数据应用完成后才登记并移出活跃表。只有正常走完流程才返回 true；COMMIT 已确认后若后续步骤抛异常，保留提交决定，不伪装成可以回滚。
+
+结束异常处理：利用 operations 已保留的记录识别此前未正常完成的 COMMIT/ROLLBACK 尝试，拒绝自动再次结束，避免重复或相反的终态日志，不新增公开接口或状态字段。WAL 写入失败不等于文件中完全没有 COMMIT，当前不自动重试；下一轮 abort 也要区分已确认／未确认的提交记录，不能看到 isCommited 为 false 就直接取消。test_fail 故障点仍留给恢复章节，本轮保持拒绝并更新说明。
+
+本轮只给出 commit 完整草案，尚未执行。后续检查需迁移相应旧测试的 WAL 初始化，验证所有隔离分支、冲突不写 COMMIT、成功终态不重复、WAL 失败不应用暂存数据，以及已确认 COMMIT 后的维护异常不改成回滚；完整 WAL 恢复按 STATE 排期。

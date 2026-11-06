@@ -166,12 +166,12 @@ void TranContext::remove(const std::string &key) {
   // 3. 按隔离级别决定立即写入墓碑还是暂存墓碑
   auto isolation_level = get_isolation_level();
   if (isolation_level == IsolationLevel::READ_UNOP_COMMITTED) {
-    // 3. RU 会立即修改引擎，因此先写出删除日志。
+    // RU 会立即修改引擎，因此先写出删除日志。
     // 首次发送会包含 CREATE；后续只发送尚未写出的记录。
     //
     // 日志失败时，辅助函数抛异常，下面的引擎删除不会执行。
     persist_pending_wal_();
-    
+
     // Engine::remove 会写入 {key, "", tranc_id_}
     // 这是新增或更新本事务的删除版本，不是物理删除历史节点
     // 不需要备份旧值：取消事务后，由查询过滤排除这个墓碑版本
@@ -184,7 +184,7 @@ void TranContext::remove(const std::string &key) {
     return;
   }
 
-  // 空字符串表示“本事务准备删除这个 key”
+  // 4. 空字符串表示“本事务准备删除这个 key”
   // 如果此前 put 过这个 key，就用墓碑覆盖暂存值
   //
   // 不能用 temp_map_.erase(key)：

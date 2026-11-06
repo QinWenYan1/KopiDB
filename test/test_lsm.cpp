@@ -1809,7 +1809,14 @@ class EngineGetRollbackTest : public TranCommitTest {};
 
 
 // 删除测试复用组件绑定与容量配置，分别检查暂存删除和立即删除。
-class TranRemoveTest : public TranCommitTest {};
+class TranRemoveTest : public TranCommitTest {
+protected:
+  void SetUp() override {
+    TranCommitTest::SetUp();
+    // RU put/remove 现在需要 WAL；只补删除测试的依赖，不改变存储测试的公共夹具。
+    manager->init_new_wal();
+  }
+};
 
 // 目的：暂存删除要保留墓碑，覆盖本事务先前的写入和读缓存；提交前不影响引擎。
 // 场景：三个暂存型级别分别删除已有 key、重复删除和删除不存在的 key，
