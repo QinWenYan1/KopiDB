@@ -299,13 +299,14 @@ void WAL::cleanWALFile() {
       std::stoull(active_path.filename().string().substr(4));
 
   // 每个文件是否能删除可以独立判断，不需要先排序。
-  for (const auto &entry : std::filesystem::directory_iterator(active_path.parent_path())) {
-    if (!entry.is_regular_file()) 
+  for (const auto &entry :
+       std::filesystem::directory_iterator(active_path.parent_path())) {
+    if (!entry.is_regular_file())
       continue;
 
-    const auto path = entry.path(); 
-    const std::string name = path.filename().string(); 
-      
+    const auto path = entry.path();
+    const std::string name = path.filename().string();
+
     // 2. 只处理 wal.<纯数字序号>，忽略其他文件。
     if (!name.starts_with("wal.")) {
       continue;
@@ -313,66 +314,64 @@ void WAL::cleanWALFile() {
 
     const std::string suffix = name.substr(4);
     if (suffix.empty() ||
-        !std::all_of(suffix.begin(), suffix.end(), [](char ch) {
-          return ch >= '0' && ch <= '9';
-        })) {
+        !std::all_of(suffix.begin(), suffix.end(),
+                     [](char ch) { return ch >= '0' && ch <= '9'; })) {
       continue;
     }
 
     try {
-        const uint64_t seq = std::stoull(suffix);
+      const uint64_t seq = std::stoull(suffix);
 
-        // 3. 只处理比当前活动文件更早的日志。
-        // 活动文件仍可能继续写入，不能删除。
-        // 如果发现更大的序号，也保守保留。
-        if (seq >= active_seq) {
-          continue;
-        }
-
-        // 4. 完整读取并解码，再判断能否删除。
-        // 复用 Record::decode 的长度、类型和边界检查，
-        // 避免把截断或损坏的日志误认为可以删除。
-        auto file = FileObj::open(path.string(), false);
-        const auto file_size = file.size();
-
-        if (file_size == std::numeric_limits<size_t>::max()) {
-          throw std::runtime_error("WAL: failed to read log file size");
-        }
-
-        const auto records =
-            Record::decode(file.read_to_slice(0, file_size));
-
-        // 5. 只要有一条记录尚未被安全检查点覆盖，就保留整个文件。
-        //
-        // 例如 checkpoint 为 10：
-        //   记录 ID 为 3、8  → 可以删除。
-        //   记录 ID 为 3、12 → 必须保留。
-        //
-        // 文件序号与事务 ID 是两回事，不能拿 wal.后面的序号代替判断。
-        bool can_delete = true;
-        for (const auto &record : records) {
-          if (record.getTrancId() > checkpoint_tranc_id_) {
-            can_delete = false;
-            break;
-          }
-        }
-
-        if (!can_delete) {
-          continue;
-        }
-
-        // 6. 确认安全后，关闭读取句柄，再删除文件。
-        // 空的历史日志没有需要保留的记录，也可以删除。
-        //
-        // 使用能报告文件系统错误的删除接口；
-        // 当前 FileObj::del_file() 没有向上传递删除失败。
-        file.close();
-        std::filesystem::remove(path);
-      } catch (const std::exception &e) {
-        // 无法确认内容完整或删除失败时，记录错误。
-        // 单个文件处理失败，不妨碍继续检查其他文件。
-        spdlog::error("WAL: failed to clean {}: {}", path.string(), e.what());
+      // 3. 只处理比当前活动文件更早的日志。
+      // 活动文件仍可能继续写入，不能删除。
+      // 如果发现更大的序号，也保守保留。
+      if (seq >= active_seq) {
+        continue;
       }
+
+      // 4. 完整读取并解码，再判断能否删除。
+      // 复用 Record::decode 的长度、类型和边界检查，
+      // 避免把截断或损坏的日志误认为可以删除。
+      auto file = FileObj::open(path.string(), false);
+      const auto file_size = file.size();
+
+      if (file_size == std::numeric_limits<size_t>::max()) {
+        throw std::runtime_error("WAL: failed to read log file size");
+      }
+
+      const auto records = Record::decode(file.read_to_slice(0, file_size));
+
+      // 5. 只要有一条记录尚未被安全检查点覆盖，就保留整个文件。
+      //
+      // 例如 checkpoint 为 10：
+      //   记录 ID 为 3、8  → 可以删除。
+      //   记录 ID 为 3、12 → 必须保留。
+      //
+      // 文件序号与事务 ID 是两回事，不能拿 wal.后面的序号代替判断。
+      bool can_delete = true;
+      for (const auto &record : records) {
+        if (record.getTrancId() > checkpoint_tranc_id_) {
+          can_delete = false;
+          break;
+        }
+      }
+
+      if (!can_delete) {
+        continue;
+      }
+
+      // 6. 确认安全后，关闭读取句柄，再删除文件。
+      // 空的历史日志没有需要保留的记录，也可以删除。
+      //
+      // 使用能报告文件系统错误的删除接口；
+      // 当前 FileObj::del_file() 没有向上传递删除失败。
+      file.close();
+      std::filesystem::remove(path);
+    } catch (const std::exception &e) {
+      // 无法确认内容完整或删除失败时，记录错误。
+      // 单个文件处理失败，不妨碍继续检查其他文件。
+      spdlog::error("WAL: failed to clean {}: {}", path.string(), e.what());
+    }
   }
 }
 
