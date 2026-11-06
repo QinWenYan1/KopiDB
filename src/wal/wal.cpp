@@ -286,66 +286,93 @@ void WAL::cleaner() {
 }
 
 void WAL::cleanWALFile() {
-  // 遍历log_file_所在的文件夹
-  std::string dir_path;
+  // 1. 清理期间保护活动文件和检查点。
+  // 避免判断文件能否删除时，另一个线程同时轮换文件或修改检查点。
+  //
+  // cleaner() 调用前已经解锁，因此这里可以正常获取 mutex_。
+  // 这个简单方案会让清理期间的 log() 暂时等待；
+  // 清理线程睡眠期间仍会释放锁，不影响前台写入。
+  std::lock_guard<std::mutex> lock(mutex_);
 
-  std::unique_lock<std::mutex> lock(mutex_); // 只在获取当前文件路径时获取锁
-  if (active_log_path_.find("/") != std::string::npos) {
-    dir_path =
-        active_log_path_.substr(0, active_log_path_.find_last_of("/")) + "/";
-  } else {
-    dir_path = "./";
-  }
-  lock.unlock();
+  const std::filesystem::path active_path(active_log_path_);
+  const uint64_t active_seq =
+      std::stoull(active_path.filename().string().substr(4));
 
-  // wal文件格式为:
-  // wal.seq
+  // 每个文件是否能删除可以独立判断，不需要先排序。
+  for (const auto &entry : std::filesystem::directory_iterator(active_path.parent_path())) {
+    if (!entry.is_regular_file()) 
+      continue;
 
-  std::vector<std::pair<size_t, std::string>> wal_paths;
-
-  for (const auto &entry : std::filesystem::directory_iterator(dir_path)) {
-    if (entry.is_regular_file() &&
-        entry.path().filename().string().substr(0, 4) == "wal.") {
-      std::string filename = entry.path().filename().string();
-      size_t dot_pos = filename.find_last_of(".");
-      std::string seq_str = filename.substr(dot_pos + 1);
-      uint64_t seq = std::stoull(seq_str);
-      wal_paths.push_back({seq, entry.path().string()});
-    }
+  const auto path = entry.path(); 
+  const std::string name = path.filename().string(); 
+    
+  // 2. 只处理 wal.<纯数字序号>，忽略其他文件。
+  if (!name.starts_with("wal.")) {
+    continue;
   }
 
-  // 按照seq升序排序
-  std::sort(wal_paths.begin(), wal_paths.end(),
-            [](const std::pair<size_t, std::string> &a,
-               const std::pair<size_t, std::string> &b) {
-              return a.first < b.first;
-            });
+  const std::string suffix = name.substr(4);
+  if (suffix.empty() ||
+      !std::all_of(suffix.begin(), suffix.end(), [](char ch) {
+        return ch >= '0' && ch <= '9';
+      })) {
+    continue;
+  }
 
-  // 判断是否可以删除
-  std::vector<FileObj> del_paths;
-  for (int idx = 0; idx < (int)wal_paths.size() - 1; idx++) {
-    auto cur_path = wal_paths[idx].second;
-    auto cur_file = FileObj::open(cur_path, false);
-    // 遍历文件记录, 读取所有的tranc_id,
-    // 判断是否都小于等于checkpoint_tranc_id_
-    size_t offset = 0;
-    bool has_unfinished = false;
-    while (offset + sizeof(uint16_t) < cur_file.size()) {
-      uint16_t record_size = cur_file.read_uint16(offset);
-      uint64_t tranc_id = cur_file.read_uint64(offset + sizeof(uint16_t));
-      if (tranc_id > checkpoint_tranc_id_) {
-        has_unfinished = true;
-        break;
+  try {
+      const uint64_t seq = std::stoull(suffix);
+
+      // 3. 只处理比当前活动文件更早的日志。
+      // 活动文件仍可能继续写入，不能删除。
+      // 如果发现更大的序号，也保守保留。
+      if (seq >= active_seq) {
+        continue;
       }
-      offset += record_size;
-    }
-    if (!has_unfinished) {
-      del_paths.push_back(std::move(cur_file));
-    }
-  }
 
-  for (auto &del_file : del_paths) {
-    del_file.del_file();
+      // 4. 完整读取并解码，再判断能否删除。
+      // 复用 Record::decode 的长度、类型和边界检查，
+      // 避免把截断或损坏的日志误认为可以删除。
+      auto file = FileObj::open(path.string(), false);
+      const auto file_size = file.size();
+
+      if (file_size == std::numeric_limits<size_t>::max()) {
+        throw std::runtime_error("WAL: failed to read log file size");
+      }
+
+      const auto records =
+          Record::decode(file.read_to_slice(0, file_size));
+
+      // 5. 只要有一条记录尚未被安全检查点覆盖，就保留整个文件。
+      //
+      // 例如 checkpoint 为 10：
+      //   记录 ID 为 3、8  → 可以删除。
+      //   记录 ID 为 3、12 → 必须保留。
+      //
+      // 文件序号与事务 ID 是两回事，不能拿 wal.后面的序号代替判断。
+      bool can_delete = true;
+      for (const auto &record : records) {
+        if (record.getTrancId() > checkpoint_tranc_id_) {
+          can_delete = false;
+          break;
+        }
+      }
+
+      if (!can_delete) {
+        continue;
+      }
+
+      // 6. 确认安全后，关闭读取句柄，再删除文件。
+      // 空的历史日志没有需要保留的记录，也可以删除。
+      //
+      // 使用能报告文件系统错误的删除接口；
+      // 当前 FileObj::del_file() 没有向上传递删除失败。
+      file.close();
+      std::filesystem::remove(path);
+    } catch (const std::exception &e) {
+      // 无法确认内容完整或删除失败时，记录错误。
+      // 单个文件处理失败，不妨碍继续检查其他文件。
+      spdlog::error("WAL: failed to clean {}: {}", path.string(), e.what());
+    }
   }
 }
 
