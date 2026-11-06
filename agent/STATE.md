@@ -16,11 +16,13 @@
 
 ## 当前进度
 
-2026-11-06 当前：目录 **5.2.2「WAL 运行机制」**（文章标题 Lab 5.4），进度 **33.3%（2/6 阶段验收通过）**。阶段①、②已验收；阶段③ cleaner 的 wait_for 参数已修复，构建成功，新增等待／退出 2 项测试后，隔离运行 **WAL 29/29 通过**。当前进入 cleanWALFile 草案，旧日志筛选删除尚未验收，阶段③未完成。助手只补测试和维护文档，未修改业务源码。具体进度与验收见 [PLAN.md](PLAN.md)。
+2026-11-06 当前：目录 **5.2.2「WAL 运行机制」**（文章标题 Lab 5.4），进度 **50%（3/6 阶段验收通过）**。阶段①～③已验收；本轮新增真实周期清理 4 项测试，构建成功，隔离运行 **WAL 33/33、Record 38/38，共 71/71 通过**。检查点 setter 联动复核通过，无需修改。当前进入阶段④的 TranManager::write_to_wal 草案；事务日志接入及恢复尚未验收。助手只补测试和维护文档，未修改业务源码。具体进度与验收见 [PLAN.md](PLAN.md)。
 
 历史构建失败：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-cleaner-review-w8muy_vb`，原因是 wait_for 收到了 should_stop() 返回的 bool，现已改为 should_stop 谓词对象。
 
 cleaner 复测证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-cleaner-wait-review-is2ady3p`，WAL 29/29。新增测试验证 60 秒清理间隔下前台写入及提前关闭，各预留 100ms 调度机会；没有等待旧文件清理超时，不作为删除规则或清理异常分支的运行验收。源码与测试在构建／运行期间哈希一致。本轮未重跑 Record，上一阶段 38/38 保留为历史结果。
+
+阶段③验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-cleanup-review-qvvm_y16`，WAL 33/33、Record 38/38，共 71/71。已通过真实后台线程验证安全历史日志删除、活动／未来序号保护、检查点推进、损坏与无关文件保留，以及清理与写入轮换／检查点更新的并发衔接。测试显式提供安全检查点，未接通管理器持久化检查点与恢复；未注入删除权限错误或目录读取失败，文件短写／单独 sync 故障也未注入。write_to_wal 本轮只在聊天中给出实现草案。
 
 构造验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-constructor-review-97qgp25k`。首次 5 项测试关闭后台清理，验证文件创建／保留与失败传播。
 

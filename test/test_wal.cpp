@@ -564,6 +564,30 @@ std::vector<Record> read_wal_records(const std::filesystem::path &path) {
   return Record::decode(file.read_to_slice(0, file.size()));
 }
 
+void write_wal_records(const std::filesystem::path &path,
+                       const std::vector<Record> &records) {
+  std::vector<uint8_t> bytes;
+  for (const auto &record : records) {
+    const auto encoded = record.encode();
+    bytes.insert(bytes.end(), encoded.begin(), encoded.end());
+  }
+  FileObj::create_and_write(path.string(), std::move(bytes));
+}
+
+// 等待真实清理线程产生可观察结果，不直接调用或替换私有清理函数。
+// 使用截止时间，允许调度延迟，不依赖固定 sleep 后恰好已经完成清理。
+template <typename Predicate>
+bool wait_for_wal_condition(Predicate condition) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  do {
+    if (condition()) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  } while (std::chrono::steady_clock::now() < deadline);
+  return condition();
+}
+
 } // namespace
 
 class WALTest : public ::testing::Test {
@@ -1145,6 +1169,147 @@ TEST_F(WALTest, CleanerShutdownInterruptsLongWait) {
   EXPECT_LT(elapsed, std::chrono::seconds(5));
   EXPECT_TRUE(std::filesystem::is_regular_file(
       std::filesystem::path(test_dir) / "wal.0"));
+}
+
+// 目的：真实周期清理只删除完整且全部 ID 被检查点覆盖的历史文件。
+// 验证检查点相等边界、乱序 ID、空历史文件，以及活动／更大序号文件保护。
+TEST_F(WALTest, CleanupRespectsCheckpointAndProtectsActiveFile) {
+  const auto dir = std::filesystem::path(test_dir);
+  const std::vector<Record> safe = {
+      Record::createRecord(3), Record::commitRecord(10)};
+  const std::vector<Record> pending = {
+      Record::createRecord(12), Record::commitRecord(4)};
+  const std::vector<Record> active = {Record::createRecord(5)};
+  const std::vector<Record> future = {Record::createRecord(1)};
+  write_wal_records(dir / "wal.0", safe);
+  write_wal_records(dir / "wal.1", pending);
+  write_wal_records(dir / "wal.2", {});
+
+  {
+    WAL wal(test_dir, 0, 10, 1, 0);
+    wal.log(active);
+    // 活动文件是 wal.3，即使又出现更大文件名，也不能把 wal.3 当作旧文件删除。
+    write_wal_records(dir / "wal.9", future);
+    ASSERT_TRUE(wait_for_wal_condition([&] {
+      return !std::filesystem::exists(dir / "wal.0") &&
+             !std::filesystem::exists(dir / "wal.2");
+    }));
+  }
+
+  EXPECT_EQ(read_wal_records(dir / "wal.1"), pending);
+  EXPECT_EQ(read_wal_records(dir / "wal.3"), active);
+  EXPECT_EQ(read_wal_records(dir / "wal.9"), future);
+}
+
+// 目的：第一次清理保留检查点之外的记录；公开 setter 推进检查点后，后续周期可删除。
+// 通过先删除另一个安全文件确认首次清理已发生，而不是只检查“文件暂时还在”。
+TEST_F(WALTest, CleanupUsesUpdatedCheckpoint) {
+  const auto dir = std::filesystem::path(test_dir);
+  const std::vector<Record> pending = {
+      Record::createRecord(20), Record::commitRecord(2)};
+  const std::vector<Record> later = {Record::createRecord(21)};
+  write_wal_records(dir / "wal.0", pending);
+  write_wal_records(dir / "wal.1", {Record::createRecord(8)});
+
+  {
+    WAL wal(test_dir, 0, 10, 1, 0);
+    ASSERT_TRUE(wait_for_wal_condition([&] {
+      return !std::filesystem::exists(dir / "wal.1");
+    }));
+    ASSERT_TRUE(std::filesystem::exists(dir / "wal.0"));
+    EXPECT_EQ(read_wal_records(dir / "wal.0"), pending);
+
+    wal.set_checkpoint_tranc_id(20);
+    ASSERT_TRUE(wait_for_wal_condition([&] {
+      return !std::filesystem::exists(dir / "wal.0");
+    }));
+    // 历史文件清完后，唯一的活动文件仍能继续写入。
+    wal.log(later);
+  }
+  EXPECT_EQ(read_wal_records(dir / "wal.2"), later);
+}
+
+// 目的：损坏日志和非日志文件保持原样，且不能阻断同一轮对正常历史文件的清理。
+// 覆盖一字节尾部、零记录长度、截断记录、未知类型和有效记录后的残缺尾部。
+TEST_F(WALTest, CleanupPreservesMalformedAndUnrelatedFiles) {
+  const auto dir = std::filesystem::path(test_dir);
+  auto truncated = Record::createRecord(7).encode();
+  truncated.pop_back();
+  auto unknown = Record::createRecord(7).encode();
+  unknown[10] = 255;
+  auto trailing = Record::createRecord(7).encode();
+  trailing.push_back(1);
+  const std::vector<std::pair<std::string, std::vector<uint8_t>>> preserved = {
+      {"wal.0", {1}}, {"wal.1", std::vector<uint8_t>(11, 0)},
+      {"wal.2", truncated}, {"wal.3", unknown}, {"wal.4", trailing},
+      {"wal.backup", {1, 2}}, {"wal.12.bak", {3, 4}},
+      {"wal.", {5, 6}}, {"notes.txt", {7, 8}}};
+  for (const auto &[name, bytes] : preserved) {
+    FileObj::create_and_write((dir / name).string(), bytes);
+  }
+  write_wal_records(dir / "wal.5", {Record::createRecord(1)});
+
+  {
+    WAL wal(test_dir, 128, 10, 1, 0);
+    ASSERT_TRUE(wait_for_wal_condition([&] {
+      return !std::filesystem::exists(dir / "wal.5");
+    }));
+  }
+
+  for (const auto &[name, bytes] : preserved) {
+    SCOPED_TRACE(name);
+    auto file = FileObj::open((dir / name).string());
+    EXPECT_EQ(file.read_to_slice(0, file.size()), bytes);
+  }
+  EXPECT_TRUE(std::filesystem::is_regular_file(dir / "wal.6"));
+}
+
+// 目的：后台清理与前台轮换、检查点更新同时运行时，不丢失仍需保留的事务日志。
+// 低版本历史文件用于观察清理确实执行；前台写入的 ID 始终高于本测试的检查点。
+TEST_F(WALTest, CleanupCoordinatesWithWritesRotationAndCheckpointUpdates) {
+  constexpr size_t batch_count = 32;
+  const auto dir = std::filesystem::path(test_dir);
+  write_wal_records(dir / "wal.0", {Record::createRecord(1)});
+  {
+    WAL wal(test_dir, 0, 0, 1, 1);
+    std::vector<std::exception_ptr> errors(2);
+    std::thread writer([&] {
+      try {
+        for (size_t i = 0; i < batch_count; ++i) {
+          const uint64_t id = 1000 + i;
+          wal.log({Record::createRecord(id), Record::commitRecord(id)});
+          std::this_thread::sleep_for(std::chrono::milliseconds(40));
+        }
+      } catch (...) {
+        errors[0] = std::current_exception();
+      }
+    });
+    std::thread checkpoint_writer([&] {
+      try {
+        for (uint64_t id = 1; id <= batch_count; ++id) {
+          wal.set_checkpoint_tranc_id(id);
+          std::this_thread::sleep_for(std::chrono::milliseconds(40));
+        }
+      } catch (...) {
+        errors[1] = std::current_exception();
+      }
+    });
+    writer.join();
+    checkpoint_writer.join();
+    for (const auto &error : errors) {
+      ASSERT_FALSE(error);
+    }
+    ASSERT_TRUE(wait_for_wal_condition([&] {
+      return !std::filesystem::exists(dir / "wal.0");
+    }));
+  }
+
+  for (size_t i = 0; i < batch_count; ++i) {
+    const uint64_t id = 1000 + i;
+    const std::vector<Record> expected = {
+        Record::createRecord(id), Record::commitRecord(id)};
+    EXPECT_EQ(read_wal_records(dir / ("wal." + std::to_string(i + 1))), expected);
+  }
 }
 
 TEST_F(WALTest, LogAndFlush) {
