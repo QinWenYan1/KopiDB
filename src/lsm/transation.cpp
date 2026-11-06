@@ -70,6 +70,39 @@ void TranContext::persist_pending_wal_() {
   // operations 为空且计数为 0 时，也自然在这里返回
   if (wal_written_count_ == record_count)
     return; 
+
+  // 3. 上下文保存的是管理器的 weak_ptr
+  // 取得 shared_ptr，保证本次日志调用期间管理器仍然有效
+  auto manager = tranManager_.lock(); 
+  if (!manager)
+      throw std::logic_error("TranContext::persist_pending_wal_: transaction manager has expired"); 
+  bool success = false; 
+
+  if (wal_written_count_ == 0) {
+    // 4. 首次发送：全部记录都尚未写出
+    // 直接传原数组，避免额外复制整批记录
+    success = manager->write_to_wal(operations); 
+  } else {
+    // 5. 后续发送：只取尚未写出的后缀
+    //
+    // 例如总共 3 条、已经写出 2 条
+    // 就取 [begin + 2, end)，仅发送最后一条
+    // 保留原 operations，通过副本适配现有 vector 接口
+    const std::vector<Record> pending(operations.begin() + wal_written_count_, operations.end()); 
+    success = manager->write_to_wal(pending); 
+  }
+
+  // 6. 写入没有确认成功，停止当前流程
+  // 计数保持不变，不能把失败的部分标记为已经写出
+  if (!success)
+    throw std::runtime_error(
+        "TranContext::persist_pending_wal_: failed to write WAL");
+
+  // 7. 全部新增记录写入成功，才推进已写位置
+  // 这里只记录日志进度，不改变事务的提交或回滚状态
+  wal_written_count_ = record_count; 
+
+  
 }
 
 // Lab 5.2 put 实现
