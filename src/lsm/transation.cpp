@@ -151,20 +151,27 @@ void TranContext::put(const std::string &key, const std::string &value) {
 void TranContext::remove(const std::string &key) {
   spdlog::trace("TranContext--remove({}) called, tranc_id={}", key, tranc_id_);
 
-  // 1. 已结束的事务不能继续删除。
-  // 必须在追加日志记录、修改暂存表或引擎之前检查，
-  // 避免 abort 后又产生新的操作。
+  // 1. 已结束的事务不能继续删除
+  // 必须在追加日志记录、修改暂存表或引擎之前检查
+  // 避免 abort 后又产生新的操作
   if (isCommited || isAborted) {
     throw std::logic_error(
         "TranContext::remove: transaction has already finished");
   }
 
   // 2. 所有隔离级别都需要先写入 operations 中
+  // DELETE 只需要记录 key，删除发生在哪个版本由 tranc_id_ 标识
   operations.emplace_back(Record::deleteRecord(this->tranc_id_, key));
 
   // 3. 按隔离级别决定立即写入墓碑还是暂存墓碑
   auto isolation_level = get_isolation_level();
   if (isolation_level == IsolationLevel::READ_UNOP_COMMITTED) {
+    // 3. RU 会立即修改引擎，因此先写出删除日志。
+    // 首次发送会包含 CREATE；后续只发送尚未写出的记录。
+    //
+    // 日志失败时，辅助函数抛异常，下面的引擎删除不会执行。
+    persist_pending_wal_();
+    
     // Engine::remove 会写入 {key, "", tranc_id_}
     // 这是新增或更新本事务的删除版本，不是物理删除历史节点
     // 不需要备份旧值：取消事务后，由查询过滤排除这个墓碑版本
