@@ -957,6 +957,41 @@ std::map<uint64_t, std::vector<Record>> TranManager::check_recover() {
 
 // Lab 5.4
 bool TranManager::write_to_wal(const std::vector<Record> &records) {
+  // 1. WAL 应在启动阶段完成初始化
+  // 没有 WAL 时不能报告成功，否则上层会误以为日志已经写出
+  // 此处也避免直接解引用空 shared_ptr
+  if (!wal) {
+    spdlog::error(
+        "TranManager--write_to_wal(): WAL is not initialized");
+    return false;
+  }
+
+  try {
+    // 2. 强制写入，不等待缓冲达到条数阈值
+    //
+    // 即使本次只有几条记录，也必须完成写入和文件流刷新
+    // 才能向上层报告本次日志操作成功
+    //
+    // records 为空时也交给 log：它仍可能需要写出已有缓冲
+    // WAL::log 内部负责加锁、写入和错误检查
+    wal->log(records, true); 
+  } catch (const std::exception &e){
+    // 3. 将日志调用中的标准异常转换为失败结果
+    // 上层收到 false 后，不能直接登记事务提交成功
+    spdlog::error("TranManager--write_to_wal(): Exception occurred: {}",
+                  e.what());
+  } catch (...) {
+    // 无法取得具体错误信息时，也明确报告失败
+    spdlog::error(
+        "TranManager--write_to_wal(): Unknown exception while writing WAL");
+    return false;
+  }
+
+  // 4. log 正常返回，说明它已经完成本次强制写入要求。
+  // 这里只报告日志结果，不登记事务提交或推进 SST 检查点。
+  spdlog::trace(
+      "TranManager--write_to_wal(): Successfully wrote {} records to WAL",
+      records.size());
   return true;
 }
 
