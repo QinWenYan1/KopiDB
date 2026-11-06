@@ -54,6 +54,24 @@ TranContext::TranContext(uint64_t tranc_id, std::shared_ptr<LSMEngine> engine,
   operations.emplace_back(Record::createRecord(tranc_id_));
 }
 
+
+void TranContext::persist_pending_wal_() {
+  const auto record_count = operations.size();
+
+  // 1. 已写条数不能大于当前记录总数
+  // 例如清空 operations 却忘记同步计数，就会破坏这个关系
+  // 明确报告内部状态错误，避免后面构造越界的迭代器区间
+  if (wal_written_count_ > record_count) 
+    throw std::logic_error(
+        "TranContext::persist_pending_wal_: invalid WAL record count");
+  
+  
+  // 2. 没有新增记录，不需要再次发送
+  // operations 为空且计数为 0 时，也自然在这里返回
+  if (wal_written_count_ == record_count)
+    return; 
+}
+
 // Lab 5.2 put 实现
 // 读未提交：使用本事务 ID 直接写入引擎，不再备份旧值。
 // 其他隔离级别： 暂存在本事务的 temp_map_，等 commit() 再写入引擎
@@ -980,7 +998,7 @@ bool TranManager::write_to_wal(const std::vector<Record> &records) {
     // 上层收到 false 后，不能直接登记事务提交成功
     spdlog::error("TranManager--write_to_wal(): Exception occurred: {}",
                   e.what());
-    return false; 
+    return false;
   } catch (...) {
     // 无法取得具体错误信息时，也明确报告失败
     spdlog::error(

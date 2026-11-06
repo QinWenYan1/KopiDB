@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <cstddef>
 
 namespace tiny_lsm {
 
@@ -64,6 +65,14 @@ public:
   enum IsolationLevel isolation_level_;
 
 private:
+  // 将 operations 中尚未写入 WAL 的部分写出
+  // 成功后更新已写条数；失败抛异常，不推进计数
+  void persist_pending_wal_(); 
+
+  // operations 前多少条记录已经确认写入 WAL。
+  // 初始为 0，表示连 CREATE 也还没有写出。
+  // 结束事务时若清空 operations，也需要同步将此计数归零。
+  std::size_t wal_written_count_ = 0;
   std::unordered_map<std::string,
                      std::optional<std::pair<std::string, uint64_t>>>
       read_map_;
