@@ -955,23 +955,8 @@ std::map<uint64_t, std::vector<Record>> TranManager::check_recover() {
   return wal_records;
 }
 
+// Lab 5.4
 bool TranManager::write_to_wal(const std::vector<Record> &records) {
-  spdlog::trace("TranManager--write_to_wal(): Writing {} records to WAL",
-                records.size());
-
-  try {
-    wal->log(records, true);
-  } catch (const std::exception &e) {
-    spdlog::error("TranManager--write_to_wal(): Exception occurred: {}",
-                  e.what());
-
-    return false;
-  }
-
-  spdlog::trace(
-      "TranManager--write_to_wal(): Successfully wrote {} records to WAL",
-      records.size());
-
   return true;
 }
 
