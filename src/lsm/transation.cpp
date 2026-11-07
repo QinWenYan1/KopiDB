@@ -509,21 +509,60 @@ bool TranContext::commit(bool test_fail) {
   return true;
 }
 
-// 请求管理器登记回滚，并结束上下文、清理本事务的暂存数据
-// 查询侧已接入回滚过滤；
+// 取消事务：按需写出 ROLLBACK → 登记回滚 → 清理上下文
+// 已经写入存储层的版本由回滚名单过滤，不在这里恢复旧值
 // ! SERIALIZABLE（未完整实现）：同样沿用通用取消流程，不代表已具备完整隔离保证。
 bool TranContext::abort() {
-  // 同一个 TranContext 的操作由调用者串行执行
-  // 已经提交或回滚的事务，不能再次取消
+  // 1. 同一个上下文由调用者串行使用
+  // 已经提交或取消的事务不能再次取消，也不能重复写 ROLLBACK
   if (isCommited || isAborted)
     return false;
 
-  // 上下文持有的是 weak_ptr，管理器可能已经销毁
-  // 回滚必须让管理器记住这个 ID，不能只修改本地标志
+  // 回滚必须登记到管理器，才能让其他查询排除本事务的版本
+  // 取得 shared_ptr，保证后续操作期间管理器仍然存在
   auto manager = tranManager_.lock();
   if (!manager)
     throw std::logic_error(
         "TranContext::abort: transaction manager has expired");
+
+  // 已写条数必须对应 operations 中实际存在的前缀
+  // 在追加 ROLLBACK 前检查，避免追加操作掩盖原有的计数错误
+  if (wal_written_count_ > operations.size())
+    throw std::logic_error(
+        "TranContext::abort: invalid WAL record count");
+  
+  const bool write_immediately =
+      (isolation_level_ == IsolationLevel::READ_UNOP_COMMITTED);
+  
+  // 已经确认发送过日志，需要再记录这笔事务被取消
+  bool need_rollback_log = wal_written_count_ != 0;
+
+  // 2. 检查此前是否已经尝试结束，并判断是否需要回滚日志。
+  for (const auto &record : operations) {
+    const auto type = record.getOperationType();
+
+    // 本地尚未结束，却已经存在结束记录，说明上次结束流程异常退出。
+    //
+    // 尤其是 COMMIT 写入报错：不能认定磁盘里一定没有 COMMIT，
+    // 因此不能随后追加 ROLLBACK，擅自把结果不确定的提交改成取消。
+    // 已有 ROLLBACK 时也不自动重试，避免重复发送结束记录。
+    if (type == OperationType::OP_COMMIT ||
+        type == OperationType::OP_ROLLBACK) {
+      throw std::logic_error(
+          "TranContext::abort: previous ending attempt did not finish");
+    }
+
+    // RU 的 PUT/DELETE 会立即尝试写 WAL。
+    // 即使第一次写入报错、已写计数仍为 0，也不能认定日志文件为空。
+    // 因此这种情况仍走写 ROLLBACK 的流程；
+    // 如果 WAL 已进入故障状态，辅助函数会抛异常，不假装日志写入成功。
+    if (write_immediately &&
+        (type == OperationType::OP_PUT ||
+         type == OperationType::OP_DELETE)) {
+      need_rollback_log = true;
+    }
+  }
+
 
   // 先登记回滚，再修改上下文状态
   // 如果登记抛异常，下面的代码不会执行
