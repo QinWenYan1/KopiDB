@@ -6,7 +6,7 @@
 
 **进度：66.7%（4/6 阶段验收通过）**。按验收阶段数计算，不代表工时比例。阶段①～④已验收；阶段⑤辅助函数、put/remove/commit 已检查，commit 本轮相关测试 25/25 通过。commit 尚有三处旧说明需同步；下一个函数为 abort，阶段⑤未完成。
 
-当前函数：[src/lsm/transation.cpp](../src/lsm/transation.cpp) 第 280 行的 `TranContext::commit()` 功能检查通过；第 279、292、487～493 行仍有旧注释／报错文字待用户同步。下一个是当前第 508 行的 `TranContext::abort()`，接入回滚日志及结束异常处理。行号以 2026-11-07 本轮检查为准。
+当前函数：[src/lsm/transation.cpp](../src/lsm/transation.cpp) 第 285 行的 `TranContext::commit()` 功能检查通过；第 284、297 行及 catch 内仍有旧注释／报错文字待用户同步。下一个是当前第 515 行的 `TranContext::abort()`，接入回滚日志及结束异常处理。行号以 2026-11-07 补充 SERIALIZABLE 标记后为准。
 
 ## 本轮目标
 
@@ -221,3 +221,5 @@ commit 草案保留现有真实版本比较、墓碑参与冲突判断、SERIALI
 证据目录：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-tran-commit-wal-review-dta65h8t`，包含两个构建日志、各自测试命令／JSON／日志及源码哈希。构建／运行期间源码与测试哈希一致；助手只修改测试和文档，未修改业务源码。
 
 本轮隔离语义核对：Lab 5.2 正文 1 的串行化介绍包含阻塞方案，正文 3.2.4 又要求提交时冲突检查；二者不能解读为必须在 get 后一直持锁。作者 master 的 commit 明确标注 SERIALIZABLE 尚未独立实现、复用 RR。当前本地沿用已确认的单键 read_map_ 验证，不覆盖范围幻读，也不按事务 ID 排队提交；完整可串行化仍按 STATE 的既定范围留待独立扩展，本轮不引入锁管理器。
+
+2026-11-07 用户确认保留现有 SERIALIZABLE 逻辑，要求相关入口和处理位置都标明未完整实现。已在枚举、上下文与创建入口、读写／提交／回滚分支、级别查询和范围遍历入口补充统一注释；测试说明明确不代表完整隔离验收，README 表格补充“未完整实现”。本轮比对确认所有相关 C++ 文件的非注释代码不变，git diff --check 通过；纯注释／说明改动未重新运行测试，主线仍是 abort 的 WAL 接入。

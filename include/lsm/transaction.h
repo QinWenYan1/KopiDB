@@ -19,6 +19,7 @@ enum class IsolationLevel {
   READ_UNOP_COMMITTED,
   READ_OP_COMMITTED,
   REPEATABLE_READ,
+  // ! SERIALIZABLE（未完整实现）：仅有单键缓存及提交验证，不保证范围幻读保护。
   SERIALIZABLE
 };
 
@@ -38,6 +39,7 @@ class TranManager;
 // 包括直接访问其成员；跨线程移交时也必须正确同步。
 //
 // shared_ptr 只管理对象生命周期，不保证上下文成员的并发访问安全。
+// ! SERIALIZABLE（未完整实现）：以下接口保留实验性分支，不能作为完整串行化使用。
 class TranContext {
   friend class TranManager;
 
@@ -84,6 +86,7 @@ public:
   ~TranManager();
   void init_new_wal();
   void set_engine(std::shared_ptr<LSMEngine> engine);
+  // ! SERIALIZABLE（未完整实现）：允许创建上下文，不代表已提供完整隔离保证。
   std::shared_ptr<TranContext> new_tranc(const IsolationLevel &isolation_level);
 
   uint64_t getNextTransactionId();

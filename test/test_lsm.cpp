@@ -29,6 +29,8 @@
 
 using namespace ::tiny_lsm;
 
+// ! SERIALIZABLE（未完整实现）：本文件涉及该级别的用例只验证现有的局部行为。
+// 测试通过不代表已验证范围幻读保护或完整可串行化。
 class LSMTest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -2413,7 +2415,8 @@ TEST_F(TranCommitTest, ConflictCancelsWithoutApplyingAnyPendingWrite) {
   }
 }
 
-// 目的：串行化分支检查已有值变化、缺失变存在、删除以及同值新版本。
+// 目的：实验性 SERIALIZABLE 分支检查单键值变化、缺失变存在、删除以及同值新版本。
+// ! SERIALIZABLE（未完整实现）：本例不覆盖范围查询或完整可串行化。
 // 场景：事务 10 缓存读取结果，版本 7 随后变化；不只检查“版本是否大于 10”。
 TEST_F(TranCommitTest, SerialReadValidationIncludesMissingAndDeletedKeys) {
   for (int scenario = 0; scenario < 4; ++scenario) {
@@ -3907,6 +3910,7 @@ TEST_F(TranCommitTest, StillRejectsValidConflictBelowAbortedVersion) {
 }
 
 // 目的：SERIALIZABLE 的读集校验也使用过滤后的版本，取消的更新不造成虚假冲突。
+// ! SERIALIZABLE（未完整实现）：本例只验证单键读集的回滚过滤。
 // 场景：先缓存有效旧值和不存在；后来 RU 更新/删除旧值并新增缺失 key，再刷盘取消。
 TEST_F(TranCommitTest, SerialReadValidationIgnoresAbortedChanges) {
   uint64_t id = 10;

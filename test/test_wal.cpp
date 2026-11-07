@@ -21,6 +21,8 @@
 using namespace testing;
 using namespace ::tiny_lsm;
 
+// ! SERIALIZABLE（未完整实现）：本文件涉及该级别的用例只验证现有单键行为及 WAL。
+// 日志和提交测试通过，不代表已验证范围幻读保护或完整可串行化。
 // 场景：事务上下文创建时生成开始记录，后续操作依靠同一个 ID 关联。
 // 验证记录的身份和类型，并确保没有携带属于 PUT/DELETE 的 key/value。
 // 本组只检查 Record，不创建尚未完成的 WAL 对象。
@@ -1757,6 +1759,7 @@ TEST_F(TranCommitWALTest, WriteConflictDoesNotWriteCommitOrPendingValues) {
 // 目的：确认当前 SERIALIZABLE 分支采用提交时验证，不是在 get 后一直锁住读取的 key。
 // T1 读 A 后暂存 B；T2 修改 A 并成功提交；T1 仍读自己的缓存，但提交失败且 B 不入库。
 // 这是现有单键验证的测试，不把它当作完整可串行化或范围幻读验证。
+// ! SERIALIZABLE（未完整实现）：本例只证明读过的单个 key 变化时会拒绝提交。
 TEST_F(TranCommitWALTest, ReadChangeRejectsCommitWithoutBlockingOtherWriter) {
   const auto base_id = manager->getNextTransactionId();
   engine->put("A", "old", base_id);

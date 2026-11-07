@@ -1009,12 +1009,14 @@ void LSM::flush_all() {
   }
 }
 
+// ! SERIALIZABLE（未完整实现）：此遍历入口不会向事务登记读取范围，不提供幻读保护。
 LSM::LSMIterator LSM::begin(uint64_t tranc_id) {
   return engine->begin(tranc_id);
 }
 
 LSM::LSMIterator LSM::end() { return engine->end(); }
 
+// ! SERIALIZABLE（未完整实现）：谓词只用于筛选结果，未登记为事务的范围读取依赖。
 std::optional<std::pair<TwoMergeIterator, TwoMergeIterator>>
 LSM::lsm_iters_monotony_predicate(
     uint64_t tranc_id, std::function<int(const std::string &)> predicate) {
@@ -1022,6 +1024,7 @@ LSM::lsm_iters_monotony_predicate(
 }
 
 // 开启一个事务
+// ! SERIALIZABLE（未完整实现）：这里只传递所选级别，不会补齐完整串行化机制。
 std::shared_ptr<TranContext>
 LSM::begin_tran(const IsolationLevel &isolation_level) {
   auto tranc_context = tran_manager_->new_tranc(isolation_level);

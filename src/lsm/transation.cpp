@@ -25,6 +25,7 @@ inline std::string isolation_level_to_string(const IsolationLevel &level) {
   case IsolationLevel::REPEATABLE_READ:
     return "REPEATABLE_READ";
   case IsolationLevel::SERIALIZABLE:
+    // ! SERIALIZABLE（未完整实现）：仅返回级别名称，不表示已具备完整隔离保证。
     return "SERIALIZABLE";
   default:
     return "UNKNOWN";
@@ -37,6 +38,7 @@ inline std::string isolation_level_to_string(const IsolationLevel &level) {
 // isolation level, tranc_id, 和 operation
 // isCommited、isAborted 已在头文件中默认初始化为 false
 // 几个容器也会自动构造为空
+// ! SERIALIZABLE（未完整实现）：这里只保存所选级别，相关分支仍为实验性实现。
 TranContext::TranContext(uint64_t tranc_id, std::shared_ptr<LSMEngine> engine,
                          std::shared_ptr<TranManager> tranManager,
                          const enum IsolationLevel &isolation_level)
@@ -142,6 +144,7 @@ void TranContext::put(const std::string &key, const std::string &value) {
   } else {
     // 暂存在自己的上下文中，其他事务无法通过引擎读取这次修改
     // 重复修改同一个 key 时，暂存表保留最后一次写入的值
+    // ! SERIALIZABLE（未完整实现）：同样走暂存路径，不为读过的 key 或范围持有事务锁。
     temp_map_.insert_or_assign(key, value);
 
     spdlog::trace("TranContext--put: stored in temp map, tranc_id={}",
@@ -191,6 +194,7 @@ void TranContext::remove(const std::string &key) {
   // 不能用 temp_map_.erase(key)：
   // 那会丢失删除意图，随后 get 可能重新读到数据库中的旧值。
   // 保留墓碑后，本事务 get 返回不存在，commit 再应用这次删除。
+  // ! SERIALIZABLE（未完整实现）：这里仅暂存删除，不阻塞其他事务对读取范围的修改。
   temp_map_.insert_or_assign(key, std::string{});
   spdlog::trace("TranContext--{}: remove({}) stored in temp map",
                 isolation_level_to_string(isolation_level_), key);
@@ -225,6 +229,7 @@ std::optional<std::string> TranContext::get(const std::string &key) {
   // 读已提交、可重复读及当前 SERIALIZABLE 分支传 true
   // 让 Engine 在查找过程中排除活跃事务的记录
   // 无论传什么，已经回滚的记录都会被排除
+  // ! SERIALIZABLE（未完整实现）：排除未提交版本只是读取条件，不等于完整串行化。
   const bool require_committed =
       isolation_level_ != IsolationLevel::READ_UNOP_COMMITTED;
 
@@ -243,8 +248,8 @@ std::optional<std::string> TranContext::get(const std::string &key) {
     query = engine_->get(key, 0, require_committed);
   } else {
     // 5. RR 保持同一个 key 的首次读取结果
-    // 当前 SERIALIZABLE 分支也复用这套单键缓存
-    // 这并不代表仅凭缓存就实现了完整串行化
+    // ! SERIALIZABLE（未完整实现）：当前也复用这套单键缓存。
+    // 不记录范围查询条件，不能据此保证范围结果不出现幻读。
     auto cached = read_map_.find(key);
     if (cached != read_map_.end()) {
       query = cached->second;
@@ -383,12 +388,15 @@ bool TranContext::commit(bool test_fail) {
     }
   }
 
-  // 5. SERIALIZABLE 额外验证已记录的单键读取结果
-  //    例如读 A 后决定修改 B，如果 A 已变化，就不能继续按旧结果提交
-  //    这里检查的是 read_map_ 中的单键记录，不涵盖范围查询的幻读
-  //    read_map_ 是当前事务自己的“读取记录表”，保存第一次查询某个 key
-  //    时看到的结果
-  //    1. 实现可重复读, 2. 给 SERIALIZABLE 的提交检查提供依据
+  // 5. 单键读取校验
+  // ! SERIALIZABLE（未完整实现）：当前只有以下校验，不具备完整可串行化保证。
+  // read_map_ 保存本事务第一次读取某个 key 的结果。
+  // 提交时若发现该结果已变化，就取消本事务；不会在读取后一直锁住该 key。
+  //
+  // ! 这里没有记录、验证范围查询条件，不能保证避免幻读。
+  // 例如查询“年龄 > 30”得到 10 条记录，其他事务插入一名 31 岁员工：
+  // 仅检查原先读过的 key，无法发现新增记录使结果变成了 11 条。
+  // TODO: 后续独立补齐范围冲突处理等串行化保证，并验证完整隔离语义。
   if (!conflict && isolation_level_ == IsolationLevel::SERIALIZABLE) {
     for (const auto &[key, expected] : read_map_) {
       auto current = latest_record(key);
@@ -503,6 +511,7 @@ bool TranContext::commit(bool test_fail) {
 
 // 请求管理器登记回滚，并结束上下文、清理本事务的暂存数据
 // 查询侧已接入回滚过滤；
+// ! SERIALIZABLE（未完整实现）：同样沿用通用取消流程，不代表已具备完整隔离保证。
 bool TranContext::abort() {
   // 同一个 TranContext 的操作由调用者串行执行
   // 已经提交或回滚的事务，不能再次取消
@@ -544,6 +553,7 @@ bool TranContext::abort() {
 }
 
 enum IsolationLevel TranContext::get_isolation_level() {
+  // ! SERIALIZABLE（未完整实现）：返回所选级别，不表示相应隔离保证已完整实现。
   return isolation_level_;
 }
 
@@ -994,6 +1004,7 @@ uint64_t TranManager::get_checkpoint_tranc_id() {
 
 // Lab 5.2 事务上下文分配
 // 分配 ID → 创建上下文 → 登记到管理器 → 返回上下文
+// ! SERIALIZABLE（未完整实现）：允许创建实验性上下文，但未提供完整的串行化调度。
 std::shared_ptr<TranContext>
 TranManager::new_tranc(const IsolationLevel &isolation_level) {
   spdlog::debug("TranManager--new_tranc(): Creating new transaction with "

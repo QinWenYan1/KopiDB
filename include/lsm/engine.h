@@ -119,6 +119,7 @@ public:
   void remove(const std::string &key);
   void remove_batch(const std::vector<std::string> &keys);
 
+  // ! SERIALIZABLE（未完整实现）：以下遍历接口未纳入事务读集验证，不能保证避免幻读。
   using LSMIterator = Level_Iterator;
   LSMIterator begin(uint64_t tranc_id);
   LSMIterator end();
@@ -130,6 +131,7 @@ public:
   void flush_all();
 
   // 开启一个事务
+  // ! SERIALIZABLE（未完整实现）：当前仅提供实验性的单键读取与提交检查。
   std::shared_ptr<TranContext>
   begin_tran(const IsolationLevel &isolation_level);
 
