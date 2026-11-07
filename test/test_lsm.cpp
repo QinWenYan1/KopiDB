@@ -1778,6 +1778,9 @@ protected:
     manager = std::make_shared<TranManager>(test_dir);
     manager->set_engine(engine);
     engine->set_tran_manager(manager);
+    // commit 现在必须先写 WAL。夹具每次使用新目录，显式接通日志依赖；
+    // 不经过尚未实现的 LSM 启动恢复，也不改变原来的提交断言。
+    manager->init_new_wal();
   }
 
   void TearDown() override {
@@ -1809,14 +1812,7 @@ class EngineGetRollbackTest : public TranCommitTest {};
 
 
 // 删除测试复用组件绑定与容量配置，分别检查暂存删除和立即删除。
-class TranRemoveTest : public TranCommitTest {
-protected:
-  void SetUp() override {
-    TranCommitTest::SetUp();
-    // RU put/remove 现在需要 WAL；只补删除测试的依赖，不改变存储测试的公共夹具。
-    manager->init_new_wal();
-  }
-};
+class TranRemoveTest : public TranCommitTest {};
 
 // 目的：暂存删除要保留墓碑，覆盖本事务先前的写入和读缓存；提交前不影响引擎。
 // 场景：三个暂存型级别分别删除已有 key、重复删除和删除不存在的 key，
@@ -2499,6 +2495,14 @@ TEST_F(TranCommitTest, FlushFailurePreservesCommittedStateAndMemory) {
             std::make_optional(std::make_pair(value, uint64_t{5})));
   EXPECT_EQ(engine->get("k", 2),
             std::make_optional(std::make_pair(value, uint64_t{2})));
+  // 即使后续 SST 编码失败，之前确认写出的 COMMIT 也不能变成回滚。
+  auto wal_file = FileObj::open(test_dir + "/wal.0");
+  const std::vector<Record> expected_log = {
+      Record::createRecord(5), Record::putRecord(5, "k", value),
+      Record::commitRecord(5)};
+  EXPECT_EQ(Record::decode(wal_file.read_to_slice(0, wal_file.size())),
+            expected_log);
+  EXPECT_FALSE(context.abort());
   const auto operation_count = context.operations.size();
   EXPECT_FALSE(context.commit());
   EXPECT_EQ(context.operations.size(), operation_count);

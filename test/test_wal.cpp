@@ -1623,6 +1623,214 @@ TEST_F(TranRemoveWALTest, WalFailurePreservesValueAndDoesNotCreateTombstone) {
   EXPECT_EQ(read_wal_records(dir / "wal.1"), occupied);
 }
 
+class TranCommitWALTest : public TranPutWALTest {};
+
+// 目的：暂存事务提交时写出完整操作历史和 COMMIT，成功后才对严格读取可见。
+// 三个暂存级别都覆盖重复 put、删除和事务状态；中间值仍留在日志中供重放。
+TEST_F(TranCommitWALTest, StagedCommitPersistsHistoryAndPublishesFinalValues) {
+  const auto path = std::filesystem::path(test_dir) / "wal.0";
+  std::vector<Record> expected;
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    const auto base_id = manager->getNextTransactionId();
+    const auto suffix = std::to_string(base_id);
+    const auto key = "key-" + suffix;
+    const auto removed = "removed-" + suffix;
+    engine->put(removed, "old", base_id);
+    auto transaction = manager->new_tranc(level);
+    const auto id = transaction->tranc_id_;
+    transaction->put(key, "first");
+    transaction->put(key, "last");
+    transaction->remove(removed);
+    EXPECT_EQ(read_wal_records(path), expected);
+    EXPECT_FALSE(engine->get(key, 0, true));
+    ASSERT_TRUE(engine->get(removed, 0, true));
+    EXPECT_TRUE(manager->should_skip_read(id, true));
+
+    ASSERT_TRUE(transaction->commit());
+    const std::vector<Record> batch = {
+        Record::createRecord(id), Record::putRecord(id, key, "first"),
+        Record::putRecord(id, key, "last"), Record::deleteRecord(id, removed),
+        Record::commitRecord(id)};
+    expected.insert(expected.end(), batch.begin(), batch.end());
+    EXPECT_EQ(read_wal_records(path), expected);
+    EXPECT_EQ(transaction->operations, batch);
+    EXPECT_TRUE(transaction->isCommited);
+    EXPECT_FALSE(transaction->isAborted);
+    EXPECT_FALSE(manager->should_skip_read(id, true));
+    EXPECT_EQ(engine->get(key, 0, true),
+              std::make_optional(std::make_pair(std::string("last"), id)));
+    EXPECT_FALSE(engine->get(removed, 0, true));
+    EXPECT_EQ(engine->memtable.get_record(removed, 0),
+              std::make_optional(std::make_pair(std::string{}, id)));
+  }
+}
+
+// 目的：RU 的数据操作已预写，commit 只能追加 COMMIT，不能重发 CREATE/PUT/DELETE。
+// 提交前严格查询排除活跃事务，提交后看到本次值和删除。
+TEST_F(TranCommitWALTest, ReadUncommittedCommitOnlyAppendsCommit) {
+  const auto base_id = manager->getNextTransactionId();
+  engine->put("removed", "old", base_id);
+  auto transaction = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  const auto id = transaction->tranc_id_;
+  transaction->put("key", "value");
+  transaction->remove("removed");
+  const auto path = std::filesystem::path(test_dir) / "wal.0";
+  std::vector<Record> expected = {
+      Record::createRecord(id), Record::putRecord(id, "key", "value"),
+      Record::deleteRecord(id, "removed")};
+  EXPECT_EQ(read_wal_records(path), expected);
+  EXPECT_FALSE(engine->get("key", 0, true));
+  ASSERT_TRUE(engine->get("removed", 0, true));
+
+  ASSERT_TRUE(transaction->commit());
+  expected.push_back(Record::commitRecord(id));
+  EXPECT_EQ(read_wal_records(path), expected);
+  EXPECT_EQ(transaction->operations, expected);
+  EXPECT_FALSE(manager->should_skip_read(id, true));
+  EXPECT_EQ(engine->get("key", 0, true),
+            std::make_optional(std::make_pair(std::string("value"), id)));
+  EXPECT_FALSE(engine->get("removed", 0, true));
+}
+
+// 目的：没有写操作的事务也能正常结束；重复 commit/abort 不追加任何终态日志。
+// RU 从未调用过 put/remove 时，也需要在首次提交中发送 CREATE。
+TEST_F(TranCommitWALTest, ReadOnlyCommitAndRepeatedEndDoNotDuplicateRecords) {
+  const auto path = std::filesystem::path(test_dir) / "wal.0";
+  std::vector<Record> expected;
+  for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
+                     IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    auto transaction = manager->new_tranc(level);
+    const auto id = transaction->tranc_id_;
+    EXPECT_FALSE(transaction->get("missing"));
+    ASSERT_TRUE(transaction->commit());
+    expected.push_back(Record::createRecord(id));
+    expected.push_back(Record::commitRecord(id));
+    EXPECT_EQ(read_wal_records(path), expected);
+    EXPECT_FALSE(transaction->commit());
+    EXPECT_FALSE(transaction->abort());
+    EXPECT_EQ(transaction->operations.size(), 2u);
+    EXPECT_EQ(read_wal_records(path), expected);
+    EXPECT_FALSE(manager->should_skip_read(id, true));
+    EXPECT_FALSE(manager->is_aborted(id));
+  }
+}
+
+// 目的：旧事务遇到已经提交的新版本时，取消全部暂存修改，不能写出 COMMIT。
+// 同时放一个没有冲突的 key，确保检查完整个事务之前没有部分应用数据。
+TEST_F(TranCommitWALTest, WriteConflictDoesNotWriteCommitOrPendingValues) {
+  const auto path = std::filesystem::path(test_dir) / "wal.0";
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    const auto suffix = std::to_string(static_cast<int>(level));
+    const auto key = "conflict-" + suffix;
+    const auto extra = "extra-" + suffix;
+    auto older = manager->new_tranc(level);
+    older->put(key, "stale");
+    older->put(extra, "pending");
+    auto newer = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+    newer->put(key, "new");
+    ASSERT_TRUE(newer->commit());
+    const auto successful = read_wal_records(path);
+    const auto operation_count = older->operations.size();
+
+    EXPECT_FALSE(older->commit());
+    EXPECT_TRUE(older->isAborted);
+    EXPECT_FALSE(older->isCommited);
+    EXPECT_TRUE(manager->is_aborted(older->tranc_id_));
+    EXPECT_FALSE(engine->get(extra, 0));
+    EXPECT_EQ(engine->get(key, 0, true),
+              std::make_optional(std::make_pair(std::string("new"),
+                                                newer->tranc_id_)));
+    EXPECT_EQ(older->operations.size(), operation_count);
+    EXPECT_EQ(read_wal_records(path), successful);
+  }
+}
+
+// 目的：确认当前 SERIALIZABLE 分支采用提交时验证，不是在 get 后一直锁住读取的 key。
+// T1 读 A 后暂存 B；T2 修改 A 并成功提交；T1 仍读自己的缓存，但提交失败且 B 不入库。
+// 这是现有单键验证的测试，不把它当作完整可串行化或范围幻读验证。
+TEST_F(TranCommitWALTest, ReadChangeRejectsCommitWithoutBlockingOtherWriter) {
+  const auto base_id = manager->getNextTransactionId();
+  engine->put("A", "old", base_id);
+  auto reader = manager->new_tranc(IsolationLevel::SERIALIZABLE);
+  EXPECT_EQ(reader->get("A"), std::make_optional(std::string("old")));
+  reader->put("B", "based-on-old-A");
+  auto writer = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  writer->put("A", "new");
+  ASSERT_TRUE(writer->commit());
+  const auto path = std::filesystem::path(test_dir) / "wal.0";
+  const std::vector<Record> expected = {
+      Record::createRecord(writer->tranc_id_),
+      Record::putRecord(writer->tranc_id_, "A", "new"),
+      Record::commitRecord(writer->tranc_id_)};
+
+  EXPECT_EQ(reader->get("A"), std::make_optional(std::string("old")));
+  EXPECT_FALSE(reader->commit());
+  EXPECT_TRUE(manager->is_aborted(reader->tranc_id_));
+  EXPECT_FALSE(engine->get("B", 0));
+  EXPECT_EQ(read_wal_records(path), expected);
+}
+
+// 目的：尚未初始化 WAL 的提交不能应用暂存数据，也不能登记提交或自动改成回滚。
+TEST_F(TranCommitWALTest, MissingWalDoesNotApplyOrFinishTransaction) {
+  const auto dir = std::filesystem::path(test_dir) / "uninitialized";
+  auto missing_engine = std::make_shared<LSMEngine>(dir.string());
+  auto missing_manager = std::make_shared<TranManager>(dir.string());
+  missing_manager->set_engine(missing_engine);
+  missing_engine->set_tran_manager(missing_manager);
+  auto transaction = missing_manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  transaction->put("key", "pending");
+
+  EXPECT_THROW(transaction->commit(), std::runtime_error);
+  EXPECT_FALSE(missing_engine->get("key", 0));
+  EXPECT_FALSE(transaction->isCommited);
+  EXPECT_FALSE(transaction->isAborted);
+  EXPECT_TRUE(missing_manager->should_skip_read(transaction->tranc_id_, true));
+  EXPECT_FALSE(missing_manager->is_aborted(transaction->tranc_id_));
+  EXPECT_FALSE(std::filesystem::exists(dir / "wal.0"));
+}
+
+// 目的：真实轮换失败发生在暂存数据应用之前，旧值、旧日志及活跃状态都保留。
+// 结束尝试已经留下 COMMIT 后，不自动再次提交；避免重复或相互矛盾的终态记录。
+TEST_F(TranCommitWALTest, WalFailurePreservesDataAndRejectsRepeatedCommit) {
+  const auto base_id = manager->getNextTransactionId();
+  engine->put("key", "old", base_id);
+  auto transaction = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
+  transaction->remove("key");
+  transaction->put("new", "pending");
+  auto padding = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  padding->put("padding", std::string(5000, 'v'));
+  const auto dir = std::filesystem::path(test_dir);
+  const auto successful = read_wal_records(dir / "wal.0");
+  ASSERT_GT(std::filesystem::file_size(dir / "wal.0"), 4096u);
+  const std::vector<Record> occupied = {Record::createRecord(99)};
+  write_wal_records(dir / "wal.1", occupied);
+
+  EXPECT_THROW(transaction->commit(), std::runtime_error);
+  EXPECT_FALSE(transaction->isCommited);
+  EXPECT_FALSE(transaction->isAborted);
+  EXPECT_TRUE(manager->should_skip_read(transaction->tranc_id_, true));
+  EXPECT_FALSE(manager->is_aborted(transaction->tranc_id_));
+  EXPECT_FALSE(manager->get_flushed_tranc_ids().contains(transaction->tranc_id_));
+  EXPECT_EQ(engine->get("key", 0, true),
+            std::make_optional(std::make_pair(std::string("old"), base_id)));
+  EXPECT_FALSE(engine->get("new", 0));
+  ASSERT_EQ(transaction->operations.back().getOperationType(), OperationType::OP_COMMIT);
+  const auto count = transaction->operations.size();
+  EXPECT_THROW(transaction->commit(), std::logic_error);
+  EXPECT_EQ(transaction->operations.size(), count);
+  EXPECT_EQ(read_wal_records(dir / "wal.0"), successful);
+  EXPECT_EQ(read_wal_records(dir / "wal.1"), occupied);
+}
+
 TEST_F(WALTest, LogAndFlush) {
   MockWAL wal(test_dir, 10, 100);
 

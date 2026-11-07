@@ -459,24 +459,18 @@ bool TranContext::commit(bool test_fail) {
     manager->add_ready_to_flush_tranc_id(tranc_id_,
                                         TransactionState::OP_COMMITTED);
 
-    
-
-  }
-
-
-  try {
-    // 7. 写完整笔事务及结束标记后，检查单表容量
+    // 8. 写完整笔事务及结束标记后，检查单表容量
     //    put_ 不会自动冻结，因此这里主动处理
     //    冻结只把旧表放入内存队列、换上新表，此时尚未写 SST
     if (mem.current_table->get_size() >= per_mem_limit)
       mem.frozen_cur_table_();
 
-    // 8. 按逆序释放锁，然后才能调用自行加锁的容量查询和刷盘接口
+    // 9. 按逆序释放锁，然后才能调用自行加锁的容量查询和刷盘接口
     frozen_lock.unlock();
     curr_lock.unlock();
     sst_lock.unlock();
 
-    // 9. 总内存达到阈值就刷盘；一次只刷一张表，所以每次重新检查
+    // 10. 总内存达到阈值就刷盘；一次只刷一张表，所以每次重新检查
     //    空表直接结束，也避免阈值为 0 时反复尝试刷空表
     for (;;) {
       const auto &total_size = mem.get_total_size();
@@ -486,6 +480,7 @@ bool TranContext::commit(bool test_fail) {
 
       engine_->flush();
     }
+
   } catch (const std::exception &e) {
     // 到这里事务已经提交。冻结或刷盘失败，不会撤销已应用的修改
     // 保留 isCommited == true，并原样抛出异常，供调用者处理刷盘故障
