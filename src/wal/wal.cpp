@@ -233,7 +233,7 @@ void WAL::log(const std::vector<Record> &records, bool force_flush) {
   log_buffer_.clear();
 }
 
-// TODO: Lab 5.4 实现WAL的清理线程
+// Lab 5.4 实现WAL的清理线程
 void WAL::cleaner() {
   // 构造函数只在 clean_interval_ != 0 时启动此线程
   // 将配置中的秒数转换成 wait_for 接收的时间间隔

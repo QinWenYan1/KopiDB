@@ -280,8 +280,8 @@ std::optional<std::string> TranContext::get(const std::string &key) {
 // Lab 5.2 commit 实现
 // commit() 提交流程：
 // 检查冲突 → 写出 COMMIT → 应用数据 → 登记完成 → 按容量冻结、刷盘
-// 冲突时取消整笔事务；暂存修改尚未写入，因此不需要恢复数据库旧值。
-// 当前阶段不写 WAL；同一个 TranContext 的操作由调用者串行执行。
+// 冲突时取消整笔事务；暂存修改尚未写入，因此不需要恢复数据库旧值
+// 同一个 TranContext 的操作由调用者串行执行
 bool TranContext::commit(bool test_fail) {
   spdlog::info("TranContext--commit(): Starting commit for transaction ID={}",
                tranc_id_);
@@ -294,7 +294,7 @@ bool TranContext::commit(bool test_fail) {
   // 必须抛出异常；仅构造一个 logic_error 对象不会阻止后续执行
   if (test_fail)
     throw std::logic_error(
-        "TranContext::commit: test_fail requires WAL support");
+      "TranContext::commit: test_fail is reserved for recovery tests");
 
   auto manager = tranManager_.lock();
   if (!manager || !engine_)
@@ -490,12 +490,12 @@ bool TranContext::commit(bool test_fail) {
     }
 
   } catch (const std::exception &e) {
-    // 到这里事务已经提交。冻结或刷盘失败，不会撤销已应用的修改
-    // 保留 isCommited == true，并原样抛出异常，供调用者处理刷盘故障
-    // 若冻结时就失败，尚未手动释放的锁会在函数退出时自动释放
+    // WAL 已确认 COMMIT；后续数据应用、状态登记或内存维护仍可能失败。
+    // 保留提交决定并向调用方报告，不能改成回滚。
+    // 尚未手动释放的锁，会在函数退出时自动释放。
     spdlog::error(
-        "TranContext--commit(): Transaction ID={} is already committed, "
-        "but memtable maintenance failed: {}",
+        "TranContext--commit(): WAL confirmed transaction ID={}, "
+        "but applying changes, registering state or memtable maintenance failed: {}",
         tranc_id_, e.what());
 
     // throw;：重新抛出当前异常，让调用者处理
@@ -592,8 +592,8 @@ bool TranContext::abort() {
   temp_map_.clear();
   read_map_.clear();
 
-  // 当前阶段没有把这些操作记录写入 WAL，可以直接丢弃
-  // 后续接入 WAL 时，再处理回滚日志
+  // 取消已登记完成，清理上下文保存的日志历史
+  // 记录数组与已写计数同时清空；已经写入的 WAL 文件内容不受影响
   operations.clear();
   wal_written_count_ = 0; 
   spdlog::info(
