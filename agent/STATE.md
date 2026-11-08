@@ -1,6 +1,6 @@
 # KopiDB 项目状态
 
-最后核对：2026-11-07。当前目录 5.2.2「WAL 运行机制」（Lab 5.4）的计划见 [PLAN.md](PLAN.md)，问题事实、证据及处理状态见 [AUDIT.md](AUDIT.md)。
+最后核对：2026-11-08。当前目录 5.2.2「WAL 运行机制」（Lab 5.4）的计划见 [PLAN.md](PLAN.md)，问题事实、证据及处理状态见 [AUDIT.md](AUDIT.md)。
 
 本文件记录项目现状、已确认的设计、全局约定、验收边界和整体排期。代码与记录不一致时，先检查代码，再更新记录；不能把讨论通过的方案当作已经实现。[AUDIT.md](AUDIT.md) 是全局问题账本；[PLAN.md](PLAN.md) 只记录当前选定工作、执行顺序、TODO 与具体的验收场景。
 
@@ -16,7 +16,7 @@
 
 ## 当前进度
 
-2026-11-07 当前：目录 **5.2.2「WAL 运行机制」**（文章标题 Lab 5.4），进度 **66.7%（4/6 阶段验收通过）**。阶段①～④已验收；阶段⑤辅助函数、put/remove/commit 已检查，commit 最近相关测试 **25/25 通过**。当前已交付 abort 的 WAL 接入草案，等待用户手写后检查；commit 尚有三处旧说明需同步，完整事务日志链路未验收。助手按授权补测试、文档和 SERIALIZABLE 限制注释，未代改业务逻辑。具体进度与验收见 [PLAN.md](PLAN.md)。
+2026-11-08 当前：目录 **5.2.2「WAL 运行机制」**（文章标题 Lab 5.4），进度 **83.3%（5/6 阶段验收通过）**。阶段①～⑤已验收，abort 相关测试 **20/20**；阶段⑥适用回归 **215/215 通过**（Record/WAL 98、LSM 117），剩 5 处旧注释／提示文字待用户同步。尚未开始下一章的恢复与公开入口整合。助手按授权补测试、文档和 SERIALIZABLE 限制注释，未代改业务逻辑。具体收尾位置见 [PLAN.md](PLAN.md)。
 
 辅助函数构建证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-pending-wal-build-fpq__gob`。声明／定义、计数初始化和发送范围通过代码检查；两个测试目标构建成功，期间源码与测试哈希一致。实际去重与错误行为随后续公开事务接口接入验证，未将构建成功当作单元测试通过。
 
@@ -24,7 +24,9 @@ put 接入证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-tran
 
 remove 接入证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-tran-remove-wal-review-5su4zxi7`。两个目标构建成功；事务 WAL 测试 14/14，原 put/remove 回归 7/7，共 21/21。只给删除测试夹具补齐 WAL 初始化，原断言保留；源码与测试在执行期间哈希一致。旧回归对 commit/abort 的调用不等于它们的 WAL 接入已验收。
 
-当前提交实现：COMMIT 确认写出后保留提交决定，数据应用完成后再登记管理器状态供严格读取看见；后续处理错误继续抛出，不能把已确认提交改成回滚。日志失败可能留下部分内容，未正常完成的结束尝试不自动重试，abort 接入时一并处理这条约束。恢复流程仍按后续章节推进。
+当前事务结束实现：COMMIT 确认写出后保留提交决定，数据应用完成后再登记管理器状态供严格读取看见；后续处理错误继续抛出，不能把已确认提交改成回滚。abort 已按需写 ROLLBACK 后登记取消，并清理上下文／重置日志计数。日志失败可能留下部分内容，未正常完成的结束尝试不自动重试或改写为相反决定。恢复流程仍按后续章节推进。
+
+2026-11-08 验收证据：abort 专项目录 `/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-tran-abort-wal-review-8u827glh`，20/20 通过；整体验收目录 `/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-final-review-960_yt5s`，Record/WAL 98/98、LSM 最终 117/117。三项旧测试补齐 RU 所需的管理器／WAL 初始化，原断言保留；首轮唯一夹具失败日志及修正后复测均保留。各轮运行期间源码／测试哈希一致，细节与后续 Lab 排除范围见 PLAN；不将这些通过结果当作崩溃恢复或完整串行化保证。
 
 commit 验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-tran-commit-wal-review-dta65h8t`。两个测试目标构建成功；新增事务 WAL 测试 7/7、原提交／删除回归 18/18，共 25/25。涵盖日志内容、可见性、写／读冲突、重复结束、WAL 失败及 COMMIT 已写出后的刷盘失败。原提交夹具补齐 WAL 初始化，保留断言；执行期间源码／测试哈希一致。未验证完整可串行化、内存分配故障或崩溃恢复。
 

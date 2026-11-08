@@ -1,12 +1,12 @@
 # KopiDB 当前任务：WAL 运行机制
 
-最后更新：2026-11-07。
+最后更新：2026-11-08。
 
 章节：目录 **5.2.2「WAL 运行机制」**，文章标题 **Lab 5.4 WAL 运行机制**。
 
-**进度：66.7%（4/6 阶段验收通过）**。按验收阶段数计算，不代表工时比例。阶段①～④已验收；阶段⑤辅助函数、put/remove/commit 已检查，commit 最近相关测试 25/25 通过。当前进入 abort 的 WAL 接入，完整草案交由用户手写，尚未验收；commit 的三处旧说明仍待同步。
+**进度：83.3%（5/6 阶段验收通过）**。按验收阶段数计算，不代表工时比例。阶段①～⑤已验收；abort 本轮相关测试 20/20 通过。阶段⑥功能回归已完成：Record/WAL 98/98、LSM 适用用例 117/117，共 215/215 通过；尚有 5 处旧注释／提示文字待用户同步，收尾后再完成本计划。
 
-当前函数：[src/lsm/transation.cpp](../src/lsm/transation.cpp) 第 515 行的 `TranContext::abort()`：替换第 512 行起的旧说明及函数体，接入回滚日志及结束异常处理。commit 第 284、297 行及 catch 内的旧说明仍待用户同步，不阻塞本轮函数推进。行号以 2026-11-07 本轮检查为准。
+当前任务：阶段⑥的说明清理。位置为 [transation.cpp](../src/lsm/transation.cpp) 第 284、297、493～499、595～598 行，以及 [wal.cpp](../src/wal/wal.cpp) 第 236 行。均为旧注释或日志／异常提示，不新增业务功能。行号以 2026-11-08 本轮检查为准；abort 第 515 行的实现已通过验收。
 
 ## 本轮目标
 
@@ -22,8 +22,8 @@
 
 - [Lab 5.4 全文](https://github.com/Vanilla-Beauty/tiny-lsm/blob/lab-doc-2/src/lab5/lab5.4-WAL.md)：正文 3.1 是 WAL 组件，3.2 是 TranContext 日志接入，二者都属于本轮。
 - [作者 WAL 参考](https://github.com/Vanilla-Beauty/tiny-lsm/blob/master/src/wal/wal.cpp)与[事务参考](https://github.com/Vanilla-Beauty/tiny-lsm/blob/master/src/lsm/transation.cpp)：2026-11-04 已读取；只作对照，未运行作者工程。
-- [本地 WAL](../src/wal/wal.cpp)的构造、析构、log、flush、cleaner 尚未实现；cleanWALFile、reset_file 已有参考函数体，需要按本轮方案推导，不能算作已验收。
-- [本地事务](../src/lsm/transation.cpp)：put/remove 先追加 operations；RU 随即调用 Engine，其他级别暂存。commit 尚未调用 write_to_wal；abort 尚未记录 ROLLBACK。write_to_wal 虽已有函数体，仍按 Lab 要求独立实现。
+- 开始本轮时，[本地 WAL](../src/wal/wal.cpp)的构造、析构、log、flush、cleaner 尚未实现；cleanWALFile、reset_file 已有参考函数体。本轮已按所选方案完成并验收，历史初始状态不代表当前仍缺失。
+- 开始本轮时，[本地事务](../src/lsm/transation.cpp)的 commit 尚未发送 WAL，abort 尚未记录 ROLLBACK；当前 put/remove/commit/abort 和 write_to_wal 已完成本轮接入及验收。
 - [Engine](../src/lsm/engine.cpp)的 put/remove 会按总内存阈值调用 flush。因此 RU 数据可能在事务结束前进入 SST，不能不加说明地照搬“所有记录只在 commit 时写 WAL”。
 - [FileObj](../src/utils/files.cpp)的 append/sync 返回 bool，调用方必须检查；[StdFile::open](../src/utils/std_file.cpp)的 create=true 会截断已有文件。sync 当前使用 fstream::flush。
 - 已核对下一章的职责划分：WAL::recover、TranManager::check_recover、init_new_wal 的恢复后初始化和 LSM 构造入口属于目录 5.2.3，详见 STATE 排期。
@@ -78,8 +78,8 @@ WAL::set_checkpoint_tranc_id、TranContext 构造函数/get、已有事务状态
 | ② 缓冲与写入 | log → flush → reset_file | 未达阈值可缓冲；达阈值、强制刷盘、正常关闭后记录可完整解码；重复空 flush 不重复写；轮换不丢记录、不覆盖文件；写失败明确上报 | 已验收：WAL 27/27，连同 Record 共 65/65 |
 | ③ 旧日志清理 | cleaner → cleanWALFile；复核 checkpoint setter | 只删除安全检查点覆盖的历史文件；活动文件及未完成范围保留；空目录／单文件正常；清理与写入并发不破坏文件；关闭能唤醒等待中的线程 | 已验收：WAL 33/33，连同 Record 共 71/71 |
 | ④ 管理器接入 | TranManager::write_to_wal | 实际写入并刷新，返回真实结果；WAL 未初始化或写入失败不能伪装成功；新目录测试可显式接通组件 | 已验收：修正后 4/4 通过 |
-| ⑤ 事务接入 | 私有日志辅助函数 → put → remove → commit → abort；复核构造/get | RU 先记录后写数据，暂存事务检查通过后写 COMMIT；冲突不写成功提交记录；取消结果与 ROLLBACK／回滚名单一致；重复结束不重复写；原有隔离与删除语义保持 | 进行中：辅助函数、put/remove/commit 已检查；当前 abort 草案待用户实现，commit 旧说明待同步 |
-| ⑥ 整体验收 | WAL 文件测试、事务联调、受影响回归、文档收尾 | 实际文件内容、线程退出、写入失败、提交／回滚顺序均有验证；Record 与原有事务测试无回归；明确已测范围和后续恢复依赖 | 待开始 |
+| ⑤ 事务接入 | 私有日志辅助函数 → put → remove → commit → abort；复核构造/get | RU 先记录后写数据，暂存事务检查通过后写 COMMIT；冲突不写成功提交记录；取消结果与 ROLLBACK／回滚名单一致；重复结束不重复写；原有隔离与删除语义保持 | 已验收：abort 本轮相关测试 20/20；完整适用回归覆盖事务接入 |
+| ⑥ 整体验收 | WAL 文件测试、事务联调、受影响回归、文档收尾 | 实际文件内容、线程退出、写入失败、提交／回滚顺序均有验证；Record 与原有事务测试无回归；明确已测范围和后续恢复依赖 | 功能回归 215/215 通过；5 处旧说明待用户同步 |
 
 同一行有多个函数，也分多轮给出实现。顺序沿 Lab 3.1 → 3.2；reset_file、cleanWALFile 和私有日志辅助函数在其直接使用阶段补齐。前面函数依赖后面尚未实现的功能时只标记代码检查完成，不把依赖场景提前算作通过。
 
@@ -101,8 +101,8 @@ WAL::set_checkpoint_tranc_id、TranContext 构造函数/get、已有事务状态
 - [x] ② 缓冲与写入（包含轮换和文件失败路径；WAL 27/27）。
 - [x] ③ 旧日志清理（含真实周期清理、检查点 setter 与并发衔接）。
 - [x] ④ 管理器接入（标准异常失败返回已修复，4/4 通过）。
-- [ ] ⑤ 事务接入。
-- [ ] ⑥ 整体验收。
+- [x] ⑤ 事务接入（abort 相关测试 20/20，完整适用回归已通过）。
+- [ ] ⑥ 整体验收（功能回归 215/215 已通过，剩余 5 处旧说明清理）。
 
 2026-11-04 构造函数草案：按成员声明顺序初始化配置与停止标记；空目录参数归一为当前目录，创建所需目录；扫描普通文件中 wal.<纯数字序号>，取最大序号加一，无旧日志时使用 wal.0；使用 uint64_t 序号，无法再递增时明确报错；打开新文件后最后启动清理线程，clean_interval=0 不启动线程。沿用 FileObj 的异常上报，不吞掉初始化失败。
 
@@ -231,3 +231,17 @@ abort 草案：已结束返回 false；取得管理器并核对日志计数；�
 ROLLBACK 按需确认后，调用 add_ready_to_flush_tranc_id 登记 ABORTED，再设置 isAborted，清理 temp_map_、read_map_ 和 operations，并把 wal_written_count_ 归零。沿用查询侧回滚 ID 过滤，不恢复 rollback_map_，不回写旧值，不额外获取 MemTable/SST 锁。异常自然向上传播，保留未完成现场，不自动重试结束操作。
 
 本轮只交付 abort 草案，尚未运行。用户实现后补测暂存取消不写日志、RU 取消日志与版本过滤、只读取消、重复结束、WAL 故障不假装成功、首次 RU 写日志失败后的取消，以及失败提交不能随后改写为回滚；完整恢复继续留在下一章。
+
+2026-11-08 abort 验收：用户实现符合既定顺序；先确认按需发送的 ROLLBACK，再登记 ABORTED，成功后清空上下文并重置计数。COMMIT/ROLLBACK 异常结束记录会阻止重复或相反的结束尝试，首次 RU 日志失败时不会因计数为 0 跳过回滚日志。第 595～596 行仍有“尚未写 WAL”的旧注释，属于待清理说明，功能逻辑正确。
+
+新增 TranAbortWALTest 六项：暂存取消不写日志且保留原值；只读取消无日志；RU 数据已刷入 SST 后追加一次 ROLLBACK 并正确过滤；未初始化 WAL 时允许丢弃本地暂存／只读上下文；真实回滚日志故障保留现场并拒绝重复结束；首次 RU 写入失败后取消仍报告日志故障。同时增强现有 commit 失败测试，确认不能随后追加 ROLLBACK。未读取私有计数或改变业务类访问权限，计数归零另由代码检查确认。
+
+两个目标构建成功，隔离执行 TranAbortWALTest.*:TranCommitWALTest.* **13/13**、TranAbortTest.* **7/7**，共 **20/20 通过**。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-tran-abort-wal-review-8u827glh`，包含构建、命令、JSON、日志和前后哈希；执行期间源码／测试未变。
+
+阶段⑥回归：两项旧 RU 压缩测试补齐管理器与 WAL 初始化，保留原断言。首轮 Record/WAL **98/98**，LSM **116/117**；唯一失败为 TranContextGetRejectsFinishedTransactions，其前置 RU put 仍传空管理器，尚未执行到 get 断言就报错。助手补齐该用例的管理器与 WAL 初始化，没有改变断言；重建后使用相同 LSM 过滤器复测 **117/117**。最终适用回归共 **215/215 通过**，没有因这次测试夹具修正重复运行已通过且未改动的 WAL 组。
+
+整体证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wal-final-review-960_yt5s`。wal/ 保存 98 项通过结果；lsm/ 保留首轮失败；lsm-retest/ 保存修正后的 117 项通过结果。每轮各自记录构建／命令／JSON／日志及源码哈希；执行期间一致。LSM 文件故障子进程测试使用 GoogleTest threadsafe 模式，避免继承 WAL 清理线程正在持有的锁。
+
+排除范围：11 项依赖公开 LSM 启动／恢复的测试，精确名单保存在 excluded-lsm.json；另未运行 test_wal 中 RecoverTest、PartialFlushRecoveryTest、ConcurrentTransactionsTest、HighConcurrencyWithAborts、MixedTransactionCommitAbortAndCrashRecovery，这些涉及下一章恢复或尚未接通的公开入口。没有据此宣称完整 test_lsm/test_wal、崩溃恢复、完整 SERIALIZABLE 或断电持久性已验收；磁盘短写、单独 sync 故障和内存分配失败没有注入。
+
+下一步仅同步 5 处说明：commit 函数头删去“不写 WAL”；test_fail 提示改为保留给恢复测试；commit catch 说明可能失败的是数据应用、状态登记或内存维护；abort 清空记录处解释已经完成取消登记并同步重置计数；cleaner 删除已过期的 Lab 5.4 TODO 字样。业务代码继续由用户手写，完成这些说明后再核对收尾；暂不提前进入 Lab 5.5。

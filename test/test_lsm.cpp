@@ -575,7 +575,9 @@ TEST_F(LSMTest, MvccTwoMergeCompactionPreservesEqualVersionTombstone) {
 TEST_F(LSMTest, MvccReadUncommittedDeleteSurvivesActualCompaction) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
   auto manager = bind_test_manager(engine);
-  TranContext transaction(5, engine, nullptr,
+  // RU 写入现在先写 WAL；新目录显式接通依赖，保留原压缩语义断言。
+  manager->init_new_wal();
+  TranContext transaction(5, engine, manager,
                           IsolationLevel::READ_UNOP_COMMITTED);
   const int ratio = TomlConfig::getInstance().getLsmSstLevelRatio();
   ASSERT_GE(ratio, 2);
@@ -614,7 +616,9 @@ TEST_F(LSMTest, MvccReadUncommittedDeleteSurvivesActualCompaction) {
 TEST_F(LSMTest, MvccReadUncommittedRewriteSurvivesActualCompaction) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
   auto manager = bind_test_manager(engine);
-  TranContext transaction(5, engine, nullptr,
+  // RU 写入现在先写 WAL；新目录显式接通依赖，保留原压缩语义断言。
+  manager->init_new_wal();
+  TranContext transaction(5, engine, manager,
                           IsolationLevel::READ_UNOP_COMMITTED);
   const int ratio = TomlConfig::getInstance().getLsmSstLevelRatio();
   ASSERT_GE(ratio, 2);
@@ -1651,6 +1655,9 @@ TEST_F(LSMTest, TranContextGetFirstReadRespectsVersionBound) {
 // 场景：先 put，再设置公开的提交/回滚标记，单独验证 get 的状态检查。
 TEST_F(LSMTest, TranContextGetRejectsFinishedTransactions) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
+  // 前置 put 包含 RU 分支，需要有效管理器和 WAL，才能执行到 get 的结束检查。
+  auto manager = bind_test_manager(engine);
+  manager->init_new_wal();
   for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
                      IsolationLevel::READ_OP_COMMITTED,
                      IsolationLevel::REPEATABLE_READ,
@@ -1658,7 +1665,7 @@ TEST_F(LSMTest, TranContextGetRejectsFinishedTransactions) {
     for (bool committed : {false, true}) {
       SCOPED_TRACE(static_cast<int>(level));
       SCOPED_TRACE(committed);
-      TranContext context(7, engine, nullptr, level);
+      TranContext context(7, engine, manager, level);
       context.put("k", "own");
       context.isCommited = committed;
       context.isAborted = !committed;

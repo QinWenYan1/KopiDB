@@ -575,7 +575,6 @@ bool TranContext::abort() {
     persist_pending_wal_();
   }
 
-
   // 4. 登记回滚 ID
   // RU 的记录可能已经进入 MemTable 或 SST，查询会根据此名单跳过它们
   // 暂存事务还没有把数据写入存储层，后面直接清理暂存内容即可
@@ -597,6 +596,8 @@ bool TranContext::abort() {
   // 后续接入 WAL 时，再处理回滚日志
   operations.clear();
   wal_written_count_ = 0; 
+  spdlog::info(
+      "TranContext--abort(): Transaction ID={} aborted", tranc_id_);
   return true;
 }
 

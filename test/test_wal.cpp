@@ -1829,7 +1829,194 @@ TEST_F(TranCommitWALTest, WalFailurePreservesDataAndRejectsRepeatedCommit) {
   ASSERT_EQ(transaction->operations.back().getOperationType(), OperationType::OP_COMMIT);
   const auto count = transaction->operations.size();
   EXPECT_THROW(transaction->commit(), std::logic_error);
+  // COMMIT 的写入尝试尚未正常结束，不能随后追加相反的 ROLLBACK。
+  EXPECT_THROW(transaction->abort(), std::logic_error);
+  EXPECT_FALSE(transaction->isAborted);
+  EXPECT_FALSE(manager->is_aborted(transaction->tranc_id_));
   EXPECT_EQ(transaction->operations.size(), count);
+  EXPECT_EQ(read_wal_records(dir / "wal.0"), successful);
+  EXPECT_EQ(read_wal_records(dir / "wal.1"), occupied);
+}
+
+class TranAbortWALTest : public TranPutWALTest {};
+
+// 目的：暂存型事务的修改尚未写入日志或引擎，取消只需登记并清理上下文。
+// 覆盖修改、删除、新增和读取缓存；SERIALIZABLE 仅验证当前实验性分支。
+TEST_F(TranAbortWALTest, StagedAbortKeepsWalEmptyAndPreservesStoredValues) {
+  const auto path = std::filesystem::path(test_dir) / "wal.0";
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    const auto base_id = manager->getNextTransactionId();
+    const auto suffix = std::to_string(base_id);
+    const auto key = "key-" + suffix;
+    const auto removed = "removed-" + suffix;
+    const auto added = "added-" + suffix;
+    engine->put(key, "old", base_id);
+    engine->put(removed, "keep", base_id);
+    auto transaction = manager->new_tranc(level);
+    EXPECT_EQ(transaction->get(key), std::make_optional(std::string("old")));
+    transaction->put(key, "pending");
+    transaction->remove(removed);
+    transaction->put(added, "pending");
+
+    ASSERT_TRUE(transaction->abort());
+    EXPECT_TRUE(transaction->isAborted);
+    EXPECT_FALSE(transaction->isCommited);
+    EXPECT_TRUE(manager->is_aborted(transaction->tranc_id_));
+    EXPECT_TRUE(transaction->operations.empty());
+    EXPECT_TRUE(transaction->temp_map_.empty());
+    EXPECT_EQ(engine->get(key, 0),
+              std::make_optional(std::make_pair(std::string("old"), base_id)));
+    EXPECT_EQ(engine->get(removed, 0),
+              std::make_optional(std::make_pair(std::string("keep"), base_id)));
+    EXPECT_FALSE(engine->get(added, 0));
+    EXPECT_FALSE(transaction->abort());
+    EXPECT_FALSE(transaction->commit());
+    EXPECT_THROW(transaction->get(key), std::logic_error);
+    EXPECT_EQ(std::filesystem::file_size(path), 0u);
+  }
+}
+
+// 目的：只读事务的 CREATE 仅在上下文中，取消时无需为了结束而写一组日志。
+TEST_F(TranAbortWALTest, ReadOnlyAbortDoesNotCreateWalRecords) {
+  for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
+                     IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    auto transaction = manager->new_tranc(level);
+    EXPECT_FALSE(transaction->get("missing"));
+    ASSERT_TRUE(transaction->abort());
+    EXPECT_TRUE(manager->is_aborted(transaction->tranc_id_));
+    EXPECT_TRUE(transaction->operations.empty());
+    EXPECT_FALSE(transaction->abort());
+  }
+  EXPECT_TRUE(read_wal_records(std::filesystem::path(test_dir) / "wal.0").empty());
+}
+
+// 目的：RU 的修改已进入 SST 后，取消仍追加一次 ROLLBACK，查询按回滚名单恢复旧版本。
+// 同时检查修改、墓碑、新增记录；重复结束不能重发日志，也不能把取消改成提交。
+TEST_F(TranAbortWALTest, RollbackAppendsOnceAndFiltersFlushedVersions) {
+  const auto base_id = manager->getNextTransactionId();
+  engine->put("updated", "old", base_id);
+  engine->put("removed", "keep", base_id);
+  auto transaction = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  const auto id = transaction->tranc_id_;
+  transaction->put("updated", "dirty");
+  transaction->remove("removed");
+  transaction->put("added", "dirty");
+  engine->flush();
+  ASSERT_EQ(engine->memtable.get_total_size(), 0u);
+  ASSERT_FALSE(engine->ssts.empty());
+  const auto path = std::filesystem::path(test_dir) / "wal.0";
+  std::vector<Record> expected = {
+      Record::createRecord(id), Record::putRecord(id, "updated", "dirty"),
+      Record::deleteRecord(id, "removed"), Record::putRecord(id, "added", "dirty")};
+  ASSERT_EQ(read_wal_records(path), expected);
+
+  ASSERT_TRUE(transaction->abort());
+  expected.push_back(Record::rollbackRecord(id));
+  EXPECT_EQ(read_wal_records(path), expected);
+  EXPECT_TRUE(manager->is_aborted(id));
+  EXPECT_TRUE(transaction->isAborted);
+  EXPECT_FALSE(transaction->isCommited);
+  EXPECT_TRUE(transaction->operations.empty());
+  EXPECT_TRUE(transaction->temp_map_.empty());
+  EXPECT_EQ(engine->get("updated", 0),
+            std::make_optional(std::make_pair(std::string("old"), base_id)));
+  EXPECT_EQ(engine->get("removed", 0),
+            std::make_optional(std::make_pair(std::string("keep"), base_id)));
+  EXPECT_FALSE(engine->get("added", 0));
+  EXPECT_EQ(engine->memtable.get_total_size(), 0u);
+  EXPECT_FALSE(transaction->abort());
+  EXPECT_FALSE(transaction->commit());
+  EXPECT_EQ(read_wal_records(path), expected);
+}
+
+// 目的：从未发送日志的事务，取消时不应强制依赖已初始化的 WAL。
+// RU 只读；其他三个级别暂存写入后取消，均可直接丢弃，不产生数据或日志文件。
+TEST_F(TranAbortWALTest, LocalOnlyAbortWorksWithoutInitializedWal) {
+  const auto dir = std::filesystem::path(test_dir) / "uninitialized";
+  auto local_engine = std::make_shared<LSMEngine>(dir.string());
+  auto local_manager = std::make_shared<TranManager>(dir.string());
+  local_manager->set_engine(local_engine);
+  local_engine->set_tran_manager(local_manager);
+  for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
+                     IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    auto transaction = local_manager->new_tranc(level);
+    if (level != IsolationLevel::READ_UNOP_COMMITTED)
+      transaction->put("key", "pending");
+    ASSERT_TRUE(transaction->abort());
+    EXPECT_TRUE(local_manager->is_aborted(transaction->tranc_id_));
+    EXPECT_TRUE(transaction->operations.empty());
+    EXPECT_FALSE(local_engine->get("key", 0));
+  }
+  EXPECT_FALSE(std::filesystem::exists(dir / "wal.0"));
+}
+
+// 目的：回滚日志真正写入失败时，不能登记取消、清空现场或隐藏仍然活跃的 RU 记录。
+// 占用下一日志文件制造轮换错误；再次结束必须被拒绝，不能重复追加 ROLLBACK/COMMIT。
+TEST_F(TranAbortWALTest, WalFailurePreservesActiveContextAndRejectsRepeatedEnd) {
+  auto transaction = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  const auto id = transaction->tranc_id_;
+  transaction->put("key", "dirty");
+  auto padding = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  padding->put("padding", std::string(5000, 'v'));
+  const auto dir = std::filesystem::path(test_dir);
+  const auto successful = read_wal_records(dir / "wal.0");
+  ASSERT_GT(std::filesystem::file_size(dir / "wal.0"), 4096u);
+  const std::vector<Record> occupied = {Record::createRecord(99)};
+  write_wal_records(dir / "wal.1", occupied);
+  const auto before_count = transaction->operations.size();
+
+  EXPECT_THROW(transaction->abort(), std::runtime_error);
+  EXPECT_FALSE(transaction->isAborted);
+  EXPECT_FALSE(transaction->isCommited);
+  EXPECT_FALSE(manager->is_aborted(id));
+  EXPECT_TRUE(manager->should_skip_read(id, true));
+  EXPECT_EQ(engine->get("key", 0),
+            std::make_optional(std::make_pair(std::string("dirty"), id)));
+  EXPECT_FALSE(engine->get("key", 0, true));
+  ASSERT_EQ(transaction->operations.size(), before_count + 1);
+  EXPECT_EQ(transaction->operations.back(), Record::rollbackRecord(id));
+  EXPECT_THROW(transaction->abort(), std::logic_error);
+  EXPECT_THROW(transaction->commit(), std::logic_error);
+  EXPECT_EQ(transaction->operations.size(), before_count + 1);
+  EXPECT_EQ(read_wal_records(dir / "wal.0"), successful);
+  EXPECT_EQ(read_wal_records(dir / "wal.1"), occupied);
+}
+
+// 目的：首次 RU 写入失败，已写计数仍为 0，abort 不能因此跳过日志而报告成功。
+// 通过另一事务填满活动文件，让本事务的第一次 put 就遇到真实文件轮换故障。
+TEST_F(TranAbortWALTest, FailedFirstWriteCannotSkipRollbackWal) {
+  auto padding = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  padding->put("padding", std::string(5000, 'v'));
+  const auto dir = std::filesystem::path(test_dir);
+  const auto successful = read_wal_records(dir / "wal.0");
+  ASSERT_GT(std::filesystem::file_size(dir / "wal.0"), 4096u);
+  const std::vector<Record> occupied = {Record::createRecord(99)};
+  write_wal_records(dir / "wal.1", occupied);
+  auto transaction = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  const auto id = transaction->tranc_id_;
+
+  EXPECT_THROW(transaction->put("key", "pending"), std::runtime_error);
+  EXPECT_FALSE(engine->memtable.get_record("key", 0));
+  EXPECT_THROW(transaction->abort(), std::runtime_error);
+  EXPECT_FALSE(transaction->isAborted);
+  EXPECT_FALSE(transaction->isCommited);
+  EXPECT_FALSE(manager->is_aborted(id));
+  EXPECT_TRUE(manager->should_skip_read(id, true));
+  const std::vector<Record> expected_context = {
+      Record::createRecord(id), Record::putRecord(id, "key", "pending"),
+      Record::rollbackRecord(id)};
+  EXPECT_EQ(transaction->operations, expected_context);
+  EXPECT_THROW(transaction->abort(), std::logic_error);
+  EXPECT_EQ(transaction->operations, expected_context);
   EXPECT_EQ(read_wal_records(dir / "wal.0"), successful);
   EXPECT_EQ(read_wal_records(dir / "wal.1"), occupied);
 }
