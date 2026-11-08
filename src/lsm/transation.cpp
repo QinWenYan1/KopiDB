@@ -563,17 +563,25 @@ bool TranContext::abort() {
     }
   }
 
+  // 3. 先记录取消决定，再向管理器登记取消。
+  //
+  // 例如 RU 已写出 CREATE、PUT、DELETE：
+  // 这里只发送新追加的 ROLLBACK，之前的记录不会重复发送。
+  //
+  // 没有发送过日志的暂存事务，以及没有修改的只读事务，
+  // 可以直接丢弃上下文，不必专门写一组 CREATE/ROLLBACK。
+  if (need_rollback_log) {
+    operations.emplace_back(Record::rollbackRecord(tranc_id_));
+    persist_pending_wal_();
+  }
 
-  // 先登记回滚，再修改上下文状态
-  // 如果登记抛异常，下面的代码不会执行
-  // 上下文仍保留原来的状态和暂存内容，不会假装回滚成功
+
+  // 4. 登记回滚 ID
+  // RU 的记录可能已经进入 MemTable 或 SST，查询会根据此名单跳过它们
+  // 暂存事务还没有把数据写入存储层，后面直接清理暂存内容即可
   //
-  // 两类事务都登记同一个回滚 ID：
-  // 1. 暂存型事务：修改尚未写入存储层，随后丢弃暂存内容
-  // 2. 读未提交事务：记录可能已在 MemTable 或 SST 中
-  //    后续查询根据回滚名单跳过这些版本，不在这里回写旧值
-  //
-  // 登记函数内部负责加锁，这里无需再次获取管理器的锁
+  // 登记函数内部负责加锁；这里不修改存储数据，无需获取内存表或 SST 锁
+  // 如果登记失败，异常直接向上传播，不提前设置 isAborted 或清空现场
   manager->add_ready_to_flush_tranc_id(tranc_id_, TransactionState::ABORTED);
 
   // 登记成功后，正式结束这个上下文
@@ -588,6 +596,7 @@ bool TranContext::abort() {
   // 当前阶段没有把这些操作记录写入 WAL，可以直接丢弃
   // 后续接入 WAL 时，再处理回滚日志
   operations.clear();
+  wal_written_count_ = 0; 
   return true;
 }
 
