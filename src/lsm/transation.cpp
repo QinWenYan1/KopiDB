@@ -144,7 +144,8 @@ void TranContext::put(const std::string &key, const std::string &value) {
   } else {
     // 暂存在自己的上下文中，其他事务无法通过引擎读取这次修改
     // 重复修改同一个 key 时，暂存表保留最后一次写入的值
-    // ! SERIALIZABLE（未完整实现）：同样走暂存路径，不为读过的 key 或范围持有事务锁。
+    // ! SERIALIZABLE（未完整实现）：同样走暂存路径，不为读过的 key
+    // 或范围持有事务锁。
     temp_map_.insert_or_assign(key, value);
 
     spdlog::trace("TranContext--put: stored in temp map, tranc_id={}",
@@ -194,7 +195,8 @@ void TranContext::remove(const std::string &key) {
   // 不能用 temp_map_.erase(key)：
   // 那会丢失删除意图，随后 get 可能重新读到数据库中的旧值。
   // 保留墓碑后，本事务 get 返回不存在，commit 再应用这次删除。
-  // ! SERIALIZABLE（未完整实现）：这里仅暂存删除，不阻塞其他事务对读取范围的修改。
+  // !
+  // SERIALIZABLE（未完整实现）：这里仅暂存删除，不阻塞其他事务对读取范围的修改。
   temp_map_.insert_or_assign(key, std::string{});
   spdlog::trace("TranContext--{}: remove({}) stored in temp map",
                 isolation_level_to_string(isolation_level_), key);
@@ -229,7 +231,8 @@ std::optional<std::string> TranContext::get(const std::string &key) {
   // 读已提交、可重复读及当前 SERIALIZABLE 分支传 true
   // 让 Engine 在查找过程中排除活跃事务的记录
   // 无论传什么，已经回滚的记录都会被排除
-  // ! SERIALIZABLE（未完整实现）：排除未提交版本只是读取条件，不等于完整串行化。
+  // !
+  // SERIALIZABLE（未完整实现）：排除未提交版本只是读取条件，不等于完整串行化。
   const bool require_committed =
       isolation_level_ != IsolationLevel::READ_UNOP_COMMITTED;
 
@@ -294,7 +297,7 @@ bool TranContext::commit(bool test_fail) {
   // 必须抛出异常；仅构造一个 logic_error 对象不会阻止后续执行
   if (test_fail)
     throw std::logic_error(
-      "TranContext::commit: test_fail is reserved for recovery tests");
+        "TranContext::commit: test_fail is reserved for recovery tests");
 
   auto manager = tranManager_.lock();
   if (!manager || !engine_)
@@ -304,10 +307,10 @@ bool TranContext::commit(bool test_fail) {
   // 如果上次结束流程异常退出，operations 中可能已经留下结束记录
   // 写日志报错不等于文件中一个字节也没写入
   // 因此不能自动再次提交，或者在已有回滚记录后追加 COMMIT
-  for (const auto &record : operations){
-    const auto type = record.getOperationType(); 
+  for (const auto &record : operations) {
+    const auto type = record.getOperationType();
     if (type == OperationType::OP_COMMIT ||
-        type == OperationType::OP_ROLLBACK ){
+        type == OperationType::OP_ROLLBACK) {
       throw std::logic_error(
           "TranContext::commit: previous ending attempt did not finish");
     }
@@ -436,7 +439,7 @@ bool TranContext::commit(bool test_fail) {
   // 写入未确认成功时，辅助函数抛异常；
   // 后面的数据应用、结束标记和提交登记都不会执行。
   operations.emplace_back(Record::commitRecord(tranc_id_));
-  persist_pending_wal_(); 
+  persist_pending_wal_();
 
   // 7. COMMIT 已确认写出，先记住这个提交决定
   // 后续即使内存处理失败，也不能再允许 abort 改成回滚
@@ -465,7 +468,7 @@ bool TranContext::commit(bool test_fail) {
     // 先登记提交完成，再允许刷盘线程处理这些数据
     // 否则标记可能已经刷出，管理器却还没有这笔事务的结束登记
     manager->add_ready_to_flush_tranc_id(tranc_id_,
-                                        TransactionState::OP_COMMITTED);
+                                         TransactionState::OP_COMMITTED);
 
     // 8. 写完整笔事务及结束标记后，检查单表容量
     //    put_ 不会自动冻结，因此这里主动处理
@@ -493,10 +496,10 @@ bool TranContext::commit(bool test_fail) {
     // WAL 已确认 COMMIT；后续数据应用、状态登记或内存维护仍可能失败。
     // 保留提交决定并向调用方报告，不能改成回滚。
     // 尚未手动释放的锁，会在函数退出时自动释放。
-    spdlog::error(
-        "TranContext--commit(): WAL confirmed transaction ID={}, "
-        "but applying changes, registering state or memtable maintenance failed: {}",
-        tranc_id_, e.what());
+    spdlog::error("TranContext--commit(): WAL confirmed transaction ID={}, "
+                  "but applying changes, registering state or memtable "
+                  "maintenance failed: {}",
+                  tranc_id_, e.what());
 
     // throw;：重新抛出当前异常，让调用者处理
     throw;
@@ -511,7 +514,8 @@ bool TranContext::commit(bool test_fail) {
 
 // 取消事务：按需写出 ROLLBACK → 登记回滚 → 清理上下文
 // 已经写入存储层的版本由回滚名单过滤，不在这里恢复旧值
-// ! SERIALIZABLE（未完整实现）：同样沿用通用取消流程，不代表已具备完整隔离保证。
+// !
+// SERIALIZABLE（未完整实现）：同样沿用通用取消流程，不代表已具备完整隔离保证。
 bool TranContext::abort() {
   // 1. 同一个上下文由调用者串行使用
   // 已经提交或取消的事务不能再次取消，也不能重复写 ROLLBACK
@@ -528,12 +532,11 @@ bool TranContext::abort() {
   // 已写条数必须对应 operations 中实际存在的前缀
   // 在追加 ROLLBACK 前检查，避免追加操作掩盖原有的计数错误
   if (wal_written_count_ > operations.size())
-    throw std::logic_error(
-        "TranContext::abort: invalid WAL record count");
-  
+    throw std::logic_error("TranContext::abort: invalid WAL record count");
+
   const bool write_immediately =
       (isolation_level_ == IsolationLevel::READ_UNOP_COMMITTED);
-  
+
   // 已经确认发送过日志，需要再记录这笔事务被取消
   bool need_rollback_log = wal_written_count_ != 0;
 
@@ -557,8 +560,7 @@ bool TranContext::abort() {
     // 因此这种情况仍走写 ROLLBACK 的流程；
     // 如果 WAL 已进入故障状态，辅助函数会抛异常，不假装日志写入成功。
     if (write_immediately &&
-        (type == OperationType::OP_PUT ||
-         type == OperationType::OP_DELETE)) {
+        (type == OperationType::OP_PUT || type == OperationType::OP_DELETE)) {
       need_rollback_log = true;
     }
   }
@@ -595,9 +597,8 @@ bool TranContext::abort() {
   // 取消已登记完成，清理上下文保存的日志历史
   // 记录数组与已写计数同时清空；已经写入的 WAL 文件内容不受影响
   operations.clear();
-  wal_written_count_ = 0; 
-  spdlog::info(
-      "TranContext--abort(): Transaction ID={} aborted", tranc_id_);
+  wal_written_count_ = 0;
+  spdlog::info("TranContext--abort(): Transaction ID={} aborted", tranc_id_);
   return true;
 }
 
@@ -1053,7 +1054,8 @@ uint64_t TranManager::get_checkpoint_tranc_id() {
 
 // Lab 5.2 事务上下文分配
 // 分配 ID → 创建上下文 → 登记到管理器 → 返回上下文
-// ! SERIALIZABLE（未完整实现）：允许创建实验性上下文，但未提供完整的串行化调度。
+// !
+// SERIALIZABLE（未完整实现）：允许创建实验性上下文，但未提供完整的串行化调度。
 std::shared_ptr<TranContext>
 TranManager::new_tranc(const IsolationLevel &isolation_level) {
   spdlog::debug("TranManager--new_tranc(): Creating new transaction with "
