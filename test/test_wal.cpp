@@ -2247,6 +2247,116 @@ TEST_F(WALTest, RecoverRejectsOverflowingSequenceAndNonDirectory) {
   EXPECT_THROW(WAL::recover(test_dir, 0), std::out_of_range);
 }
 
+// 管理器日志检查入口：先恢复已保存状态，不初始化新 WAL，避免清理旧日志。
+// 本组只验收检查点传递和候选记录返回，实际状态恢复／重放在后续启动阶段验收。
+class TranManagerRecoveryTest : public WALTest {};
+
+// 目的：状态文件记录 flushed={2,4} 时，使用检查点 2 而不是最大值 4。
+// 3 和 4 都作为候选返回；回滚、未结束事务也保留，交给后续流程判断。
+// 重复检查不修改状态文件内容、回滚名单、待处理集合或 next ID。
+TEST_F(TranManagerRecoveryTest,
+       CheckRecoverUsesSavedCheckpointAndPreservesCandidates) {
+  const auto dir = std::filesystem::path(test_dir);
+  {
+    TranManager manager(test_dir);
+    for (uint64_t id = 1; id <= 6; ++id)
+      ASSERT_EQ(manager.getNextTransactionId(), id);
+    for (uint64_t id = 1; id <= 4; ++id)
+      manager.add_ready_to_flush_tranc_id(id, TransactionState::OP_COMMITTED);
+    manager.add_flushed_tranc_id(1);
+    manager.add_flushed_tranc_id(2);
+    manager.add_flushed_tranc_id(4);
+    manager.add_ready_to_flush_tranc_id(5, TransactionState::ABORTED);
+  }
+
+  std::vector<Record> records;
+  std::map<uint64_t, std::vector<Record>> expected;
+  for (uint64_t id = 1; id <= 6; ++id) {
+    std::vector<Record> group = {
+        Record::createRecord(id),
+        Record::putRecord(id, "key" + std::to_string(id), "value")};
+    if (id <= 4)
+      group.push_back(Record::commitRecord(id));
+    else if (id == 5)
+      group.push_back(Record::rollbackRecord(id));
+    records.insert(records.end(), group.begin(), group.end());
+    if (id > 2)
+      expected[id] = group;
+  }
+  write_wal_records(dir / "wal.0", records);
+
+  const auto read_state = [&] {
+    auto file = FileObj::open((dir / "tranc_id").string());
+    return file.read_to_slice(0, file.size());
+  };
+  const auto saved_state = read_state();
+  TranManager manager(test_dir);
+  const auto saved_flushed = manager.get_flushed_tranc_ids();
+  ASSERT_EQ(manager.get_checkpoint_tranc_id(), 2u);
+  ASSERT_EQ(manager.get_max_flushed_tranc_id(), 4u);
+  ASSERT_TRUE(manager.is_aborted(5));
+  ASSERT_FALSE(manager.is_aborted(6));
+
+  EXPECT_EQ(manager.check_recover(), expected);
+  EXPECT_EQ(manager.check_recover(), expected);
+  EXPECT_EQ(manager.get_flushed_tranc_ids(), saved_flushed);
+  EXPECT_TRUE(manager.is_aborted(5));
+  EXPECT_FALSE(manager.is_aborted(6));
+  EXPECT_EQ(read_wal_records(dir / "wal.0"), records);
+  EXPECT_EQ(read_state(), saved_state);
+
+  // 将检查后的内存状态重新编码，确认私有的 ready 集合等也没有变化。
+  manager.write_tranc_id_file();
+  EXPECT_EQ(read_state(), saved_state);
+  EXPECT_EQ(manager.getNextTransactionId(), 7u);
+  EXPECT_FALSE(std::filesystem::exists(dir / "wal.1"));
+}
+
+// 目的：没有 WAL 时返回空候选，不创建 WAL、不推进检查点，也不消耗事务 ID。
+TEST_F(TranManagerRecoveryTest, CheckRecoverWithoutWalLeavesProgressUnchanged) {
+  TranManager manager(test_dir);
+  for (uint64_t id = 1; id <= 2; ++id) {
+    ASSERT_EQ(manager.getNextTransactionId(), id);
+    manager.add_ready_to_flush_tranc_id(id, TransactionState::OP_COMMITTED);
+    manager.add_flushed_tranc_id(id);
+  }
+
+  EXPECT_TRUE(manager.check_recover().empty());
+  EXPECT_EQ(manager.get_checkpoint_tranc_id(), 2u);
+  EXPECT_EQ(manager.getNextTransactionId(), 3u);
+  EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(test_dir) / "wal.0"));
+}
+
+// 目的：完整 WAL 记录损坏时继续向调用方报告错误，不伪装成“没有日志”。
+// 检查失败也不能修改已保存／内存中的事务状态或原日志文件。
+TEST_F(TranManagerRecoveryTest,
+       CheckRecoverPropagatesFailureWithoutChangingState) {
+  const auto dir = std::filesystem::path(test_dir);
+  TranManager manager(test_dir);
+  ASSERT_EQ(manager.getNextTransactionId(), 1u);
+  manager.add_ready_to_flush_tranc_id(1, TransactionState::ABORTED);
+  manager.write_tranc_id_file();
+  const auto read_state = [&] {
+    auto file = FileObj::open((dir / "tranc_id").string());
+    return file.read_to_slice(0, file.size());
+  };
+  const auto saved_state = read_state();
+  auto malformed = Record::createRecord(2).encode();
+  malformed[10] = 255;
+  FileObj::create_and_write((dir / "wal.0").string(), malformed);
+
+  EXPECT_THROW(manager.check_recover(), std::runtime_error);
+  EXPECT_EQ(manager.get_checkpoint_tranc_id(), 0u);
+  EXPECT_TRUE(manager.is_aborted(1));
+  EXPECT_FALSE(manager.is_aborted(2));
+  EXPECT_EQ(read_state(), saved_state);
+  manager.write_tranc_id_file();
+  EXPECT_EQ(read_state(), saved_state);
+  EXPECT_EQ(manager.getNextTransactionId(), 2u);
+  auto file = FileObj::open((dir / "wal.0").string());
+  EXPECT_EQ(file.read_to_slice(0, file.size()), malformed);
+}
+
 TEST_F(WALTest, PartialFlushRecoveryTest) {
   {
     LSM lsm(test_dir);
