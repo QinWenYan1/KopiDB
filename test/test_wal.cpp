@@ -2074,53 +2074,177 @@ TEST_F(WALTest, LogAndFlush) {
   EXPECT_EQ(wal.get_log_buffer().size(), 0);
 }
 
+// 目的：用真实 WAL 写入并轮换后，恢复函数必须完整收集三个事务的历史。
+// 包括已提交、已回滚和未结束事务；本函数收集记录，不提前决定是否重放。
+// 旧用例的检查点大于全部写入 ID，而且只遍历实际结果，返回空也会通过。
 TEST_F(WALTest, RecoverTest) {
-  std::map<uint64_t, std::vector<Record>> expected;
+  const auto create7 = Record::createRecord(7);
+  const auto put7 = Record::putRecord(7, "key", std::string(300, 'v'));
+  const auto delete7 = Record::deleteRecord(7, "key");
+  const auto rewrite7 = Record::putRecord(7, "key", "last");
+  const auto commit7 = Record::commitRecord(7);
+  const auto create8 = Record::createRecord(8);
+  const auto put8 = Record::putRecord(8, "cancelled", "value");
+  const auto rollback8 = Record::rollbackRecord(8);
+  const auto create9 = Record::createRecord(9);
+  const auto put9 = Record::putRecord(9, "unfinished", "value");
+  const std::map<uint64_t, std::vector<Record>> expected = {
+      {7, {create7, put7, delete7, rewrite7, commit7}},
+      {8, {create8, put8, rollback8}},
+      {9, {create9, put9}}};
 
   {
-    MockWAL wal(test_dir, 10, 100);
-
-    std::vector<Record> records;
-    int record1_len = 50;
-
-    uint64_t tranc_id = 0;
-    for (int i = 0; i < record1_len; i++) {
-      auto tranc_str = std::to_string(tranc_id);
-      auto key = tranc_str + "-key-" + std::to_string(i);
-      if (i == 0) {
-        auto rec = Record::createRecord(tranc_id);
-        records.push_back(rec);
-        expected[tranc_id].push_back(rec);
-      } else if (i % 10 == 0 || i == record1_len - 1) {
-        // 每10条记录或者最后一条记录提交一次
-        auto rec = Record::commitRecord(tranc_id);
-        records.push_back(rec);
-        expected[tranc_id].push_back(rec);
-        tranc_id++;
-      } else {
-        auto value = tranc_str + "-value-" + std::to_string(i);
-        auto rec = Record::putRecord(tranc_id, key, value);
-        records.push_back(rec);
-        expected[tranc_id].push_back(rec);
-      }
-      if (i % 20 == 0) {
-        // 每20条记录写入一次
-        wal.log(records);
-        records.clear();
-      }
-    }
-    if (!records.empty()) {
-      wal.log(records);
-    }
+    // 关闭后台清理，避免测试收集日志时引入无关的周期删除行为。
+    WAL wal(test_dir, 0, 0, 0, 64);
+    wal.log({create7, put7, create8, put8});
+    wal.log({delete7, rollback8, create9, put9});
+    wal.log({rewrite7, commit7});
   }
 
-  // 恢复
-  auto tranc_records = WAL::recover(test_dir, 100);
-  // 校验 Record
-  uint64_t tranc_id = 0;
-  for (auto &[tranc_id, records] : tranc_records) {
-    EXPECT_EQ(records, expected[tranc_id]);
+  EXPECT_EQ(WAL::recover(test_dir, 0), expected);
+}
+
+// 目的：新库没有日志时返回空结果；不因为执行恢复而创建目录或日志。
+TEST_F(WALTest, RecoverMissingDirectoryAndEmptyLog) {
+  const auto missing = std::filesystem::path(test_dir) / "missing";
+  EXPECT_TRUE(WAL::recover(missing.string(), 0).empty());
+  EXPECT_FALSE(std::filesystem::exists(missing));
+  EXPECT_TRUE(WAL::recover(test_dir, 0).empty());
+
+  const auto empty_log = std::filesystem::path(test_dir) / "wal.0";
+  FileObj::create_and_write(empty_log.string(), {});
+  EXPECT_TRUE(WAL::recover(test_dir, 0).empty());
+  EXPECT_EQ(std::filesystem::file_size(empty_log), 0u);
+}
+
+// 目的：按数字序号读取 wal.2、wal.10 和超过 32 位的序号，保持事务内顺序。
+// 不读取名字相似的备份文件或目录；事务 ID 同样要保留完整的 64 位。
+TEST_F(WALTest, RecoverNumericOrderAndGrouping) {
+  const auto dir = std::filesystem::path(test_dir);
+  const uint64_t id = (uint64_t{1} << 40) + 7;
+  const auto create = Record::createRecord(id);
+  const auto first = Record::putRecord(id, "key", "first");
+  const auto second = Record::putRecord(id, "key", "second");
+  const auto commit = Record::commitRecord(id);
+  write_wal_records(dir / "wal.10", {second});
+  write_wal_records(dir / "wal.4294967296", {commit});
+  write_wal_records(dir / "wal.2", {create, first});
+
+  for (const char *name : {"wal.", "wal.backup", "wal.-1", "wal.1.tmp"})
+    FileObj::create_and_write((dir / name).string(), {0, 0});
+  std::filesystem::create_directory(dir / "wal.1");
+
+  const std::map<uint64_t, std::vector<Record>> expected = {
+      {id, {create, first, second, commit}}};
+  EXPECT_EQ(WAL::recover(test_dir, 0), expected);
+}
+
+// 目的：检查点为 2 时保留事务 3、4，不能把零散完成的 4 当成连续检查点。
+// 4 是否已经刷盘由上层判断；这里也检查恰好等于检查点的事务会被排除。
+TEST_F(WALTest, RecoverCheckpointLeavesGapsForUpperLayer) {
+  std::vector<Record> records;
+  std::map<uint64_t, std::vector<Record>> expected;
+  for (uint64_t id = 1; id <= 4; ++id) {
+    const auto create = Record::createRecord(id);
+    const auto commit = Record::commitRecord(id);
+    records.push_back(create);
+    records.push_back(commit);
+    if (id > 2)
+      expected[id] = {create, commit};
   }
+  write_wal_records(std::filesystem::path(test_dir) / "wal.0", records);
+
+  EXPECT_EQ(WAL::recover(test_dir, 2), expected);
+  EXPECT_TRUE(WAL::recover(test_dir, 4).empty());
+}
+
+// 目的：空路径与 WAL 构造函数一致，表示当前目录。
+// 测试临时切换工作目录，离开本用例时自动恢复，避免影响后续用例。
+TEST_F(WALTest, RecoverEmptyPathUsesCurrentDirectory) {
+  struct RestoreDirectory {
+    std::filesystem::path path;
+    ~RestoreDirectory() { std::filesystem::current_path(path); }
+  } restore{std::filesystem::current_path()};
+
+  const auto create = Record::createRecord(7);
+  write_wal_records(std::filesystem::path(test_dir) / "wal.0", {create});
+  std::filesystem::current_path(test_dir);
+  const std::map<uint64_t, std::vector<Record>> expected = {{7, {create}}};
+  EXPECT_EQ(WAL::recover("", 0), expected);
+}
+
+// 目的：COMMIT 只写了一部分时，保留前面的完整记录，不伪造提交成功。
+// 枚举尾记录各个截断位置；旧文件有残缺尾部、后面已有新日志时也能重复读取。
+// 每次恢复后核对原始字节，保证没有截断、改写或删除旧日志。
+TEST_F(WALTest, RecoverPartialTailsAcrossRepeatedRecovery) {
+  const auto dir = std::filesystem::path(test_dir);
+  const auto old_path = dir / "wal.2";
+  const auto new_path = dir / "wal.10";
+  const std::vector<Record> unfinished = {
+      Record::createRecord(7), Record::putRecord(7, "key", std::string(300, 'v'))};
+  const std::vector<Record> committed = {
+      Record::createRecord(8), Record::putRecord(8, "other", "value"),
+      Record::commitRecord(8)};
+  const std::map<uint64_t, std::vector<Record>> expected = {
+      {7, unfinished}, {8, committed}};
+  write_wal_records(new_path, committed);
+
+  std::vector<uint8_t> prefix;
+  for (const auto &record : unfinished) {
+    const auto encoded = record.encode();
+    prefix.insert(prefix.end(), encoded.begin(), encoded.end());
+  }
+  const auto tail = Record::commitRecord(7).encode();
+  for (size_t kept = 0; kept < tail.size(); ++kept) {
+    SCOPED_TRACE(kept);
+    auto bytes = prefix;
+    bytes.insert(bytes.end(), tail.begin(), tail.begin() + kept);
+    FileObj::create_and_write(old_path.string(), bytes);
+
+    ASSERT_EQ(WAL::recover(test_dir, 0), expected);
+    EXPECT_EQ(WAL::recover(test_dir, 0), expected);
+    auto old_file = FileObj::open(old_path.string());
+    EXPECT_EQ(old_file.size(), bytes.size());
+    EXPECT_EQ(old_file.read_to_slice(0, bytes.size()), bytes);
+    EXPECT_EQ(read_wal_records(new_path), committed);
+  }
+}
+
+// 目的：完整记录的非法长度、操作类型和字段长度仍要报错，不能当作尾部缺失。
+// 即使该 ID 已被检查点覆盖，也不能让完整记录的格式错误悄悄通过。
+TEST_F(WALTest, RecoverRejectsMalformedCompleteRecords) {
+  auto short_header = Record::createRecord(7).encode();
+  short_header[0] = 10;
+  auto unknown_type = Record::createRecord(7).encode();
+  unknown_type[10] = 255;
+  auto invalid_string = Record::putRecord(7, "key", "value").encode();
+  invalid_string[11] = 250;
+  const std::vector<std::vector<uint8_t>> malformed = {
+      short_header, unknown_type, invalid_string};
+  const auto path = std::filesystem::path(test_dir) / "wal.0";
+
+  for (size_t i = 0; i < malformed.size(); ++i) {
+    SCOPED_TRACE(i);
+    FileObj::create_and_write(path.string(), malformed[i]);
+    EXPECT_THROW(WAL::recover(test_dir, 0), std::runtime_error);
+    EXPECT_THROW(WAL::recover(test_dir, 7), std::runtime_error);
+    auto file = FileObj::open(path.string());
+    EXPECT_EQ(file.read_to_slice(0, file.size()), malformed[i]);
+  }
+}
+
+// 目的：路径指向普通文件、或日志数字序号超过 uint64_t 时，明确报告错误。
+// 不把无法识别顺序的日志静默跳过，也不把错误路径当作没有日志的新库。
+TEST_F(WALTest, RecoverRejectsOverflowingSequenceAndNonDirectory) {
+  const auto dir = std::filesystem::path(test_dir);
+  const auto not_dir = dir / "not_a_directory";
+  FileObj::create_and_write(not_dir.string(), {});
+  EXPECT_THROW(WAL::recover(not_dir.string(), 0),
+               std::filesystem::filesystem_error);
+
+  write_wal_records(dir / "wal.18446744073709551616",
+                    {Record::createRecord(7)});
+  EXPECT_THROW(WAL::recover(test_dir, 0), std::out_of_range);
 }
 
 TEST_F(WALTest, PartialFlushRecoveryTest) {

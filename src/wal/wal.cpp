@@ -204,9 +204,10 @@ WAL::recover(const std::string &log_dir, uint64_t checkpoint_tranc_id) {
       if (remaining < sizeof(uint16_t))
         break; 
 
-      // 长度按小端存储：
-      // 第一个字节占低 8 位，第二个字节左移 8 位后拼接
-      const size_t record_len = static_cast<size_t>(data[valid_bytes]) | (static_cast<size_t>(valid_bytes + 1) << 8); 
+      // 读取长度字段的两个字节：
+      // data[valid_bytes] 是低位字节
+      // data[valid_bytes + 1] 是高位字节，左移 8 位后拼接
+      const size_t record_len = static_cast<size_t>(data[valid_bytes]) | (static_cast<size_t>(data[valid_bytes + 1]) << 8); 
 
       // 已经读到了完整长度字段，却声明连公共头都放不下
       // 属于非法记录，不能按普通的尾部缺失忽略
