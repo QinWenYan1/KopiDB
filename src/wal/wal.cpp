@@ -163,6 +163,15 @@ WAL::recover(const std::string &log_dir, uint64_t checkpoint_tranc_id) {
     const uint64_t seq = std::stoull(suffix); 
     wal_files.emplace_back(seq, entry.path().string()); 
   }
+
+  // 3. 按数字序号读取：wal.2 必须先于 wal.10
+  // 一个事务可能跨文件写入，顺序颠倒会改变它的操作顺序
+  std::sort(wal_files.begin(), wal_files.end()); 
+
+  // Record 公共头：总长度 2B + 事务 ID 8B + 操作类型 1B
+  constexpr size_t header_size = sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t); 
+
+
   // ? 3. 按 seq 升序排序
   // ? 4. 逐文件读取所有 Record (Record::decode)
   // ?    仅保留 tranc_id > checkpoint_tranc_id 的记录
