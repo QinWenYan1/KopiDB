@@ -206,6 +206,28 @@ WAL::recover(const std::string &log_dir, uint64_t checkpoint_tranc_id) {
       // 长度按小端存储：
       // 第一个字节占低 8 位，第二个字节左移 8 位后拼接
       const size_t record_len = static_cast<size_t>(data[valid_bytes]) | (static_cast<size_t>(valid_bytes + 1) << 8); 
+
+      // 已经读到了完整长度字段，却声明连公共头都放不下
+      // 属于非法记录，不能按普通的尾部缺失忽略
+      if (record_len < header_size)
+        throw std::runtime_error(
+            "WAL::recover: invalid record length: " + path);
+
+      // 声明需要的字节没有全部写入文件，停在这条记录之前
+      if (record_len > remaining)
+          break; 
+      
+      valid_bytes += record_len; 
+    }
+
+    if (valid_bytes != data.size()){
+      spdlog::warn(
+          "WAL::recover: ignoring {} incomplete tail bytes in {}",
+          data.size() - valid_bytes, path);
+    
+      // 只缩短内存中的读取缓冲，不修改原文件
+      // 旧日志会保留，因此后续重启还可能遇到同一段残缺尾部
+      data.resize(valid_bytes);
     }
   }
   // ?    仅保留 tranc_id > checkpoint_tranc_id 的记录
