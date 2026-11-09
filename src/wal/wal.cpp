@@ -3,6 +3,7 @@
 #include "wal/wal.h"
 #include "spdlog/spdlog.h"
 #include "utils/files.h"
+#include "wal/record.h"
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -229,10 +230,28 @@ WAL::recover(const std::string &log_dir, uint64_t checkpoint_tranc_id) {
       // 旧日志会保留，因此后续重启还可能遇到同一段残缺尾部
       data.resize(valid_bytes);
     }
+
+    // 6. 对完整记录执行原有严格解码
+    // 非法操作类型、字段长度不匹配等错误仍会向上传递
+    auto records = Record::decode(data); 
+
+    for (auto &record : records){
+      const uint64_t tranc_id = record.getTrancId(); 
+
+      // 检查点覆盖的事务无需再次收集
+      // 仅保留 tranc_id > checkpoint_tranc_id 的记录
+      if (tranc_id <= checkpoint_tranc_id)
+        continue; 
+
+      // 文件按序读取，文件内记录也按序解码
+      // 因此同一个事务的多次 PUT、DELETE 和结束记录不会乱序
+      //
+      // 此处保留 COMMIT、ROLLBACK，以及没有结束记录的事务
+      // 下一层管理器负责判断状态，这里只负责收集
+      tranc_records[tranc_id].push_back(std::move(record)); 
+    }
   }
-  // ?    仅保留 tranc_id > checkpoint_tranc_id 的记录
-  // ? 5. 返回 map<tranc_id, records>
-  return {};
+  return tranc_records; 
 }
 
 // Lab 5.4 强制刷盘
