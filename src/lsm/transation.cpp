@@ -5,6 +5,7 @@
 #include "spdlog/spdlog.h"
 #include "utils/files.h"
 #include "wal/record.h"
+#include "wal/wal.h"
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -13,6 +14,8 @@
 #include <sys/types.h>
 #include <utility>
 #include <vector>
+#include <algorithm>
+#include <limits>
 
 namespace tiny_lsm {
 
@@ -1099,16 +1102,27 @@ std::string TranManager::get_tranc_id_file_path() {
   return data_dir_ + "/tranc_id";
 }
 
+// 本函数用于启动恢复：此时还没有对外接收事务
+// 也尚未创建本次运行使用的新 WAL
 std::map<uint64_t, std::vector<Record>> TranManager::check_recover() {
   spdlog::info("TranManager--check_recover(): Starting recovery from WAL");
 
-  std::map<uint64_t, std::vector<Record>> wal_records =
-      WAL::recover(data_dir_, *flushedTrancIds_.begin());
+  // 1. 保护管理器的事务状态
+  std::lock_guard<std::mutex> lock(mutex_); 
 
-  spdlog::info("TranManager--check_recover(): Recovered {} transactions",
-               wal_records.size());
+  uint64_t next_id = nextTransactionId_.load(); 
+  // flushed 集合至少包含一个检查点，初始值为 0
+  // next_id 从 1 开始；出现 0 时不能继续分配事务 ID
+  if (flushedTrancIds_.empty() || next_id == 0)
+    throw std::logic_error(
+        "TranManager::check_recover: invalid transaction state");
 
-  return wal_records;
+  // 2. 使用“连续检查点”收集日志
+  // 例如 flushed 为 {2, 4}，表示 3 尚未确认完成
+  // 必须传入 2，不能传入最大的 4，否则会漏掉事务 3
+  const uint64_t checkpoint = *flushedTrancIds_.begin(); 
+  auto wal_records = WAL::recover(data_dir_, checkpoint); 
+
 }
 
 // Lab 5.4
