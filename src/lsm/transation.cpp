@@ -1102,27 +1102,31 @@ std::string TranManager::get_tranc_id_file_path() {
   return data_dir_ + "/tranc_id";
 }
 
-// 本函数用于启动恢复：此时还没有对外接收事务
-// 也尚未创建本次运行使用的新 WAL
+// 读取检查点之后的候选 WAL 记录，并返回给启动流程。
+// 上层继续判断事务状态和刷盘情况，再决定是否重放。
+// 本函数不直接把日志中的修改写入数据库。
 std::map<uint64_t, std::vector<Record>> TranManager::check_recover() {
   spdlog::info("TranManager--check_recover(): Starting recovery from WAL");
 
-  // 1. 保护管理器的事务状态
-  std::lock_guard<std::mutex> lock(mutex_); 
+  // 1. 管理器构造时已经读取了事务状态文件。
+  // 这里取“连续处理完成”的检查点。
+  // 例如 flushed 为 {2, 4}，检查点是 2，不能漏掉尚未完成的事务 3。
+  const uint64_t checkpoint = get_checkpoint_tranc_id();
 
-  uint64_t next_id = nextTransactionId_.load(); 
-  // flushed 集合至少包含一个检查点，初始值为 0
-  // next_id 从 1 开始；出现 0 时不能继续分配事务 ID
-  if (flushedTrancIds_.empty() || next_id == 0)
-    throw std::logic_error(
-        "TranManager::check_recover: invalid transaction state");
+  // 2. 收集检查点之后的日志。
+  // recover 是静态函数，所以此时不需要先创建 WAL 对象。
+  // 文件读取失败时，异常直接向上传递，不能当作“没有日志”。
+  auto records = WAL::recover(data_dir_, checkpoint);
 
-  // 2. 使用“连续检查点”收集日志
-  // 例如 flushed 为 {2, 4}，表示 3 尚未确认完成
-  // 必须传入 2，不能传入最大的 4，否则会漏掉事务 3
-  const uint64_t checkpoint = *flushedTrancIds_.begin(); 
-  auto wal_records = WAL::recover(data_dir_, checkpoint); 
+  spdlog::info(
+      "TranManager--check_recover(): Found {} transaction groups after "
+      "checkpoint {}",
+      records.size(), checkpoint);
 
+  // 3. 将候选日志交给上层启动流程。
+  // 返回结果仍可能包含回滚、未结束和零散已刷盘的事务，
+  // 后续根据事务状态判断哪些需要重放。
+  return records;
 }
 
 // Lab 5.4
