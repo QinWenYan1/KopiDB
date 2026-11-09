@@ -652,18 +652,15 @@ TranManager::TranManager(std::string data_dir)
 void TranManager::init_new_wal() {
   spdlog::info("TranManager--init_new_wal(): Cleaning up old WAL files");
 
-  // TODO: 1 和 4096 应该统一用宏定义
-  // 先清理掉所有 wal. 开头的文件, 因为其已经被重放过了
-  for (const auto &entry : std::filesystem::directory_iterator(data_dir_)) {
-    if (entry.path().filename().string().find("wal.") == 0) {
-      std::filesystem::remove(entry.path());
-    }
-  }
-  wal = std::make_shared<WAL>(data_dir_, 128, get_max_flushed_tranc_id(), 1,
-                              4096);
-  flushedTrancIds_.clear();
-  flushedTrancIds_.insert(nextTransactionId_.load() - 1);
-  spdlog::info("TranManager--init_new_wal(): New WAL initialized");
+  // 1. 取得连续处理完成的检查点
+  // 例如 flushed 为 {2, 4}，这里使用 2
+  // 事务 3 尚未确认完成，不能让清理线程提前删除它的日志
+  const uint64_t checkpoint = get_checkpoint_tranc_id(); 
+
+  // 2. 沿用当前 WAL 参数，明确每个数字的含义
+  constexpr size_t buffer_size = 128;         // 缓冲阈值：128 条记录
+  constexpr uint64_t clean_interval = 1;      // 清理线程每隔 1 秒检查一次
+  constexpr uint64_t file_size_limit = 4096;  // 文件轮换阈值：4096 字节
 }
 
 void TranManager::set_engine(std::shared_ptr<LSMEngine> engine) {
