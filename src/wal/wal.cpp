@@ -128,11 +128,41 @@ WAL::~WAL() {
   log_file_.close();
 }
 
+// Lab 5.5 检查需要重放的WAL日志
 std::map<uint64_t, std::vector<Record>>
 WAL::recover(const std::string &log_dir, uint64_t checkpoint_tranc_id) {
-  // TODO: Lab 5.5 检查需要重放的WAL日志
-  // ? 1. 若 log_dir 不存在则直接返回空 map
-  // ? 2. 遍历目录找到所有 "wal." 前缀的文件
+  std::map<uint64_t, std::vector<Record>> tranc_records; 
+
+  // 1. 与 WAL 构造函数保持一致：空路径表示当前目录
+  // 新数据库可能还没有日志目录，此时没有记录需要恢复
+  const std::filesystem::path dir = log_dir.empty() ? "." : log_dir; 
+  if (!std::filesystem::exists(dir))
+    return tranc_records; 
+
+  
+  // 2. 收集日志文件，同时解析文件序号
+  // pair.first 保存数字序号，pair.second 保存完整路径
+  // 提前解析一次，避免排序过程中反复转换字符串
+  std::vector<std::pair<uint64_t, std::string>> wal_files;
+  
+  for (const auto &entry : std::filesystem::directory_iterator(dir)){
+    if (!entry.is_regular_file())
+      continue; 
+  
+    const std::string name = entry.path().filename().string(); 
+    if (!name.starts_with("wal."))
+      continue; 
+
+    // 与写入端使用相同的文件识别规则：
+    // wal.2、wal.10 是日志；wal.backup、wal. 都不参与恢复
+    const std::string suffix = name.substr(4); 
+    if (suffix.empty() || !std::all_of(suffix.begin(), suffix.end(), [](char ch){return '0' <= ch && ch <= '9';}))
+      continue; 
+    
+    // 超出整数范围时直接报错，不能随意忽略可能需要恢复的日志
+    const uint64_t seq = std::stoull(suffix); 
+    wal_files.emplace_back(seq, entry.path().string()); 
+  }
   // ? 3. 按 seq 升序排序
   // ? 4. 逐文件读取所有 Record (Record::decode)
   // ?    仅保留 tranc_id > checkpoint_tranc_id 的记录
