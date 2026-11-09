@@ -5,6 +5,7 @@
 #include "utils/files.h"
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
@@ -168,12 +169,45 @@ WAL::recover(const std::string &log_dir, uint64_t checkpoint_tranc_id) {
   // 一个事务可能跨文件写入，顺序颠倒会改变它的操作顺序
   std::sort(wal_files.begin(), wal_files.end()); 
 
+  // 4. 逐文件读取所有 Record (Record::decode)
   // Record 公共头：总长度 2B + 事务 ID 8B + 操作类型 1B
   constexpr size_t header_size = sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t); 
+  for (const auto &wal_file : wal_files) {
+    const std::string &path = wal_file.second; 
 
+    auto file = FileObj::open(path , false); 
+    const size_t file_size = file.size(); 
 
-  // ? 3. 按 seq 升序排序
-  // ? 4. 逐文件读取所有 Record (Record::decode)
+    // 底层 tellg() 失败返回 -1，转换成 size_t 后成为最大值
+    // 必须先识别失败，不能拿这个值去分配读取缓冲区
+    if (file_size == std::numeric_limits<size_t>::max())
+      throw std::runtime_error("WAL::recover: failed to read file size: " + path); 
+
+    if (file_size == 0)
+      continue; 
+
+    auto data = file.read_to_slice(0, file_size); 
+
+    // 5. 找出文件开头连续、完整的记录占用了多少字节。
+    //
+    // 例如：[完整 CREATE][完整 PUT][写了一半的 COMMIT]
+    // 前两条可以解码，最后半条不能当作提交成功。
+    //
+    // Record::decode 仍保持严格检查；这里先处理文件尾部缺失。
+    // 一条记录不会跨 WAL 文件，不能从下一个文件拼接补齐
+    size_t valid_bytes = 0; 
+    while (valid_bytes < data.size()){
+      const size_t remaining = data.size() - valid_bytes; 
+
+      // 连 2B 长度字段都没写完，说明剩下的是半条尾记录
+      if (remaining < sizeof(uint16_t))
+        break; 
+
+      // 长度按小端存储：
+      // 第一个字节占低 8 位，第二个字节左移 8 位后拼接
+      const size_t record_len = static_cast<size_t>(data[valid_bytes]) | (static_cast<size_t>(valid_bytes + 1) << 8); 
+    }
+  }
   // ?    仅保留 tranc_id > checkpoint_tranc_id 的记录
   // ? 5. 返回 map<tranc_id, records>
   return {};
