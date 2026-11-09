@@ -2357,6 +2357,106 @@ TEST_F(TranManagerRecoveryTest,
   EXPECT_EQ(file.read_to_slice(0, file.size()), malformed);
 }
 
+// 目的：初始化会使用旧文件之后的新序号，旧日志保留，新 WAL 能实际写入。
+// 保存启动状态后再初始化，整个过程不能重置刷盘集合或修改事务 ID。
+TEST_F(TranManagerRecoveryTest, InitWalPreservesOldLogsAndWritesNewFile) {
+  const auto dir = std::filesystem::path(test_dir);
+  const std::vector<Record> old2 = {
+      Record::createRecord(7), Record::putRecord(7, "old", "value")};
+  const std::vector<Record> old10 = {Record::commitRecord(7)};
+  write_wal_records(dir / "wal.2", old2);
+  write_wal_records(dir / "wal.10", old10);
+  TranManager manager(test_dir);
+  for (uint64_t id = 1; id <= 7; ++id)
+    ASSERT_EQ(manager.getNextTransactionId(), id);
+  manager.write_tranc_id_file();
+
+  manager.init_new_wal();
+  EXPECT_TRUE(std::filesystem::exists(dir / "wal.11"));
+  EXPECT_EQ(read_wal_records(dir / "wal.2"), old2);
+  EXPECT_EQ(read_wal_records(dir / "wal.10"), old10);
+  EXPECT_EQ(manager.get_checkpoint_tranc_id(), 0u);
+  EXPECT_EQ(manager.get_max_flushed_tranc_id(), 0u);
+  EXPECT_EQ(manager.getNextTransactionId(), 8u);
+
+  const std::vector<Record> fresh = {
+      Record::createRecord(8), Record::putRecord(8, "new", "value"),
+      Record::commitRecord(8)};
+  ASSERT_TRUE(manager.write_to_wal(fresh));
+  EXPECT_EQ(read_wal_records(dir / "wal.11"), fresh);
+}
+
+// 目的：flushed={2,4} 时，后台清理只能使用连续检查点 2。
+// 等待真实清理线程删除覆盖范围内的日志，同时确认事务 3、4、5 的日志仍在。
+// 初始化前保存完整状态，清理线程才能依据该检查点安全工作。
+TEST_F(TranManagerRecoveryTest, InitWalCleanerUsesSavedContinuousCheckpoint) {
+  const auto dir = std::filesystem::path(test_dir);
+  TranManager manager(test_dir);
+  for (uint64_t id = 1; id <= 6; ++id)
+    ASSERT_EQ(manager.getNextTransactionId(), id);
+  for (uint64_t id = 1; id <= 4; ++id)
+    manager.add_ready_to_flush_tranc_id(id, TransactionState::OP_COMMITTED);
+  manager.add_flushed_tranc_id(1);
+  manager.add_flushed_tranc_id(2);
+  manager.add_flushed_tranc_id(4);
+  manager.add_ready_to_flush_tranc_id(5, TransactionState::ABORTED);
+  manager.write_tranc_id_file();
+  const auto read_state = [&] {
+    auto file = FileObj::open((dir / "tranc_id").string());
+    return file.read_to_slice(0, file.size());
+  };
+  const auto saved_state = read_state();
+  const auto saved_flushed = manager.get_flushed_tranc_ids();
+  write_wal_records(dir / "wal.0",
+                    {Record::createRecord(1), Record::commitRecord(1)});
+  const std::vector<Record> pending3 = {
+      Record::createRecord(3), Record::commitRecord(3)};
+  const std::vector<Record> flushed4 = {
+      Record::createRecord(4), Record::commitRecord(4)};
+  const std::vector<Record> aborted5 = {
+      Record::createRecord(5), Record::rollbackRecord(5)};
+  write_wal_records(dir / "wal.1", pending3);
+  write_wal_records(dir / "wal.2", flushed4);
+  write_wal_records(dir / "wal.3", aborted5);
+
+  manager.init_new_wal();
+  ASSERT_TRUE(wait_for_wal_condition([&] {
+    return !std::filesystem::exists(dir / "wal.0");
+  }));
+  EXPECT_EQ(read_wal_records(dir / "wal.1"), pending3);
+  EXPECT_EQ(read_wal_records(dir / "wal.2"), flushed4);
+  EXPECT_EQ(read_wal_records(dir / "wal.3"), aborted5);
+  EXPECT_TRUE(std::filesystem::exists(dir / "wal.4"));
+  EXPECT_EQ(manager.get_flushed_tranc_ids(), saved_flushed);
+  EXPECT_EQ(manager.get_checkpoint_tranc_id(), 2u);
+  EXPECT_TRUE(manager.is_aborted(5));
+  EXPECT_EQ(read_state(), saved_state);
+  manager.write_tranc_id_file();
+  EXPECT_EQ(read_state(), saved_state);
+  EXPECT_EQ(manager.getNextTransactionId(), 7u);
+}
+
+// 目的：新日志文件创建失败时抛异常，保留旧 WAL 和事务状态，不假装初始化成功。
+// 用同名目录占住下一文件路径，触发真实文件打开失败，无需依赖权限或磁盘空间。
+TEST_F(TranManagerRecoveryTest, InitWalFileFailurePreservesLogsAndState) {
+  const auto dir = std::filesystem::path(test_dir);
+  const std::vector<Record> old = {
+      Record::createRecord(7), Record::commitRecord(7)};
+  write_wal_records(dir / "wal.2", old);
+  std::filesystem::create_directory(dir / "wal.3");
+  TranManager manager(test_dir);
+  for (uint64_t id = 1; id <= 7; ++id)
+    ASSERT_EQ(manager.getNextTransactionId(), id);
+  manager.write_tranc_id_file();
+
+  EXPECT_THROW(manager.init_new_wal(), std::runtime_error);
+  EXPECT_FALSE(manager.write_to_wal({Record::createRecord(8)}));
+  EXPECT_EQ(read_wal_records(dir / "wal.2"), old);
+  EXPECT_TRUE(std::filesystem::is_directory(dir / "wal.3"));
+  EXPECT_EQ(manager.get_checkpoint_tranc_id(), 0u);
+  EXPECT_EQ(manager.getNextTransactionId(), 8u);
+}
+
 TEST_F(WALTest, PartialFlushRecoveryTest) {
   {
     LSM lsm(test_dir);
