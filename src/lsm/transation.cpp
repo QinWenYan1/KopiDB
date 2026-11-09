@@ -661,6 +661,23 @@ void TranManager::init_new_wal() {
   constexpr size_t buffer_size = 128;         // 缓冲阈值：128 条记录
   constexpr uint64_t clean_interval = 1;      // 清理线程每隔 1 秒检查一次
   constexpr uint64_t file_size_limit = 4096;  // 文件轮换阈值：4096 字节
+
+  // 3. 创建本次运行使用的 WAL
+  //
+  // WAL 构造函数已经负责选择新文件序号：
+  // 例如已有 wal.2、wal.10，就创建 wal.11，保留旧文件内容
+  // 这里直接复用，不再次扫描或删除旧日志
+  //
+  // 调用前，上层启动流程必须已成功保存与 checkpoint 对应的事务状态
+  // 因为构造完成后清理线程就会开始工作，可能删除检查点覆盖的旧日志
+  // “先保存状态，再调用本函数”的顺序将在 LSM 构造函数中接通
+  wal = std::make_shared<WAL>(data_dir_, buffer_size, checkpoint, clean_interval, file_size_limit); 
+
+  // 此处保持原来的刷盘集合和事务 ID。
+  // 数据是否已经进入 SST，由真实的刷盘流程登记。
+  spdlog::info(
+      "TranManager--init_new_wal(): New WAL initialized, checkpoint={}",
+      checkpoint);
 }
 
 void TranManager::set_engine(std::shared_ptr<LSMEngine> engine) {
