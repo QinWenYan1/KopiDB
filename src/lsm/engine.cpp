@@ -932,6 +932,17 @@ void LSMEngine::set_tran_manager(std::shared_ptr<TranManager> tran_manager) {
 LSM::LSM(std::string path)
     : engine(std::make_shared<LSMEngine>(path)),
       tran_manager_(std::make_shared<TranManager>(path)) {
+  // 初始化列表已经创建了两个组件：
+  // Engine 加载已有 SST，TranManager 读取已有事务状态
+  // 此时还没有对外接收操作，也没有启动新的 WAL 清理线程
+
+  // 1. 绑定组件
+  // 管理器创建事务时需要 Engine
+  // Engine 查询回滚状态、报告刷盘结果时需要管理器
+  tran_manager_->set_engine(engine);
+  engine->set_tran_manager(tran_manager_); 
+
+  
   // TODO: Lab 5.5 控制WAL重放与组件的初始化
   // ? 1. 绑定 tran_manager 与 engine: 互相 set
   // ? 2. 调用 tran_manager_->check_recover() 获取需要重放的事务记录
