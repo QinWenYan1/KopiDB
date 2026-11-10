@@ -929,6 +929,7 @@ void LSMEngine::set_tran_manager(std::shared_ptr<TranManager> tran_manager) {
 }
 
 // *********************** LSM ***********************
+  // Lab 5.5 控制WAL重放与组件的初始化
 LSM::LSM(std::string path)
     : engine(std::make_shared<LSMEngine>(path)),
       tran_manager_(std::make_shared<TranManager>(path)) {
@@ -942,8 +943,27 @@ LSM::LSM(std::string path)
   tran_manager_->set_engine(engine);
   engine->set_tran_manager(tran_manager_); 
 
-  
-  // TODO: Lab 5.5 控制WAL重放与组件的初始化
+  // 2. 读取候选日志，再恢复管理器状态
+  // 先记住哪些事务已取消，以及下一个可用 ID
+  // 后面才能正确决定哪些数据需要重放
+  const auto recovery_records = tran_manager_->check_recover(); 
+  tran_manager_->restore_recovery_state(recovery_records); 
+
+  // 3. 按事务 ID 依次处理候选记录
+  for (const auto &[tranc_id, records] : recovery_records) {
+    // 已经处理完成或已经取消的事务不重放
+    //
+    // 这里同时检查连续检查点和零散刷盘集合：
+    // 例如 flushed 原来为 {2, 4, 5}，重放事务 3 时可能触发刷盘
+    // 集合随后压缩成 {5}，此时虽然 contains(4) 为 false
+    // 但 4 <= checkpoint(5)，仍然应当跳过
+    if (tranc_id <= tran_manager_->get_checkpoint_tranc_id() || 
+        tran_manager_->get_flushed_tranc_ids().contains(tranc_id) ||
+        tran_manager_->is_aborted(tranc_id))
+      continue; 
+  }
+
+
   // ? 1. 绑定 tran_manager 与 engine: 互相 set
   // ? 2. 调用 tran_manager_->check_recover() 获取需要重放的事务记录
   // ? 3. 遍历返回的 map<tranc_id, records>:
