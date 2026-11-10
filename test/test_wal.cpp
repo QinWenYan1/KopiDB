@@ -2457,6 +2457,183 @@ TEST_F(TranManagerRecoveryTest, InitWalFileFailurePreservesLogsAndState) {
   EXPECT_EQ(manager.getNextTransactionId(), 8u);
 }
 
+// 目的：恢复提交、回滚和未结束三种事务，并让 next ID 越过全部已使用编号。
+// 已提交事务只进入待刷盘集合；真正收到刷盘通知之前，检查点不能提前推进。
+TEST_F(TranManagerRecoveryTest, RestoreClassifiesTransactionsAndAdvancesId) {
+  const auto dir = std::filesystem::path(test_dir);
+  TranManager manager(test_dir);
+  for (uint64_t id = 1; id <= 2; ++id) {
+    ASSERT_EQ(manager.getNextTransactionId(), id);
+    manager.add_ready_to_flush_tranc_id(id, TransactionState::OP_COMMITTED);
+    manager.add_flushed_tranc_id(id);
+  }
+  manager.write_tranc_id_file();
+  const auto read_state = [&] {
+    auto file = FileObj::open((dir / "tranc_id").string());
+    return file.read_to_slice(0, file.size());
+  };
+  const auto saved_state = read_state();
+  const std::vector<Record> log = {
+      Record::createRecord(3), Record::putRecord(3, "committed", "value"),
+      Record::commitRecord(3), Record::createRecord(4),
+      Record::putRecord(4, "cancelled", "value"), Record::rollbackRecord(4),
+      Record::createRecord(5), Record::putRecord(5, "unfinished", "value")};
+  write_wal_records(dir / "wal.0", log);
+  const auto records = manager.check_recover();
+
+  manager.restore_recovery_state(records);
+  EXPECT_FALSE(manager.is_aborted(3));
+  EXPECT_TRUE(manager.is_aborted(4));
+  EXPECT_TRUE(manager.is_aborted(5));
+  EXPECT_EQ(manager.get_checkpoint_tranc_id(), 2u);
+  EXPECT_EQ(manager.get_max_flushed_tranc_id(), 2u);
+  EXPECT_EQ(manager.getNextTransactionId(), 6u);
+  EXPECT_EQ(read_state(), saved_state);
+  EXPECT_EQ(read_wal_records(dir / "wal.0"), log);
+  EXPECT_EQ(manager.check_recover(), records);
+
+  // 通知 5 时可以结算已取消的 4、5，但提交事务 3 仍等待自己的通知。
+  manager.add_flushed_tranc_id(5);
+  EXPECT_EQ(manager.get_checkpoint_tranc_id(), 2u);
+  EXPECT_TRUE(manager.get_flushed_tranc_ids().contains(4));
+  EXPECT_TRUE(manager.get_flushed_tranc_ids().contains(5));
+  manager.add_flushed_tranc_id(3);
+  EXPECT_EQ(manager.get_checkpoint_tranc_id(), 5u);
+  EXPECT_TRUE(manager.is_aborted(4));
+  EXPECT_TRUE(manager.is_aborted(5));
+}
+
+// 目的：保留状态文件已有的回滚名单、零散刷盘 ID 和更大的 next ID。
+// 重复恢复结果不变；已经结算的 4 不能重新进入待处理表。
+TEST_F(TranManagerRecoveryTest, RestorePreservesSavedStateAndIsRepeatable) {
+  const auto dir = std::filesystem::path(test_dir);
+  TranManager manager(test_dir);
+  for (uint64_t id = 1; id <= 7; ++id)
+    ASSERT_EQ(manager.getNextTransactionId(), id);
+  manager.add_ready_to_flush_tranc_id(1, TransactionState::ABORTED);
+  manager.add_ready_to_flush_tranc_id(2, TransactionState::OP_COMMITTED);
+  manager.add_flushed_tranc_id(2);
+  manager.add_ready_to_flush_tranc_id(4, TransactionState::OP_COMMITTED);
+  manager.add_flushed_tranc_id(4);
+  manager.add_ready_to_flush_tranc_id(5, TransactionState::ABORTED);
+  const auto saved_flushed = manager.get_flushed_tranc_ids();
+  write_wal_records(dir / "wal.0",
+                    {Record::createRecord(3), Record::commitRecord(3),
+                     Record::createRecord(4), Record::commitRecord(4),
+                     Record::createRecord(6)});
+  const auto records = manager.check_recover();
+  const auto read_state = [&] {
+    auto file = FileObj::open((dir / "tranc_id").string());
+    return file.read_to_slice(0, file.size());
+  };
+
+  manager.restore_recovery_state(records);
+  manager.write_tranc_id_file();
+  const auto restored_state = read_state();
+  manager.restore_recovery_state(records);
+  manager.write_tranc_id_file();
+  EXPECT_EQ(read_state(), restored_state);
+  EXPECT_EQ(manager.get_flushed_tranc_ids(), saved_flushed);
+  EXPECT_TRUE(manager.is_aborted(1));
+  EXPECT_TRUE(manager.is_aborted(5));
+  EXPECT_TRUE(manager.is_aborted(6));
+  EXPECT_FALSE(manager.is_aborted(3));
+  EXPECT_FALSE(manager.is_aborted(4));
+
+  // 如果恢复误把 4 再次登记为 ready，这次通知就会改变状态文件。
+  manager.add_flushed_tranc_id(4);
+  manager.write_tranc_id_file();
+  EXPECT_EQ(read_state(), restored_state);
+  EXPECT_EQ(manager.getNextTransactionId(), 8u);
+}
+
+// 目的：没有候选日志时保持原有进度和回滚名单，不能重置成“新数据库”。
+TEST_F(TranManagerRecoveryTest, RestoreEmptyCandidatesPreservesState) {
+  const auto dir = std::filesystem::path(test_dir);
+  TranManager manager(test_dir);
+  ASSERT_EQ(manager.getNextTransactionId(), 1u);
+  manager.add_ready_to_flush_tranc_id(1, TransactionState::ABORTED);
+  manager.write_tranc_id_file();
+  auto file = FileObj::open((dir / "tranc_id").string());
+  const auto saved_state = file.read_to_slice(0, file.size());
+
+  manager.restore_recovery_state({});
+  EXPECT_TRUE(manager.is_aborted(1));
+  EXPECT_EQ(manager.get_checkpoint_tranc_id(), 0u);
+  manager.write_tranc_id_file();
+  auto after = FileObj::open((dir / "tranc_id").string());
+  EXPECT_EQ(after.read_to_slice(0, after.size()), saved_state);
+  EXPECT_EQ(manager.getNextTransactionId(), 2u);
+}
+
+// 目的：WAL 中出现 uint64_t 最大 ID 时，不能加一回绕到 0。
+// 在登记任何新事务前报错，并保持已有状态和 ID 分配器不变。
+TEST_F(TranManagerRecoveryTest, RestoreRejectsIdOverflowBeforeChangingState) {
+  const auto dir = std::filesystem::path(test_dir);
+  TranManager manager(test_dir);
+  ASSERT_EQ(manager.getNextTransactionId(), 1u);
+  manager.add_ready_to_flush_tranc_id(1, TransactionState::ABORTED);
+  manager.write_tranc_id_file();
+  auto file = FileObj::open((dir / "tranc_id").string());
+  const auto saved_state = file.read_to_slice(0, file.size());
+  const auto max_id = std::numeric_limits<uint64_t>::max();
+  write_wal_records(dir / "wal.0", {Record::createRecord(max_id)});
+  const auto records = manager.check_recover();
+
+  EXPECT_THROW(manager.restore_recovery_state(records), std::overflow_error);
+  EXPECT_TRUE(manager.is_aborted(1));
+  EXPECT_FALSE(manager.is_aborted(max_id));
+  manager.write_tranc_id_file();
+  auto after = FileObj::open((dir / "tranc_id").string());
+  EXPECT_EQ(after.read_to_slice(0, after.size()), saved_state);
+  EXPECT_EQ(manager.getNextTransactionId(), 2u);
+}
+
+// 目的：取消／未结束事务的值和墓碑已经在 SST 中时，恢复名单仍能让它们失效。
+// 直接准备存储层记录，验收管理器与 SST 查询的衔接；不冒充 LSM 启动流程已完成。
+TEST_F(TranManagerRecoveryTest, RestoreFiltersInvalidVersionsAlreadyInSst) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = std::make_shared<TranManager>(test_dir);
+  manager->set_engine(engine);
+  engine->set_tran_manager(manager);
+  engine->put("changed", "old", 1);
+  engine->put("deleted", "old", 1);
+  engine->put("unfinished", "old", 1);
+  engine->put("changed", "dirty", 3);
+  engine->remove("deleted", 3);
+  engine->put("new", "dirty", 3);
+  engine->put("unfinished", "dirty", 4);
+  while (engine->memtable.get_total_size() > 0)
+    engine->flush();
+  for (const char *key : {"changed", "unfinished"}) {
+    const auto result = engine->get(key, 0);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result->first, "dirty");
+  }
+
+  write_wal_records(std::filesystem::path(test_dir) / "wal.0",
+                    {Record::createRecord(3),
+                     Record::putRecord(3, "changed", "dirty"),
+                     Record::deleteRecord(3, "deleted"),
+                     Record::putRecord(3, "new", "dirty"),
+                     Record::rollbackRecord(3), Record::createRecord(4),
+                     Record::putRecord(4, "unfinished", "dirty")});
+  manager->restore_recovery_state(manager->check_recover());
+
+  for (const char *key : {"changed", "deleted", "unfinished"}) {
+    SCOPED_TRACE(key);
+    const auto result = engine->get(key, 0);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->first, "old");
+    EXPECT_EQ(result->second, 1u);
+  }
+  EXPECT_FALSE(engine->get("new", 0).has_value());
+  EXPECT_EQ(engine->memtable.get_total_size(), 0u);
+  EXPECT_TRUE(manager->is_aborted(3));
+  EXPECT_TRUE(manager->is_aborted(4));
+  EXPECT_EQ(manager->getNextTransactionId(), 5u);
+}
+
 TEST_F(WALTest, PartialFlushRecoveryTest) {
   {
     LSM lsm(test_dir);
