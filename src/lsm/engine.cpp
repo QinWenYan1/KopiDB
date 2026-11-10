@@ -1014,6 +1014,20 @@ LSM::~LSM() {
 }
 
 std::optional<std::string> LSM::get(const std::string &key) {
+  // 1. 普通查询不创建事务，也不分配新的事务 ID
+  //
+  // 0：不限制版本号大小，由 Engine 选择最大的有效版本
+  // false：沿用普通查询允许读取其他事务未提交修改的约定
+  // 无论是否允许读未提交，Engine 都会排除已回滚版本
+  auto result = engine->get(key, 0, false); 
+
+  // 2. Engine 已经完成版本比较和墓碑处理
+  // 没有找到有效值时，直接向用户返回“不存在”
+  if (result.has_value())
+    return std::nullopt; 
+
+  
+
   auto tranc_id = tran_manager_->getNextTransactionId();
   auto res = engine->get(key, tranc_id);
 
