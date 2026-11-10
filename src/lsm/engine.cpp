@@ -10,6 +10,7 @@
 #include "sst/concact_iterator.h"
 #include "sst/sst.h"
 #include "sst/sst_iterator.h"
+#include "wal/record.h"
 #include <algorithm>
 #include <cstddef>
 #include <filesystem>
@@ -968,7 +969,25 @@ LSM::LSM(std::string path)
         tran_manager_->get_flushed_tranc_ids().contains(tranc_id) ||
         tran_manager_->is_aborted(tranc_id))
       continue; 
+
+    // 4. 按原来的操作顺序，把修改重新应用到数据库
+    //
+    // 使用底层 Engine 接口，沿用日志中的原事务 ID
+    // 不能调用 LSM::put/remove，因为普通入口会分配新的 ID
+    // Engine 内部已有容量检查，需要时会冻结内存表、触发刷盘
+    for (const auto &record : records){
+      const auto type = record.getOperationType(); 
+
+      if (type == OperationType::OP_PUT) {
+        engine->put(record.getKey(), record.getValue(), tranc_id); 
+      } else if (type == OperationType::OP_DELETE) {
+        engine->remove(record.getKey(), tranc_id); 
+      }
+      // CREATE、COMMIT 等记录用于判断事务状态
+      // 不作为用户 key-value 写入
+    }
   }
+
 
   
   // 4. 调用 tran_manager_->init_new_wal() 开启新的 WAL
