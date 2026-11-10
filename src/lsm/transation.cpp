@@ -1169,6 +1169,35 @@ void TranManager::restore_recovery_state(const std::map<uint64_t, std::vector<Re
   if (nextTransactionId_.load() <= max_wal_id)
       nextTransactionId_.store(max_wal_id + 1); 
 
+  // 2. 恢复每笔事务的结束状态
+  // records 来自 check_recover()，每组至少包含一条完整记录
+  for (const auto &[id, operations] : records){
+    // 已经结算的事务保持原状态，不重新放进待处理集合
+    // 例如 flushed 为 {2, 4}，候选日志里的事务 4 在这里跳过
+    if (flushedTrancIds_.contains(id))
+      continue; 
+
+    // 当前写入流程将 COMMIT 或 ROLLBACK 放在事务记录的末尾
+    // 有完整 COMMIT，且没有已有的回滚决定，才登记为已提交
+    //
+    // ROLLBACK 或没有结束记录，都按取消处理：
+    // 进程已经重启，原来的事务上下文无法继续执行了
+    const bool committed = 
+      (operations.back().getOperationType() == OperationType::OP_COMMIT && !is_aborted(id)); 
+    
+    // 3. 复用现有登记接口
+    //
+    // OP_COMMITTED：登记为已提交，等待后续重放、刷盘和结算
+    // ABORTED：同时加入回滚名单，让查询跳过它已经写入 SST 的版本
+    //
+    // 登记接口内部已经加锁，这里不要再获取同一把 mutex
+    add_ready_to_flush_tranc_id(id, committed ? TransactionState::OP_COMMITTED : TransactionState::ABORTED); 
+  }
+
+  spdlog::info(
+      "TranManager--restore_recovery_state(): Processed {} transaction groups, "
+      "next transaction ID={}",
+      records.size(), nextTransactionId_.load());
 }
 
 // Lab 5.4
