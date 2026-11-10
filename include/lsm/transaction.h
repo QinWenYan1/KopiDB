@@ -121,6 +121,11 @@ public:
 
   std::map<uint64_t, std::vector<Record>> check_recover();
 
+  // 启动时根据候选 WAL 记录恢复事务状态和 ID 进度。
+  // records 来自 check_recover()；调用时尚未对外提供服务。
+  void restore_recovery_state(
+      const std::map<uint64_t, std::vector<Record>> &records);
+
   std::string get_tranc_id_file_path();
   void write_tranc_id_file();
   void read_tranc_id_file();
