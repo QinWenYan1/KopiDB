@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <gmock/gmock.h>
@@ -17,6 +18,10 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#ifndef _WIN32
+#include <csignal>
+#include <sys/resource.h>
+#endif
 
 using namespace testing;
 using namespace ::tiny_lsm;
@@ -2633,6 +2638,121 @@ TEST_F(TranManagerRecoveryTest, RestoreFiltersInvalidVersionsAlreadyInSst) {
   EXPECT_TRUE(manager->is_aborted(4));
   EXPECT_EQ(manager->getNextTransactionId(), 5u);
 }
+
+class LSMStartupWALTest : public WALTest {};
+
+// 目的：遇到完整但非法的 WAL 记录，构造失败，不创建新日志或删除旧日志。
+// 不把捕获错误后返回空候选当作一次成功恢复。
+TEST_F(LSMStartupWALTest, MalformedWalStopsStartupAndPreservesLogs) {
+  const auto dir = std::filesystem::path(test_dir);
+  {
+    TranManager saved(test_dir);
+    saved.write_tranc_id_file();
+  }
+  auto malformed = Record::createRecord(7).encode();
+  malformed[10] = 255;
+  FileObj::create_and_write((dir / "wal.0").string(), malformed);
+
+  EXPECT_THROW({ LSM db(test_dir); }, std::runtime_error);
+  EXPECT_FALSE(std::filesystem::exists(dir / "wal.1"));
+  auto file = FileObj::open((dir / "wal.0").string());
+  EXPECT_EQ(file.read_to_slice(0, file.size()), malformed);
+}
+
+#ifndef _WIN32
+// 目的：进程通过 _Exit 退出，不执行 LSM／管理器析构，因此不能依赖正常关闭保存状态。
+// RU 的修改、墓碑和未结束写入已进入 SST；重启必须结合 WAL 恢复取消状态。
+TEST_F(LSMStartupWALTest, ProcessExitRestoresTransactionsWithoutDestructors) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  ASSERT_EXIT(
+      {
+        try {
+          LSM db(test_dir);
+          auto committed = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+          committed->put("changed", "old");
+          committed->put("deleted", "old");
+          if (!committed->commit())
+            std::_Exit(71);
+
+          auto cancelled = db.begin_tran(IsolationLevel::READ_UNOP_COMMITTED);
+          cancelled->put("changed", "dirty");
+          cancelled->remove("deleted");
+          cancelled->put("new", "dirty");
+          db.flush_all();
+          if (!cancelled->abort())
+            std::_Exit(72);
+
+          auto unfinished = db.begin_tran(IsolationLevel::READ_UNOP_COMMITTED);
+          unfinished->put("unfinished", "dirty");
+          db.flush_all();
+          std::_Exit(0);
+        } catch (...) {
+          std::_Exit(73);
+        }
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  for (int restart = 0; restart < 2; ++restart) {
+    SCOPED_TRACE(restart);
+    LSM db(test_dir);
+    auto next = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+    EXPECT_GT(next->tranc_id_, 3u);
+    ASSERT_TRUE(next->abort());
+    EXPECT_EQ(db.get("changed"), std::make_optional(std::string("old")));
+    EXPECT_EQ(db.get("deleted"), std::make_optional(std::string("old")));
+    EXPECT_FALSE(db.get("new").has_value());
+    EXPECT_FALSE(db.get("unfinished").has_value());
+  }
+}
+
+// 目的：恢复后的事务状态保存失败时，不能启动新 WAL 或删除仍需要的旧日志。
+// 用子进程的文件长度限制制造实际写入／刷新失败，不改变父进程的资源限制。
+// 状态文件覆盖失败后的可重试性另行记录，不把“WAL 保留”当作完整故障恢复保证。
+TEST_F(LSMStartupWALTest, StateSaveFailurePreservesWalAndStopsInitialization) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  const auto dir = std::filesystem::path(test_dir);
+  {
+    // 先准备引擎的辅助文件和完整的初始事务状态，再注入文件写失败。
+    auto engine = std::make_shared<LSMEngine>(test_dir);
+    TranManager saved(test_dir);
+    saved.write_tranc_id_file();
+  }
+  const std::vector<Record> records = {
+      Record::createRecord(7), Record::putRecord(7, "survivor", "value"),
+      Record::commitRecord(7)};
+  write_wal_records(dir / "wal.0", records);
+  const auto original_state_size = std::filesystem::file_size(dir / "tranc_id");
+
+  ASSERT_EXIT(
+      {
+        struct rlimit limits;
+        if (getrlimit(RLIMIT_FSIZE, &limits) != 0)
+          std::_Exit(81);
+        limits.rlim_cur = 16;
+        if (std::signal(SIGXFSZ, SIG_IGN) == SIG_ERR ||
+            setrlimit(RLIMIT_FSIZE, &limits) != 0)
+          std::_Exit(82);
+        try {
+          LSM db(test_dir);
+        } catch (const std::exception &e) {
+          const std::string message = e.what();
+          if (message.find("failed to save transaction state") !=
+              std::string::npos)
+            std::_Exit(0);
+          std::_Exit(83);
+        }
+        std::_Exit(84);
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  EXPECT_EQ(read_wal_records(dir / "wal.0"), records);
+  EXPECT_FALSE(std::filesystem::exists(dir / "wal.1"));
+  // 记录本次故障后的文件大小供审计，不把当前的损坏行为写成期望结果。
+  RecordProperty("state_bytes_before", std::to_string(original_state_size));
+  RecordProperty("state_bytes_after",
+                 std::to_string(std::filesystem::file_size(dir / "tranc_id")));
+}
+#endif
 
 TEST_F(WALTest, PartialFlushRecoveryTest) {
   {

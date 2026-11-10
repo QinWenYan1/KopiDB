@@ -4,6 +4,7 @@
 #include "lsm/level_iterator.h"
 #include "sst/concact_iterator.h"
 #include "utils/files.h"
+#include "wal/record.h"
 #include <algorithm>
 #include <cstdlib>
 #include <exception>
@@ -2661,6 +2662,199 @@ TEST_F(LSMTest, TrancIdTest) {
       EXPECT_EQ(res.value().first, "tranc1");
     }
   }
+}
+
+namespace {
+
+// 为启动恢复测试准备真实 WAL 字节，不经过尚未完成的 commit(true) 故障入口。
+void write_startup_wal(const std::filesystem::path &path,
+                       const std::vector<Record> &records) {
+  std::vector<uint8_t> bytes;
+  for (const auto &record : records) {
+    const auto encoded = record.encode();
+    bytes.insert(bytes.end(), encoded.begin(), encoded.end());
+  }
+  FileObj::create_and_write(path.string(), std::move(bytes));
+}
+
+} // namespace
+
+// 目的：首次启动完成组件绑定和 WAL 初始化，用户可以直接通过 begin_tran 操作。
+// 验证事务读到自身暂存修改、其他事务提交前不可见，以及正常提交后的公开读取。
+TEST_F(LSMTest, StartupRecoveryBindsComponentsForExplicitTransactions) {
+  LSM db(test_dir);
+  auto writer = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  auto reader = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  ASSERT_NE(writer, nullptr);
+  ASSERT_NE(reader, nullptr);
+  EXPECT_GT(reader->tranc_id_, writer->tranc_id_);
+
+  writer->put("key", "value");
+  EXPECT_EQ(writer->get("key"), std::make_optional(std::string("value")));
+  EXPECT_FALSE(reader->get("key").has_value());
+  ASSERT_TRUE(writer->commit());
+  EXPECT_EQ(reader->get("key"), std::make_optional(std::string("value")));
+  EXPECT_EQ(db.get("key"), std::make_optional(std::string("value")));
+  ASSERT_TRUE(reader->abort());
+
+  auto file = FileObj::open((std::filesystem::path(test_dir) / "wal.0").string());
+  const auto records = Record::decode(file.read_to_slice(0, file.size()));
+  ASSERT_FALSE(records.empty());
+  EXPECT_EQ(records.back().getTrancId(), writer->tranc_id_);
+  EXPECT_EQ(records.back().getOperationType(), OperationType::OP_COMMIT);
+}
+
+// 目的：从旧 WAL 恢复已提交的 PUT/DELETE，并排除回滚、未结束事务。
+// 重复正常关闭和启动仍保持结果；恢复补出的完成标记应在刷盘后推进事务检查点。
+// 本用例准备磁盘日志作为输入，不把普通 LSM::put 的 WAL 接入视为已经完成。
+TEST_F(LSMTest, StartupRecoveryReplaysWalAndSurvivesRepeatedRestart) {
+  {
+    TranManager manager(test_dir);
+    manager.write_tranc_id_file();
+  }
+  write_startup_wal(
+      std::filesystem::path(test_dir) / "wal.0",
+      {Record::createRecord(1), Record::putRecord(1, "keep", "old"),
+       Record::putRecord(1, "deleted", "old"), Record::commitRecord(1),
+       Record::createRecord(2), Record::putRecord(2, "keep", "new"),
+       Record::deleteRecord(2, "deleted"),
+       Record::putRecord(2, "temporary", "value"),
+       Record::deleteRecord(2, "temporary"),
+       Record::putRecord(2, "inserted", "value"), Record::commitRecord(2),
+       Record::createRecord(3), Record::putRecord(3, "keep", "cancelled"),
+       Record::putRecord(3, "cancelled_only", "value"),
+       Record::rollbackRecord(3), Record::createRecord(4),
+       Record::putRecord(4, "keep", "unfinished"),
+       Record::putRecord(4, "unfinished_only", "value")});
+
+  for (int restart = 0; restart < 3; ++restart) {
+    SCOPED_TRACE(restart);
+    {
+      LSM db(test_dir);
+      auto next = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+      EXPECT_GT(next->tranc_id_, 4u);
+      ASSERT_TRUE(next->abort());
+      EXPECT_EQ(db.get("keep"), std::make_optional(std::string("new")));
+      EXPECT_EQ(db.get("inserted"), std::make_optional(std::string("value")));
+      EXPECT_FALSE(db.get("deleted").has_value());
+      EXPECT_FALSE(db.get("temporary").has_value());
+      EXPECT_FALSE(db.get("cancelled_only").has_value());
+      EXPECT_FALSE(db.get("unfinished_only").has_value());
+
+      // 保留原事务 ID，不能用普通 LSM::put 为重放分配新版本。
+      auto it = db.begin(0);
+      expect_mvcc_records(it, {{"inserted", "value", 2}, {"keep", "new", 2}});
+    }
+
+    // DB 已完全关闭后再检查保存的状态，避免两个管理器同时保存同一个文件。
+    TranManager saved(test_dir);
+    EXPECT_GE(saved.get_checkpoint_tranc_id(), 2u);
+    EXPECT_TRUE(saved.is_aborted(3));
+    EXPECT_TRUE(saved.is_aborted(4));
+  }
+}
+
+// 目的：取消／未结束事务已把修改、删除和新增版本刷入 SST 时，启动恢复仍须过滤它们。
+// 用合法 SST 和 WAL 准备重启前的状态，然后只通过重新构造的 LSM 查询与遍历。
+TEST_F(LSMTest, StartupRecoveryFiltersInvalidVersionsInExistingSst) {
+  {
+    auto engine = std::make_shared<LSMEngine>(test_dir);
+    auto manager = bind_test_manager(engine);
+    for (uint64_t id = 1; id <= 3; ++id)
+      ASSERT_EQ(manager->getNextTransactionId(), id);
+    add_sst_for_point_query(
+        engine, 0, 1,
+        {{"deleted", "", 2}, {"deleted", "old_deleted", 1},
+         {"inserted", "cancelled", 2},
+         {"unfinished", "dirty", 3}, {"unfinished", "old_unfinished", 1},
+         {"updated", "cancelled", 2}, {"updated", "old_updated", 1}});
+    manager->add_ready_to_flush_tranc_id(1, TransactionState::OP_COMMITTED);
+    manager->add_flushed_tranc_id(1);
+  }
+  write_startup_wal(
+      std::filesystem::path(test_dir) / "wal.0",
+      {Record::createRecord(2), Record::deleteRecord(2, "deleted"),
+       Record::putRecord(2, "inserted", "cancelled"),
+       Record::putRecord(2, "updated", "cancelled"), Record::rollbackRecord(2),
+       Record::createRecord(3), Record::putRecord(3, "unfinished", "dirty")});
+
+  for (int restart = 0; restart < 2; ++restart) {
+    SCOPED_TRACE(restart);
+    LSM db(test_dir);
+    EXPECT_EQ(db.get("deleted"), std::make_optional(std::string("old_deleted")));
+    EXPECT_EQ(db.get("updated"), std::make_optional(std::string("old_updated")));
+    EXPECT_EQ(db.get("unfinished"),
+              std::make_optional(std::string("old_unfinished")));
+    EXPECT_FALSE(db.get("inserted").has_value());
+    auto it = db.begin(0);
+    expect_mvcc_records(it, {{"deleted", "old_deleted", 1},
+                            {"unfinished", "old_unfinished", 1},
+                            {"updated", "old_updated", 1}});
+  }
+}
+
+// 目的：初始 flushed={2,4,5}，重放事务 3 时触发刷盘，使集合压缩为 {5}。
+// 事务 4 虽然不再单独存放，也应被连续检查点覆盖；不能再次写入它的物理版本。
+// 将已有数据放在 L1，并用小内存阈值触发真实刷盘；不依赖假的回调或私有成员。
+TEST_F(LSMTest, StartupRecoverySkipsCompletedIdsAfterCheckpointCompression) {
+  auto &config = const_cast<TomlConfig &>(TomlConfig::getInstance());
+  struct RestoreLimits {
+    TomlConfig &config;
+    long long per_limit;
+    long long total_limit;
+    ~RestoreLimits() {
+      config.modify_lsm_per_mem_size_limit(per_limit);
+      config.modify_lsm_tol_mem_size_limit(total_limit);
+    }
+  } restore{config, config.getLsmPerMemSizeLimit(),
+             config.getLsmTolMemSizeLimit()};
+
+  {
+    auto engine = std::make_shared<LSMEngine>(test_dir);
+    auto manager = bind_test_manager(engine);
+    for (uint64_t id = 1; id <= 5; ++id)
+      ASSERT_EQ(manager->getNextTransactionId(), id);
+    add_sst_for_point_query(
+        engine, 1, 1,
+        {{"", "", 5}, {"", "", 4}, {"", "", 2}, {"", "", 1},
+         {"done4", "value4", 4}, {"done5", "value5", 5}});
+    for (uint64_t id : {uint64_t{1}, uint64_t{2}, uint64_t{4}, uint64_t{5}}) {
+      manager->add_ready_to_flush_tranc_id(id, TransactionState::OP_COMMITTED);
+      manager->add_flushed_tranc_id(id);
+    }
+    ASSERT_EQ(manager->get_flushed_tranc_ids(), (std::set<uint64_t>{2, 4, 5}));
+  }
+  write_startup_wal(
+      std::filesystem::path(test_dir) / "wal.0",
+      {Record::createRecord(3), Record::putRecord(3, "needed3", "value3"),
+       Record::commitRecord(3), Record::createRecord(4),
+       Record::putRecord(4, "done4", "value4"), Record::commitRecord(4),
+       Record::createRecord(5), Record::putRecord(5, "done5", "value5"),
+       Record::commitRecord(5)});
+  config.modify_lsm_per_mem_size_limit(0);
+  config.modify_lsm_tol_mem_size_limit(0);
+
+  {
+    LSM db(test_dir);
+    EXPECT_EQ(db.get("needed3"), std::make_optional(std::string("value3")));
+    EXPECT_EQ(db.get("done4"), std::make_optional(std::string("value4")));
+    EXPECT_EQ(db.get("done5"), std::make_optional(std::string("value5")));
+  }
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
+  EXPECT_EQ(manager->get_checkpoint_tranc_id(), 5u);
+  size_t copies4 = 0;
+  size_t copies5 = 0;
+  for (const auto &[sst_id, sst] : engine->ssts) {
+    for (auto it = sst->begin(0, true); it.is_valid(); ++it) {
+      if (it->first == "done4")
+        ++copies4;
+      if (it->first == "done5")
+        ++copies5;
+    }
+  }
+  EXPECT_EQ(copies4, 1u);
+  EXPECT_EQ(copies5, 1u);
 }
 
 TEST_F(LSMTest, Recover) {
