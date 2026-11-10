@@ -986,12 +986,26 @@ LSM::LSM(std::string path)
       // CREATE、COMMIT 等记录用于判断事务状态
       // 不作为用户 key-value 写入
     }
+    // 5. 所有数据操作都成功后，补上本事务的完成标记
+    //
+    // 与正常 commit 一样，空 key + 空 value 是内部标记
+    // 后续刷盘遇到它，才会通知管理器：这笔事务已经刷盘完成
+    // 必须放在该事务全部数据操作之后，不能提前报告完成
+    engine->put("", "", tranc_id); 
+
+    spdlog::debug(
+        "LSM--Recover: Recovered transaction with tranc_id={}", tranc_id);
   }
 
+  // 6. 保存恢复后的事务状态
+  // 包括新的 ID 进度、回滚名单，以及重放期间可能更新的刷盘进度
+  // 保存失败直接抛异常，不能继续启动 WAL 清理线程
+  tran_manager_->write_tranc_id_file(); 
 
-  
-  // 4. 调用 tran_manager_->init_new_wal() 开启新的 WAL
-  // 文件准备接收新写入
+  // 7. 最后创建本次运行使用的 WAL
+  // 清理线程从此开始工作，使用的是刚才已经保存成功的检查点
+  // 尚未刷盘的恢复数据，仍由保留下来的旧 WAL 保障后续恢复
+  tran_manager_->init_new_wal();
 }
 
 LSM::~LSM() {
