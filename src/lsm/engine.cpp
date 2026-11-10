@@ -938,18 +938,25 @@ LSM::LSM(std::string path)
   // 此时还没有对外接收操作，也没有启动新的 WAL 清理线程
 
   // 1. 绑定组件
+  // 绑定 tran_manager 与 engine: 互相 set
+  // 
   // 管理器创建事务时需要 Engine
   // Engine 查询回滚状态、报告刷盘结果时需要管理器
   tran_manager_->set_engine(engine);
   engine->set_tran_manager(tran_manager_); 
 
   // 2. 读取候选日志，再恢复管理器状态
+  // 调用 tran_manager_->check_recover() 获取需要重放的事务记录
+  //
   // 先记住哪些事务已取消，以及下一个可用 ID
   // 后面才能正确决定哪些数据需要重放
   const auto recovery_records = tran_manager_->check_recover(); 
   tran_manager_->restore_recovery_state(recovery_records); 
 
   // 3. 按事务 ID 依次处理候选记录
+  // 遍历返回的 map<tranc_id, records>:
+  // - 若该 tranc_id 已在 flushed_tranc_ids 中则跳过 (已刷盘无需重放)
+  // - 否则根据 record.getOperationType() 调用 engine->put() 或 engine->remove() 
   for (const auto &[tranc_id, records] : recovery_records) {
     // 已经处理完成或已经取消的事务不重放
     //
@@ -963,13 +970,8 @@ LSM::LSM(std::string path)
       continue; 
   }
 
-
-  // ? 1. 绑定 tran_manager 与 engine: 互相 set
-  // ? 2. 调用 tran_manager_->check_recover() 获取需要重放的事务记录
-  // ? 3. 遍历返回的 map<tranc_id, records>:
-  // ?    - 若该 tranc_id 已在 flushed_tranc_ids 中则跳过 (已刷盘无需重放)
-  // ?    - 否则根据 record.getOperationType() 调用 engine->put() 或
-  // engine->remove() ? 4. 调用 tran_manager_->init_new_wal() 开启新的 WAL
+  
+  // 4. 调用 tran_manager_->init_new_wal() 开启新的 WAL
   // 文件准备接收新写入
 }
 
