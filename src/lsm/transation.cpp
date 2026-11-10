@@ -1143,6 +1143,34 @@ std::map<uint64_t, std::vector<Record>> TranManager::check_recover() {
   return records;
 }
 
+
+void TranManager::restore_recovery_state(const std::map<uint64_t, std::vector<Record>> &records){
+  // 本函数只在启动恢复期间调用，此时没有并发用户事务
+  // 没有候选日志时，保留状态文件已经恢复出来的进度
+  if(records.empty())
+    return; 
+
+  // 1. 找到 WAL 中出现过的最大事务 ID
+  // map 按 ID 排序，因此最后一项的 key 就是最大 ID
+  //
+  // 回滚和未结束事务的 ID 也已经被使用过，不能再次分配
+  // 例如日志中最大 ID 为 7，新事务至少要从 8 开始
+  const uint64_t max_wal_id = records.rbegin()->first; 
+
+  // 最大整数不能再加 1，否则会回绕到 0，导致重复使用旧 ID
+  // 先检查这一点，再开始修改管理器状态
+  if (max_wal_id == std::numeric_limits<uint64_t>::max())
+    throw std::overflow_error(
+        "TranManager::restore_recovery_state: transaction ID exhausted");
+
+  // 状态文件中的进度也可能比 WAL 更靠后，因此只能向前推进
+  // 先保留这些已经使用过的编号，再处理下面的事务登记
+  // 推进 ID 不代表这些事务已经提交，也不代表数据已经刷盘
+  if (nextTransactionId_.load() <= max_wal_id)
+      nextTransactionId_.store(max_wal_id + 1); 
+
+}
+
 // Lab 5.4
 bool TranManager::write_to_wal(const std::vector<Record> &records) {
   // 1. WAL 应在启动阶段完成初始化
