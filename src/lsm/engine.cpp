@@ -930,7 +930,7 @@ void LSMEngine::set_tran_manager(std::shared_ptr<TranManager> tran_manager) {
 }
 
 // *********************** LSM ***********************
-  // Lab 5.5 控制WAL重放与组件的初始化
+// Lab 5.5 控制WAL重放与组件的初始化
 LSM::LSM(std::string path)
     : engine(std::make_shared<LSMEngine>(path)),
       tran_manager_(std::make_shared<TranManager>(path)) {
@@ -940,24 +940,24 @@ LSM::LSM(std::string path)
 
   // 1. 绑定组件
   // 绑定 tran_manager 与 engine: 互相 set
-  // 
+  //
   // 管理器创建事务时需要 Engine
   // Engine 查询回滚状态、报告刷盘结果时需要管理器
   tran_manager_->set_engine(engine);
-  engine->set_tran_manager(tran_manager_); 
+  engine->set_tran_manager(tran_manager_);
 
   // 2. 读取候选日志，再恢复管理器状态
   // 调用 tran_manager_->check_recover() 获取需要重放的事务记录
   //
   // 先记住哪些事务已取消，以及下一个可用 ID
   // 后面才能正确决定哪些数据需要重放
-  const auto recovery_records = tran_manager_->check_recover(); 
-  tran_manager_->restore_recovery_state(recovery_records); 
+  const auto recovery_records = tran_manager_->check_recover();
+  tran_manager_->restore_recovery_state(recovery_records);
 
   // 3. 按事务 ID 依次处理候选记录
   // 遍历返回的 map<tranc_id, records>:
   // - 若该 tranc_id 已在 flushed_tranc_ids 中则跳过 (已刷盘无需重放)
-  // - 否则根据 record.getOperationType() 调用 engine->put() 或 engine->remove() 
+  // - 否则根据 record.getOperationType() 调用 engine->put() 或 engine->remove()
   for (const auto &[tranc_id, records] : recovery_records) {
     // 已经处理完成或已经取消的事务不重放
     //
@@ -965,23 +965,23 @@ LSM::LSM(std::string path)
     // 例如 flushed 原来为 {2, 4, 5}，重放事务 3 时可能触发刷盘
     // 集合随后压缩成 {5}，此时虽然 contains(4) 为 false
     // 但 4 <= checkpoint(5)，仍然应当跳过
-    if (tranc_id <= tran_manager_->get_checkpoint_tranc_id() || 
+    if (tranc_id <= tran_manager_->get_checkpoint_tranc_id() ||
         tran_manager_->get_flushed_tranc_ids().contains(tranc_id) ||
         tran_manager_->is_aborted(tranc_id))
-      continue; 
+      continue;
 
     // 4. 按原来的操作顺序，把修改重新应用到数据库
     //
     // 使用底层 Engine 接口，沿用日志中的原事务 ID
     // 不能调用 LSM::put/remove，因为普通入口会分配新的 ID
     // Engine 内部已有容量检查，需要时会冻结内存表、触发刷盘
-    for (const auto &record : records){
-      const auto type = record.getOperationType(); 
+    for (const auto &record : records) {
+      const auto type = record.getOperationType();
 
       if (type == OperationType::OP_PUT) {
-        engine->put(record.getKey(), record.getValue(), tranc_id); 
+        engine->put(record.getKey(), record.getValue(), tranc_id);
       } else if (type == OperationType::OP_DELETE) {
-        engine->remove(record.getKey(), tranc_id); 
+        engine->remove(record.getKey(), tranc_id);
       }
       // CREATE、COMMIT 等记录用于判断事务状态
       // 不作为用户 key-value 写入
@@ -991,16 +991,16 @@ LSM::LSM(std::string path)
     // 与正常 commit 一样，空 key + 空 value 是内部标记
     // 后续刷盘遇到它，才会通知管理器：这笔事务已经刷盘完成
     // 必须放在该事务全部数据操作之后，不能提前报告完成
-    engine->put("", "", tranc_id); 
+    engine->put("", "", tranc_id);
 
-    spdlog::debug(
-        "LSM--Recover: Recovered transaction with tranc_id={}", tranc_id);
+    spdlog::debug("LSM--Recover: Recovered transaction with tranc_id={}",
+                  tranc_id);
   }
 
   // 6. 保存恢复后的事务状态
   // 包括新的 ID 进度、回滚名单，以及重放期间可能更新的刷盘进度
   // 保存失败直接抛异常，不能继续启动 WAL 清理线程
-  tran_manager_->write_tranc_id_file(); 
+  tran_manager_->write_tranc_id_file();
 
   // 7. 最后创建本次运行使用的 WAL
   // 清理线程从此开始工作，使用的是刚才已经保存成功的检查点
@@ -1075,14 +1075,16 @@ void LSM::flush_all() {
   }
 }
 
-// ! SERIALIZABLE（未完整实现）：此遍历入口不会向事务登记读取范围，不提供幻读保护。
+// !
+// SERIALIZABLE（未完整实现）：此遍历入口不会向事务登记读取范围，不提供幻读保护。
 LSM::LSMIterator LSM::begin(uint64_t tranc_id) {
   return engine->begin(tranc_id);
 }
 
 LSM::LSMIterator LSM::end() { return engine->end(); }
 
-// ! SERIALIZABLE（未完整实现）：谓词只用于筛选结果，未登记为事务的范围读取依赖。
+// !
+// SERIALIZABLE（未完整实现）：谓词只用于筛选结果，未登记为事务的范围读取依赖。
 std::optional<std::pair<TwoMergeIterator, TwoMergeIterator>>
 LSM::lsm_iters_monotony_predicate(
     uint64_t tranc_id, std::function<int(const std::string &)> predicate) {
