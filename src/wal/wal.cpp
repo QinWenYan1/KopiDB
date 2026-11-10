@@ -133,61 +133,64 @@ WAL::~WAL() {
 // Lab 5.5 检查需要重放的WAL日志
 std::map<uint64_t, std::vector<Record>>
 WAL::recover(const std::string &log_dir, uint64_t checkpoint_tranc_id) {
-  std::map<uint64_t, std::vector<Record>> tranc_records; 
+  std::map<uint64_t, std::vector<Record>> tranc_records;
 
   // 1. 与 WAL 构造函数保持一致：空路径表示当前目录
   // 新数据库可能还没有日志目录，此时没有记录需要恢复
-  const std::filesystem::path dir = log_dir.empty() ? "." : log_dir; 
+  const std::filesystem::path dir = log_dir.empty() ? "." : log_dir;
   if (!std::filesystem::exists(dir))
-    return tranc_records; 
+    return tranc_records;
 
-  
   // 2. 收集日志文件，同时解析文件序号
   // pair.first 保存数字序号，pair.second 保存完整路径
   // 提前解析一次，避免排序过程中反复转换字符串
   std::vector<std::pair<uint64_t, std::string>> wal_files;
-  
-  for (const auto &entry : std::filesystem::directory_iterator(dir)){
+
+  for (const auto &entry : std::filesystem::directory_iterator(dir)) {
     if (!entry.is_regular_file())
-      continue; 
-  
-    const std::string name = entry.path().filename().string(); 
+      continue;
+
+    const std::string name = entry.path().filename().string();
     if (!name.starts_with("wal."))
-      continue; 
+      continue;
 
     // 与写入端使用相同的文件识别规则：
     // wal.2、wal.10 是日志；wal.backup、wal. 都不参与恢复
-    const std::string suffix = name.substr(4); 
-    if (suffix.empty() || !std::all_of(suffix.begin(), suffix.end(), [](char ch){return '0' <= ch && ch <= '9';}))
-      continue; 
-    
+    const std::string suffix = name.substr(4);
+    if (suffix.empty() ||
+        !std::all_of(suffix.begin(), suffix.end(),
+                     [](char ch) { return '0' <= ch && ch <= '9'; }))
+      continue;
+
     // 超出整数范围时直接报错，不能随意忽略可能需要恢复的日志
-    const uint64_t seq = std::stoull(suffix); 
-    wal_files.emplace_back(seq, entry.path().string()); 
+    const uint64_t seq = std::stoull(suffix);
+    wal_files.emplace_back(seq, entry.path().string());
   }
 
   // 3. 按数字序号读取：wal.2 必须先于 wal.10
   // 一个事务可能跨文件写入，顺序颠倒会改变它的操作顺序
-  std::sort(wal_files.begin(), wal_files.end()); 
+  std::sort(wal_files.begin(), wal_files.end());
 
   // 4. 逐文件读取所有 Record (Record::decode)
   // Record 公共头：总长度 2B + 事务 ID 8B + 操作类型 1B
-  constexpr size_t header_size = sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t); 
+  constexpr size_t header_size =
+      sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint8_t);
   for (const auto &wal_file : wal_files) {
-    const std::string &path = wal_file.second; 
+    const std::string &path = wal_file.second;
 
-    auto file = FileObj::open(path , false); 
-    const size_t file_size = file.size(); 
+    auto file = FileObj::open(path, false);
+    const size_t file_size = file.size();
 
     // 底层 tellg() 失败返回 -1，转换成 size_t 后成为最大值
     // 必须先识别失败，不能拿这个值去分配读取缓冲区
     if (file_size == std::numeric_limits<size_t>::max())
-      throw std::runtime_error("WAL::recover: failed to read file size: " + path); 
+      throw std::runtime_error("WAL::recover: failed to read file size: " +
+                               path);
 
     if (file_size == 0)
-      continue; 
+      continue;
 
-    auto data = file.read_to_slice(0, file_size); 
+    auto data = file.read_to_slice(0, file_size);
 
     // 5. 找出文件开头连续、完整的记录占用了多少字节。
     //
@@ -196,37 +199,38 @@ WAL::recover(const std::string &log_dir, uint64_t checkpoint_tranc_id) {
     //
     // Record::decode 仍保持严格检查；这里先处理文件尾部缺失。
     // 一条记录不会跨 WAL 文件，不能从下一个文件拼接补齐
-    size_t valid_bytes = 0; 
-    while (valid_bytes < data.size()){
-      const size_t remaining = data.size() - valid_bytes; 
+    size_t valid_bytes = 0;
+    while (valid_bytes < data.size()) {
+      const size_t remaining = data.size() - valid_bytes;
 
       // 连 2B 长度字段都没写完，说明剩下的是半条尾记录
       if (remaining < sizeof(uint16_t))
-        break; 
+        break;
 
       // 读取长度字段的两个字节：
       // data[valid_bytes] 是低位字节
       // data[valid_bytes + 1] 是高位字节，左移 8 位后拼接
-      const size_t record_len = static_cast<size_t>(data[valid_bytes]) | (static_cast<size_t>(data[valid_bytes + 1]) << 8); 
+      const size_t record_len =
+          static_cast<size_t>(data[valid_bytes]) |
+          (static_cast<size_t>(data[valid_bytes + 1]) << 8);
 
       // 已经读到了完整长度字段，却声明连公共头都放不下
       // 属于非法记录，不能按普通的尾部缺失忽略
       if (record_len < header_size)
-        throw std::runtime_error(
-            "WAL::recover: invalid record length: " + path);
+        throw std::runtime_error("WAL::recover: invalid record length: " +
+                                 path);
 
       // 声明需要的字节没有全部写入文件，停在这条记录之前
       if (record_len > remaining)
-          break; 
-      
-      valid_bytes += record_len; 
+        break;
+
+      valid_bytes += record_len;
     }
 
-    if (valid_bytes != data.size()){
-      spdlog::warn(
-          "WAL::recover: ignoring {} incomplete tail bytes in {}",
-          data.size() - valid_bytes, path);
-    
+    if (valid_bytes != data.size()) {
+      spdlog::warn("WAL::recover: ignoring {} incomplete tail bytes in {}",
+                   data.size() - valid_bytes, path);
+
       // 只缩短内存中的读取缓冲，不修改原文件
       // 旧日志会保留，因此后续重启还可能遇到同一段残缺尾部
       data.resize(valid_bytes);
@@ -234,25 +238,25 @@ WAL::recover(const std::string &log_dir, uint64_t checkpoint_tranc_id) {
 
     // 6. 对完整记录执行原有严格解码
     // 非法操作类型、字段长度不匹配等错误仍会向上传递
-    auto records = Record::decode(data); 
+    auto records = Record::decode(data);
 
-    for (auto &record : records){
-      const uint64_t tranc_id = record.getTrancId(); 
+    for (auto &record : records) {
+      const uint64_t tranc_id = record.getTrancId();
 
       // 检查点覆盖的事务无需再次收集
       // 仅保留 tranc_id > checkpoint_tranc_id 的记录
       if (tranc_id <= checkpoint_tranc_id)
-        continue; 
+        continue;
 
       // 文件按序读取，文件内记录也按序解码
       // 因此同一个事务的多次 PUT、DELETE 和结束记录不会乱序
       //
       // 此处保留 COMMIT、ROLLBACK，以及没有结束记录的事务
       // 下一层管理器负责判断状态，这里只负责收集
-      tranc_records[tranc_id].push_back(std::move(record)); 
+      tranc_records[tranc_id].push_back(std::move(record));
     }
   }
-  return tranc_records; 
+  return tranc_records;
 }
 
 // Lab 5.4 强制刷盘

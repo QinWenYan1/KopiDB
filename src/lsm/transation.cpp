@@ -8,14 +8,13 @@
 #include "wal/wal.h"
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <sys/types.h>
 #include <utility>
 #include <vector>
-#include <algorithm>
-#include <limits>
 
 namespace tiny_lsm {
 
@@ -655,12 +654,12 @@ void TranManager::init_new_wal() {
   // 1. 取得连续处理完成的检查点
   // 例如 flushed 为 {2, 4}，这里使用 2
   // 事务 3 尚未确认完成，不能让清理线程提前删除它的日志
-  const uint64_t checkpoint = get_checkpoint_tranc_id(); 
+  const uint64_t checkpoint = get_checkpoint_tranc_id();
 
   // 2. 沿用当前 WAL 参数，明确每个数字的含义
-  constexpr size_t buffer_size = 128;         // 缓冲阈值：128 条记录
-  constexpr uint64_t clean_interval = 1;      // 清理线程每隔 1 秒检查一次
-  constexpr uint64_t file_size_limit = 4096;  // 文件轮换阈值：4096 字节
+  constexpr size_t buffer_size = 128;    // 缓冲阈值：128 条记录
+  constexpr uint64_t clean_interval = 1; // 清理线程每隔 1 秒检查一次
+  constexpr uint64_t file_size_limit = 4096; // 文件轮换阈值：4096 字节
 
   // 3. 创建本次运行使用的 WAL
   //
@@ -671,7 +670,8 @@ void TranManager::init_new_wal() {
   // 调用前，上层启动流程必须已成功保存与 checkpoint 对应的事务状态
   // 因为构造完成后清理线程就会开始工作，可能删除检查点覆盖的旧日志
   // “先保存状态，再调用本函数”的顺序将在 LSM 构造函数中接通
-  wal = std::make_shared<WAL>(data_dir_, buffer_size, checkpoint, clean_interval, file_size_limit); 
+  wal = std::make_shared<WAL>(data_dir_, buffer_size, checkpoint,
+                              clean_interval, file_size_limit);
 
   // 此处保持原来的刷盘集合和事务 ID。
   // 数据是否已经进入 SST，由真实的刷盘流程登记。
@@ -1143,19 +1143,19 @@ std::map<uint64_t, std::vector<Record>> TranManager::check_recover() {
   return records;
 }
 
-
-void TranManager::restore_recovery_state(const std::map<uint64_t, std::vector<Record>> &records){
+void TranManager::restore_recovery_state(
+    const std::map<uint64_t, std::vector<Record>> &records) {
   // 本函数只在启动恢复期间调用，此时没有并发用户事务
   // 没有候选日志时，保留状态文件已经恢复出来的进度
-  if(records.empty())
-    return; 
+  if (records.empty())
+    return;
 
   // 1. 找到 WAL 中出现过的最大事务 ID
   // map 按 ID 排序，因此最后一项的 key 就是最大 ID
   //
   // 回滚和未结束事务的 ID 也已经被使用过，不能再次分配
   // 例如日志中最大 ID 为 7，新事务至少要从 8 开始
-  const uint64_t max_wal_id = records.rbegin()->first; 
+  const uint64_t max_wal_id = records.rbegin()->first;
 
   // 最大整数不能再加 1，否则会回绕到 0，导致重复使用旧 ID
   // 先检查这一点，再开始修改管理器状态
@@ -1167,31 +1167,33 @@ void TranManager::restore_recovery_state(const std::map<uint64_t, std::vector<Re
   // 先保留这些已经使用过的编号，再处理下面的事务登记
   // 推进 ID 不代表这些事务已经提交，也不代表数据已经刷盘
   if (nextTransactionId_.load() <= max_wal_id)
-      nextTransactionId_.store(max_wal_id + 1); 
+    nextTransactionId_.store(max_wal_id + 1);
 
   // 2. 恢复每笔事务的结束状态
   // records 来自 check_recover()，每组至少包含一条完整记录
-  for (const auto &[id, operations] : records){
+  for (const auto &[id, operations] : records) {
     // 已经结算的事务保持原状态，不重新放进待处理集合
     // 例如 flushed 为 {2, 4}，候选日志里的事务 4 在这里跳过
     if (flushedTrancIds_.contains(id))
-      continue; 
+      continue;
 
     // 当前写入流程将 COMMIT 或 ROLLBACK 放在事务记录的末尾
     // 有完整 COMMIT，且没有已有的回滚决定，才登记为已提交
     //
     // ROLLBACK 或没有结束记录，都按取消处理：
     // 进程已经重启，原来的事务上下文无法继续执行了
-    const bool committed = 
-      (operations.back().getOperationType() == OperationType::OP_COMMIT && !is_aborted(id)); 
-    
+    const bool committed =
+        (operations.back().getOperationType() == OperationType::OP_COMMIT &&
+         !is_aborted(id));
+
     // 3. 复用现有登记接口
     //
     // OP_COMMITTED：登记为已提交，等待后续重放、刷盘和结算
     // ABORTED：同时加入回滚名单，让查询跳过它已经写入 SST 的版本
     //
     // 登记接口内部已经加锁，这里不要再获取同一把 mutex
-    add_ready_to_flush_tranc_id(id, committed ? TransactionState::OP_COMMITTED : TransactionState::ABORTED); 
+    add_ready_to_flush_tranc_id(id, committed ? TransactionState::OP_COMMITTED
+                                              : TransactionState::ABORTED);
   }
 
   spdlog::info(
