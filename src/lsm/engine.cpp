@@ -1075,7 +1075,16 @@ void LSM::put(const std::string &key, const std::string &value) {
     throw std::invalid_argument(
         "LSM::put: value must not be empty; use remove()");
   }
-  
+
+  // 2. 一次普通写入使用一个独立的新版本号
+  // 提前预留三条记录的位置；如果这里分配失败，还没有消耗 ID
+  std::vector<Record> records; 
+  records.reserve(3); 
+  const auto tranc_id = tran_manager_->getNextTransactionId();
+
+  try{}
+
+
 }
 
 void LSM::put_batch(
