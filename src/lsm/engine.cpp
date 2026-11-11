@@ -1202,6 +1202,22 @@ void LSM::remove(const std::string &key) {
   records.reserve(3);
   const auto tranc_id = tran_manager_->getNextTransactionId();
 
+  try {
+    records.emplace_back(Record::createRecord(tranc_id)); 
+
+    // DELETE 只记录待删除的 key，不需要携带 value
+    // deleteRecord 自己检查 key 和整条记录的编码长度
+    records.emplace_back(Record::deleteRecord(tranc_id, key));
+
+    records.emplace_back(Record::commitRecord(tranc_id));
+  } catch (...) {
+    // 构建记录失败时，还没有写 WAL，也没有删除数据
+    // 登记取消，结算已经分配的 ID，避免挡住检查点推进
+    tran_manager_->add_ready_to_flush_tranc_id(
+        tranc_id, TransactionState::ABORTED);
+    throw;
+  }
+
 }
 
 void LSM::remove_batch(const std::vector<std::string> &keys) {
