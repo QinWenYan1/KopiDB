@@ -961,6 +961,96 @@ TEST_F(LSMTest, DirectGetPreservesVisibilityAndDeletionRules) {
   EXPECT_FALSE(db.get("changed").has_value());
 }
 
+// 目的：普通批查保留输入顺序、重复 key 和缺失项，空／非空查询都不分配事务 ID。
+// 重复查询仍能读到原值，确认返回结果的移动操作没有取走存储层中的字符串。
+TEST_F(LSMTest, DirectGetBatchPreservesOrderWithoutAllocatingTransactionIds) {
+  LSM db(test_dir);
+  auto writer = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  const uint64_t writer_id = writer->tranc_id_;
+  const std::string value_a(64, 'a');
+  const std::string value_b(64, 'b');
+  writer->put("a", value_a);
+  writer->put("b", value_b);
+  ASSERT_TRUE(writer->commit());
+
+  const std::vector<std::string> keys{"b", "missing", "a", "b", "missing"};
+  const std::vector<std::pair<std::string, std::optional<std::string>>> expected{
+      {"b", value_b}, {"missing", std::nullopt}, {"a", value_a},
+      {"b", value_b}, {"missing", std::nullopt}};
+  EXPECT_TRUE(db.get_batch({}).empty());
+  const auto first = db.get_batch(keys);
+  EXPECT_EQ(first, expected);
+  EXPECT_EQ(db.get_batch(keys), expected);
+  EXPECT_TRUE(db.get_batch({}).empty());
+
+  auto next = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  EXPECT_EQ(next->tranc_id_, writer_id + 1);
+  ASSERT_TRUE(next->abort());
+}
+
+// 目的：普通批查允许读取 RU 的未提交值和墓碑；这些版本进入 SST 后取消，
+// 再次批查应返回旧有效值、隐藏取消的新增 key，并保留重复项和缺失项的位置。
+TEST_F(LSMTest, DirectGetBatchFiltersAbortedValuesAndTombstonesFromSst) {
+  LSM db(test_dir);
+  auto base = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  base->put("changed", "old");
+  base->put("deleted", "old");
+  base->put("stable", "keep");
+  ASSERT_TRUE(base->commit());
+
+  auto dirty = db.begin_tran(IsolationLevel::READ_UNOP_COMMITTED);
+  dirty->put("changed", "dirty");
+  dirty->remove("deleted");
+  dirty->put("new", "dirty");
+  const std::vector<std::string> keys{
+      "new", "deleted", "changed", "missing", "changed", "stable"};
+  using BatchResult =
+      std::vector<std::pair<std::string, std::optional<std::string>>>;
+  const BatchResult before_abort{
+      {"new", std::string("dirty")}, {"deleted", std::nullopt},
+      {"changed", std::string("dirty")}, {"missing", std::nullopt},
+      {"changed", std::string("dirty")}, {"stable", std::string("keep")}};
+  EXPECT_EQ(db.get_batch(keys), before_abort);
+
+  db.flush_all();
+  EXPECT_EQ(db.get_batch(keys), before_abort);
+  ASSERT_TRUE(dirty->abort());
+  const BatchResult after_abort{
+      {"new", std::nullopt}, {"deleted", std::string("old")},
+      {"changed", std::string("old")}, {"missing", std::nullopt},
+      {"changed", std::string("old")}, {"stable", std::string("keep")}};
+  EXPECT_EQ(db.get_batch(keys), after_abort);
+}
+
+// 目的：RC 暂存的删除在提交前不影响普通批查；提交后，最新的有效墓碑返回 nullopt。
+// 分别覆盖墓碑还在 MemTable 和已刷入 SST 的情况，其他 key 和结果位置保持正确。
+TEST_F(LSMTest, DirectGetBatchReturnsNulloptForCommittedDeletion) {
+  LSM db(test_dir);
+  auto base = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  base->put("removed", "old");
+  base->put("live", "value");
+  ASSERT_TRUE(base->commit());
+  db.flush_all();
+
+  auto deletion = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  deletion->remove("removed");
+  const std::vector<std::string> keys{"removed", "live", "removed", "missing"};
+  using BatchResult =
+      std::vector<std::pair<std::string, std::optional<std::string>>>;
+  const BatchResult before_commit{
+      {"removed", std::string("old")}, {"live", std::string("value")},
+      {"removed", std::string("old")}, {"missing", std::nullopt}};
+  EXPECT_EQ(db.get_batch(keys), before_commit);
+
+  ASSERT_TRUE(deletion->commit());
+  const BatchResult after_commit{
+      {"removed", std::nullopt}, {"live", std::string("value")},
+      {"removed", std::nullopt}, {"missing", std::nullopt}};
+  EXPECT_EQ(db.get_batch(keys), after_commit);
+  db.flush_all();
+  EXPECT_EQ(db.get_batch(keys), after_commit);
+}
+
 TEST_F(LSMTest, BasicOperations) {
   LSM lsm(test_dir);
 

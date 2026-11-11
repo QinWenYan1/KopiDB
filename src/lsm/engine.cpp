@@ -1049,7 +1049,19 @@ LSM::get_batch(const std::vector<std::string> &keys) {
 
   // 3. 按底层返回顺序逐项转换
   // 底层已经保留输入顺序和重复 key，这里不重新排序或去重
+  for (auto &[key, record] : batch_results) {
+    if (record.has_value()) {
+      // batch_results 是本次查询的临时结果
+      // 将其中的 key 和 value 移入返回数组，减少字符串复制
+      results.emplace_back(std::move(key), std::move(record->first)); 
+    } else {
+      // 没找到也保留这一项，用户才能知道哪个 key 不存在
+      results.emplace_back(std::move(key), std::nullopt); 
+    }
+  }
 
+  // 空输入会自然得到空结果，不需要额外分支
+  return results; 
 }
 
 void LSM::put(const std::string &key, const std::string &value) {
