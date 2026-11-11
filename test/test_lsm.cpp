@@ -1411,6 +1411,127 @@ TEST_F(LSMTest, DirectRemoveOversizedKeyCancelsIdWithoutBlockingCheckpoint) {
   EXPECT_EQ(saved.getNextTransactionId(), 4u);
 }
 
+// 目的：空批量删除在新库和已有数据时都不消耗 ID、不写 WAL，也不影响原值。
+TEST_F(LSMTest, DirectRemoveBatchEmptyInputDoesNotAllocateIdOrWriteWal) {
+  LSM db(test_dir);
+  const auto read_wal = [&] {
+    auto file = FileObj::open(test_dir + "/wal.0", false);
+    return file.read_to_slice(0, file.size());
+  };
+  db.remove_batch({});
+  EXPECT_TRUE(read_wal().empty());
+  db.put("kept", "old");
+  const auto before = read_wal();
+  db.remove_batch({});
+  EXPECT_EQ(read_wal(), before);
+  EXPECT_EQ(db.get("kept"), std::make_optional(std::string("old")));
+  auto next = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  EXPECT_EQ(next->tranc_id_, 2u);
+  ASSERT_TRUE(next->abort());
+}
+
+// 目的：后部 key 为空时，整批在分配 ID 和写日志前拒绝，前面的合法 key 也不能删除。
+TEST_F(LSMTest, DirectRemoveBatchRejectsLateEmptyKeyBeforeAnyDelete) {
+  LSM db(test_dir);
+  db.put_batch({{"a", "value-a"}, {"b", "value-b"}});
+  const auto read_wal = [&] {
+    auto file = FileObj::open(test_dir + "/wal.0", false);
+    return file.read_to_slice(0, file.size());
+  };
+  const auto before = read_wal();
+  const std::vector<std::string> invalid_keys{"a", "missing", "b", ""};
+  EXPECT_THROW(db.remove_batch(invalid_keys), std::invalid_argument);
+  EXPECT_EQ(read_wal(), before);
+  EXPECT_EQ(db.get("a"), std::make_optional(std::string("value-a")));
+  EXPECT_EQ(db.get("b"), std::make_optional(std::string("value-b")));
+  EXPECT_FALSE(db.get("missing").has_value());
+  auto next = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  EXPECT_EQ(next->tranc_id_, 2u);
+  ASSERT_TRUE(next->abort());
+}
+
+// 目的：整批删除共用一个 ID，日志按输入顺序保留重复 key 和不存在的 key。
+// 零内存阈值验证自动刷盘和完成登记；旧版本仍可通过历史读取上限访问。
+TEST_F(LSMTest, DirectRemoveBatchPreservesWalOrderAndRegistersAutomaticFlush) {
+  auto &config = const_cast<TomlConfig &>(TomlConfig::getInstance());
+  struct RestoreLimits {
+    TomlConfig &config;
+    long long per_limit;
+    long long total_limit;
+    ~RestoreLimits() {
+      config.modify_lsm_per_mem_size_limit(per_limit);
+      config.modify_lsm_tol_mem_size_limit(total_limit);
+    }
+  } restore{config, config.getLsmPerMemSizeLimit(),
+             config.getLsmTolMemSizeLimit()};
+  config.modify_lsm_per_mem_size_limit(0);
+  config.modify_lsm_tol_mem_size_limit(0);
+
+  {
+    LSM db(test_dir);
+    db.put_batch({{"a", "value-a"}, {"b", "value-b"}, {"keep", "value-keep"}});
+    db.remove_batch({"b", "missing", "a", "b"});
+    EXPECT_FALSE(db.get("a").has_value());
+    EXPECT_FALSE(db.get("b").has_value());
+    EXPECT_FALSE(db.get("missing").has_value());
+    EXPECT_EQ(db.get("keep"), std::make_optional(std::string("value-keep")));
+    auto file = FileObj::open(test_dir + "/wal.0", false);
+    const auto records = Record::decode(file.read_to_slice(0, file.size()));
+    const std::vector<Record> expected{
+        Record::createRecord(1), Record::putRecord(1, "a", "value-a"),
+        Record::putRecord(1, "b", "value-b"),
+        Record::putRecord(1, "keep", "value-keep"), Record::commitRecord(1),
+        Record::createRecord(2), Record::deleteRecord(2, "b"),
+        Record::deleteRecord(2, "missing"), Record::deleteRecord(2, "a"),
+        Record::deleteRecord(2, "b"), Record::commitRecord(2)};
+    EXPECT_EQ(records, expected);
+    {
+      auto history = db.begin(1);
+      expect_mvcc_records(history, {{"a", "value-a", 1}, {"b", "value-b", 1},
+                                   {"keep", "value-keep", 1}});
+    }
+    {
+      // 释放迭代器的 SST 读锁后，DB 析构才可以执行后续刷盘。
+      auto current = db.begin(0);
+      expect_mvcc_records(current, {{"keep", "value-keep", 1}});
+    }
+  }
+  TranManager saved(test_dir);
+  EXPECT_EQ(saved.get_checkpoint_tranc_id(), 2u);
+  EXPECT_EQ(saved.getNextTransactionId(), 3u);
+}
+
+// 目的：后部 key 超出 DELETE 编码长度时，前面已构造的记录也不能写 WAL 或删除数据。
+// 失败 ID 登记取消，下一批合法删除刷盘后，检查点应越过该编号继续推进。
+TEST_F(LSMTest, DirectRemoveBatchLateOversizedKeyCancelsWholeBatch) {
+  {
+    LSM db(test_dir);
+    db.put_batch({{"a", "value-a"}, {"b", "value-b"}, {"keep", "value-keep"}});
+    const auto read_wal = [&] {
+      auto file = FileObj::open(test_dir + "/wal.0", false);
+      return file.read_to_slice(0, file.size());
+    };
+    const auto before = read_wal();
+    const std::vector<std::string> invalid_keys{
+        "a", "b", std::string(std::numeric_limits<uint16_t>::max(), 'k')};
+    EXPECT_THROW(db.remove_batch(invalid_keys), std::length_error);
+    EXPECT_EQ(read_wal(), before);
+    EXPECT_EQ(db.get("a"), std::make_optional(std::string("value-a")));
+    EXPECT_EQ(db.get("b"), std::make_optional(std::string("value-b")));
+    EXPECT_EQ(db.get("keep"), std::make_optional(std::string("value-keep")));
+
+    db.remove_batch({"a", "b"});
+    EXPECT_FALSE(db.get("a").has_value());
+    EXPECT_FALSE(db.get("b").has_value());
+    EXPECT_EQ(db.get("keep"), std::make_optional(std::string("value-keep")));
+    db.flush_all();
+  }
+  TranManager saved(test_dir);
+  EXPECT_TRUE(saved.is_aborted(2));
+  EXPECT_EQ(saved.get_checkpoint_tranc_id(), 3u);
+  EXPECT_EQ(saved.getNextTransactionId(), 4u);
+}
+
 TEST_F(LSMTest, BasicOperations) {
   LSM lsm(test_dir);
 

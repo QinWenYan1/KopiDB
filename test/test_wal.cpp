@@ -2641,6 +2641,31 @@ TEST_F(TranManagerRecoveryTest, RestoreFiltersInvalidVersionsAlreadyInSst) {
 
 class LSMStartupWALTest : public WALTest {};
 
+// 目的：批量删除日志写入失败时，所有已有值都保留，不能提前应用前几个墓碑。
+// 真实轮换错误之后再次批删也必须失败，不能绕过已经进入故障状态的 WAL。
+TEST_F(LSMStartupWALTest, DirectRemoveBatchWalFailurePreservesAllValues) {
+  const auto dir = std::filesystem::path(test_dir);
+  LSM db(test_dir);
+  db.put("a", "old-a");
+  db.put("b", "old-b");
+  const std::string padding(5000, 'v');
+  db.put("padding", padding);
+  ASSERT_GT(std::filesystem::file_size(dir / "wal.0"), 4096u);
+  const auto successful = read_wal_records(dir / "wal.0");
+  const std::vector<Record> occupied = {Record::createRecord(99)};
+  write_wal_records(dir / "wal.1", occupied);
+
+  const std::vector<std::string> keys{"a", "b", "missing"};
+  EXPECT_THROW(db.remove_batch(keys), std::runtime_error);
+  EXPECT_EQ(db.get("a"), std::make_optional(std::string("old-a")));
+  EXPECT_EQ(db.get("b"), std::make_optional(std::string("old-b")));
+  EXPECT_FALSE(db.get("missing"));
+  EXPECT_THROW(db.remove_batch({"padding"}), std::runtime_error);
+  EXPECT_EQ(db.get("padding"), std::make_optional(padding));
+  EXPECT_EQ(read_wal_records(dir / "wal.0"), successful);
+  EXPECT_EQ(read_wal_records(dir / "wal.1"), occupied);
+}
+
 // 目的：删除日志未确认成功时，不能提前写墓碑遮住旧值。
 // 占用下一个 WAL 文件制造真实轮换失败，后续删除也不能绕过 WAL 的故障状态。
 TEST_F(LSMStartupWALTest, DirectRemoveWalFailurePreservesExistingValues) {
@@ -2726,6 +2751,60 @@ TEST_F(LSMStartupWALTest, MalformedWalStopsStartupAndPreservesLogs) {
 }
 
 #ifndef _WIN32
+// 目的：整批墓碑尚未刷盘就退出进程，恢复后仍能遮住 SST 中的全部旧值。
+// 批次包含重复 key 和不存在的 key，WAL 顺序与共同 ID 保持；重启后继续分配新 ID。
+TEST_F(LSMStartupWALTest, DirectRemoveBatchSurvivesProcessExitWithoutDestructors) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  const std::vector<std::string> keys{"a", "missing", "a", "b"};
+  ASSERT_EXIT(
+      {
+        try {
+          LSM db(test_dir);
+          db.put("a", "old-a");
+          db.put("b", "old-b");
+          db.put("survivor", "kept");
+          db.flush_all();
+          db.remove_batch(keys);
+          std::_Exit(0);
+        } catch (...) {
+          std::_Exit(94);
+        }
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  const auto records = read_wal_records(
+      std::filesystem::path(test_dir) / "wal.0");
+  const std::vector<Record> expected = {
+      Record::createRecord(1), Record::putRecord(1, "a", "old-a"),
+      Record::commitRecord(1), Record::createRecord(2),
+      Record::putRecord(2, "b", "old-b"), Record::commitRecord(2),
+      Record::createRecord(3), Record::putRecord(3, "survivor", "kept"),
+      Record::commitRecord(3), Record::createRecord(4),
+      Record::deleteRecord(4, "a"), Record::deleteRecord(4, "missing"),
+      Record::deleteRecord(4, "a"), Record::deleteRecord(4, "b"),
+      Record::commitRecord(4)};
+  ASSERT_EQ(records, expected);
+
+  for (int restart = 0; restart < 2; ++restart) {
+    SCOPED_TRACE(restart);
+    LSM db(test_dir);
+    EXPECT_FALSE(db.get("a"));
+    EXPECT_FALSE(db.get("b"));
+    EXPECT_FALSE(db.get("missing"));
+    EXPECT_EQ(db.get("survivor"), std::make_optional(std::string("kept")));
+    if (restart == 0) {
+      db.put("after", "restored");
+      const std::vector<Record> expected_fresh = {
+          Record::createRecord(5), Record::putRecord(5, "after", "restored"),
+          Record::commitRecord(5)};
+      EXPECT_EQ(read_wal_records(std::filesystem::path(test_dir) / "wal.1"),
+                expected_fresh);
+    } else {
+      EXPECT_EQ(db.get("after"), std::make_optional(std::string("restored")));
+    }
+  }
+}
+
 // 目的：旧值已落入 SST、删除仍在内存时直接退出进程，重启不能让旧值重新出现。
 // 同时验证 DELETE 日志、删除不存在的 key、恢复后 ID 延续以及删除后的重新写入。
 TEST_F(LSMStartupWALTest, DirectRemoveSurvivesProcessExitWithoutDestructors) {
