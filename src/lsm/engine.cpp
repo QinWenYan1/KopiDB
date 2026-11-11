@@ -1034,23 +1034,22 @@ std::optional<std::string> LSM::get(const std::string &key) {
 
 std::vector<std::pair<std::string, std::optional<std::string>>>
 LSM::get_batch(const std::vector<std::string> &keys) {
-  // 1. 获取事务ID
-  auto tranc_id = tran_manager_->getNextTransactionId();
+  // 1. 普通批量查询不创建事务，也不分配新的事务 ID
+  // 0 表示不限制版本号大小
+  // 底层仍会排除回滚版本，并将有效墓碑处理为“不存在”
+  auto batch_results = engine->get_batch(keys, 0);
 
-  // 2. 调用 engine 的批量查询接口
-  auto batch_results = engine->get_batch(keys, tranc_id);
+  // 2. 将底层的 {key, optional<{value, version}>}
+  // 转换成用户接口需要的 {key, optional<value>}
+  //
+  // 每个输入 key 都对应一个结果，先预留容量
+  // 避免逐项添加时反复扩容
+  std::vector<std::pair<std::string, std::optional<std::string>>> results; 
+  results.reserve(batch_results.size()); 
 
-  // 3. 构造最终结果
-  std::vector<std::pair<std::string, std::optional<std::string>>> results;
-  for (const auto &[key, value] : batch_results) {
-    if (value.has_value()) {
-      results.emplace_back(key, value->first); // 提取值部分
-    } else {
-      results.emplace_back(key, std::nullopt); // 键不存在
-    }
-  }
+  // 3. 按底层返回顺序逐项转换
+  // 底层已经保留输入顺序和重复 key，这里不重新排序或去重
 
-  return results;
 }
 
 void LSM::put(const std::string &key, const std::string &value) {
