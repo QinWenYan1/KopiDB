@@ -1218,6 +1218,29 @@ void LSM::remove(const std::string &key) {
     throw;
   }
 
+  // 3. 先确认完整删除日志已经写出，再修改存储层
+  // WAL 报错可能已经留下部分内容，因此这里仅报告失败
+  // 不能直接把可能已经写出 COMMIT 的操作登记为取消
+  if (!tran_manager_->write_to_wal(records)) 
+    throw std::runtime_error("LSM::remove: failed to write WAL");
+  
+  // 4. 删除不是物理移除旧记录，而是写入本版本的墓碑：
+  // {key, "", tranc_id}。旧版本仍可供较早的读取上限查询
+  //
+  // key 当前不存在也允许删除，不需要先调用 get
+  // 使用底层 remove，不能调用会拒绝空 value 的公开 LSM::put
+  engine->remove(key, tranc_id);
+
+  // 5. 墓碑应用成功后，登记已提交、等待刷盘确认
+  // 必须先登记，再写可能立即触发刷盘的完成标记
+  tran_manager_->add_ready_to_flush_tranc_id(
+      tranc_id, TransactionState::OP_COMMITTED);
+  
+  // 6. 最后写完成标记，供刷盘流程确认本次删除已全部刷盘
+  // WAL 确认 COMMIT 后，后续异常继续向上传播
+  // 不再登记取消；保留日志供恢复完成这次删除
+  engine->put("", "", tranc_id);
+
 }
 
 void LSM::remove_batch(const std::vector<std::string> &keys) {
