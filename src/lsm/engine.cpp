@@ -1256,8 +1256,7 @@ void LSM::remove_batch(const std::vector<std::string> &keys) {
   // 空 key 保留给内部事务标记，不能由用户删除。
   for (const auto &key : keys) {
     if (key.empty()) {
-      throw std::invalid_argument(
-          "LSM::remove_batch: key must not be empty");
+      throw std::invalid_argument("LSM::remove_batch: key must not be empty");
     }
   }
 
@@ -1282,8 +1281,8 @@ void LSM::remove_batch(const std::vector<std::string> &keys) {
     // 任意 key 超出 Record 编码长度时，整组记录准备失败。
     // 此时尚未写 WAL，也没有删除前面那些合法 key。
     // 登记取消，结算已经分配的 ID，再继续抛出异常。
-    tran_manager_->add_ready_to_flush_tranc_id(
-        tranc_id, TransactionState::ABORTED);
+    tran_manager_->add_ready_to_flush_tranc_id(tranc_id,
+                                               TransactionState::ABORTED);
     throw;
   }
 
@@ -1302,8 +1301,8 @@ void LSM::remove_batch(const std::vector<std::string> &keys) {
 
   // 6. 全部墓碑写入成功后，登记已提交、等待刷盘确认。
   // 必须在完成标记之前登记，避免标记已经刷出却查不到状态。
-  tran_manager_->add_ready_to_flush_tranc_id(
-      tranc_id, TransactionState::OP_COMMITTED);
+  tran_manager_->add_ready_to_flush_tranc_id(tranc_id,
+                                             TransactionState::OP_COMMITTED);
 
   // 7. 整批只写一个完成标记，放在所有墓碑之后。
   // WAL 确认 COMMIT 后的异常继续向上传播，
