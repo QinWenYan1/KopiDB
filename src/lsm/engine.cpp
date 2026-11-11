@@ -1149,6 +1149,26 @@ void LSM::put_batch(const std::vector<std::pair<std::string, std::string>> &kvs)
   std::vector<Record> records; 
   records.reserve(kvs.size() + 2); 
   const auto tranc_id = tran_manager_->getNextTransactionId(); 
+
+  try {
+    records.emplace_back(Record::createRecord(tranc_id)); 
+
+    // 保留输入顺序，不在这里按 key 去重
+    // 同一批出现 {"a", "first"}、{"a", "last"} 时
+    // 底层同 key、同版本的更新规则会让最后一项生效
+    // WAL 也保持这个顺序，恢复才能得到相同结果
+    for (const auto &[key, value] : kvs)
+      records.emplace_back(Record::putRecord(tranc_id, key, value)); 
+
+    records.emplace_back(Record::commitRecord(tranc_id)); 
+  } catch (...) {
+    // 任意一项超出 Record 编码限制时，整组记录准备失败。
+    // 此时尚未调用 WAL，也没有把前面的项目写进引擎。
+    // 登记取消，结算已经分配的 ID，再继续抛出异常。
+    tran_manager_->add_ready_to_flush_tranc_id(
+        tranc_id, TransactionState::ABORTED);
+    throw;
+  }
     
 }
 void LSM::remove(const std::string &key) {
