@@ -1026,15 +1026,10 @@ std::optional<std::string> LSM::get(const std::string &key) {
   if (result.has_value())
     return std::nullopt; 
 
-  
-
-  auto tranc_id = tran_manager_->getNextTransactionId();
-  auto res = engine->get(key, tranc_id);
-
-  if (res.has_value()) {
-    return res.value().first;
-  }
-  return std::nullopt;
+  // 3. Engine 返回的是 {value, 事务版本号}。
+  // 普通用户接口只返回 value，将临时结果中的字符串移出去，
+  // 避免再复制一份；版本号留在存储层内部使用。
+  return std::move(result->first);
 }
 
 std::vector<std::pair<std::string, std::optional<std::string>>>
