@@ -1078,24 +1078,24 @@ void LSM::put(const std::string &key, const std::string &value) {
 
   // 2. 一次普通写入使用一个独立的新版本号
   // 提前预留三条记录的位置；如果这里分配失败，还没有消耗 ID
-  std::vector<Record> records; 
-  records.reserve(3); 
+  std::vector<Record> records;
+  records.reserve(3);
   const auto tranc_id = tran_manager_->getNextTransactionId();
-  try{
+  try {
     // 3. 这次写入的内容和结束决定已经确定
     // 因此可以一起准备 CREATE、PUT、COMMIT
     // 三条记录共用同一个 ID，恢复时属于同一组
-    records.emplace_back(Record::createRecord(tranc_id)); 
-    records.emplace_back(Record::putRecord(tranc_id, key, value)); 
-    records.emplace_back(Record::commitRecord(tranc_id)); 
+    records.emplace_back(Record::createRecord(tranc_id));
+    records.emplace_back(Record::putRecord(tranc_id, key, value));
+    records.emplace_back(Record::commitRecord(tranc_id));
   } catch (...) {
     // 例如 key/value 超出 Record 编码长度。
     // 此时还没有调用 WAL，也没有修改数据，可以登记取消。
     //
     // 这里只是结算已经分配的 ID，避免检查点被这个编号挡住；
     // 没有旧值需要恢复，也不需要写回滚日志。
-    tran_manager_->add_ready_to_flush_tranc_id(
-        tranc_id, TransactionState::ABORTED);
+    tran_manager_->add_ready_to_flush_tranc_id(tranc_id,
+                                               TransactionState::ABORTED);
     throw;
   }
 
@@ -1112,12 +1112,13 @@ void LSM::put(const std::string &key, const std::string &value) {
   //
   // 这一步即使触发刷盘，也尚无本事务的完成标记
   // 因此不会误报“本事务已经全部刷盘”
-  engine->put(key, value, tranc_id); 
+  engine->put(key, value, tranc_id);
 
   // 6. 数据应用成功后，登记已经提交、等待刷盘确认
   // 必须在写完成标记之前登记：
   // 下一步可能立即触发刷盘，刷盘通知需要查到这份状态
-  tran_manager_->add_ready_to_flush_tranc_id(tranc_id, TransactionState::OP_COMMITTED); 
+  tran_manager_->add_ready_to_flush_tranc_id(tranc_id,
+                                             TransactionState::OP_COMMITTED);
 
   // 7. 最后写内部完成标记
   // 数据先写、标记后写；结合最老表优先刷盘的顺序
@@ -1125,48 +1126,50 @@ void LSM::put(const std::string &key, const std::string &value) {
   //
   // 从 WAL 确认 COMMIT 开始，后续异常都直接向上传播
   // 不能再把这次写入改成取消；恢复仍依据保留的日志
-  engine->put("", "", tranc_id); 
+  engine->put("", "", tranc_id);
 }
 
-void LSM::put_batch(const std::vector<std::pair<std::string, std::string>> &kvs) {
+void LSM::put_batch(
+    const std::vector<std::pair<std::string, std::string>> &kvs) {
   // 1. 空批次没有任何修改，不分配 ID，也不写日志。
-  if (kvs.empty()) 
+  if (kvs.empty())
     return;
-  
+
   // 2. 先检查整批参数，再开始处理
   // 例如第三项的 value 为空，前两项也不能提前写入
   // 空 key 保留给内部标记；删除操作使用 remove/remove_batch
-  for (const auto &[key, value] : kvs){
+  for (const auto &[key, value] : kvs) {
     if (key.empty())
       throw std::invalid_argument("LSM::put_batch: key must not be empty");
 
     if (value.empty())
-      throw std::invalid_argument("LSM::put_batch: value must not be empty; use remove_batch()");
+      throw std::invalid_argument(
+          "LSM::put_batch: value must not be empty; use remove_batch()");
   }
 
   // 3. 整批需要：一条 CREATE、每项一条 PUT、一条 COMMIT
   // 先预留容量，再分配 ID；预留失败时还没有消耗编号
-  std::vector<Record> records; 
-  records.reserve(kvs.size() + 2); 
-  const auto tranc_id = tran_manager_->getNextTransactionId(); 
+  std::vector<Record> records;
+  records.reserve(kvs.size() + 2);
+  const auto tranc_id = tran_manager_->getNextTransactionId();
 
   try {
-    records.emplace_back(Record::createRecord(tranc_id)); 
+    records.emplace_back(Record::createRecord(tranc_id));
 
     // 保留输入顺序，不在这里按 key 去重
     // 同一批出现 {"a", "first"}、{"a", "last"} 时
     // 底层同 key、同版本的更新规则会让最后一项生效
     // WAL 也保持这个顺序，恢复才能得到相同结果
     for (const auto &[key, value] : kvs)
-      records.emplace_back(Record::putRecord(tranc_id, key, value)); 
+      records.emplace_back(Record::putRecord(tranc_id, key, value));
 
-    records.emplace_back(Record::commitRecord(tranc_id)); 
+    records.emplace_back(Record::commitRecord(tranc_id));
   } catch (...) {
     // 任意一项超出 Record 编码限制时，整组记录准备失败。
     // 此时尚未调用 WAL，也没有把前面的项目写进引擎。
     // 登记取消，结算已经分配的 ID，再继续抛出异常。
-    tran_manager_->add_ready_to_flush_tranc_id(
-        tranc_id, TransactionState::ABORTED);
+    tran_manager_->add_ready_to_flush_tranc_id(tranc_id,
+                                               TransactionState::ABORTED);
     throw;
   }
 
@@ -1178,23 +1181,23 @@ void LSM::put_batch(const std::vector<std::pair<std::string, std::string>> &kvs)
   // 5. 日志已确认 COMMIT，再将整批数据交给 Engine
   // 底层批量接口统一加锁、按顺序写入，并处理冻结和刷盘
   // LSM 不额外加锁，也不拆成多次普通 put
-  engine->put_batch(kvs, tranc_id); 
+  engine->put_batch(kvs, tranc_id);
 
   // 6. 整批数据应用成功后，先登记已提交、等待刷盘确认
   // 下一步写完成标记可能立即触发刷盘，因此登记必须在前
-  tran_manager_->add_ready_to_flush_tranc_id(tranc_id, TransactionState::OP_COMMITTED); 
+  tran_manager_->add_ready_to_flush_tranc_id(tranc_id,
+                                             TransactionState::OP_COMMITTED);
 
   // 7. 整批只需要一个完成标记，放在所有业务数据之后
   // 刷盘识别这个标记后，才能通知管理器本批写入已全部刷盘
   engine->put("", "", tranc_id);
-    
 }
 void LSM::remove(const std::string &key) {
   // 1. 空 key 保留给内部事务标记，用户不能删除它
   // 在分配 ID 前检查，非法调用不消耗编号
-  if (key.empty()) 
+  if (key.empty())
     throw std::invalid_argument("LSM::remove: key must not be empty");
-  
+
   // 2. 一次普通删除使用一个独立的新版本号
   // 日志由 CREATE、DELETE、COMMIT 三条记录组成
   // 先预留容量，再分配 ID
@@ -1203,7 +1206,7 @@ void LSM::remove(const std::string &key) {
   const auto tranc_id = tran_manager_->getNextTransactionId();
 
   try {
-    records.emplace_back(Record::createRecord(tranc_id)); 
+    records.emplace_back(Record::createRecord(tranc_id));
 
     // DELETE 只记录待删除的 key，不需要携带 value
     // deleteRecord 自己检查 key 和整条记录的编码长度
@@ -1213,17 +1216,17 @@ void LSM::remove(const std::string &key) {
   } catch (...) {
     // 构建记录失败时，还没有写 WAL，也没有删除数据
     // 登记取消，结算已经分配的 ID，避免挡住检查点推进
-    tran_manager_->add_ready_to_flush_tranc_id(
-        tranc_id, TransactionState::ABORTED);
+    tran_manager_->add_ready_to_flush_tranc_id(tranc_id,
+                                               TransactionState::ABORTED);
     throw;
   }
 
   // 3. 先确认完整删除日志已经写出，再修改存储层
   // WAL 报错可能已经留下部分内容，因此这里仅报告失败
   // 不能直接把可能已经写出 COMMIT 的操作登记为取消
-  if (!tran_manager_->write_to_wal(records)) 
+  if (!tran_manager_->write_to_wal(records))
     throw std::runtime_error("LSM::remove: failed to write WAL");
-  
+
   // 4. 删除不是物理移除旧记录，而是写入本版本的墓碑：
   // {key, "", tranc_id}。旧版本仍可供较早的读取上限查询
   //
@@ -1233,14 +1236,13 @@ void LSM::remove(const std::string &key) {
 
   // 5. 墓碑应用成功后，登记已提交、等待刷盘确认
   // 必须先登记，再写可能立即触发刷盘的完成标记
-  tran_manager_->add_ready_to_flush_tranc_id(
-      tranc_id, TransactionState::OP_COMMITTED);
-  
+  tran_manager_->add_ready_to_flush_tranc_id(tranc_id,
+                                             TransactionState::OP_COMMITTED);
+
   // 6. 最后写完成标记，供刷盘流程确认本次删除已全部刷盘
   // WAL 确认 COMMIT 后，后续异常继续向上传播
   // 不再登记取消；保留日志供恢复完成这次删除
   engine->put("", "", tranc_id);
-
 }
 
 void LSM::remove_batch(const std::vector<std::string> &keys) {
