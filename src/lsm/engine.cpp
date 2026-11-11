@@ -1190,8 +1190,18 @@ void LSM::put_batch(const std::vector<std::pair<std::string, std::string>> &kvs)
     
 }
 void LSM::remove(const std::string &key) {
-  auto tranc_id = tran_manager_->getNextTransactionId();
-  engine->remove(key, tranc_id);
+  // 1. 空 key 保留给内部事务标记，用户不能删除它
+  // 在分配 ID 前检查，非法调用不消耗编号
+  if (key.empty()) 
+    throw std::invalid_argument("LSM::remove: key must not be empty");
+  
+  // 2. 一次普通删除使用一个独立的新版本号
+  // 日志由 CREATE、DELETE、COMMIT 三条记录组成
+  // 先预留容量，再分配 ID
+  std::vector<Record> records;
+  records.reserve(3);
+  const auto tranc_id = tran_manager_->getNextTransactionId();
+
 }
 
 void LSM::remove_batch(const std::vector<std::string> &keys) {
