@@ -1128,10 +1128,28 @@ void LSM::put(const std::string &key, const std::string &value) {
   engine->put("", "", tranc_id); 
 }
 
-void LSM::put_batch(
-    const std::vector<std::pair<std::string, std::string>> &kvs) {
-  auto tranc_id = tran_manager_->getNextTransactionId();
-  engine->put_batch(kvs, tranc_id);
+void LSM::put_batch(const std::vector<std::pair<std::string, std::string>> &kvs) {
+  // 1. 空批次没有任何修改，不分配 ID，也不写日志。
+  if (kvs.empty()) 
+    return;
+  
+  // 2. 先检查整批参数，再开始处理
+  // 例如第三项的 value 为空，前两项也不能提前写入
+  // 空 key 保留给内部标记；删除操作使用 remove/remove_batch
+  for (const auto &[key, value] : kvs){
+    if (key.empty())
+      throw std::invalid_argument("LSM::put_batch: key must not be empty");
+
+    if (value.empty())
+      throw std::invalid_argument("LSM::put_batch: value must not be empty; use remove_batch()");
+  }
+
+  // 3. 整批需要：一条 CREATE、每项一条 PUT、一条 COMMIT
+  // 先预留容量，再分配 ID；预留失败时还没有消耗编号
+  std::vector<Record> records; 
+  records.reserve(kvs.size() + 2); 
+  const auto tranc_id = tran_manager_->getNextTransactionId(); 
+    
 }
 void LSM::remove(const std::string &key) {
   auto tranc_id = tran_manager_->getNextTransactionId();
