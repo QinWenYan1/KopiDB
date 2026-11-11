@@ -1169,6 +1169,24 @@ void LSM::put_batch(const std::vector<std::pair<std::string, std::string>> &kvs)
         tranc_id, TransactionState::ABORTED);
     throw;
   }
+
+  // 4. 全部记录准备成功后，一次写出完整日志
+  // WAL 写入失败可能留下部分内容，不能直接登记取消
+  if (!tran_manager_->write_to_wal(records))
+    throw std::runtime_error("LSM::put_batch: failed to write WAL");
+
+  // 5. 日志已确认 COMMIT，再将整批数据交给 Engine
+  // 底层批量接口统一加锁、按顺序写入，并处理冻结和刷盘
+  // LSM 不额外加锁，也不拆成多次普通 put
+  engine->put_batch(kvs, tranc_id); 
+
+  // 6. 整批数据应用成功后，先登记已提交、等待刷盘确认
+  // 下一步写完成标记可能立即触发刷盘，因此登记必须在前
+  tran_manager_->add_ready_to_flush_tranc_id(tranc_id, TransactionState::OP_COMMITTED); 
+
+  // 7. 整批只需要一个完成标记，放在所有业务数据之后
+  // 刷盘识别这个标记后，才能通知管理器本批写入已全部刷盘
+  engine->put("", "", tranc_id);
     
 }
 void LSM::remove(const std::string &key) {
