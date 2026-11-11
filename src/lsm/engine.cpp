@@ -1081,8 +1081,23 @@ void LSM::put(const std::string &key, const std::string &value) {
   std::vector<Record> records; 
   records.reserve(3); 
   const auto tranc_id = tran_manager_->getNextTransactionId();
-
-  try{}
+  try{
+    // 3. 这次写入的内容和结束决定已经确定
+    // 因此可以一起准备 CREATE、PUT、COMMIT
+    // 三条记录共用同一个 ID，恢复时属于同一组
+    records.emplace_back(Record::createRecord(tranc_id)); 
+    records.emplace_back(Record::putRecord(tranc_id, key, value)); 
+    records.emplace_back(Record::commitRecord(tranc_id)); 
+  } catch (...) {
+    // 例如 key/value 超出 Record 编码长度。
+    // 此时还没有调用 WAL，也没有修改数据，可以登记取消。
+    //
+    // 这里只是结算已经分配的 ID，避免检查点被这个编号挡住；
+    // 没有旧值需要恢复，也不需要写回滚日志。
+    tran_manager_->add_ready_to_flush_tranc_id(
+        tranc_id, TransactionState::ABORTED);
+    throw;
+  }
 
 
 }
