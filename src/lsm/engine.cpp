@@ -1246,8 +1246,69 @@ void LSM::remove(const std::string &key) {
 }
 
 void LSM::remove_batch(const std::vector<std::string> &keys) {
-  auto tranc_id = tran_manager_->getNextTransactionId();
+  // 1. 空批次没有删除操作，不分配 ID，也不写日志。
+  if (keys.empty()) {
+    return;
+  }
+
+  // 2. 先检查全部 key，再开始处理。
+  // 例如第三个 key 为空，前两个 key 也不能提前删除。
+  // 空 key 保留给内部事务标记，不能由用户删除。
+  for (const auto &key : keys) {
+    if (key.empty()) {
+      throw std::invalid_argument(
+          "LSM::remove_batch: key must not be empty");
+    }
+  }
+
+  // 3. 整批日志：一条 CREATE、每个 key 一条 DELETE、一条 COMMIT。
+  // 先预留容量，再为整批分配一个独立的新版本号。
+  std::vector<Record> records;
+  records.reserve(keys.size() + 2);
+  const auto tranc_id = tran_manager_->getNextTransactionId();
+
+  try {
+    records.emplace_back(Record::createRecord(tranc_id));
+
+    // 保留输入顺序，重复 key 也允许。
+    // 同 key、同版本的重复删除只会更新同一个墓碑，
+    // 不需要额外创建去重容器，也不需要先查询 key 是否存在。
+    for (const auto &key : keys) {
+      records.emplace_back(Record::deleteRecord(tranc_id, key));
+    }
+
+    records.emplace_back(Record::commitRecord(tranc_id));
+  } catch (...) {
+    // 任意 key 超出 Record 编码长度时，整组记录准备失败。
+    // 此时尚未写 WAL，也没有删除前面那些合法 key。
+    // 登记取消，结算已经分配的 ID，再继续抛出异常。
+    tran_manager_->add_ready_to_flush_tranc_id(
+        tranc_id, TransactionState::ABORTED);
+    throw;
+  }
+
+  // 4. 全部记录准备成功后，一次确认整组日志写出。
+  // WAL 报错可能已经留下部分内容，不能直接登记取消。
+  if (!tran_manager_->write_to_wal(records)) {
+    throw std::runtime_error("LSM::remove_batch: failed to write WAL");
+  }
+
+  // 5. 日志已确认 COMMIT，再批量写入墓碑。
+  // 底层统一加锁、按顺序删除，并处理冻结和自动刷盘。
+  //
+  // 不能循环调用公开 LSM::remove：
+  // 那会为每个 key 分配不同 ID，拆成多笔独立删除。
   engine->remove_batch(keys, tranc_id);
+
+  // 6. 全部墓碑写入成功后，登记已提交、等待刷盘确认。
+  // 必须在完成标记之前登记，避免标记已经刷出却查不到状态。
+  tran_manager_->add_ready_to_flush_tranc_id(
+      tranc_id, TransactionState::OP_COMMITTED);
+
+  // 7. 整批只写一个完成标记，放在所有墓碑之后。
+  // WAL 确认 COMMIT 后的异常继续向上传播，
+  // 不再登记取消；保留日志供恢复补齐这批删除。
+  engine->put("", "", tranc_id);
 }
 
 void LSM::clear() { engine->clear(); }
