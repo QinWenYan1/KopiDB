@@ -4,7 +4,7 @@
 
 章节：目录 **5.2.3「崩溃恢复」**，文章标题 **Lab 5.5 崩溃恢复**。
 
-**进度：66.7%（4/6 阶段按所列范围验收通过）**。阶段⑤普通 get 2/2、get_batch 3/3 已通过；本轮 TranContext::put 空参数校验构建成功，新增 2 项及受影响回归合计 **7/7 通过**。下一函数为 LSM::put 接入 WAL 和自动提交，A5 其余入口校验放到本阶段末尾。阶段内部分完成不折算百分比。
+**进度：66.7%（4/6 阶段按所列范围验收通过）**。阶段⑤普通 get、get_batch、TranContext::put 参数校验均已通过；本轮普通 LSM::put 构建成功，相关 **7/7 通过**（新增 6、原有回归 1）。当前进入 LSM::put_batch，阶段内部分完成不折算百分比。
 
 ## 本轮目标
 
@@ -26,7 +26,7 @@
 | ② 日志检查入口 | `TranManager::check_recover()` | 使用连续检查点调用 WAL::recover，原样返回候选记录；不改变事务状态／ID；读取失败正常上报 | 已验收：构建成功，新增 3/3 通过 |
 | ③ 初始化新日志 | `TranManager::init_new_wal()` | 新 WAL 能接收写入，旧日志不被提前删除或覆盖；不能把仅重放到内存的数据误记为已刷盘 | 已验收：新增 3/3，相关回归 4/4，通过；旧日志提示文字待同步 |
 | ④ 接通启动恢复 | `TranManager::restore_recovery_state(records)` → `LSM::LSM()`；复核启动／保存失败路径 | 组件绑定正确；区分提交／取消／未结束事务，恢复回滚过滤与 ID 进度；仅重放有效事务，重复正常重启结果正确；失败保留 WAL | 已验收所列范围：辅助函数 5/5，本轮启动相关 8/8；文件写失败后的自动重试边界见审计 |
-| ⑤ 必要接口衔接 | get → get_batch → 普通写入口、`commit(test_fail)`、A5 参数校验；必要的状态／关闭联动 | 普通写入同样受 WAL 保护；纯读取不制造事务 ID 缺口；故障点能留下可恢复的提交；非法参数在产生修改前拒绝 | 进行中：get、get_batch 及 TranContext::put 校验通过；当前 LSM::put 的 WAL 与自动提交 |
+| ⑤ 必要接口衔接 | get → get_batch → 普通写入口、`commit(test_fail)`、A5 参数校验；必要的状态／关闭联动 | 普通写入同样受 WAL 保护；纯读取不制造事务 ID 缺口；故障点能留下可恢复的提交；非法参数在产生修改前拒绝 | 进行中：get、get_batch 及 TranContext::put 校验通过；LSM::put 相关 7/7 通过；当前 LSM::put_batch |
 | ⑥ 整体验收 | 恢复用例、受影响回归、文档收尾 | 正常重启、绕过析构的进程退出、回滚／未提交版本已落 SST、恢复失败保留日志均有验证；报告真实通过范围与未覆盖边界 | 待开始 |
 
 ## 具体函数范围
@@ -268,9 +268,9 @@ test_wal 与 test_lsm 均构建成功；隔离运行 **3/3 + 5/5 = 8/8 通过**�
 
 `xmake build test_lsm` 成功，隔离运行 `LSMTest.TranContextPut*:LSMTest.TranContextGetOwnWritesOverrideReadCache:TranCommitTest.AppliesWritesAndEndsOnlyOnce`，**7/7 通过**（新增 2、原有 5）。源码和测试哈希在执行期间一致；没有扩大运行其他套件。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-tran-put-validation-9gm4zsyi`。A5 仅此函数通过，其他公开入口仍待本阶段末完成，A6 未纳入本次改动。
 
-## 当前草案：LSM::put 独立接入 WAL 与完成登记
+## 已验收：LSM::put 独立接入 WAL 与完成登记
 
-位置：`src/lsm/engine.cpp:1067`，公开签名仍为 `void put(const std::string &, const std::string &)`。当前业务源码仍是分配 ID 后直接写 Engine，上一版隐式 RC 事务草案没有落入业务代码。
+位置：`src/lsm/engine.cpp:1067`，公开签名仍为 `void put(const std::string &, const std::string &)`。用户现已完成独立普通写入实现；此前隐式 RC 事务草案没有落入业务代码。
 
 2026-11-11 用户质疑在普通 put 中调用 new_tranc。重新核对：内部包装事务并非原则错误，也不等于 RU；但本地 RC commit 还携带版本冲突检查，会让普通 put 新增同 key 并发冲突失败。复用整段提交流程不只是补日志，用户尚未接受这种语义变化，因此撤回该具体草案。
 
@@ -282,6 +282,26 @@ test_wal 与 test_lsm 均构建成功；隔离运行 **3/3 + 5/5 = 8/8 通过**�
 
 刷盘衔接已检查：第一次 Engine::put 可能自动刷出数据，但没有本次完成标记，不会误报本次全部刷盘；登记 ready 后才写标记，标记被刷出时状态已经存在。数据先于标记，沿用 MemTable 最老表优先刷盘的顺序。LSM 不额外套锁，调用已有自行加锁接口；没有引入 RC 的版本冲突拒绝策略。WAL 确认 COMMIT 后，应用数据、状态登记或标记写入失败直接向上传播，不改成回滚。
 
-本轮只在聊天交付完整 LSM::put 草案，由用户手写。无需头文件或其他业务函数联动；没有运行草案或声称验收通过。A5 的本函数空参数检查随此草案处理，剩余接口检查仍留本阶段末。
+本轮用户已按独立写入方案完成 LSM::put，无需头文件或其他业务函数联动。A5 的本函数空参数检查同时实现；实际验收结果见下文，剩余入口继续按计划逐函数处理。
 
 用户实现后验收：成功写入有对应 CREATE／PUT／COMMIT、正确数据和完成登记；用户无需 commit；进程绕过析构退出后可恢复；参数／编码错误不修改数据，已分配的失败 ID 能结算；完成标记即使触发自动刷盘也正确登记；日志或数据应用失败向调用方报告，不静默成功，不把已确认 COMMIT 改成回滚。
+
+## 2026-11-11 普通 put 验收结果
+
+用户实现与既定顺序一致；只有构建 Record 之前的失败登记取消，进入 WAL 后的错误不改写结束决定。助手未修改业务代码。
+
+新增 test_lsm.cpp 的 4 项 LSMTest.DirectPut*：真实 CREATE／PUT／COMMIT 和独立 ID、阈值为 0 时业务数据／完成标记自动刷盘后检查点推进；空参数不消耗 ID、不写日志或删除旧值；超长 Record 取消已分配 ID，后续检查点可以跨过它；普通覆盖与显式事务共用版本序列、旧事务提交冲突及历史版本读取。另回归 LSMTest.BasicOperations。
+
+新增 test_wal.cpp 的 2 项 LSMStartupWALTest.DirectPut*：占用下一 WAL 文件制造真实轮换失败，旧值与旧日志保持、新 key 不写入；子进程 _Exit 绕过析构后，普通写入及同 key 更新可恢复，重启后继续分配新 ID，并再次正常重启验证。子进程用 threadsafe death-test 模式。
+
+两个目标构建成功，隔离运行上述范围，最终 **5/5 + 2/2 = 7/7 通过**，每轮最终构建／运行期间相关源码与测试哈希一致。首轮 test_lsm 在新增超长测试处阻塞：助手写的测试持有 Level_Iterator 的 SST 读锁，又同线程调用 flush_all 等写锁；终止该次运行后，仅修正测试迭代器作用域，并让历史版本检查逐个销毁迭代器，原有断言保留。最终五项全部通过，不把首轮未跑完的项目算作通过。
+
+证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-direct-put-review-ssy4g0kf`，含 WAL 结果、首轮中断说明及最终 LSM 结果。未扩大运行全量 LSM 或后续 commit(test_fail)；没有注入内存分配失败或宣称断电持久性。A5 此时仅 TranContext::put 与 LSM::put 校验通过，其他入口仍待完成。
+
+## 下一函数：LSM::put_batch
+
+位置：`src/lsm/engine.cpp:1131`，保留原公开签名。在单条普通写入验收后，按同一独立写入方案处理整批：不创建 TranContext、不引入 RC 冲突策略，整批共用一个新 ID。空批次直接返回；先检查全部 key/value，预留 CREATE + N 条 PUT + COMMIT 的位置，再分配 ID 和构建记录。任何 Record 构建失败时尚未调用 WAL、也没写数据，可登记该 ID 取消；整组日志确认写出后，再调用 Engine::put_batch、登记提交完成、写内部完成标记。
+
+调用链已核对：MemTable::put_batch 在同一把活跃表写锁内按输入顺序处理，整批结束后检查冻结；同 key 同版本更新值，因此重复 key 由最后一项生效，WAL 保留原输入顺序即可。LSM 不自行套锁，也不逐条调用普通 LSM::put，否则会拆成多个 ID 和多组提交。COMMIT 确认后应用或刷盘失败继续上报，不反向登记取消；不宣称任意异常下整批自动回滚。
+
+用户实现后验收：空批次不分配 ID／写日志；后部空参数不会导致前部写入；整批日志共用 ID、记录顺序正确、重复 key 最后值生效；后部 Record 超长不写任何数据或日志，已分配的 ID 正确结算；完成登记及自动刷盘正确；绕过析构退出后整批能够恢复。草案尚未落入业务代码，不计作已验收。

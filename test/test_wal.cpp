@@ -2641,6 +2641,26 @@ TEST_F(TranManagerRecoveryTest, RestoreFiltersInvalidVersionsAlreadyInSst) {
 
 class LSMStartupWALTest : public WALTest {};
 
+// 目的：普通 put 也必须先写 WAL；日志轮换失败不能覆盖旧值或写入新 key。
+// 填满当前日志后占用下一个文件名，制造真实轮换错误，保留旧日志验证未被覆盖。
+TEST_F(LSMStartupWALTest, DirectPutWalFailureDoesNotApplyData) {
+  const auto dir = std::filesystem::path(test_dir);
+  LSM db(test_dir);
+  db.put("key", "before");
+  db.put("padding", std::string(5000, 'v'));
+  ASSERT_GT(std::filesystem::file_size(dir / "wal.0"), 4096u);
+  const auto successful = read_wal_records(dir / "wal.0");
+  const std::vector<Record> occupied = {Record::createRecord(99)};
+  write_wal_records(dir / "wal.1", occupied);
+
+  EXPECT_THROW(db.put("key", "after"), std::runtime_error);
+  EXPECT_THROW(db.put("new", "blocked"), std::runtime_error);
+  EXPECT_EQ(db.get("key"), std::make_optional(std::string("before")));
+  EXPECT_FALSE(db.get("new"));
+  EXPECT_EQ(read_wal_records(dir / "wal.0"), successful);
+  EXPECT_EQ(read_wal_records(dir / "wal.1"), occupied);
+}
+
 // 目的：遇到完整但非法的 WAL 记录，构造失败，不创建新日志或删除旧日志。
 // 不把捕获错误后返回空候选当作一次成功恢复。
 TEST_F(LSMStartupWALTest, MalformedWalStopsStartupAndPreservesLogs) {
@@ -2660,6 +2680,55 @@ TEST_F(LSMStartupWALTest, MalformedWalStopsStartupAndPreservesLogs) {
 }
 
 #ifndef _WIN32
+// 目的：普通 put 返回后，即使进程直接退出、不执行析构刷盘，写入仍可通过 WAL 恢复。
+// 同时覆盖同 key 连续更新；重启两次并继续普通写入，确认版本号没有复用旧编号。
+TEST_F(LSMStartupWALTest, DirectPutSurvivesProcessExitWithoutDestructors) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  ASSERT_EXIT(
+      {
+        try {
+          LSM db(test_dir);
+          db.put("stable", "value");
+          db.put("changed", "old");
+          db.put("changed", "new");
+          std::_Exit(0);
+        } catch (...) {
+          std::_Exit(91);
+        }
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  const auto records = read_wal_records(
+      std::filesystem::path(test_dir) / "wal.0");
+  const std::vector<Record> expected = {
+      Record::createRecord(1), Record::putRecord(1, "stable", "value"),
+      Record::commitRecord(1), Record::createRecord(2),
+      Record::putRecord(2, "changed", "old"), Record::commitRecord(2),
+      Record::createRecord(3), Record::putRecord(3, "changed", "new"),
+      Record::commitRecord(3)};
+  ASSERT_EQ(records, expected);
+
+  for (int restart = 0; restart < 2; ++restart) {
+    SCOPED_TRACE(restart);
+    LSM db(test_dir);
+    EXPECT_EQ(db.get("stable"), std::make_optional(std::string("value")));
+    EXPECT_EQ(db.get("changed"), std::make_optional(std::string("new")));
+    if (restart == 0) {
+      db.put("continued", "after-recovery");
+      const auto fresh = read_wal_records(
+          std::filesystem::path(test_dir) / "wal.1");
+      const std::vector<Record> expected_fresh = {
+          Record::createRecord(4),
+          Record::putRecord(4, "continued", "after-recovery"),
+          Record::commitRecord(4)};
+      EXPECT_EQ(fresh, expected_fresh);
+    } else {
+      EXPECT_EQ(db.get("continued"),
+                std::make_optional(std::string("after-recovery")));
+    }
+  }
+}
+
 // 目的：进程通过 _Exit 退出，不执行 LSM／管理器析构，因此不能依赖正常关闭保存状态。
 // RU 的修改、墓碑和未结束写入已进入 SST；重启必须结合 WAL 恢复取消状态。
 TEST_F(LSMStartupWALTest, ProcessExitRestoresTransactionsWithoutDestructors) {

@@ -1051,6 +1051,137 @@ TEST_F(LSMTest, DirectGetBatchReturnsNulloptForCommittedDeletion) {
   EXPECT_EQ(db.get_batch(keys), after_commit);
 }
 
+// 目的：每次普通 put 使用独立 ID，真实 WAL 按 CREATE、PUT、COMMIT 的顺序保存。
+// 将内存阈值设为 0，迫使数据和完成标记分别自动刷盘，验证 ready 登记早于标记刷盘。
+// 正常关闭后读取管理器状态，确认检查点已推进，不依赖显式 flush_all 补救顺序错误。
+TEST_F(LSMTest, DirectPutWritesWalAndRegistersAutomaticFlush) {
+  auto &config = const_cast<TomlConfig &>(TomlConfig::getInstance());
+  struct RestoreLimits {
+    TomlConfig &config;
+    long long per_limit;
+    long long total_limit;
+    ~RestoreLimits() {
+      config.modify_lsm_per_mem_size_limit(per_limit);
+      config.modify_lsm_tol_mem_size_limit(total_limit);
+    }
+  } restore{config, config.getLsmPerMemSizeLimit(),
+             config.getLsmTolMemSizeLimit()};
+  config.modify_lsm_per_mem_size_limit(0);
+  config.modify_lsm_tol_mem_size_limit(0);
+
+  {
+    LSM db(test_dir);
+    db.put("a", "value-a");
+    db.put("b", "value-b");
+    EXPECT_EQ(db.get("a"), std::make_optional(std::string("value-a")));
+    EXPECT_EQ(db.get("b"), std::make_optional(std::string("value-b")));
+    auto file = FileObj::open(test_dir + "/wal.0", false);
+    const auto records = Record::decode(file.read_to_slice(0, file.size()));
+    const std::vector<Record> expected = {
+        Record::createRecord(1), Record::putRecord(1, "a", "value-a"),
+        Record::commitRecord(1), Record::createRecord(2),
+        Record::putRecord(2, "b", "value-b"), Record::commitRecord(2)};
+    EXPECT_EQ(records, expected);
+    auto it = db.begin(0);
+    expect_mvcc_records(it, {{"a", "value-a", 1}, {"b", "value-b", 2}});
+  }
+  TranManager saved(test_dir);
+  EXPECT_EQ(saved.get_checkpoint_tranc_id(), 2u);
+  EXPECT_EQ(saved.getNextTransactionId(), 3u);
+}
+
+// 目的：空 key／空 value 在分配 ID、写 WAL 和修改数据之前被拒绝。
+// 特别检查对已有 key 传空 value 不会成为删除；错误之后仍可执行下一次合法写入。
+TEST_F(LSMTest, DirectPutRejectsEmptyArgumentsWithoutAllocatingIds) {
+  LSM db(test_dir);
+  db.put("kept", "old");
+  const auto read_wal = [&] {
+    auto file = FileObj::open(test_dir + "/wal.0", false);
+    return file.read_to_slice(0, file.size());
+  };
+  const auto before = read_wal();
+  const std::vector<std::pair<std::string, std::string>> invalid_inputs{
+      {"", "value"}, {"kept", ""}, {"", ""}};
+  for (const auto &[key, value] : invalid_inputs) {
+    EXPECT_THROW(db.put(key, value), std::invalid_argument);
+    EXPECT_EQ(read_wal(), before);
+    EXPECT_EQ(db.get("kept"), std::make_optional(std::string("old")));
+  }
+
+  db.put("next", "accepted");
+  auto it = db.begin(0);
+  expect_mvcc_records(it, {{"kept", "old", 1}, {"next", "accepted", 2}});
+  auto next = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  EXPECT_EQ(next->tranc_id_, 3u);
+  ASSERT_TRUE(next->abort());
+}
+
+// 目的：Record 长度超限发生在 ID 分配之后，但尚未写 WAL 或数据。
+// 该 ID 必须登记取消，避免后续合法写入刷盘时，连续检查点永远卡在这个缺口。
+TEST_F(LSMTest, DirectPutOversizedRecordCancelsIdWithoutBlockingCheckpoint) {
+  {
+    LSM db(test_dir);
+    db.put("kept", "old");
+    const auto read_wal = [&] {
+      auto file = FileObj::open(test_dir + "/wal.0", false);
+      return file.read_to_slice(0, file.size());
+    };
+    const auto before = read_wal();
+    const std::string oversized(std::numeric_limits<uint16_t>::max(), 'x');
+    EXPECT_THROW(db.put("too-large", oversized), std::length_error);
+    EXPECT_EQ(read_wal(), before);
+    EXPECT_EQ(db.get("kept"), std::make_optional(std::string("old")));
+    EXPECT_FALSE(db.get("too-large").has_value());
+
+    db.put("after", "accepted");
+    {
+      auto it = db.begin(0);
+      expect_mvcc_records(it, {{"after", "accepted", 3}, {"kept", "old", 1}});
+    } // 迭代器持有 SST 读锁；先释放它，再调用需要 SST 写锁的 flush_all。
+    db.flush_all();
+  }
+  TranManager saved(test_dir);
+  EXPECT_TRUE(saved.is_aborted(2));
+  EXPECT_EQ(saved.get_checkpoint_tranc_id(), 3u);
+  EXPECT_EQ(saved.getNextTransactionId(), 4u);
+}
+
+// 目的：普通 put 与显式事务共用 ID 分配器，重复覆盖保留正确的最新版本和历史版本。
+// 较旧的暂存事务不能覆盖后来成功的普通写入；后续显式提交和普通写入仍可继续。
+TEST_F(LSMTest, DirectPutOverwritesAndSharesVersionsWithExplicitTransactions) {
+  LSM db(test_dir);
+  db.put("key", "first");
+  auto older = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  ASSERT_EQ(older->tranc_id_, 2u);
+  older->put("key", "staged-old");
+  db.put("key", "second");
+  EXPECT_FALSE(older->commit());
+  EXPECT_EQ(db.get("key"), std::make_optional(std::string("second")));
+
+  auto explicit_writer = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  ASSERT_EQ(explicit_writer->tranc_id_, 4u);
+  explicit_writer->put("key", "explicit");
+  ASSERT_TRUE(explicit_writer->commit());
+  EXPECT_EQ(db.get("key"), std::make_optional(std::string("explicit")));
+  db.put("key", "last");
+  EXPECT_EQ(db.get("key"), std::make_optional(std::string("last")));
+  db.flush_all();
+
+  // 每次遍历结束即销毁迭代器，避免同一线程重复持有 SST 读锁。
+  {
+    auto current = db.begin(0);
+    expect_mvcc_records(current, {{"key", "last", 5}});
+  }
+  {
+    auto previous = db.begin(4);
+    expect_mvcc_records(previous, {{"key", "explicit", 4}});
+  }
+  {
+    auto first = db.begin(1);
+    expect_mvcc_records(first, {{"key", "first", 1}});
+  }
+}
+
 TEST_F(LSMTest, BasicOperations) {
   LSM lsm(test_dir);
 
