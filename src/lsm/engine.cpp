@@ -1019,12 +1019,12 @@ std::optional<std::string> LSM::get(const std::string &key) {
   // 0：不限制版本号大小，由 Engine 选择最大的有效版本
   // false：沿用普通查询允许读取其他事务未提交修改的约定
   // 无论是否允许读未提交，Engine 都会排除已回滚版本
-  auto result = engine->get(key, 0, false); 
+  auto result = engine->get(key, 0, false);
 
   // 2. Engine 已经完成版本比较和墓碑处理
   // 没有找到有效值时，直接向用户返回“不存在”
   if (!result.has_value())
-    return std::nullopt; 
+    return std::nullopt;
 
   // 3. Engine 返回的是 {value, 事务版本号}。
   // 普通用户接口只返回 value，将临时结果中的字符串移出去，
@@ -1044,8 +1044,8 @@ LSM::get_batch(const std::vector<std::string> &keys) {
   //
   // 每个输入 key 都对应一个结果，先预留容量
   // 避免逐项添加时反复扩容
-  std::vector<std::pair<std::string, std::optional<std::string>>> results; 
-  results.reserve(batch_results.size()); 
+  std::vector<std::pair<std::string, std::optional<std::string>>> results;
+  results.reserve(batch_results.size());
 
   // 3. 按底层返回顺序逐项转换
   // 底层已经保留输入顺序和重复 key，这里不重新排序或去重
@@ -1053,15 +1053,15 @@ LSM::get_batch(const std::vector<std::string> &keys) {
     if (record.has_value()) {
       // batch_results 是本次查询的临时结果
       // 将其中的 key 和 value 移入返回数组，减少字符串复制
-      results.emplace_back(std::move(key), std::move(record->first)); 
+      results.emplace_back(std::move(key), std::move(record->first));
     } else {
       // 没找到也保留这一项，用户才能知道哪个 key 不存在
-      results.emplace_back(std::move(key), std::nullopt); 
+      results.emplace_back(std::move(key), std::nullopt);
     }
   }
 
   // 空输入会自然得到空结果，不需要额外分支
-  return results; 
+  return results;
 }
 
 void LSM::put(const std::string &key, const std::string &value) {
