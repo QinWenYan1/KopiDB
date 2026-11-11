@@ -250,13 +250,13 @@ test_wal 与 test_lsm 均构建成功；隔离运行 **3/3 + 5/5 = 8/8 通过**�
 
 沿用 [A5](AUDIT.md#a5) 已确认方向，进入实施前在聊天中提供可复制 issue；不是新增加一轮全库修复。issue 引用已通过 GitHub 读取核实的提交 ae156f7269ba30bd3d940f3ab5daa28b328a3053，不把本地未提交注释造成的行号变化套到远程代码上。
 
-2026-11-11 顺序调整：保留用户已经完成的 TranContext::put 校验，验收后回到 LSM::put → put_batch → remove → remove_batch 的 WAL 和结束登记主线，再完成 commit(test_fail) 及必要状态／关闭联动。A5 剩余的 TranContext::remove 空 key 检查、LSM 写入口分配 ID 前的参数检查及批量预检查，统一放到本阶段末尾；参数约束不是恢复逻辑的前置条件。每轮仍只交付一个函数。
+2026-11-11 顺序调整：保留用户已经完成的 TranContext::put 校验，验收后回到 LSM::put → put_batch → remove → remove_batch 的 WAL 和结束登记主线，再完成 commit(test_fail) 及必要状态／关闭联动。A5 不再单独打断当前主线；当前 LSM::put 草案直接带上该函数已约定的两项空参数检查，其他入口及批量预检查统一在本阶段末补齐。每轮仍只交付一个函数。
 
 当前函数：`src/lsm/transation.cpp:114` 的 TranContext::put。保留现有结束状态检查、RU 先写 WAL 再写 Engine、其他级别暂存，以及 SERIALIZABLE 限制标记。只在结束状态检查之后、追加 Record 之前增加空 key／空 value 检查，抛 invalid_argument；空 key 保留给内部标记，空 value 为墓碑，用户删除应调用 remove。
 
 验证要求：所有支持的当前隔离分支均拒绝非法输入；operations、temp_map、WAL 和存储数据不因非法调用而改变；合法写入与 remove 删除语义保持；已结束上下文仍按原有 logic_error 优先拒绝。既有两项显式事务测试使用 put(key, "") 表达删除，下一轮随新约定迁移为 remove(key)，保留原本的隔离／暂存／记录检查。底层 MemTable、SST 等合法空标记测试不改，不把空参数检查下放到这些层。
 
-后续普通写入的设计依赖已核对：可复用 new_tranc(READ_OP_COMMITTED)→put/remove→commit，单次普通操作不要求用户手动提交。需要一起处理提交前异常时 activeTrans_ 持有的上下文，以及已追加 COMMIT 后失败不能强制 abort 的边界；具体异常处理在对应 LSM 写函数草案中说明，不在当前参数校验函数中夹带新机制或自动重试策略。
+普通写入仍需补齐 WAL、完成标记和结束登记。此前提出复用 new_tranc(READ_OP_COMMITTED)→commit 的草案，因会引入现有 RC 的冲突拒绝策略，已在用户质疑后撤回；不把这项行为变化当作 WAL 接入的必需前提。下一版按下方约束重新推导。
 
 首轮交付 A5 issue 与 TranContext::put 的校验草案；用户现已完成该函数的前置检查。验收结果记在下方，A5 的其他入口仍待阶段末补齐；不把整个问题标为已解决，也不将 A6 自动混入此次修改。
 
@@ -268,14 +268,20 @@ test_wal 与 test_lsm 均构建成功；隔离运行 **3/3 + 5/5 = 8/8 通过**�
 
 `xmake build test_lsm` 成功，隔离运行 `LSMTest.TranContextPut*:LSMTest.TranContextGetOwnWritesOverrideReadCache:TranCommitTest.AppliesWritesAndEndsOnlyOnce`，**7/7 通过**（新增 2、原有 5）。源码和测试哈希在执行期间一致；没有扩大运行其他套件。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-tran-put-validation-9gm4zsyi`。A5 仅此函数通过，其他公开入口仍待本阶段末完成，A6 未纳入本次改动。
 
-## 下一函数：LSM::put 接入 WAL 与自动提交
+## 当前草案：LSM::put 独立接入 WAL 与完成登记
 
-位置：`src/lsm/engine.cpp:1067`，公开签名仍为 `void put(const std::string &, const std::string &)`。作者 master 中的普通 put 仍是分配 ID 后直接写 Engine；本地已确认普通写入也要受 WAL 保护，因此需要衔接，而不照抄这条绕过日志的路径。
+位置：`src/lsm/engine.cpp:1067`，公开签名仍为 `void put(const std::string &, const std::string &)`。当前业务源码仍是分配 ID 后直接写 Engine，上一版隐式 RC 事务草案没有落入业务代码。
 
-草案复用 `new_tranc(READ_OP_COMMITTED) → tx->put → tx->commit`。RC 在提交前只暂存，由既有 commit 完成日志、应用数据、结束标记和管理器登记。调用者仍只调用普通 put，不需要自己 commit；普通 get 的读取约定不因此改变。此函数仍由用户手写，本轮草案不算已实现。
+2026-11-11 用户质疑在普通 put 中调用 new_tranc。重新核对：内部包装事务并非原则错误，也不等于 RU；但本地 RC commit 还携带版本冲突检查，会让普通 put 新增同 key 并发冲突失败。复用整段提交流程不只是补日志，用户尚未接受这种语义变化，因此撤回该具体草案。
 
-提交返回 false 必须转为异常，不能让 void 接口看起来写入成功。发生异常时，仅在上下文尚未结束、operations 中也不存在 COMMIT／ROLLBACK 结束尝试的情况下调用 abort，避免 activeTrans_ 留住已放弃的临时事务；已经确认提交或存在结束尝试时，不改成回滚。清理自身失败应记录并继续传播原始异常。当前不引入自动重试或新的辅助类型。
+继续目标不变：普通写入必须有可恢复的 WAL 和完成登记，用户只调用 put，不承担显式事务句柄或手动 commit。下一版优先保持普通写入独立，复用管理器的 write_to_wal、结束登记等底层能力，不将完整 TranContext 及某个隔离级别作为必需依赖。WAL 中可以沿用同一 ID 的 CREATE／PUT／COMMIT 分组，这不要求一定创建 TranContext 对象。
 
-行为取舍：普通 put 复用暂存型事务后，同 key 并发写入可能触发现有版本冲突，并向调用者抛异常；这是接口表现的变化，不能只描述成无行为变化的日志接线。当前参数错误先由 TranContext::put 拒绝并取消临时事务；LSM 分配 ID 前的检查按 A5 排在阶段末，暂不声称非法参数完全不消耗 ID。
+2026-11-11 当前草案已核对调用顺序：普通一次写入作为一个自动结束的日志单元，分配独立新 ID；不创建 TranContext，也不使用 ID 0。与显式 RU 不同，普通写入已经知道本次操作和结束决定，因此一次发送 CREATE／PUT／COMMIT，再应用数据，不需要先发送 PUT、等待用户决定后再发送 COMMIT。
 
-用户实现后验收：成功写入有对应 CREATE／PUT／COMMIT 日志和正确数据；正常调用自行结束，调用者无需 commit；进程退出绕过析构仍可恢复；提交前参数／编码错误不会遗留未结束的隐式事务；日志或提交失败向上传播，不能静默成功或把已确认 COMMIT 改成回滚。
+具体顺序：空参数检查 → 预留三条 Record 容量 → 分配 ID → 构建三条记录 → write_to_wal 强制写出整组 → Engine::put 写业务数据 → add_ready_to_flush_tranc_id(COMMITTED) → Engine::put 写完成标记。Record 构建失败且尚未调用 WAL 时，可登记 ABORTED 结算已分配的 ID，再上报；进入 WAL 调用之后，失败可能已有 COMMIT，不再使用这个取消分支。
+
+刷盘衔接已检查：第一次 Engine::put 可能自动刷出数据，但没有本次完成标记，不会误报本次全部刷盘；登记 ready 后才写标记，标记被刷出时状态已经存在。数据先于标记，沿用 MemTable 最老表优先刷盘的顺序。LSM 不额外套锁，调用已有自行加锁接口；没有引入 RC 的版本冲突拒绝策略。WAL 确认 COMMIT 后，应用数据、状态登记或标记写入失败直接向上传播，不改成回滚。
+
+本轮只在聊天交付完整 LSM::put 草案，由用户手写。无需头文件或其他业务函数联动；没有运行草案或声称验收通过。A5 的本函数空参数检查随此草案处理，剩余接口检查仍留本阶段末。
+
+用户实现后验收：成功写入有对应 CREATE／PUT／COMMIT、正确数据和完成登记；用户无需 commit；进程绕过析构退出后可恢复；参数／编码错误不修改数据，已分配的失败 ID 能结算；完成标记即使触发自动刷盘也正确登记；日志或数据应用失败向调用方报告，不静默成功，不把已确认 COMMIT 改成回滚。

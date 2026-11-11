@@ -1065,8 +1065,17 @@ LSM::get_batch(const std::vector<std::string> &keys) {
 }
 
 void LSM::put(const std::string &key, const std::string &value) {
-  auto tranc_id = tran_manager_->getNextTransactionId();
-  engine->put(key, value, tranc_id);
+  // 1. 先检查公开接口参数，非法调用不分配事务 ID。
+  // 空 key 用作内部事务标记；空 value 表示墓碑。
+  // 用户需要删除数据时，应调用 remove。
+  if (key.empty()) {
+    throw std::invalid_argument("LSM::put: key must not be empty");
+  }
+  if (value.empty()) {
+    throw std::invalid_argument(
+        "LSM::put: value must not be empty; use remove()");
+  }
+  
 }
 
 void LSM::put_batch(
