@@ -16,7 +16,7 @@
 
 ## 当前进度
 
-2026-11-12 当前：目录 **5.2.3「崩溃恢复」**（Lab 5.5）进度仍为 **66.7%（4/6 阶段按所列范围验收）**。普通 get、get_batch、TranContext::put 校验及 LSM::put 已验收；本轮用户完成 LSM::put_batch，相关构建成功、新增 **6/6 通过**。已验证空批次与整批参数检查、同一 ID 与 WAL 顺序、重复 key、编码失败结算、自动刷盘、WAL 失败不应用整批及绕过析构退出后的恢复。助手新增测试的宏参数编译问题已修正，业务代码未代改。当前进入 LSM::remove；[A5](AUDIT.md#a5) 的三个 put 入口校验通过，删除入口尚未完成。具体顺序和测试证据见 [PLAN.md](PLAN.md)，A6～A8 仍独立留在 [AUDIT](AUDIT.md)。
+2026-11-12 当前：目录 **5.2.3「崩溃恢复」**（Lab 5.5）进度仍为 **66.7%（4/6 阶段按所列范围验收）**。普通 get、get_batch、put、put_batch 及 TranContext::put 参数校验已验收；本轮用户完成 LSM::remove，构建成功，相关 **7/7 通过**（新增 6、原有回归 1）。已验证 DELETE 日志、已有／缺失 key 删除、历史版本、参数／编码失败、自动刷盘，以及 WAL 失败保留旧值和旧值已在 SST 时的异常退出恢复。业务代码未代改。当前进入 LSM::remove_batch；[A5](AUDIT.md#a5) 仍剩 LSM::remove_batch 与 TranContext::remove 的空 key 检查。具体顺序和证据见 [PLAN.md](PLAN.md)，A6～A8 仍独立留在 [AUDIT](AUDIT.md)。
 
 上一轮目录 **5.2.2「WAL 运行机制」**（Lab 5.4）已于 2026-11-08 完成，**100%（6/6 阶段）**，适用回归 **215/215 通过**（Record/WAL 98、LSM 117），5 处旧注释／提示文字已复核。旧执行清单已从 PLAN 清除，历史证据保留在本文件；助手按授权补测试、文档和 SERIALIZABLE 限制注释，未代改业务逻辑。
 

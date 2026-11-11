@@ -123,7 +123,7 @@ A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 
 
 ### A5：明确公开写入接口对空 key／空 value 的处理策略
 
-类型：API 约束改进建议。状态：处理中。2026-11-08 已纳入 [Lab 5.5 计划](PLAN.md) 阶段⑤；截至 2026-11-12，TranContext::put、LSM::put 与 LSM::put_batch 的校验已验收，删除入口仍待补齐，尚未整体解决。原记录／方向确认日期：2026-10-31。
+类型：API 约束改进建议。状态：处理中。2026-11-08 已纳入 [Lab 5.5 计划](PLAN.md) 阶段⑤；截至 2026-11-12，TranContext::put、LSM::put、LSM::put_batch 与 LSM::remove 的校验已验收；LSM::remove_batch 和 TranContext::remove 仍待补齐，尚未整体解决。原记录／方向确认日期：2026-10-31。
 
 背景：用户询问误传空 key 或空 value 的结果。现有约定将空 key 保留给内部事务标记，将空 value 解释为墓碑；这不是已确认支持普通空字符串数据的接口。本条讨论是否让公开写入口主动报参数错误，不能只因缺少额外防护就判定现有实现违反已接受契约。
 
@@ -138,6 +138,8 @@ A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 
 2026-11-11 普通 LSM::put 也已拒绝空 key／空 value，位置在 ID 分配前；空值不再被当作用户删除操作。该函数编码失败的已分配 ID 会登记取消。相关参数、日志、数据、检查点及恢复测试最终 7/7 通过，详见 PLAN 与 `kopidb-direct-put-review-ssy4g0kf` 证据目录。put_batch、remove、remove_batch 及 TranContext::remove 的输入约束尚未完成，A5 仍为处理中。
 
 2026-11-12：LSM::put_batch 已在分配 ID 和写入前检查全部空 key／value；空批次不分配 ID，后部非法参数不会应用前部合法项。相关新增 6/6 通过，证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-direct-put-batch-review-e0iphix9`。删除入口尚待实现，A5 不标记整体完成。
+
+2026-11-12：LSM::remove 已在分配 ID 前拒绝空 key，相关参数、DELETE 日志、数据／历史版本、检查点和恢复场景 7/7 通过。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-direct-remove-review-us7jp4yl`。剩余 LSM::remove_batch 与 TranContext::remove 尚待补齐，A5 仍为处理中。
 
 边界：底层仍需允许合法墓碑和内部事务标记，不把拒绝空数据的检查机械加到 SkipList、MemTable、Block 或 SST。若未来需要保存普通空字符串值，需单独讨论记录类型表示，不在当前 A2 中修改编码。
 

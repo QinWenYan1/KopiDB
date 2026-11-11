@@ -1301,6 +1301,116 @@ TEST_F(LSMTest, DirectPutBatchLateOversizedRecordCancelsWholeBatch) {
   EXPECT_EQ(saved.getNextTransactionId(), 4u);
 }
 
+// 目的：普通 remove 写出 CREATE、DELETE、COMMIT，删除已有值，但保留旧版本。
+// 分别在 MemTable 和 SST 上检查历史读取；迭代器只在局部作用域内存活，不跨越 flush。
+TEST_F(LSMTest, DirectRemoveWritesDeleteWalAndPreservesHistory) {
+  LSM db(test_dir);
+  db.put("key", "old");
+  db.remove("key");
+  auto file = FileObj::open(test_dir + "/wal.0", false);
+  const auto records = Record::decode(file.read_to_slice(0, file.size()));
+  const std::vector<Record> expected{
+      Record::createRecord(1), Record::putRecord(1, "key", "old"),
+      Record::commitRecord(1), Record::createRecord(2),
+      Record::deleteRecord(2, "key"), Record::commitRecord(2)};
+  EXPECT_EQ(records, expected);
+
+  for (bool flushed : {false, true}) {
+    SCOPED_TRACE(flushed);
+    if (flushed)
+      db.flush_all();
+    EXPECT_FALSE(db.get("key").has_value());
+    {
+      auto history = db.begin(1);
+      expect_mvcc_records(history, {{"key", "old", 1}});
+    }
+    {
+      auto current = db.begin(0);
+      EXPECT_TRUE(current.is_end());
+    }
+  }
+}
+
+// 目的：不存在的 key 也允许删除，每次使用新 ID 并写入完整 DELETE 日志。
+// 零内存阈值使墓碑和完成标记分别自动刷盘，关闭后检查连续刷盘进度。
+TEST_F(LSMTest, DirectRemoveMissingKeyRegistersAutomaticFlush) {
+  auto &config = const_cast<TomlConfig &>(TomlConfig::getInstance());
+  struct RestoreLimits {
+    TomlConfig &config;
+    long long per_limit;
+    long long total_limit;
+    ~RestoreLimits() {
+      config.modify_lsm_per_mem_size_limit(per_limit);
+      config.modify_lsm_tol_mem_size_limit(total_limit);
+    }
+  } restore{config, config.getLsmPerMemSizeLimit(),
+             config.getLsmTolMemSizeLimit()};
+  config.modify_lsm_per_mem_size_limit(0);
+  config.modify_lsm_tol_mem_size_limit(0);
+
+  {
+    LSM db(test_dir);
+    db.remove("missing");
+    db.remove("missing");
+    EXPECT_FALSE(db.get("missing").has_value());
+    auto file = FileObj::open(test_dir + "/wal.0", false);
+    const auto records = Record::decode(file.read_to_slice(0, file.size()));
+    const std::vector<Record> expected{
+        Record::createRecord(1), Record::deleteRecord(1, "missing"),
+        Record::commitRecord(1), Record::createRecord(2),
+        Record::deleteRecord(2, "missing"), Record::commitRecord(2)};
+    EXPECT_EQ(records, expected);
+  }
+  TranManager saved(test_dir);
+  EXPECT_EQ(saved.get_checkpoint_tranc_id(), 2u);
+  EXPECT_EQ(saved.getNextTransactionId(), 3u);
+}
+
+// 目的：空 key 在分配 ID 或写入 WAL 前被拒绝，不影响已有数据和内部完成标记。
+// 错误之后仍能正常删除合法 key，下一次正式事务使用连续编号。
+TEST_F(LSMTest, DirectRemoveRejectsEmptyKeyWithoutAllocatingId) {
+  LSM db(test_dir);
+  db.put("kept", "old");
+  const auto read_wal = [&] {
+    auto file = FileObj::open(test_dir + "/wal.0", false);
+    return file.read_to_slice(0, file.size());
+  };
+  const auto before = read_wal();
+  EXPECT_THROW(db.remove(""), std::invalid_argument);
+  EXPECT_EQ(read_wal(), before);
+  EXPECT_EQ(db.get("kept"), std::make_optional(std::string("old")));
+  db.remove("kept");
+  EXPECT_FALSE(db.get("kept").has_value());
+  auto next = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  EXPECT_EQ(next->tranc_id_, 3u);
+  ASSERT_TRUE(next->abort());
+}
+
+// 目的：过长 key 无法编码为 DELETE 时，不写日志、不影响已有数据，并结算失败 ID。
+// 后续合法删除完成刷盘后，检查点应越过该取消 ID，而不是一直停在它之前。
+TEST_F(LSMTest, DirectRemoveOversizedKeyCancelsIdWithoutBlockingCheckpoint) {
+  {
+    LSM db(test_dir);
+    db.put("kept", "old");
+    const auto read_wal = [&] {
+      auto file = FileObj::open(test_dir + "/wal.0", false);
+      return file.read_to_slice(0, file.size());
+    };
+    const auto before = read_wal();
+    const std::string oversized(std::numeric_limits<uint16_t>::max(), 'k');
+    EXPECT_THROW(db.remove(oversized), std::length_error);
+    EXPECT_EQ(read_wal(), before);
+    EXPECT_EQ(db.get("kept"), std::make_optional(std::string("old")));
+    db.remove("kept");
+    EXPECT_FALSE(db.get("kept").has_value());
+    db.flush_all();
+  }
+  TranManager saved(test_dir);
+  EXPECT_TRUE(saved.is_aborted(2));
+  EXPECT_EQ(saved.get_checkpoint_tranc_id(), 3u);
+  EXPECT_EQ(saved.getNextTransactionId(), 4u);
+}
+
 TEST_F(LSMTest, BasicOperations) {
   LSM lsm(test_dir);
 

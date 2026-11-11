@@ -2641,6 +2641,27 @@ TEST_F(TranManagerRecoveryTest, RestoreFiltersInvalidVersionsAlreadyInSst) {
 
 class LSMStartupWALTest : public WALTest {};
 
+// 目的：删除日志未确认成功时，不能提前写墓碑遮住旧值。
+// 占用下一个 WAL 文件制造真实轮换失败，后续删除也不能绕过 WAL 的故障状态。
+TEST_F(LSMStartupWALTest, DirectRemoveWalFailurePreservesExistingValues) {
+  const auto dir = std::filesystem::path(test_dir);
+  LSM db(test_dir);
+  db.put("victim", "old");
+  const std::string padding(5000, 'v');
+  db.put("padding", padding);
+  ASSERT_GT(std::filesystem::file_size(dir / "wal.0"), 4096u);
+  const auto successful = read_wal_records(dir / "wal.0");
+  const std::vector<Record> occupied = {Record::createRecord(99)};
+  write_wal_records(dir / "wal.1", occupied);
+
+  EXPECT_THROW(db.remove("victim"), std::runtime_error);
+  EXPECT_THROW(db.remove("padding"), std::runtime_error);
+  EXPECT_EQ(db.get("victim"), std::make_optional(std::string("old")));
+  EXPECT_EQ(db.get("padding"), std::make_optional(padding));
+  EXPECT_EQ(read_wal_records(dir / "wal.0"), successful);
+  EXPECT_EQ(read_wal_records(dir / "wal.1"), occupied);
+}
+
 // 目的：普通 put 也必须先写 WAL；日志轮换失败不能覆盖旧值或写入新 key。
 // 填满当前日志后占用下一个文件名，制造真实轮换错误，保留旧日志验证未被覆盖。
 TEST_F(LSMStartupWALTest, DirectPutWalFailureDoesNotApplyData) {
@@ -2705,6 +2726,56 @@ TEST_F(LSMStartupWALTest, MalformedWalStopsStartupAndPreservesLogs) {
 }
 
 #ifndef _WIN32
+// 目的：旧值已落入 SST、删除仍在内存时直接退出进程，重启不能让旧值重新出现。
+// 同时验证 DELETE 日志、删除不存在的 key、恢复后 ID 延续以及删除后的重新写入。
+TEST_F(LSMStartupWALTest, DirectRemoveSurvivesProcessExitWithoutDestructors) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  ASSERT_EXIT(
+      {
+        try {
+          LSM db(test_dir);
+          db.put("victim", "old");
+          db.put("survivor", "kept");
+          db.flush_all();
+          db.remove("victim");
+          db.remove("absent");
+          std::_Exit(0);
+        } catch (...) {
+          std::_Exit(93);
+        }
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  const auto records = read_wal_records(
+      std::filesystem::path(test_dir) / "wal.0");
+  const std::vector<Record> expected = {
+      Record::createRecord(1), Record::putRecord(1, "victim", "old"),
+      Record::commitRecord(1), Record::createRecord(2),
+      Record::putRecord(2, "survivor", "kept"), Record::commitRecord(2),
+      Record::createRecord(3), Record::deleteRecord(3, "victim"),
+      Record::commitRecord(3), Record::createRecord(4),
+      Record::deleteRecord(4, "absent"), Record::commitRecord(4)};
+  ASSERT_EQ(records, expected);
+
+  for (int restart = 0; restart < 2; ++restart) {
+    SCOPED_TRACE(restart);
+    LSM db(test_dir);
+    EXPECT_EQ(db.get("survivor"), std::make_optional(std::string("kept")));
+    EXPECT_FALSE(db.get("absent"));
+    if (restart == 0) {
+      EXPECT_FALSE(db.get("victim"));
+      db.put("victim", "reborn");
+      const std::vector<Record> expected_fresh = {
+          Record::createRecord(5), Record::putRecord(5, "victim", "reborn"),
+          Record::commitRecord(5)};
+      EXPECT_EQ(read_wal_records(std::filesystem::path(test_dir) / "wal.1"),
+                expected_fresh);
+    } else {
+      EXPECT_EQ(db.get("victim"), std::make_optional(std::string("reborn")));
+    }
+  }
+}
+
 // 目的：普通批量写入返回后直接退出进程，恢复仍得到整批内容和重复 key 的最后值。
 // 每批只有一个 ID；重启后再次批量写入应使用下一个 ID，并能经过第二次重启。
 TEST_F(LSMStartupWALTest, DirectPutBatchSurvivesProcessExitWithoutDestructors) {
