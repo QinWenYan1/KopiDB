@@ -912,6 +912,55 @@ TEST_F(LSMTest, EngineMvccOversizedVersionGroupFlushPreservesMemory) {
 }
 
 // Test basic operations: put, get, remove
+// 目的：普通查询可读取已提交的值、不存在时返回 nullopt，且查询不分配事务 ID。
+// 先断言命中结果，再验证缺失分支，避免判空写反时继续解引用空 optional。
+TEST_F(LSMTest, DirectGetReturnsValuesWithoutAllocatingTransactionIds) {
+  LSM db(test_dir);
+  auto writer = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  const uint64_t writer_id = writer->tranc_id_;
+  writer->put("key", "value");
+  ASSERT_TRUE(writer->commit());
+
+  ASSERT_EQ(db.get("key"), std::make_optional(std::string("value")));
+  EXPECT_EQ(db.get("key"), std::make_optional(std::string("value")));
+  EXPECT_FALSE(db.get("missing").has_value());
+
+  auto next = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  EXPECT_EQ(next->tranc_id_, writer_id + 1);
+  ASSERT_TRUE(next->abort());
+}
+
+// 目的：普通 get 保持允许读未提交、排除回滚以及有效墓碑表示不存在的规则。
+// 取消前主动刷入 SST，确认回滚后的旧值恢复来自版本过滤，而不是数据仍在内存。
+TEST_F(LSMTest, DirectGetPreservesVisibilityAndDeletionRules) {
+  LSM db(test_dir);
+  auto committed = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  committed->put("changed", "old");
+  committed->put("deleted", "old");
+  ASSERT_TRUE(committed->commit());
+  ASSERT_EQ(db.get("changed"), std::make_optional(std::string("old")));
+
+  auto dirty = db.begin_tran(IsolationLevel::READ_UNOP_COMMITTED);
+  dirty->put("changed", "dirty");
+  dirty->remove("deleted");
+  dirty->put("new", "dirty");
+  ASSERT_EQ(db.get("changed"), std::make_optional(std::string("dirty")));
+  EXPECT_FALSE(db.get("deleted").has_value());
+  EXPECT_EQ(db.get("new"), std::make_optional(std::string("dirty")));
+  db.flush_all();
+  ASSERT_TRUE(dirty->abort());
+
+  EXPECT_EQ(db.get("changed"), std::make_optional(std::string("old")));
+  EXPECT_EQ(db.get("deleted"), std::make_optional(std::string("old")));
+  EXPECT_FALSE(db.get("new").has_value());
+
+  auto deletion = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  deletion->remove("changed");
+  EXPECT_EQ(db.get("changed"), std::make_optional(std::string("old")));
+  ASSERT_TRUE(deletion->commit());
+  EXPECT_FALSE(db.get("changed").has_value());
+}
+
 TEST_F(LSMTest, BasicOperations) {
   LSM lsm(test_dir);
 

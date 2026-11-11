@@ -1023,7 +1023,7 @@ std::optional<std::string> LSM::get(const std::string &key) {
 
   // 2. Engine 已经完成版本比较和墓碑处理
   // 没有找到有效值时，直接向用户返回“不存在”
-  if (result.has_value())
+  if (!result.has_value())
     return std::nullopt; 
 
   // 3. Engine 返回的是 {value, 事务版本号}。
