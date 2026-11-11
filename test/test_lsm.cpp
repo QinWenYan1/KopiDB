@@ -1672,8 +1672,121 @@ TEST_F(LSMTest, TranContextPutRejectsFinishedTransactions) {
   }
 }
 
+// 目的：四种级别的 put 都在追加记录、改变暂存表、WAL 或引擎数据之前拒绝空参数。
+// 已有合法修改不能被错误调用清掉；拒绝之后仍可继续合法写入并正常提交。
+TEST_F(LSMTest, TranContextPutRejectsEmptyArgumentsWithoutSideEffects) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
+  manager->write_tranc_id_file();
+  manager->init_new_wal();
+  auto base = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  base->put("existing", "old");
+  ASSERT_TRUE(base->commit());
+  const auto read_wal = [&] {
+    auto file = FileObj::open(test_dir + "/wal.0", false);
+    return file.read_to_slice(0, file.size());
+  };
+
+  for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
+                     IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    auto context = manager->new_tranc(level);
+    const auto key = "kept-" + std::to_string(context->tranc_id_);
+    const auto later = "later-" + std::to_string(context->tranc_id_);
+    context->put(key, "first");
+    const auto operations_before = context->operations;
+    const auto pending_before = context->temp_map_;
+    const auto wal_before = read_wal();
+    const auto size_before = engine->memtable.get_total_size();
+    const auto value_before = engine->get(key, 0);
+    const auto existing_before = engine->get("existing", 0);
+    const std::vector<std::pair<std::string, std::string>> invalid_inputs{
+        {"", "value"}, {"existing", ""}, {key, ""}, {"", ""}};
+
+    for (const auto &[bad_key, bad_value] : invalid_inputs) {
+      SCOPED_TRACE(bad_key);
+      EXPECT_THROW(context->put(bad_key, bad_value), std::invalid_argument);
+      EXPECT_EQ(context->operations, operations_before);
+      EXPECT_EQ(context->temp_map_, pending_before);
+      EXPECT_EQ(read_wal(), wal_before);
+      EXPECT_EQ(engine->memtable.get_total_size(), size_before);
+      EXPECT_EQ(engine->get(key, 0), value_before);
+      EXPECT_EQ(engine->get("existing", 0), existing_before);
+      EXPECT_EQ(context->get(key), std::make_optional(std::string("first")));
+      EXPECT_FALSE(context->isCommited);
+      EXPECT_FALSE(context->isAborted);
+    }
+
+    context->put(key, "last");
+    context->put(later, "accepted");
+    ASSERT_TRUE(context->commit());
+    EXPECT_EQ(engine->get(key, 0),
+              std::make_optional(std::make_pair(std::string("last"),
+                                               context->tranc_id_)));
+    EXPECT_EQ(engine->get(later, 0),
+              std::make_optional(std::make_pair(std::string("accepted"),
+                                               context->tranc_id_)));
+  }
+}
+
+// 目的：事务已提交或取消时，先报告“事务已结束”，不能改成空参数错误。
+// invalid_argument 继承自 logic_error，所以这里分别捕获，避免 EXPECT_THROW(logic_error)
+// 把错误的检查顺序也当作通过；同时确认记录、暂存值、WAL 和引擎内容均保持不变。
+TEST_F(LSMTest, TranContextPutFinishedStatePrecedesArgumentValidation) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
+  manager->write_tranc_id_file();
+  manager->init_new_wal();
+  const auto read_wal = [&] {
+    auto file = FileObj::open(test_dir + "/wal.0", false);
+    return file.read_to_slice(0, file.size());
+  };
+
+  for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
+                     IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    for (bool committed : {false, true}) {
+      SCOPED_TRACE(static_cast<int>(level));
+      SCOPED_TRACE(committed);
+      auto context = manager->new_tranc(level);
+      const auto key = "ended-" + std::to_string(context->tranc_id_);
+      context->put(key, "value");
+      if (committed)
+        ASSERT_TRUE(context->commit());
+      else
+        ASSERT_TRUE(context->abort());
+      const auto operations_before = context->operations;
+      const auto pending_before = context->temp_map_;
+      const auto wal_before = read_wal();
+      const auto size_before = engine->memtable.get_total_size();
+      const auto value_before = engine->get(key, 0);
+      const std::vector<std::pair<std::string, std::string>> invalid_inputs{
+          {"", "value"}, {key, ""}};
+
+      for (const auto &[bad_key, bad_value] : invalid_inputs) {
+        try {
+          context->put(bad_key, bad_value);
+          ADD_FAILURE() << "Ended transaction accepted put";
+        } catch (const std::invalid_argument &) {
+          ADD_FAILURE() << "Argument validation ran before finished-state check";
+        } catch (const std::logic_error &) {
+          // 预期：先拒绝使用已结束的事务。
+        }
+        EXPECT_EQ(context->operations, operations_before);
+        EXPECT_EQ(context->temp_map_, pending_before);
+        EXPECT_EQ(read_wal(), wal_before);
+        EXPECT_EQ(engine->memtable.get_total_size(), size_before);
+        EXPECT_EQ(engine->get(key, 0), value_before);
+      }
+    }
+  }
+}
+
 // 目的：本事务自己的修改优先于旧读缓存，暂存墓碑应返回“不存在”。
-// 场景：先读取引擎旧值，再暂存新值、空值墓碑、重写值，依次观察 get 的结果。
+// 场景：先读取引擎旧值，再暂存新值、通过 remove 删除、重写值，依次观察 get 的结果。
 TEST_F(LSMTest, TranContextGetOwnWritesOverrideReadCache) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
   auto manager = bind_test_manager(engine);
@@ -1686,7 +1799,7 @@ TEST_F(LSMTest, TranContextGetOwnWritesOverrideReadCache) {
     EXPECT_EQ(context.get("k"), std::make_optional(std::string("old")));
     context.put("k", "own");
     EXPECT_EQ(context.get("k"), std::make_optional(std::string("own")));
-    context.put("k", "");
+    context.remove("k");
     EXPECT_FALSE(context.get("k").has_value());
     context.put("k", "rewritten");
     EXPECT_EQ(context.get("k"), std::make_optional(std::string("rewritten")));
@@ -4157,7 +4270,7 @@ TEST_F(TranCommitTest, AppliesWritesAndEndsOnlyOnce) {
     TranContext context(id, engine, manager, level);
     context.put(key, "first");
     context.put(key, "last");
-    context.put(removed, "");
+    context.remove(removed);
     if (level != IsolationLevel::READ_UNOP_COMMITTED) {
       EXPECT_FALSE(engine->get(key, 0));
       ASSERT_TRUE(engine->get(removed, 0));

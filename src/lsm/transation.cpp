@@ -120,6 +120,19 @@ void TranContext::put(const std::string &key, const std::string &value) {
     throw std::logic_error(
         "TranContext::put: transaction has already finished");
 
+  // 检查用户输入，必须放在追加 Record 和修改数据之前。
+  //
+  // 空 key 保留给内部事务标记，不能作为普通业务 key。
+  // 空 value 在存储层表示删除墓碑；用户删除数据应调用 remove()。
+  // 参数错误只拒绝本次调用，不清空此前合法的暂存修改。
+  if (key.empty())
+    throw std::invalid_argument(
+        "TranContext::put: key must not be empty");
+
+  if (value.empty())
+    throw std::invalid_argument(
+        "TranContext::put: value must not be empty; use remove()");
+
   // 2. 设置写开关，确认是否为读未提交
   const bool write_immediately =
       (isolation_level_ == IsolationLevel::READ_UNOP_COMMITTED);
@@ -149,7 +162,6 @@ void TranContext::put(const std::string &key, const std::string &value) {
     // ! SERIALIZABLE（未完整实现）：同样走暂存路径，不为读过的 key
     // 或范围持有事务锁。
     temp_map_.insert_or_assign(key, value);
-
     spdlog::trace("TranContext--put: stored in temp map, tranc_id={}",
                   tranc_id_);
   }

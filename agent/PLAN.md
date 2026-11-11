@@ -4,7 +4,7 @@
 
 章节：目录 **5.2.3「崩溃恢复」**，文章标题 **Lab 5.5 崩溃恢复**。
 
-**进度：66.7%（4/6 阶段按所列范围验收通过）**。阶段⑤普通 get 已通过 2 项测试，本轮 get_batch 构建成功、新增 **3/3 通过**。当前进入已选定的 A5 输入约束，先交付 issue，再逐函数补齐事务写入口和普通写入口。阶段内部分完成不折算百分比。
+**进度：66.7%（4/6 阶段按所列范围验收通过）**。阶段⑤普通 get 2/2、get_batch 3/3 已通过；本轮 TranContext::put 空参数校验构建成功，新增 2 项及受影响回归合计 **7/7 通过**。下一函数为 LSM::put 接入 WAL 和自动提交，A5 其余入口校验放到本阶段末尾。阶段内部分完成不折算百分比。
 
 ## 本轮目标
 
@@ -26,7 +26,7 @@
 | ② 日志检查入口 | `TranManager::check_recover()` | 使用连续检查点调用 WAL::recover，原样返回候选记录；不改变事务状态／ID；读取失败正常上报 | 已验收：构建成功，新增 3/3 通过 |
 | ③ 初始化新日志 | `TranManager::init_new_wal()` | 新 WAL 能接收写入，旧日志不被提前删除或覆盖；不能把仅重放到内存的数据误记为已刷盘 | 已验收：新增 3/3，相关回归 4/4，通过；旧日志提示文字待同步 |
 | ④ 接通启动恢复 | `TranManager::restore_recovery_state(records)` → `LSM::LSM()`；复核启动／保存失败路径 | 组件绑定正确；区分提交／取消／未结束事务，恢复回滚过滤与 ID 进度；仅重放有效事务，重复正常重启结果正确；失败保留 WAL | 已验收所列范围：辅助函数 5/5，本轮启动相关 8/8；文件写失败后的自动重试边界见审计 |
-| ⑤ 必要接口衔接 | get → get_batch → 普通写入口、`commit(test_fail)`、A5 参数校验；必要的状态／关闭联动 | 普通写入同样受 WAL 保护；纯读取不制造事务 ID 缺口；故障点能留下可恢复的提交；非法参数在产生修改前拒绝 | 进行中：get 2/2、get_batch 3/3 通过；当前 A5 的 TranContext::put 校验 |
+| ⑤ 必要接口衔接 | get → get_batch → 普通写入口、`commit(test_fail)`、A5 参数校验；必要的状态／关闭联动 | 普通写入同样受 WAL 保护；纯读取不制造事务 ID 缺口；故障点能留下可恢复的提交；非法参数在产生修改前拒绝 | 进行中：get、get_batch 及 TranContext::put 校验通过；当前 LSM::put 的 WAL 与自动提交 |
 | ⑥ 整体验收 | 恢复用例、受影响回归、文档收尾 | 正常重启、绕过析构的进程退出、回滚／未提交版本已落 SST、恢复失败保留日志均有验证；报告真实通过范围与未覆盖边界 | 待开始 |
 
 ## 具体函数范围
@@ -246,11 +246,11 @@ test_wal 与 test_lsm 均构建成功；隔离运行 **3/3 + 5/5 = 8/8 通过**�
 
 `xmake build test_lsm` 成功，隔离运行新增批查测试 **3/3 通过**，构建／运行期间源码和测试哈希一致；没有重复运行已通过的单条 get 或其他套件。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-direct-batch-review-dg6rdngt`。助手未修改业务代码。README 已同步普通查询不再分配 ID 的规则，并移除入口初始化尚未完成的过期说明；保留整体 WAL 恢复保证尚未完成的限制，没有额外声称 README 示例已重新编译运行。
 
-## 当前问题：A5 公开写入口的空参数约束
+## 已选问题：A5 公开写入口的空参数约束
 
 沿用 [A5](AUDIT.md#a5) 已确认方向，进入实施前在聊天中提供可复制 issue；不是新增加一轮全库修复。issue 引用已通过 GitHub 读取核实的提交 ae156f7269ba30bd3d940f3ab5daa28b328a3053，不把本地未提交注释造成的行号变化套到远程代码上。
 
-顺序：TranContext::put → TranContext::remove → LSM::put → put_batch → remove → remove_batch；普通写入口同时接通先前已经列入本轮的 WAL 和结束登记。每轮只交付一个函数。之后再完成 commit(test_fail) 及必要状态／关闭联动。
+2026-11-11 顺序调整：保留用户已经完成的 TranContext::put 校验，验收后回到 LSM::put → put_batch → remove → remove_batch 的 WAL 和结束登记主线，再完成 commit(test_fail) 及必要状态／关闭联动。A5 剩余的 TranContext::remove 空 key 检查、LSM 写入口分配 ID 前的参数检查及批量预检查，统一放到本阶段末尾；参数约束不是恢复逻辑的前置条件。每轮仍只交付一个函数。
 
 当前函数：`src/lsm/transation.cpp:114` 的 TranContext::put。保留现有结束状态检查、RU 先写 WAL 再写 Engine、其他级别暂存，以及 SERIALIZABLE 限制标记。只在结束状态检查之后、追加 Record 之前增加空 key／空 value 检查，抛 invalid_argument；空 key 保留给内部标记，空 value 为墓碑，用户删除应调用 remove。
 
@@ -258,4 +258,24 @@ test_wal 与 test_lsm 均构建成功；隔离运行 **3/3 + 5/5 = 8/8 通过**�
 
 后续普通写入的设计依赖已核对：可复用 new_tranc(READ_OP_COMMITTED)→put/remove→commit，单次普通操作不要求用户手动提交。需要一起处理提交前异常时 activeTrans_ 持有的上下文，以及已追加 COMMIT 后失败不能强制 abort 的边界；具体异常处理在对应 LSM 写函数草案中说明，不在当前参数校验函数中夹带新机制或自动重试策略。
 
-当前仅交付 A5 issue 与 TranContext::put 的校验草案，尚未修改业务代码、迁移旧删除用例或运行 A5 测试；不把该问题标为已解决，也不将 A6 自动混入此次修改。
+首轮交付 A5 issue 与 TranContext::put 的校验草案；用户现已完成该函数的前置检查。验收结果记在下方，A5 的其他入口仍待阶段末补齐；不把整个问题标为已解决，也不将 A6 自动混入此次修改。
+
+## 2026-11-11 TranContext::put 参数校验验收
+
+用户在结束状态检查之后、追加 Record 之前加入空 key／空 value 检查，位置正确；非法输入不清理已有合法操作，也不改变原有 RU 立即写入和其他级别暂存规则。助手没有修改业务代码。
+
+助手新增 2 项测试：四种当前隔离分支均拒绝空参数，operations、temp_map、真实 WAL 字节及引擎数据不变，随后仍可合法写入并提交；已提交／已取消上下文优先抛事务结束错误，显式区分 invalid_argument 与其父类 logic_error。迁移两项既有用例，从 put(key, "") 改为 remove(key)，保留原来的读缓存、墓碑、提交与结束标记断言；没有修改底层合法空值测试。
+
+`xmake build test_lsm` 成功，隔离运行 `LSMTest.TranContextPut*:LSMTest.TranContextGetOwnWritesOverrideReadCache:TranCommitTest.AppliesWritesAndEndsOnlyOnce`，**7/7 通过**（新增 2、原有 5）。源码和测试哈希在执行期间一致；没有扩大运行其他套件。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-tran-put-validation-9gm4zsyi`。A5 仅此函数通过，其他公开入口仍待本阶段末完成，A6 未纳入本次改动。
+
+## 下一函数：LSM::put 接入 WAL 与自动提交
+
+位置：`src/lsm/engine.cpp:1067`，公开签名仍为 `void put(const std::string &, const std::string &)`。作者 master 中的普通 put 仍是分配 ID 后直接写 Engine；本地已确认普通写入也要受 WAL 保护，因此需要衔接，而不照抄这条绕过日志的路径。
+
+草案复用 `new_tranc(READ_OP_COMMITTED) → tx->put → tx->commit`。RC 在提交前只暂存，由既有 commit 完成日志、应用数据、结束标记和管理器登记。调用者仍只调用普通 put，不需要自己 commit；普通 get 的读取约定不因此改变。此函数仍由用户手写，本轮草案不算已实现。
+
+提交返回 false 必须转为异常，不能让 void 接口看起来写入成功。发生异常时，仅在上下文尚未结束、operations 中也不存在 COMMIT／ROLLBACK 结束尝试的情况下调用 abort，避免 activeTrans_ 留住已放弃的临时事务；已经确认提交或存在结束尝试时，不改成回滚。清理自身失败应记录并继续传播原始异常。当前不引入自动重试或新的辅助类型。
+
+行为取舍：普通 put 复用暂存型事务后，同 key 并发写入可能触发现有版本冲突，并向调用者抛异常；这是接口表现的变化，不能只描述成无行为变化的日志接线。当前参数错误先由 TranContext::put 拒绝并取消临时事务；LSM 分配 ID 前的检查按 A5 排在阶段末，暂不声称非法参数完全不消耗 ID。
+
+用户实现后验收：成功写入有对应 CREATE／PUT／COMMIT 日志和正确数据；正常调用自行结束，调用者无需 commit；进程退出绕过析构仍可恢复；提交前参数／编码错误不会遗留未结束的隐式事务；日志或提交失败向上传播，不能静默成功或把已确认 COMMIT 改成回滚。

@@ -123,15 +123,17 @@ A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 
 
 ### A5：明确公开写入接口对空 key／空 value 的处理策略
 
-类型：API 约束改进建议。状态：2026-11-08 已纳入 [Lab 5.5 计划](PLAN.md) 阶段⑤；2026-11-11 进入实施，已交付 issue 与首个函数草案，尚未验收。原记录／方向确认日期：2026-10-31。
+类型：API 约束改进建议。状态：处理中。2026-11-08 已纳入 [Lab 5.5 计划](PLAN.md) 阶段⑤；2026-11-11 TranContext::put 的校验已验收，其他入口待本阶段末补齐，尚未整体解决。原记录／方向确认日期：2026-10-31。
 
 背景：用户询问误传空 key 或空 value 的结果。现有约定将空 key 保留给内部事务标记，将空 value 解释为墓碑；这不是已确认支持普通空字符串数据的接口。本条讨论是否让公开写入口主动报参数错误，不能只因缺少额外防护就判定现有实现违反已接受契约。
 
-代码核查：`LSM::put/put_batch`（src/lsm/engine.cpp:953、958）和 `TranContext::put`（src/lsm/transation.cpp:60）没有空 key／空 value 校验；`remove` 相关入口也未拒绝空 key。空 value 会沿现有路径成为墓碑；空 key 会与保留键冲突，范围收集和 Level_Iterator 会跳过它。commit 通过 `mem.put_("", "", tranc_id_)` 写结束标记；flush_last 在 key/value 都空时收集该事务 ID。以上来自代码核查，本轮没有新增或运行测试。
+实施前代码核查：`LSM::put/put_batch`（src/lsm/engine.cpp:953、958）和 `TranContext::put`（src/lsm/transation.cpp:60）没有空 key／空 value 校验；`remove` 相关入口也未拒绝空 key。空 value 会沿现有路径成为墓碑；空 key 会与保留键冲突，范围收集和 Level_Iterator 会跳过它。commit 通过 `mem.put_("", "", tranc_id_)` 写结束标记；flush_last 在 key/value 都空时收集该事务 ID。以上来自代码核查，本轮没有新增或运行测试。
 
 已认可的方向：在 LSM 与 TranContext 的用户写入口拒绝空 key，公开 put/put_batch 拒绝空 value，通过 remove 明确删除。错误应在修改暂存表、操作记录或存储层之前上报，例如抛 std::invalid_argument；批量接口先检查全部参数再开始写入。拒绝空 value 会改变当前允许的“put 空值即删除”行为，实施时同步补充测试并更新 README。具体函数及错误处理随入口整合逐函数落实，业务代码由用户手写。
 
 2026-11-11 已核实远程提交 ae156f7269ba30bd3d940f3ab5daa28b328a3053：TranContext::put/remove 在 transation.cpp:114／158，LSM 写入口在 engine.cpp:1055–1073，尚无上述校验。issue 草稿在聊天中交付，由用户手动发布；当前首个修改点为 TranContext::put 的前置空参数检查。
+
+本轮进展：TranContext::put 已在操作记录和数据变化前拒绝空参数，并保留结束状态检查优先级。新增 2 项测试、迁移两项旧 put 空值删除用例为 remove，相关 7/7 通过；构建及运行期间源码／测试哈希一致。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-tran-put-validation-9gm4zsyi`。其余入口校验按最新 PLAN 放到阶段⑤末，不把这一函数通过记成 A5 全部完成。
 
 边界：底层仍需允许合法墓碑和内部事务标记，不把拒绝空数据的检查机械加到 SkipList、MemTable、Block 或 SST。若未来需要保存普通空字符串值，需单独讨论记录类型表示，不在当前 A2 中修改编码。
 
