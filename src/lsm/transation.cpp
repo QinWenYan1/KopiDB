@@ -126,8 +126,7 @@ void TranContext::put(const std::string &key, const std::string &value) {
   // 空 value 在存储层表示删除墓碑；用户删除数据应调用 remove()。
   // 参数错误只拒绝本次调用，不清空此前合法的暂存修改。
   if (key.empty())
-    throw std::invalid_argument(
-        "TranContext::put: key must not be empty");
+    throw std::invalid_argument("TranContext::put: key must not be empty");
 
   if (value.empty())
     throw std::invalid_argument(
