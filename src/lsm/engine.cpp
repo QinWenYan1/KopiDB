@@ -1099,7 +1099,33 @@ void LSM::put(const std::string &key, const std::string &value) {
     throw;
   }
 
+  // 4. 先将整组日志强制写出，再修改数据
+  // write_to_wal 内部调用 WAL::log(records, true)
+  //
+  // 写日志失败可能已经留下部分内容，甚至包含 COMMIT
+  // 因此这里仅报告失败，不能套用上面的“登记取消”分支
+  if (!tran_manager_->write_to_wal(records))
+    throw std::runtime_error("LSM::put: failed to write WAL");
 
+  // 5. 日志已经确认 COMMIT，现在应用业务数据
+  // Engine 自己处理锁、冻结和容量检查
+  //
+  // 这一步即使触发刷盘，也尚无本事务的完成标记
+  // 因此不会误报“本事务已经全部刷盘”
+  engine->put(key, value, tranc_id); 
+
+  // 6. 数据应用成功后，登记已经提交、等待刷盘确认
+  // 必须在写完成标记之前登记：
+  // 下一步可能立即触发刷盘，刷盘通知需要查到这份状态
+  tran_manager_->add_ready_to_flush_tranc_id(tranc_id, TransactionState::OP_COMMITTED); 
+
+  // 7. 最后写内部完成标记
+  // 数据先写、标记后写；结合最老表优先刷盘的顺序
+  // 刷出标记时，才能确认该次写入的数据已经刷盘
+  //
+  // 从 WAL 确认 COMMIT 开始，后续异常都直接向上传播
+  // 不能再把这次写入改成取消；恢复仍依据保留的日志
+  engine->put("", "", tranc_id); 
 }
 
 void LSM::put_batch(
