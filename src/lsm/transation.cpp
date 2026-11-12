@@ -727,9 +727,19 @@ void TranManager::stop_wal() {
 //    aborted_tranc_ids_      清空
 //    flushedTrancIds_        变为 {5}
 void TranManager::reset_after_clear() {
-  // 1. 管理器状态使用同一把锁保护。
-  // 整段 clear 仍要求调用方停止并发操作。
+  // 1. 管理器状态使用同一把锁保护
+  // 整段 clear 仍要求调用方停止并发操作
   std::lock_guard<std::mutex> lock(mutex_);
+
+  // 2. 必须先停止旧 WAL，再重置状态
+  // 否则旧日志写入器和清理线程还在使用清空前的状态
+  if(wal)
+    throw std::logic_error("TranManager::reset_after_clear: WAL must be stopped first");
+
+  // 不能把尚未结束的事务直接当成已经处理完成
+  // 调用方必须先提交或取消它们
+  if (!activeTrans_.empty())
+    throw std::logic_error("TranManager::reset_after_clear: active transactions must finish first");
 
 
 }
