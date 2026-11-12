@@ -696,6 +696,31 @@ void TranManager::init_new_wal() {
       checkpoint);
 }
 
+void TranManager::stop_wal() {
+  // 1. 按管理器现有约定，加锁访问活跃事务表
+  // 这把锁只保护管理器状态，不代表整个 clear 可以与普通读写并发
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  // 2. 尚未结束的事务后面还需要写入提交或回滚日志
+  // 必须在停止 WAL 之前拒绝，否则这些事务无法正常结束
+  // 抛异常时 wal 尚未改变，调用者仍可先结束事务，再重试
+  if (!activeTrans_.empty()) 
+    throw std::logic_error(
+      "TranManager::stop_wal: active transactions must finish first");
+
+  // 3. 释放管理器持有的 WAL。
+  //
+  // 当前生产代码中，只有这里的成员 wal 强持有该 WAL 对象，
+  // 因此 reset 会执行已经实现的 WAL::~WAL()：
+  //   通知清理线程退出 → join 等待退出 → 关闭日志文件。
+  //
+  // reset 返回后，才能让 clear 删除旧日志文件。
+  // wal 本来就是空指针时，reset 不会做任何事。
+  wal.reset(); 
+  
+  // 文件删除和事务状态重置，由后续 clear 流程负责。
+}
+
 void TranManager::set_engine(std::shared_ptr<LSMEngine> engine) {
   engine_ = std::move(engine);
 }

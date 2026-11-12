@@ -196,7 +196,7 @@ SSTBuilder::build（sst.cpp:503）调用 FileObj::create_and_write 直接写正�
 
 新增测试 `LSMStartupWALTest.ClearThenDirectWriteSurvivesProcessExit` 构建成功、**0/1 通过**，RecordProperty 记录重启前 WAL 文件数为 0；相关源码和测试哈希在构建运行期间一致。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-clear-wal-baseline-g92e2ndn`。测试保留在原套件中，未禁用或削弱断言。该独立基线失败不归因于已通过 18 项检查的 commit(test_fail)。
 
-修复方向：先显式停止旧 WAL／等待清理线程，再清空存储，重置并保存管理器的相关状态，最后启动新 WAL；不能只在 clear 后创建新日志而让旧线程和句柄继续存活。具体函数、维护前提和验收标准进入 PLAN。删除文件失败须报告，不能按清空成功继续重置状态；不因此承诺原子 clear 或并发 clear。
+修复方向：先显式停止旧 WAL／等待清理线程，再清空存储，重置并保存管理器的相关状态，最后启动新 WAL；不能只在 clear 后创建新日志而让旧线程和句柄继续存活。具体函数、维护前提和验收标准进入 PLAN。 2026-11-12 已按用户要求细化为 stop_wal、reset_after_clear、Engine::clear、LSM::clear 及 LSM 析构错误收尾五个函数，业务实现尚未开始。删除文件失败须报告，不能按清空成功继续重置状态；不因此承诺原子 clear 或并发 clear。
 
 ## 验证记录
 

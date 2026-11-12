@@ -87,6 +87,10 @@ class TranManager : public std::enable_shared_from_this<TranManager> {
 public:
   TranManager(std::string data_dir);
   ~TranManager();
+  // 供 clear 等独占维护流程使用；调用期间不能并发执行数据库操作
+  // 有活跃事务时拒绝停止，调用者应先提交或取消这些事务
+  // 返回前，旧 WAL 的清理线程已经退出，日志文件句柄已经关闭
+  void stop_wal();
   void init_new_wal();
   void set_engine(std::shared_ptr<LSMEngine> engine);
   // ! SERIALIZABLE（未完整实现）：允许创建上下文，不代表已提供完整隔离保证。

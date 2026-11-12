@@ -374,8 +374,24 @@ test_wal.cpp 新增 2 项 LSMStartupWALTest.DirectPutBatch*：真实 WAL 轮换�
 
 来自本阶段明确列出的 clear／状态／关闭联动复核，不扩大为全库审计。问题事实见 [A9](AUDIT.md#a9)。新增回归 LSMStartupWALTest.ClearThenDirectWriteSurvivesProcessExit 在单线程、无事务上下文或迭代器下复现：clear 后成功写入并能当场查询，_Exit 后重启丢失新值，重启前 WAL 文件数为 0；构建成功，基线 **0/1 通过**。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-clear-wal-baseline-g92e2ndn`。此失败独立于前述 commit 的 18 项通过，不能宣称当前全部恢复场景已通过。
 
-先在聊天交付 issue，再逐函数实施。候选最小范围：TranManager 新增停止 WAL 的维护接口（暂名 stop_wal），显式等待旧清理线程结束；清空后的管理器状态重置接口（暂名 reset_after_clear），保留 ID 单调性，重置已删除数据对应的 ready／aborted／flushed 进度；LSM::clear 组织停止日志、清空存储、重置并保存状态、初始化新 WAL 的顺序。保留管理器实例时无需重新绑定；不靠 shared_ptr::reset 恰好触发析构来保证旧线程已停止。
+先在聊天交付 issue，再逐函数实施。修复方案保留现有 Engine 和 TranManager 实例，不重建组件、无需重新绑定。先由 TranManager::stop_wal 显式释放其私有 WAL，再清空存储、重置并保存状态、初始化新 WAL。已核实生产代码中 WAL 只有管理器这一处 shared_ptr 强持有，清理线程保存原始 this，因此这里的 wal.reset 会在返回前执行 WAL 析构并等待线程结束；不能把它与依赖 tran_manager_.reset 恰好销毁整个管理器混为一谈。
 
-LSMEngine::clear 删除文件失败当前只打印日志，实施时需使失败向上传递，不能在未清空成功时继续重置状态并返回成功。LSM::~LSM 仅按最终失败状态复核，不自动重写；当前正常关闭的 flush_all→保存状态顺序正确。flush/flush_all 无需为本次正确性修复强行更新 WAL 检查点，现有旧安全检查点只会多保留日志，不能启用“单次最大 ID 即安全检查点”的旧注释。
+LSMEngine::clear 删除文件失败当前只打印日志，实施时需使失败向上传递，不能在未清空成功时继续重置状态并返回成功。LSM::~LSM 的正常 flush_all→保存状态顺序正确，但当前任一步抛异常会逃出析构；清空后的保存／初始化失败时，销毁对象可能再次触发保存错误，因此需要局部捕获并记录析构错误，显式 clear/flush 仍向调用者报告失败。flush/flush_all 无需为本次正确性修复强行更新 WAL 检查点，现有旧安全检查点只会多保留日志，不能启用“单次最大 ID 即安全检查点”的旧注释。
 
 本次先覆盖无并发读写、无活跃事务和有效迭代器的维护调用；并发 clear 和跨文件原子 clear 不自动纳入。具体接口与调用前提在交付函数前落实。验收：clear 后旧值消失、新写有可读的 WAL；新写成功后异常退出可恢复；重复 clear／正常重启及事务 ID、刷盘进度正确；停止旧清理线程后才删除旧文件；删除／初始化失败正常上报而非继续假装成功。A7/A8 仍按原状态独立保留，不在这里扩展为任意 I/O 故障原子性保证。A9 尚未修改业务代码。
+
+## A9 逐函数实现顺序与本轮草案
+
+本轮按用户“如何修复”的授权推进，仍由用户手写业务代码，助手逐函数验收。新增两个维护接口，配合三个既有函数的局部修改，不重写 WAL、迭代器或普通读写路径：
+
+1. **TranManager::stop_wal()**（新增）：没有活跃事务时释放 WAL；返回前旧清理线程和句柄已关闭。有活跃事务先报错，保持原 WAL 可用。
+2. **TranManager::reset_after_clear()**（新增）：仅在 WAL 已停止、存储成功清空后，清 ready/aborted，flushed 重建为 `{next_id - 1}`，next ID 保持单调递增。旧数据已按 clear 请求被明确丢弃，旧编号不能留下永远无法补齐的刷盘缺口。先准备新的集合，再替换状态；分配失败保证管理器状态未被部分改动，不宣称整个 clear 未发生修改。
+3. **LSMEngine::clear()**：删除失败向上传递，使上层停止后续重置，不把删除失败当成功。
+4. **LSM::clear()**：依次 stop_wal → Engine::clear → reset_after_clear → write_tranc_id_file → init_new_wal。
+5. **LSM::~LSM()**：保持原关闭顺序，仅补析构错误捕获与日志，避免维护失败后的析构异常导致 terminate。
+
+维护前提：调用方保证整段 clear 没有并发普通读写／事务操作，且已经销毁数据库迭代器（遍历到末尾不等于释放其 SST 读锁）；stop_wal 对活跃事务作显式检查，但 active 表为空不等于全局没有操作。当前不新增全局失败状态或并发 clear 调度器。维护失败后先处理错误、重试 clear 或销毁对象，不承诺可以继续正常开启事务；WAL 停止后，普通写入已有 write_to_wal 判空会明确失败。
+
+**本轮只交付第 1 个函数。** 在 include/lsm/transaction.h:90 的 init_new_wal 声明后新增 stop_wal 声明；定义放在 src/lsm/transation.cpp:699 的 set_engine 之前。函数用 mutex_ 检查 activeTrans_，非空抛 logic_error，随后 wal.reset；WAL 析构／清理线程不回调管理器，不存在持管理器锁等待清理线程再等管理器锁的循环。wal 已为空时 reset 本身无操作，不分配新 ID、不保存或重置状态。
+
+stop_wal 的后续验收：无 WAL／重复停止安全；活跃事务时拒绝且原事务仍可继续写入和提交；停止后 write_to_wal 返回 false，再初始化可写新文件且旧文件不被覆盖。线程 join 和关闭句柄通过当前唯一所有权与 WAL 析构调用链核查，不能仅凭 macOS 能删除文件就声称句柄已关。用户尚未实现该函数，本轮没有新增或运行测试；A9 原始基线仍为 0/1，不能因草案交付标记修复完成。
