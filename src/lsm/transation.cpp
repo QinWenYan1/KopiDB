@@ -306,12 +306,6 @@ bool TranContext::commit(bool test_fail) {
   if (isCommited || isAborted)
     return false;
 
-  // 这个开关用于后续 WAL 恢复测试，当前阶段尚不支持
-  // 必须抛出异常；仅构造一个 logic_error 对象不会阻止后续执行
-  if (test_fail)
-    throw std::logic_error(
-        "TranContext::commit: test_fail is reserved for recovery tests");
-
   auto manager = tranManager_.lock();
   if (!manager || !engine_)
     throw std::logic_error(
@@ -457,26 +451,37 @@ bool TranContext::commit(bool test_fail) {
   // 7. COMMIT 已确认写出，先记住这个提交决定
   // 后续即使内存处理失败，也不能再允许 abort 改成回滚
   //
-  // 其他事务的严格读取仍由管理器的活跃表控制：
-  // 下面写完数据并登记完成之后，才从活跃表移出
-  // commit() 也只有正常走完整个流程才返回 true
+  // 正常提交在应用数据后登记完成，再移出管理器的活跃表
+  // 恢复测试分支故意跳过应用，仍登记提交，数据等待重启恢复
+  // 因此测试分支返回 true，不表示当前实例已经应用了这些修改
   isCommited = true;
 
   try {
-    // 7. 应用暂存修改。RU 已经写过数据，不重复应用
-    // 已经持有内存表锁，使用不自行加锁的 put_
-    // 空 value 表示删除，也必须写入
-    if (!write_immediately) {
-      for (const auto &[key, value] : temp_map_) {
-        // 外层已经持锁，使用不自行加锁的 put_
-        // 空 value 也写入，表示删除这个 key
-        mem.put_(key, value, tranc_id_);
+    // 恢复测试只对暂存型事务生效
+    // 此时 COMMIT 日志已确认写出，但故意不把暂存修改应用到内存
+    // RU 的数据此前已经写入引擎，因此继续正常结束
+    const bool skip_apply_for_test = test_fail && !write_immediately; 
+
+    if (!skip_apply_for_test) {
+      // 正常提交：暂存型事务现在应用修改；RU 不重复应用
+      // 外层已持有内存表锁，使用不自行加锁的 put_
+      if (!write_immediately) {
+        for (const auto &[key, value] : temp_map_) {
+          // 外层已经持锁，使用不自行加锁的 put_
+          // 空 value 也写入，表示删除这个 key
+          mem.put_(key, value, tranc_id_);
+        }
       }
+
+      // 所有隔离级别都补上结束标记
+      // 后续刷盘识别这个标记，通过 Engine 通知管理器对应事务已刷盘
+      //
+      // 测试分支必须同时跳过完成标记：
+      // 如果数据没写，却写了标记，后续刷盘可能误判该事务已全部刷盘
+      // 重启时就会跳过它的 WAL，反而无法恢复缺失的数据
+      mem.put_("", "", tranc_id_);
     }
 
-    // 所有隔离级别都补上结束标记
-    // 后续刷盘识别这个标记，通过 Engine 通知管理器对应事务已刷盘
-    mem.put_("", "", tranc_id_);
 
     // 先登记提交完成，再允许刷盘线程处理这些数据
     // 否则标记可能已经刷出，管理器却还没有这笔事务的结束登记

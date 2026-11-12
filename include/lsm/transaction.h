@@ -51,7 +51,10 @@ public:
   void remove(const std::string &key);
   std::optional<std::string> get(const std::string &key);
 
-  // ! test_fail = true 是测试中手动触发的崩溃
+  // test_fail 仅用于恢复测试：
+  // 暂存型事务确认 COMMIT 日志写出后，跳过数据应用和完成标记
+  // 仍登记提交并返回 true，供测试关闭重启后验证 WAL 恢复
+  // 不会终止进程；RU 忽略此开关，正常提交
   bool commit(bool test_fail = false);
   bool abort();
   enum IsolationLevel get_isolation_level();

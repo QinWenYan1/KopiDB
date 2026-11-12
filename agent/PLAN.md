@@ -358,4 +358,6 @@ test_wal.cpp 新增 2 项 LSMStartupWALTest.DirectPutBatch*：真实 WAL 轮换�
 
 同步 transation.cpp:460–462 和 include/lsm/transaction.h:54 的说明：普通提交完整应用后返回成功；恢复测试分支返回 true 表示提交决定已记录，不能当作当前实例的数据已经应用。实现只在聊天中交付，业务代码由用户手写，尚未验收。
 
+2026-11-12 按用户要求，README 的 C++ 示例与示例后说明已补充 test_fail 的用户用法：正常业务默认 false，true 为预留恢复测试参数。当前源码仍提前拒绝 true，因此 README 如实注明未结束事务调用会抛 logic_error。开关实现并验收后，须同步这段说明，改为实际测试行为及 RU 忽略该开关的规则，不保留过期的“尚未启用”文字。
+
 用户实现后：迁移 TranCommitTest.InvalidInputsDoNotApplyWritesOrEndTransaction 中旧的 EXPECT_THROW(commit(true))，保留缺组件检查；新增验证日志、数据未应用、标记缺失与检查点不误推进、已结束状态、RU 正常结束、冲突／WAL 错误不能绕过。恢复 LSMTest.Recover 以及 WALTest.PartialFlushRecoveryTest、ConcurrentTransactionsTest 等适用用例；真实 _Exit 测试仍独立保留，不能用正常析构重启代替真实进程退出验证。

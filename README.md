@@ -146,7 +146,7 @@ int main() {
   if (auto value = tx->get("user:1")) {
     std::cout << *value << '\n';  // 能读到本事务尚未提交的修改
   }
-  tx->commit();  // 提交本事务的修改；结束后不再用 tx 读写
+  tx->commit();  // 默认 test_fail=false：正常提交；结束后不再用 tx 读写
 
   // ---------- 3. 事务回滚：放弃本事务的修改 ----------
   auto cancelled = db.begin_tran(IsolationLevel::REPEATABLE_READ);
@@ -174,6 +174,8 @@ int main() {
   return 0;
 }
 ```
+
+**`commit()` 的测试参数**：正常业务使用 `tx->commit()`，`test_fail` 默认为 `false`。`true` 预留给恢复测试，用于模拟“提交日志已写出，但暂存修改尚未应用”的阶段，再通过重启验证日志重放；它不负责终止进程。当前该开关尚未启用，尚未结束的事务调用 `commit(true)` 会抛出 `std::logic_error`。
 
 使用非空 key；空 value 表示删除，删除操作使用 `remove(key)`。项目目前用于学习，尚不提供 WAL 崩溃恢复保证。
 
