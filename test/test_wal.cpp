@@ -1387,6 +1387,122 @@ TEST_F(TranManagerWALTest, FileFailureReturnsFalseAndPreservesPreviousLogs) {
   EXPECT_EQ(manager->get_checkpoint_tranc_id(), 0u);
 }
 
+// 目的：没有初始化 WAL 时停止是安全空操作，重复停止也不分配 ID 或创建日志。
+TEST_F(TranManagerWALTest, StopWalWithoutInitializationIsRepeatable) {
+  const auto dir = std::filesystem::path(test_dir);
+  auto manager = std::make_shared<TranManager>(test_dir);
+  manager->write_tranc_id_file();
+  const auto read_state = [&] {
+    auto file = FileObj::open((dir / "tranc_id").string(), false);
+    return file.read_to_slice(0, file.size());
+  };
+  const auto state_before = read_state();
+
+  EXPECT_NO_THROW(manager->stop_wal());
+  EXPECT_NO_THROW(manager->stop_wal());
+  EXPECT_FALSE(manager->write_to_wal({Record::createRecord(1)}));
+  EXPECT_FALSE(std::filesystem::exists(dir / "wal.0"));
+  EXPECT_EQ(manager->get_checkpoint_tranc_id(), 0u);
+  manager->write_tranc_id_file();
+  EXPECT_EQ(read_state(), state_before);
+  EXPECT_EQ(manager->getNextTransactionId(), 1u);
+}
+
+// 目的：活跃 RU 事务存在时拒绝停止，且原 WAL 没有被先释放，事务仍能继续写入和提交。
+// 结束后即使调用者仍持有上下文指针，也应允许停止；活跃状态不是按 shared_ptr 数量判断。
+TEST_F(TranManagerWALTest, StopWalRejectsActiveTransactionAndKeepsWriterUsable) {
+  const auto path = std::filesystem::path(test_dir) / "wal.0";
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = std::make_shared<TranManager>(test_dir);
+  manager->set_engine(engine);
+  engine->set_tran_manager(manager);
+  manager->write_tranc_id_file();
+  manager->init_new_wal();
+  auto context = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  const auto id = context->tranc_id_;
+  context->put("first", "one");
+  const auto before = read_wal_records(path);
+
+  EXPECT_THROW(manager->stop_wal(), std::logic_error);
+  EXPECT_TRUE(manager->should_skip_read(id, true));
+  EXPECT_FALSE(manager->is_aborted(id));
+  EXPECT_EQ(read_wal_records(path), before);
+  context->put("second", "two");
+  ASSERT_TRUE(context->commit());
+  const std::vector<Record> expected{
+      Record::createRecord(id), Record::putRecord(id, "first", "one"),
+      Record::putRecord(id, "second", "two"), Record::commitRecord(id)};
+  EXPECT_EQ(read_wal_records(path), expected);
+  EXPECT_EQ(engine->get("second", 0),
+            std::make_optional(std::make_pair(std::string("two"), id)));
+
+  EXPECT_NO_THROW(manager->stop_wal());
+  EXPECT_TRUE(context->isCommited);
+  EXPECT_FALSE(manager->write_to_wal({Record::createRecord(id + 1)}));
+  EXPECT_EQ(read_wal_records(path), expected);
+  EXPECT_EQ(manager->get_checkpoint_tranc_id(), 0u);
+}
+
+// 目的：停止后明确拒绝写日志，但保留旧日志、回滚名单和事务进度；再次初始化可用新文件写入。
+// 检查点保持 0，旧日志中的正数 ID 不属于可清理范围，避免合法清理干扰文件保留断言。
+// join 和句柄关闭依靠 WAL 生命周期实现及其已有测试，本用例不通过 sleep 或删除文件猜测。
+TEST_F(TranManagerWALTest, StopWalPreservesStateAndAllowsNewLogInitialization) {
+  const auto dir = std::filesystem::path(test_dir);
+  const auto read_bytes = [](const std::filesystem::path &path) {
+    auto file = FileObj::open(path.string(), false);
+    return file.read_to_slice(0, file.size());
+  };
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = std::make_shared<TranManager>(test_dir);
+  manager->set_engine(engine);
+  engine->set_tran_manager(manager);
+  manager->write_tranc_id_file();
+  manager->init_new_wal();
+  auto cancelled = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  const auto cancelled_id = cancelled->tranc_id_;
+  ASSERT_TRUE(cancelled->abort());
+  auto finished = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  const auto finished_id = finished->tranc_id_;
+  finished->put("key", "first");
+  ASSERT_TRUE(finished->commit());
+  ASSERT_EQ(manager->get_checkpoint_tranc_id(), 0u);
+  manager->write_tranc_id_file();
+  const auto state_before = read_bytes(dir / "tranc_id");
+  const auto log_before = read_bytes(dir / "wal.0");
+  const auto flushed_before = manager->get_flushed_tranc_ids();
+
+  EXPECT_NO_THROW(manager->stop_wal());
+  EXPECT_NO_THROW(manager->stop_wal());
+  EXPECT_FALSE(manager->write_to_wal({Record::createRecord(finished_id + 1)}));
+  EXPECT_EQ(read_bytes(dir / "wal.0"), log_before);
+  EXPECT_EQ(read_bytes(dir / "tranc_id"), state_before);
+  EXPECT_EQ(manager->get_flushed_tranc_ids(), flushed_before);
+  EXPECT_TRUE(manager->is_aborted(cancelled_id));
+  manager->write_tranc_id_file();
+  EXPECT_EQ(read_bytes(dir / "tranc_id"), state_before);
+
+  manager->init_new_wal();
+  EXPECT_TRUE(std::filesystem::exists(dir / "wal.1"));
+  auto next = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  EXPECT_EQ(next->tranc_id_, finished_id + 1);
+  next->put("key", "second");
+  ASSERT_TRUE(next->commit());
+  const std::vector<Record> expected{
+      Record::createRecord(next->tranc_id_),
+      Record::putRecord(next->tranc_id_, "key", "second"),
+      Record::commitRecord(next->tranc_id_)};
+  EXPECT_EQ(read_wal_records(dir / "wal.1"), expected);
+  EXPECT_EQ(read_bytes(dir / "wal.0"), log_before);
+  EXPECT_EQ(engine->get("key", 0),
+            std::make_optional(std::make_pair(std::string("second"),
+                                             next->tranc_id_)));
+  EXPECT_EQ(manager->get_checkpoint_tranc_id(), 0u);
+  EXPECT_TRUE(manager->is_aborted(cancelled_id));
+  EXPECT_NO_THROW(manager->stop_wal());
+  EXPECT_EQ(read_bytes(dir / "wal.0"), log_before);
+  EXPECT_EQ(read_wal_records(dir / "wal.1"), expected);
+}
+
 // 通过公开事务接口验收 WAL 接入；每个测试使用新目录，不调用尚未实现的启动恢复。
 class TranPutWALTest : public WALTest {
 protected:
