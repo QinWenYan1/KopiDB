@@ -741,7 +741,28 @@ void TranManager::reset_after_clear() {
   if (!activeTrans_.empty())
     throw std::logic_error("TranManager::reset_after_clear: active transactions must finish first");
 
+  // 3. 保留 ID 分配进度，清空后继续使用新的编号
+  // 正常 next_id 至少为 1；0 是非法状态，也不能直接减一
+  const uint64_t next_id = nextTransactionId_.load(); 
+  if (next_id == 0)
+    throw std::logic_error("TranManager::reset_after_clear: invalid next transaction ID"); 
 
+  // 4. 旧数据已经由 clear 删除，所有旧编号都不再需要恢复
+  // 例如 next_id=6，就把检查点设为 5，新写入继续使用 6
+  //
+  // 如果检查点重置为 0，却继续分配 6
+  // 已删除的 1～5 不会再产生刷盘标记，检查点就会被缺口挡住
+  //
+  // 先准备新集合：如果分配失败，原来的管理器集合还没有改变
+  std::set<uint64_t> new_flushed_ids{next_id - 1}; 
+
+  // 5. 旧数据已不存在，不再需要等待它们刷盘，也无需保留其回滚名单
+  readyToFlushTrancIds_.clear();
+  aborted_tranc_ids_.clear();  
+
+  // 用新的单个检查点替换旧的连续进度和零散已刷盘 ID
+  // 标准分配器下，交换集合不需要重新分配节点
+  flushedTrancIds_.swap(new_flushed_ids); 
 }
 
 void TranManager::set_engine(std::shared_ptr<LSMEngine> engine) {
