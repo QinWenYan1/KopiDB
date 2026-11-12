@@ -385,7 +385,7 @@ void LSMEngine::clear() {
   memtable.clear();
   level_sst_ids.clear();
   ssts.clear();
-  
+
   // 2. 删除数据库目录中的普通文件
   // 包括旧 SST、WAL 和事务状态文件；子目录不在当前清理范围内
   try {
@@ -404,7 +404,7 @@ void LSMEngine::clear() {
     // 必须让上层知道清空没有完成，停止后续事务状态重置和新 WAL 初始化
     //
     // 只打印日志然后返回，会让上层误以为清空成功
-    // throw; 保留原异常，让调用者处理失败原因 
+    // throw; 保留原异常，让调用者处理失败原因
     spdlog::error("Error clearing directory: {}", e.what());
     throw;
   }
