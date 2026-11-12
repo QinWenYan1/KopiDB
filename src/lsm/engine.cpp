@@ -1334,7 +1334,25 @@ void LSM::remove_batch(const std::vector<std::string> &keys) {
   engine->put("", "", tranc_id);
 }
 
-void LSM::clear() { engine->clear(); }
+void LSM::clear() { 
+  // 调用方必须保证整个清空过程没有并发数据库操作
+  // 并已经销毁数据库迭代器；遍历结束不等于释放迭代器持有的锁
+  //
+  // 1. 先停止旧 WAL，等待清理线程退出并关闭日志文件
+  // 如果还有活跃事务，stop_wal 会先抛异常
+  // 此时还没有开始删除数据，调用者可以先结束事务再重试
+  tran_manager_->stop_wal(); 
+
+  // 2. 清空存储层的数据和旧文件
+  // 旧 WAL 已关闭，现在删除它不会留下继续写入的旧句柄
+  // 删除失败会抛异常，下面的状态重置不会执行
+  engine->clear(); 
+
+  // 3. 存储确认清空后，再重置事务管理器的内存状态
+  // 清理旧的待刷盘记录和回滚名单，检查点覆盖已被主动清除的旧编号
+  // 下一个事务 ID 保持递增，不重新从 1 开始
+
+}
 
 void LSM::flush() { auto max_tranc_id = engine->flush(); }
 
