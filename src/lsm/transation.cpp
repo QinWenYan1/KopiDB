@@ -460,7 +460,7 @@ bool TranContext::commit(bool test_fail) {
     // 恢复测试只对暂存型事务生效
     // 此时 COMMIT 日志已确认写出，但故意不把暂存修改应用到内存
     // RU 的数据此前已经写入引擎，因此继续正常结束
-    const bool skip_apply_for_test = test_fail && !write_immediately; 
+    const bool skip_apply_for_test = test_fail && !write_immediately;
 
     if (!skip_apply_for_test) {
       // 正常提交：暂存型事务现在应用修改；RU 不重复应用
@@ -481,7 +481,6 @@ bool TranContext::commit(bool test_fail) {
       // 重启时就会跳过它的 WAL，反而无法恢复缺失的数据
       mem.put_("", "", tranc_id_);
     }
-
 
     // 先登记提交完成，再允许刷盘线程处理这些数据
     // 否则标记可能已经刷出，管理器却还没有这笔事务的结束登记
@@ -704,9 +703,9 @@ void TranManager::stop_wal() {
   // 2. 尚未结束的事务后面还需要写入提交或回滚日志
   // 必须在停止 WAL 之前拒绝，否则这些事务无法正常结束
   // 抛异常时 wal 尚未改变，调用者仍可先结束事务，再重试
-  if (!activeTrans_.empty()) 
+  if (!activeTrans_.empty())
     throw std::logic_error(
-      "TranManager::stop_wal: active transactions must finish first");
+        "TranManager::stop_wal: active transactions must finish first");
 
   // 3. 释放管理器持有的 WAL。
   //
@@ -716,8 +715,8 @@ void TranManager::stop_wal() {
   //
   // reset 返回后，才能让 clear 删除旧日志文件。
   // wal 本来就是空指针时，reset 不会做任何事。
-  wal.reset(); 
-  
+  wal.reset();
+
   // 文件删除和事务状态重置，由后续 clear 流程负责。
 }
 

@@ -2,6 +2,7 @@
 #include "utils/files.h"
 #include "wal/wal.h"
 #include <atomic>
+#include <cstddef>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -11,7 +12,6 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <cstddef>
 
 namespace tiny_lsm {
 
@@ -39,7 +39,8 @@ class TranManager;
 // 包括直接访问其成员；跨线程移交时也必须正确同步。
 //
 // shared_ptr 只管理对象生命周期，不保证上下文成员的并发访问安全。
-// ! SERIALIZABLE（未完整实现）：以下接口保留实验性分支，不能作为完整串行化使用。
+// !
+// SERIALIZABLE（未完整实现）：以下接口保留实验性分支，不能作为完整串行化使用。
 class TranContext {
   friend class TranManager;
 
@@ -72,7 +73,7 @@ public:
 private:
   // 将 operations 中尚未写入 WAL 的部分写出
   // 成功后更新已写条数；失败抛异常，不推进计数
-  void persist_pending_wal_(); 
+  void persist_pending_wal_();
 
   // operations 前多少条记录已经确认写入 WAL。
   // 初始为 0，表示连 CREATE 也还没有写出。
