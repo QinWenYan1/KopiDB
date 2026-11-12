@@ -4,7 +4,7 @@
 
 章节：目录 **5.2.3「崩溃恢复」**，文章标题 **Lab 5.5 崩溃恢复**。
 
-**进度：66.7%（4/6 阶段按所列范围验收通过）**。阶段⑤普通 get/get_batch 和四个普通写入口均已验收；本轮 remove_batch 构建成功，新增 **6/6 通过**。当前进入 TranContext::commit(test_fail) 的恢复测试开关；A5 仍剩 TranContext::remove，阶段内部分完成不折算百分比。
+**进度：66.7%（4/6 阶段按所列范围验收通过）**。普通读写入口和 commit(test_fail) 已验收；本轮提交相关 **18/18 通过**。必要联动检查另复现 [A9：clear 后写入失去 WAL](AUDIT.md#a9)，新回归 **0/1 通过**，作为当前阶段下一项处理；A5 仍剩 TranContext::remove。阶段内部分完成不折算百分比。
 
 ## 本轮目标
 
@@ -26,7 +26,7 @@
 | ② 日志检查入口 | `TranManager::check_recover()` | 使用连续检查点调用 WAL::recover，原样返回候选记录；不改变事务状态／ID；读取失败正常上报 | 已验收：构建成功，新增 3/3 通过 |
 | ③ 初始化新日志 | `TranManager::init_new_wal()` | 新 WAL 能接收写入，旧日志不被提前删除或覆盖；不能把仅重放到内存的数据误记为已刷盘 | 已验收：新增 3/3，相关回归 4/4，通过；旧日志提示文字待同步 |
 | ④ 接通启动恢复 | `TranManager::restore_recovery_state(records)` → `LSM::LSM()`；复核启动／保存失败路径 | 组件绑定正确；区分提交／取消／未结束事务，恢复回滚过滤与 ID 进度；仅重放有效事务，重复正常重启结果正确；失败保留 WAL | 已验收所列范围：辅助函数 5/5，本轮启动相关 8/8；文件写失败后的自动重试边界见审计 |
-| ⑤ 必要接口衔接 | get → get_batch → 普通写入口、`commit(test_fail)`、A5 参数校验；必要的状态／关闭联动 | 普通写入同样受 WAL 保护；纯读取不制造事务 ID 缺口；故障点能留下可恢复的提交；非法参数在产生修改前拒绝 | 进行中：get、get_batch 及 TranContext::put 校验通过；LSM::put 相关 7/7、put_batch 新增 6/6、remove 相关 7/7 通过；remove_batch 新增 6/6 通过；当前 commit(test_fail) |
+| ⑤ 必要接口衔接 | get → get_batch → 普通写入口、`commit(test_fail)`、A5 参数校验；必要的状态／关闭联动 | 普通写入同样受 WAL 保护；纯读取不制造事务 ID 缺口；故障点能留下可恢复的提交；非法参数在产生修改前拒绝 | 进行中：get、get_batch 及 TranContext::put 校验通过；LSM::put 相关 7/7、put_batch 新增 6/6、remove 相关 7/7 通过；remove_batch 新增 6/6、commit(test_fail) 相关 18/18 通过；当前 A9 clear 联动（基线 0/1） |
 | ⑥ 整体验收 | 恢复用例、受影响回归、文档收尾 | 正常重启、绕过析构的进程退出、回滚／未提交版本已落 SST、恢复失败保留日志均有验证；报告真实通过范围与未覆盖边界 | 待开始 |
 
 ## 具体函数范围
@@ -348,16 +348,34 @@ test_wal.cpp 新增 2 项 LSMStartupWALTest.DirectPutBatch*：真实 WAL 轮换�
 
 两个目标构建成功，隔离运行 **4/4 + 2/2 = 6/6 通过**，各轮构建与运行期间相关源码／测试哈希一致；没有扩大重跑其他套件。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-direct-remove-batch-review-inf09t0f`。普通读写入口的日志衔接部分完成，不等于阶段⑤或整个 Lab 已完成。
 
-## 下一函数：TranContext::commit(bool test_fail)
+## 已验收：TranContext::commit(bool test_fail)
 
-按既定顺序继续阶段⑤恢复测试入口；A5 剩余 TranContext::remove 空 key 检查留在阶段末。当前 commit 位于 `src/lsm/transation.cpp:301`，309–313 仍提前拒绝 test_fail。已重读 Lab 5.5 的日志先行／恢复流程及缓存的作者 master commit，同时核对本地 reference-impl：作者对暂存型事务在 WAL 写出后跳过数据与完成标记，但仍登记提交、返回 true；RU 分支忽略此开关，正常提交。
+按既定顺序继续阶段⑤恢复测试入口；A5 剩余 TranContext::remove 空 key 检查留在阶段末。本轮 commit 位于 `src/lsm/transation.cpp:301`，用户已删除提前拒绝 test_fail 的旧分支。已重读 Lab 5.5 的日志先行／恢复流程及缓存的作者 master commit，同时核对本地 reference-impl：作者对暂存型事务在 WAL 写出后跳过数据与完成标记，但仍登记提交、返回 true；RU 分支忽略此开关，正常提交。
 
 本地采用同一测试语义：仅 test_fail=true 且非 RU 时，故意制造“COMMIT 日志已确认，但暂存数据与完成标记未应用”的状态。开关不会终止进程，不是真实崩溃；测试随后关闭重启，验证数据来自 WAL 重放。正常冲突检查和 WAL 错误处理仍执行，冲突返回 false、WAL 失败抛异常；RU 的数据已经提前写入，沿用参考忽略该开关并正常完成。
 
 只做必要局部修改，不重写已验收的正常提交流程：删除开头的 test_fail 拒绝；在现有 try 内以 skip_apply_for_test = test_fail && !write_immediately 控制“应用暂存数据＋写完成标记”；isCommited、统一的 add_ready(COMMITTED)、容量维护与解锁仍走原路径，不通过提前返回漏掉登记。完成标记必须与数据一起跳过，否则析构刷盘可能误判该事务已落盘，重启跳过所需 WAL。登记 ready 不等于已刷盘，没有标记就不能推进本事务的刷盘检查点。
 
-同步 transation.cpp:460–462 和 include/lsm/transaction.h:54 的说明：普通提交完整应用后返回成功；恢复测试分支返回 true 表示提交决定已记录，不能当作当前实例的数据已经应用。实现只在聊天中交付，业务代码由用户手写，尚未验收。
+同步 transation.cpp:460–462 和 include/lsm/transaction.h:54 的说明：普通提交完整应用后返回成功；恢复测试分支返回 true 表示提交决定已记录，不能当作当前实例的数据已经应用。该局部修改已由用户手写完成，实际验收见下文。
 
 2026-11-12 按用户要求，README 的 C++ 示例与示例后说明已补充 test_fail 的用户用法：正常业务默认 false，true 为预留恢复测试参数。当前源码仍提前拒绝 true，因此 README 如实注明未结束事务调用会抛 logic_error。开关实现并验收后，须同步这段说明，改为实际测试行为及 RU 忽略该开关的规则，不保留过期的“尚未启用”文字。
 
 用户实现后：迁移 TranCommitTest.InvalidInputsDoNotApplyWritesOrEndTransaction 中旧的 EXPECT_THROW(commit(true))，保留缺组件检查；新增验证日志、数据未应用、标记缺失与检查点不误推进、已结束状态、RU 正常结束、冲突／WAL 错误不能绕过。恢复 LSMTest.Recover 以及 WALTest.PartialFlushRecoveryTest、ConcurrentTransactionsTest 等适用用例；真实 _Exit 测试仍独立保留，不能用正常析构重启代替真实进程退出验证。
+
+## 2026-11-12 commit(test_fail) 验收结果
+
+用户已正确删除旧拒绝，新增 test_fail && !RU 的 guard，同时跳过暂存数据与完成标记，保持共同的提交登记、容量维护和解锁；RU 正常完成。头文件说明已同步，助手未改业务实现。
+
+迁移旧 InvalidInputs 测试为 MissingComponents，去掉“测试开关尚不支持”的临时期望，保留并补强缺组件、状态和记录不变检查。新增 test_lsm 的 4 项，验证 RC/RR/SER 仅写 WAL、退出 active 且不能重复结束；较新事务已刷盘不能越过测试提交的检查点缺口、重启恢复 PUT/DELETE；RU 正常完成；true 不能绕过冲突。test_wal 新增 2 项，验证真实 WAL 失败仍上报，以及 commit(true) 后 _Exit 的真实进程退出恢复。
+
+构建 test_lsm、test_wal 成功。隔离运行 LSM 7/7、WAL 11/11，共 **18/18 通过**（新增 6、迁移旧用例 1、其他既有用例 11），包括 LSMTest.Recover、WALTest.PartialFlushRecoveryTest、ConcurrentTransactionsTest 及正常提交回归。源码／测试在各自运行期间哈希一致。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-commit-test-fail-review-ejjvvygd`。README 已移除 test_fail 尚未启用的过期说明，明确暂存型测试提交返回 true 不表示数据已应用，RU 正常提交。
+
+## 下一项：A9 clear 与 WAL／事务状态的生命周期联动
+
+来自本阶段明确列出的 clear／状态／关闭联动复核，不扩大为全库审计。问题事实见 [A9](AUDIT.md#a9)。新增回归 LSMStartupWALTest.ClearThenDirectWriteSurvivesProcessExit 在单线程、无事务上下文或迭代器下复现：clear 后成功写入并能当场查询，_Exit 后重启丢失新值，重启前 WAL 文件数为 0；构建成功，基线 **0/1 通过**。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-clear-wal-baseline-g92e2ndn`。此失败独立于前述 commit 的 18 项通过，不能宣称当前全部恢复场景已通过。
+
+先在聊天交付 issue，再逐函数实施。候选最小范围：TranManager 新增停止 WAL 的维护接口（暂名 stop_wal），显式等待旧清理线程结束；清空后的管理器状态重置接口（暂名 reset_after_clear），保留 ID 单调性，重置已删除数据对应的 ready／aborted／flushed 进度；LSM::clear 组织停止日志、清空存储、重置并保存状态、初始化新 WAL 的顺序。保留管理器实例时无需重新绑定；不靠 shared_ptr::reset 恰好触发析构来保证旧线程已停止。
+
+LSMEngine::clear 删除文件失败当前只打印日志，实施时需使失败向上传递，不能在未清空成功时继续重置状态并返回成功。LSM::~LSM 仅按最终失败状态复核，不自动重写；当前正常关闭的 flush_all→保存状态顺序正确。flush/flush_all 无需为本次正确性修复强行更新 WAL 检查点，现有旧安全检查点只会多保留日志，不能启用“单次最大 ID 即安全检查点”的旧注释。
+
+本次先覆盖无并发读写、无活跃事务和有效迭代器的维护调用；并发 clear 和跨文件原子 clear 不自动纳入。具体接口与调用前提在交付函数前落实。验收：clear 后旧值消失、新写有可读的 WAL；新写成功后异常退出可恢复；重复 clear／正常重启及事务 ID、刷盘进度正确；停止旧清理线程后才删除旧文件；删除／初始化失败正常上报而非继续假装成功。A7/A8 仍按原状态独立保留，不在这里扩展为任意 I/O 故障原子性保证。A9 尚未修改业务代码。

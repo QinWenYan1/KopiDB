@@ -26,8 +26,9 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 | [A6](#a6) | 待验证（代码路径疑点） | 待定 | 结束尝试失败后 put/remove 仍可能追加记录，使结束记录不再位于事务日志末尾 | TranContext::put/remove 的结束尝试检查及异常路径测试 | 未估时 |
 | [A7](#a7) | 已确认，待排期 | P1 | 状态文件直接覆盖写失败会破坏旧状态，阻碍后续启动 | write_tranc_id_file 的完整写入后替换；保存失败后的重试验证 | 未估时 |
 | [A8](#a8) | 待验证（代码路径疑点） | 待定 | 恢复刷盘失败可能留下正式名称的残缺 SST，阻碍下次加载 | SSTBuilder／FileObj 的文件发布与失败处理 | 未估时 |
+| [A9](#a9) | 已复现，已纳入当前计划 | P1 | clear 删除仍打开的 WAL，后续成功写入在异常退出后丢失 | LSM::clear 与 WAL 停止／重建、事务状态重置的必要联动 | 未估时 |
 
-A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 → A2 → A3 → A4 → 整体验收推进。A5 是接口约束改进建议，已确认随目录 5.2.3 的公开入口初始化整合处理，不计为第五项已确认缺陷，已于 2026-11-08 纳入 [PLAN](PLAN.md) 的阶段⑤，尚未实施。每进入一个新修复问题，先在聊天中写 issue 草稿供用户手动发布，再逐函数推进；没有自动创建远程 issue。具体执行与验收标准维护在 PLAN。
+A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 → A2 → A3 → A4 → 整体验收推进。A5 是接口约束改进建议，已确认随目录 5.2.3 的公开入口初始化整合处理，不计为第五项已确认缺陷，已于 2026-11-08 纳入 [PLAN](PLAN.md) 的阶段⑤，当前实现进度见 A5 条目。每进入一个新修复问题，先在聊天中写 issue 草稿供用户手动发布，再逐函数推进；没有自动创建远程 issue。具体执行与验收标准维护在 PLAN。
 
 <a id="a1"></a>
 
@@ -182,6 +183,20 @@ write_tranc_id_file（transation.cpp:777）先以 create=true 清空正式 tranc
 SSTBuilder::build（sst.cpp:503）调用 FileObj::create_and_write 直接写正式 sst_N.level 路径；文件写入／刷新失败时会报告异常，但可能已留下部分内容（files.cpp:40–50）。下一次 LSMEngine 构造先扫描并打开所有此类正式文件（engine.cpp:54–75），可能在读取 WAL 前被坏 SST 挡住。已有“目录占用目标路径”的打开失败测试不会产生部分 SST，不能覆盖此情况。
 
 待验证：低内存阈值触发恢复期间刷盘，在子进程限制文件大小制造部分 SST；解除故障后检查再次启动。若成立，评估完整写入后再发布正式文件名的方案；与 A7 同属文件失败后的完整性边界，但调用点和验证不同，不宣称现有 WAL 保留机制已解决它。
+
+<a id="a9"></a>
+
+### A9：clear 后成功写入仍使用已删除的 WAL，异常退出丢失新值
+
+记录日期：2026-11-12。类型：已复现缺陷。状态：已纳入当前 Lab 5.5 PLAN 阶段⑤的必要 clear／状态／关闭联动，尚未修改业务代码；进入实施前在聊天交付 issue。与 A7/A8 的文件失败原子性问题分别记录。
+
+已核实远程提交 `71c9d71bf584a69207d8529a4e5a1c583a70b75b`：[LSM::clear](https://github.com/QinWenYan1/KopiDB/blob/71c9d71bf584a69207d8529a4e5a1c583a70b75b/src/lsm/engine.cpp#L1313) 只调用 Engine::clear；[Engine::clear](https://github.com/QinWenYan1/KopiDB/blob/71c9d71bf584a69207d8529a4e5a1c583a70b75b/src/lsm/engine.cpp#L371-L397) 删除目录全部普通文件，包括 wal.* 和 tranc_id。管理器仍持有旧 WAL 与清理线程，文件句柄没有在删除前关闭。macOS 本轮运行中，后续小写入经旧句柄写出并返回成功，但目录里没有可供下次启动读取的 WAL。
+
+复现：同一 LSM 实例 put("before-clear", "old") → clear() → put("after-clear", "new") → 当前查询确认 new → _Exit(0) → 新进程重开。全程单线程、无事务上下文和迭代器，不依赖 I/O 故障注入。旧 key 正确消失，新 key 实际也变为 nullopt；期望新值仍为 new。
+
+新增测试 `LSMStartupWALTest.ClearThenDirectWriteSurvivesProcessExit` 构建成功、**0/1 通过**，RecordProperty 记录重启前 WAL 文件数为 0；相关源码和测试哈希在构建运行期间一致。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-clear-wal-baseline-g92e2ndn`。测试保留在原套件中，未禁用或削弱断言。该独立基线失败不归因于已通过 18 项检查的 commit(test_fail)。
+
+修复方向：先显式停止旧 WAL／等待清理线程，再清空存储，重置并保存管理器的相关状态，最后启动新 WAL；不能只在 clear 后创建新日志而让旧线程和句柄继续存活。具体函数、维护前提和验收标准进入 PLAN。删除文件失败须报告，不能按清空成功继续重置状态；不因此承诺原子 clear 或并发 clear。
 
 ## 验证记录
 

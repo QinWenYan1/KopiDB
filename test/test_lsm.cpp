@@ -3254,22 +3254,198 @@ TEST_F(TranCommitTest, FlushFailurePreservesCommittedStateAndMemory) {
 
 
 
-// 目的：尚未支持的故障注入以及缺失组件必须在应用数据前报错。
-TEST_F(TranCommitTest, InvalidInputsDoNotApplyWritesOrEndTransaction) {
-  TranContext context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
-  context.put("k", "v");
-  const auto operation_count = context.operations.size();
-  EXPECT_THROW(context.commit(true), std::logic_error);
-  EXPECT_FALSE(context.isCommited);
-  EXPECT_FALSE(context.isAborted);
-  EXPECT_EQ(context.operations.size(), operation_count);
-  EXPECT_FALSE(engine->get("k", 0));
+// 目的：缺失必要组件时，在追加 COMMIT 或应用数据前报错；测试开关也不能绕过检查。
+TEST_F(TranCommitTest, MissingComponentsDoNotApplyWritesOrEndTransaction) {
   TranContext no_manager(6, engine, nullptr, IsolationLevel::REPEATABLE_READ);
   no_manager.put("missing-manager", "v");
+  const auto manager_operations = no_manager.operations;
   EXPECT_THROW(no_manager.commit(), std::logic_error);
+  EXPECT_THROW(no_manager.commit(true), std::logic_error);
+  EXPECT_FALSE(no_manager.isCommited);
+  EXPECT_FALSE(no_manager.isAborted);
+  EXPECT_EQ(no_manager.operations, manager_operations);
   EXPECT_FALSE(engine->get("missing-manager", 0));
   TranContext no_engine(7, nullptr, manager, IsolationLevel::REPEATABLE_READ);
+  const auto engine_operations = no_engine.operations;
   EXPECT_THROW(no_engine.commit(), std::logic_error);
+  EXPECT_THROW(no_engine.commit(true), std::logic_error);
+  EXPECT_FALSE(no_engine.isCommited);
+  EXPECT_FALSE(no_engine.isAborted);
+  EXPECT_EQ(no_engine.operations, engine_operations);
+}
+
+// 目的：暂存型事务 commit(true) 确认日志提交，但不写数据或完成标记。
+// 三个级别分别验证完整 WAL、原内存大小与值不变、事务退出 active 且不可再次结束。
+// SERIALIZABLE 这里只验证测试开关，不代表完整串行化已实现。
+TEST_F(TranCommitTest, TestFailStagedCommitWritesOnlyWal) {
+  auto base = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    base->put("existing-" + std::to_string(static_cast<int>(level)), "old");
+  }
+  ASSERT_TRUE(base->commit());
+  const auto read_wal = [&] {
+    auto file = FileObj::open(test_dir + "/wal.0", false);
+    return Record::decode(file.read_to_slice(0, file.size()));
+  };
+
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    const auto suffix = std::to_string(static_cast<int>(level));
+    const auto existing = "existing-" + suffix;
+    const auto added = "new-" + suffix;
+    auto context = manager->new_tranc(level);
+    const auto id = context->tranc_id_;
+    context->put(added, "pending");
+    context->remove(existing);
+    const auto size_before = engine->memtable.get_total_size();
+    const auto old = engine->get(existing, 0);
+    auto expected_wal = read_wal();
+    EXPECT_TRUE(manager->should_skip_read(id, true));
+
+    ASSERT_TRUE(context->commit(true));
+    EXPECT_TRUE(context->isCommited);
+    EXPECT_FALSE(context->isAborted);
+    EXPECT_FALSE(manager->should_skip_read(id, true));
+    EXPECT_FALSE(manager->is_aborted(id));
+    EXPECT_EQ(engine->memtable.get_total_size(), size_before);
+    EXPECT_EQ(engine->get(existing, 0), old);
+    EXPECT_FALSE(engine->get(added, 0).has_value());
+    expected_wal.insert(expected_wal.end(), context->operations.begin(),
+                        context->operations.end());
+    EXPECT_EQ(read_wal(), expected_wal);
+    EXPECT_EQ(context->operations.back().getOperationType(),
+              OperationType::OP_COMMIT);
+    EXPECT_FALSE(context->commit(true));
+    EXPECT_FALSE(context->abort());
+    EXPECT_EQ(read_wal(), expected_wal);
+  }
+}
+
+// 目的：测试提交缺少数据和完成标记，即使较新事务刷盘，检查点也不能越过这个缺口。
+// 正常关闭后重新构造 LSM，必须从保留的 WAL 恢复 PUT/DELETE，再补齐刷盘进度。
+TEST_F(LSMTest, TestFailCommitPreservesGapAndRecoversAfterRestart) {
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    const auto dir = test_dir + "/test-fail-" +
+                     std::to_string(static_cast<int>(level));
+    uint64_t skipped_id = 0;
+    uint64_t later_id = 0;
+    {
+      LSM db(dir);
+      auto base = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+      base->put("changed", "old");
+      base->put("removed", "old");
+      ASSERT_TRUE(base->commit());
+      db.flush_all();
+
+      auto skipped = db.begin_tran(level);
+      skipped_id = skipped->tranc_id_;
+      skipped->put("changed", "recovered");
+      skipped->remove("removed");
+      skipped->put("new", "recovered");
+      ASSERT_TRUE(skipped->commit(true));
+      auto later = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+      later_id = later->tranc_id_;
+      later->put("later", "value");
+      ASSERT_TRUE(later->commit());
+      db.flush_all();
+
+      auto manager = skipped->tranManager_.lock();
+      ASSERT_TRUE(manager);
+      EXPECT_EQ(manager->get_checkpoint_tranc_id(), base->tranc_id_);
+      EXPECT_FALSE(manager->get_flushed_tranc_ids().contains(skipped_id));
+      EXPECT_TRUE(manager->get_flushed_tranc_ids().contains(later_id));
+      EXPECT_FALSE(manager->should_skip_read(skipped_id, true));
+      EXPECT_EQ(db.get("changed"), std::make_optional(std::string("old")));
+      EXPECT_EQ(db.get("removed"), std::make_optional(std::string("old")));
+      EXPECT_FALSE(db.get("new").has_value());
+    }
+    {
+      LSM reopened(dir);
+      EXPECT_EQ(reopened.get("changed"),
+                std::make_optional(std::string("recovered")));
+      EXPECT_FALSE(reopened.get("removed").has_value());
+      EXPECT_EQ(reopened.get("new"),
+                std::make_optional(std::string("recovered")));
+      EXPECT_EQ(reopened.get("later"), std::make_optional(std::string("value")));
+      reopened.flush_all();
+    }
+    TranManager saved(dir);
+    EXPECT_EQ(saved.get_checkpoint_tranc_id(), later_id);
+    EXPECT_FALSE(saved.is_aborted(skipped_id));
+  }
+}
+
+// 目的：RU 的数据已经在 put/remove 时应用，commit(true) 仍应正常写 COMMIT 和完成标记。
+// 后续真实刷盘可登记完成，不能将 RU 错当成需要跳过数据应用的暂存事务。
+TEST_F(TranCommitTest, TestFailReadUncommittedStillFinishesNormally) {
+  auto base = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  base->put("deleted", "old");
+  ASSERT_TRUE(base->commit());
+  engine->flush();
+  auto context = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  const auto id = context->tranc_id_;
+  context->put("added", "dirty");
+  context->remove("deleted");
+  const auto read_wal = [&] {
+    auto file = FileObj::open(test_dir + "/wal.0", false);
+    return Record::decode(file.read_to_slice(0, file.size()));
+  };
+  auto expected_wal = read_wal();
+  expected_wal.push_back(Record::commitRecord(id));
+  EXPECT_TRUE(manager->should_skip_read(id, true));
+
+  ASSERT_TRUE(context->commit(true));
+  EXPECT_TRUE(context->isCommited);
+  EXPECT_FALSE(context->isAborted);
+  EXPECT_FALSE(manager->should_skip_read(id, true));
+  EXPECT_EQ(read_wal(), expected_wal);
+  EXPECT_EQ(engine->get("added", 0),
+            std::make_optional(std::make_pair(std::string("dirty"), id)));
+  EXPECT_FALSE(engine->get("deleted", 0).has_value());
+  engine->flush();
+  EXPECT_EQ(manager->get_checkpoint_tranc_id(), id);
+}
+
+// 目的：test_fail 不绕过提交前的冲突检查；失败事务不写 COMMIT，也不应用暂存值。
+TEST_F(TranCommitTest, TestFailDoesNotBypassWriteConflicts) {
+  const auto read_wal = [&] {
+    auto file = FileObj::open(test_dir + "/wal.0", false);
+    return file.read_to_slice(0, file.size());
+  };
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    const auto suffix = std::to_string(static_cast<int>(level));
+    const auto key = "conflict-" + suffix;
+    const auto only_old = "only-old-" + suffix;
+    auto older = manager->new_tranc(level);
+    older->put(key, "staged");
+    older->put(only_old, "staged");
+    const auto pending = older->operations;
+    auto newer = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+    newer->put(key, "newer");
+    ASSERT_TRUE(newer->commit());
+    const auto before = read_wal();
+
+    EXPECT_FALSE(older->commit(true));
+    EXPECT_FALSE(older->isCommited);
+    EXPECT_TRUE(older->isAborted);
+    EXPECT_TRUE(manager->is_aborted(older->tranc_id_));
+    EXPECT_EQ(older->operations, pending);
+    EXPECT_EQ(read_wal(), before);
+    EXPECT_EQ(engine->get(key, 0),
+              std::make_optional(std::make_pair(std::string("newer"),
+                                               newer->tranc_id_)));
+    EXPECT_FALSE(engine->get(only_old, 0).has_value());
+  }
 }
 
 // 目的：并发提交和刷盘不形成锁顺序死锁，同 key 的新版本不会被旧事务覆盖。

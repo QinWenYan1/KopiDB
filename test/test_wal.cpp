@@ -1632,6 +1632,35 @@ TEST_F(TranRemoveWALTest, WalFailurePreservesValueAndDoesNotCreateTombstone) {
 
 class TranCommitWALTest : public TranPutWALTest {};
 
+// 目的：恢复测试开关只能跳过数据应用，不能绕过真实 WAL 错误或误记提交完成。
+// 以占用下一个日志文件制造轮换失败；旧值保留，暂存修改不应用，事务仍未结束。
+TEST_F(TranCommitWALTest, TestFailStillPropagatesWalFailure) {
+  auto base = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  base->put("key", "old");
+  ASSERT_TRUE(base->commit());
+  auto transaction = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
+  transaction->remove("key");
+  transaction->put("new", "pending");
+  auto padding = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  padding->put("padding", std::string(5000, 'v'));
+  const auto dir = std::filesystem::path(test_dir);
+  ASSERT_GT(std::filesystem::file_size(dir / "wal.0"), 4096u);
+  const auto successful = read_wal_records(dir / "wal.0");
+  const std::vector<Record> occupied{Record::createRecord(99)};
+  write_wal_records(dir / "wal.1", occupied);
+
+  EXPECT_THROW(transaction->commit(true), std::runtime_error);
+  EXPECT_FALSE(transaction->isCommited);
+  EXPECT_FALSE(transaction->isAborted);
+  EXPECT_TRUE(manager->should_skip_read(transaction->tranc_id_, true));
+  EXPECT_FALSE(manager->is_aborted(transaction->tranc_id_));
+  EXPECT_EQ(engine->get("key", 0, true),
+            std::make_optional(std::make_pair(std::string("old"), base->tranc_id_)));
+  EXPECT_FALSE(engine->get("new", 0));
+  EXPECT_EQ(read_wal_records(dir / "wal.0"), successful);
+  EXPECT_EQ(read_wal_records(dir / "wal.1"), occupied);
+}
+
 // 目的：暂存事务提交时写出完整操作历史和 COMMIT，成功后才对严格读取可见。
 // 三个暂存级别都覆盖重复 put、删除和事务状态；中间值仍留在日志中供重放。
 TEST_F(TranCommitWALTest, StagedCommitPersistsHistoryAndPublishesFinalValues) {
@@ -2751,6 +2780,76 @@ TEST_F(LSMStartupWALTest, MalformedWalStopsStartupAndPreservesLogs) {
 }
 
 #ifndef _WIN32
+// 目的：clear 后成功返回的普通写入仍须有可恢复的 WAL，不能写入已被删除的旧日志句柄。
+// 单线程、没有事务上下文或迭代器；直接退出进程以排除析构刷盘掩盖日志丢失。
+TEST_F(LSMStartupWALTest, ClearThenDirectWriteSurvivesProcessExit) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  ASSERT_EXIT(
+      {
+        try {
+          LSM db(test_dir);
+          db.put("before-clear", "old");
+          db.clear();
+          db.put("after-clear", "new");
+          if (db.get("after-clear") != std::make_optional(std::string("new")))
+            std::_Exit(98);
+          std::_Exit(0);
+        } catch (...) {
+          std::_Exit(99);
+        }
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  size_t wal_count = 0;
+  for (const auto &entry : std::filesystem::directory_iterator(test_dir)) {
+    if (entry.is_regular_file() &&
+        entry.path().filename().string().starts_with("wal."))
+      ++wal_count;
+  }
+  RecordProperty("wal_files_before_reopen", std::to_string(wal_count));
+  LSM reopened(test_dir);
+  EXPECT_FALSE(reopened.get("before-clear"));
+  EXPECT_EQ(reopened.get("after-clear"), std::make_optional(std::string("new")))
+      << "clear 后成功返回的写入应可恢复；重启前 WAL 文件数=" << wal_count;
+}
+
+// 目的：commit(true) 已确认 WAL 但未应用暂存数据，随后直接退出、不执行析构。
+// 重启必须通过日志应用更新、删除和新增；不能依赖正常关闭时刷出测试数据。
+TEST_F(LSMStartupWALTest, CommitTestFailSurvivesExitBeforeApplyingData) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  ASSERT_EXIT(
+      {
+        try {
+          LSM db(test_dir);
+          db.put("updated", "old");
+          db.put("deleted", "old");
+          db.flush_all();
+          auto transaction = db.begin_tran(IsolationLevel::REPEATABLE_READ);
+          transaction->put("updated", "new");
+          transaction->remove("deleted");
+          transaction->put("added", "value");
+          if (!transaction->commit(true))
+            std::_Exit(95);
+          if (db.get("updated") != std::make_optional(std::string("old")) ||
+              db.get("deleted") != std::make_optional(std::string("old")) ||
+              db.get("added").has_value())
+            std::_Exit(96);
+          std::_Exit(0);
+        } catch (...) {
+          std::_Exit(97);
+        }
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  for (int restart = 0; restart < 2; ++restart) {
+    SCOPED_TRACE(restart);
+    LSM db(test_dir);
+    EXPECT_EQ(db.get("updated"), std::make_optional(std::string("new")));
+    EXPECT_FALSE(db.get("deleted"));
+    EXPECT_EQ(db.get("added"), std::make_optional(std::string("value")));
+  }
+}
+
 // 目的：整批墓碑尚未刷盘就退出进程，恢复后仍能遮住 SST 中的全部旧值。
 // 批次包含重复 key 和不存在的 key，WAL 顺序与共同 ID 保持；重启后继续分配新 ID。
 TEST_F(LSMStartupWALTest, DirectRemoveBatchSurvivesProcessExitWithoutDestructors) {
