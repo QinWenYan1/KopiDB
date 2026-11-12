@@ -4,7 +4,7 @@
 
 章节：目录 **5.2.3「崩溃恢复」**，文章标题 **Lab 5.5 崩溃恢复**。
 
-**进度：66.7%（4/6 阶段按所列范围验收通过）**。A9 的 stop_wal 已由用户实现，构建成功、新增 **3/3 通过**；当前进入 reset_after_clear。clear 调用链尚未接通，A9 尚未整体修复，原始基线为 0/1；A5 仍剩 TranContext::remove。阶段内部分完成不折算百分比。
+**进度：66.7%（4/6 阶段按所列范围验收通过）**。A9 的 stop_wal 已验收；本轮 reset_after_clear 构建成功、新增 **4/4 通过**。当前进入 LSMEngine::clear 的错误传播修改。完整 clear 调用链仍待接通，A9 尚未整体修复；A5 仍剩 TranContext::remove。阶段内部分完成不折算百分比。
 
 ## 本轮目标
 
@@ -26,7 +26,7 @@
 | ② 日志检查入口 | `TranManager::check_recover()` | 使用连续检查点调用 WAL::recover，原样返回候选记录；不改变事务状态／ID；读取失败正常上报 | 已验收：构建成功，新增 3/3 通过 |
 | ③ 初始化新日志 | `TranManager::init_new_wal()` | 新 WAL 能接收写入，旧日志不被提前删除或覆盖；不能把仅重放到内存的数据误记为已刷盘 | 已验收：新增 3/3，相关回归 4/4，通过；旧日志提示文字待同步 |
 | ④ 接通启动恢复 | `TranManager::restore_recovery_state(records)` → `LSM::LSM()`；复核启动／保存失败路径 | 组件绑定正确；区分提交／取消／未结束事务，恢复回滚过滤与 ID 进度；仅重放有效事务，重复正常重启结果正确；失败保留 WAL | 已验收所列范围：辅助函数 5/5，本轮启动相关 8/8；文件写失败后的自动重试边界见审计 |
-| ⑤ 必要接口衔接 | get → get_batch → 普通写入口、`commit(test_fail)`、A5 参数校验；必要的状态／关闭联动 | 普通写入同样受 WAL 保护；纯读取不制造事务 ID 缺口；故障点能留下可恢复的提交；非法参数在产生修改前拒绝 | 进行中：get、get_batch 及 TranContext::put 校验通过；LSM::put 相关 7/7、put_batch 新增 6/6、remove 相关 7/7 通过；remove_batch 新增 6/6、commit(test_fail) 相关 18/18 通过；当前 A9：stop_wal 3/3 通过，下一 reset_after_clear（clear 原始基线 0/1） |
+| ⑤ 必要接口衔接 | get → get_batch → 普通写入口、`commit(test_fail)`、A5 参数校验；必要的状态／关闭联动 | 普通写入同样受 WAL 保护；纯读取不制造事务 ID 缺口；故障点能留下可恢复的提交；非法参数在产生修改前拒绝 | 进行中：get、get_batch 及 TranContext::put 校验通过；LSM::put 相关 7/7、put_batch 新增 6/6、remove 相关 7/7 通过；remove_batch 新增 6/6、commit(test_fail) 相关 18/18 通过；当前 A9：stop_wal 3/3、reset_after_clear 4/4 通过，当前 Engine::clear（clear 原始基线 0/1） |
 | ⑥ 整体验收 | 恢复用例、受影响回归、文档收尾 | 正常重启、绕过析构的进程退出、回滚／未提交版本已落 SST、恢复失败保留日志均有验证；报告真实通过范围与未覆盖边界 | 待开始 |
 
 ## 具体函数范围
@@ -378,14 +378,14 @@ test_wal.cpp 新增 2 项 LSMStartupWALTest.DirectPutBatch*：真实 WAL 轮换�
 
 LSMEngine::clear 删除文件失败当前只打印日志，实施时需使失败向上传递，不能在未清空成功时继续重置状态并返回成功。LSM::~LSM 的正常 flush_all→保存状态顺序正确，但当前任一步抛异常会逃出析构；清空后的保存／初始化失败时，销毁对象可能再次触发保存错误，因此需要局部捕获并记录析构错误，显式 clear/flush 仍向调用者报告失败。flush/flush_all 无需为本次正确性修复强行更新 WAL 检查点，现有旧安全检查点只会多保留日志，不能启用“单次最大 ID 即安全检查点”的旧注释。
 
-本次先覆盖无并发读写、无活跃事务和有效迭代器的维护调用；并发 clear 和跨文件原子 clear 不自动纳入。具体接口与调用前提在交付函数前落实。验收：clear 后旧值消失、新写有可读的 WAL；新写成功后异常退出可恢复；重复 clear／正常重启及事务 ID、刷盘进度正确；停止旧清理线程后才删除旧文件；删除／初始化失败正常上报而非继续假装成功。A7/A8 仍按原状态独立保留，不在这里扩展为任意 I/O 故障原子性保证。A9 的 stop_wal 已由用户实现并验收，其他函数及完整 clear 联动仍未完成。
+本次先覆盖无并发读写、无活跃事务和有效迭代器的维护调用；并发 clear 和跨文件原子 clear 不自动纳入。具体接口与调用前提在交付函数前落实。验收：clear 后旧值消失、新写有可读的 WAL；新写成功后异常退出可恢复；重复 clear／正常重启及事务 ID、刷盘进度正确；停止旧清理线程后才删除旧文件；删除／初始化失败正常上报而非继续假装成功。A7/A8 仍按原状态独立保留，不在这里扩展为任意 I/O 故障原子性保证。A9 的 stop_wal 和 reset_after_clear 已由用户实现并验收，其他函数及完整 clear 联动仍未完成。
 
-## A9 逐函数实现顺序与本轮草案
+## A9 逐函数实施顺序
 
 本轮按用户“如何修复”的授权推进，仍由用户手写业务代码，助手逐函数验收。新增两个维护接口，配合三个既有函数的局部修改，不重写 WAL、迭代器或普通读写路径：
 
-1. **TranManager::stop_wal()**（新增）：没有活跃事务时释放 WAL；返回前旧清理线程和句柄已关闭。有活跃事务先报错，保持原 WAL 可用。
-2. **TranManager::reset_after_clear()**（新增）：仅在 WAL 已停止、存储成功清空后，清 ready/aborted，flushed 重建为 `{next_id - 1}`，next ID 保持单调递增。旧数据已按 clear 请求被明确丢弃，旧编号不能留下永远无法补齐的刷盘缺口。先准备新的集合，再替换状态；分配失败保证管理器状态未被部分改动，不宣称整个 clear 未发生修改。
+1. **TranManager::stop_wal()**（已验收 3/3）：没有活跃事务时释放 WAL；返回前旧清理线程和句柄已关闭。有活跃事务先报错，保持原 WAL 可用。
+2. **TranManager::reset_after_clear()**（已验收 4/4）：仅在 WAL 已停止、存储成功清空后，清 ready/aborted，flushed 重建为 `{next_id - 1}`，next ID 保持单调递增。旧数据已按 clear 请求被明确丢弃，旧编号不能留下永远无法补齐的刷盘缺口。先准备新的集合，再替换状态；分配失败保证管理器状态未被部分改动，不宣称整个 clear 未发生修改。
 3. **LSMEngine::clear()**：删除失败向上传递，使上层停止后续重置，不把删除失败当成功。
 4. **LSM::clear()**：依次 stop_wal → Engine::clear → reset_after_clear → write_tranc_id_file → init_new_wal。
 5. **LSM::~LSM()**：保持原关闭顺序，仅补析构错误捕获与日志，避免维护失败后的析构异常导致 terminate。
@@ -404,7 +404,7 @@ stop_wal 的后续验收：无 WAL／重复停止安全；活跃事务时拒绝�
 
 构建 test_wal 成功，隔离运行 **3/3 通过**，构建运行期间相关源码、头文件和测试哈希一致。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-stop-wal-review-jhief_dw`。未重跑其他套件或尚未接通的 clear 基线。
 
-## 当前函数：TranManager::reset_after_clear（草案）
+## 已验收：TranManager::reset_after_clear
 
 声明放在 include/lsm/transaction.h:94 的 stop_wal 后，定义放在 src/lsm/transation.cpp:723 的 set_engine 前。调用者必须保证 WAL 已停止、存储已经成功清空、无活跃事务／并发操作／存活的数据库迭代器。该函数只调整管理器内存状态，不删除数据、不保存文件、不重新初始化 WAL。
 
@@ -414,4 +414,20 @@ stop_wal 的后续验收：无 WAL／重复停止安全；活跃事务时拒绝�
 
 当前状态文件格式可直接保存 next=N、flushed={N-1}、ready={}、aborted={}，不改格式。现有读取器没有额外验证 next 大于所有集合 ID，本方案自身满足该关系，不因此扩展读取器修改。
 
-用户实现后验收：未停止 WAL／存在活跃事务时拒绝且状态不变；新库与重复重置；通过真实 clear 移除旧数据后清空 ready/aborted、保留 next ID；保存重开仍保持新进度，后续真实写入刷盘可继续推进。当前仅交付聊天草案，未修改业务代码，也未运行该函数测试。
+用户实现后验收：未停止 WAL／存在活跃事务时拒绝且状态不变；新库与重复重置；通过真实 clear 移除旧数据后清空 ready/aborted、保留 next ID；保存重开仍保持新进度，后续真实写入刷盘可继续推进。该函数已由用户实现，实际验收见下文。
+
+## 2026-11-12 reset_after_clear 验收通过
+
+用户实现正确：WAL／活跃事务／next_id 前置检查在修改之前；临时 set 先准备，再清 ready/aborted 并交换 flushed；next ID 保留，函数不做文件 I/O。助手未修改业务代码。
+
+新增 test_wal.cpp 的 4 项 TranManagerWALTest.ResetAfterClear*：WAL 未停止时拒绝，状态、数据与日志不变；无 WAL 但有活跃事务时拒绝，活跃登记与暂存修改保持；新库／重复重置不自动保存或创建 WAL；真实 abort1→commit2+flush→commit3未刷盘→RU abort4 后，stop→Engine::clear→reset→save，保存为 40 字节，重开后旧数据不存在、ID 从 5 继续、新事务刷盘将检查点推进到 5。
+
+构建 test_wal 成功，隔离运行 **4/4 通过**，构建／运行期间相关源码、头文件和测试哈希一致。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-reset-after-clear-review-cji6c5ba`。未注入内存分配故障或重跑未接通的 LSM::clear 基线；本轮只证明管理器重置接口和正常清空后的衔接，不把它算作 A9 整体修复。
+
+## 下一函数：LSMEngine::clear
+
+当前位于 src/lsm/engine.cpp:382。本轮只修正文件删除失败的传播：原 filesystem_error 分支打印日志后继续返回，必须在记录错误后 throw，阻止上层把未清空成功的存储当作成功，继续 reset_after_clear／保存新状态／创建新 WAL。保持既有内存表、SST 目录、普通文件删除和 VLog 重建流程，不重置 SST 编号或改造缓存。
+
+调用前仍要求独占维护、无活跃事务和存活迭代器，并已停止 WAL。该步骤可能在失败前删除部分数据，不承诺原子 clear；失败交给调用方处理后重试，不能吞掉异常。VLog 的打开失败已有 FileObj::open 向上传递；目录循环已删除普通 VLog 文件，之后既有 del_vlog 的重复删除不作为新问题，不扩展 Lab 6 的实现。
+
+用户实现后验收：正常清空内存／SST 与旧文件，保留既有 VLog 重开行为；真实目录／删除错误向上抛出，不能伪装清空成功。完整 LSM::clear 的停止、状态重置与 WAL 重开待下一函数接通；当前只交付本函数聊天草案。
