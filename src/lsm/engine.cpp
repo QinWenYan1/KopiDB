@@ -380,10 +380,14 @@ uint64_t LSMEngine::remove_batch(const std::vector<std::string> &keys,
 // 本函数负责存储层的数据清空；清空后的事务状态重置、状态文件保存
 // 以及新 WAL 的初始化，需要由上层 LSM::clear() 流程继续完成
 void LSMEngine::clear() {
+  // 1. 调用方必须先停止旧 WAL，并保证没有并发操作和存活的迭代器
+  // 清空内存中的记录，以及引擎维护的 SST 目录信息
   memtable.clear();
   level_sst_ids.clear();
   ssts.clear();
-  // 清空当前文件夹的所有内容
+  
+  // 2. 删除数据库目录中的普通文件
+  // 包括旧 SST、WAL 和事务状态文件；子目录不在当前清理范围内
   try {
     for (const auto &entry : std::filesystem::directory_iterator(data_dir)) {
       if (!entry.is_regular_file()) {
@@ -396,15 +400,24 @@ void LSMEngine::clear() {
                    entry.path().string());
     }
   } catch (const std::filesystem::filesystem_error &e) {
-    // 处理文件系统错误
+    // 删除失败时，旧文件可能仍然存在
+    // 必须让上层知道清空没有完成，停止后续事务状态重置和新 WAL 初始化
+    //
+    // 只打印日志然后返回，会让上层误以为清空成功
+    // throw; 保留原异常，让调用者处理失败原因 
     spdlog::error("Error clearing directory: {}", e.what());
+    throw;
   }
 
-  // Re-create the vlog so new writes go to a fresh file
+  // 3. 沿用现有 VLog 的清理与重新打开流程
+  // 重新打开失败时，异常自然向上传播，上层同样不能继续按成功处理
   if (vlog_) {
     vlog_->del_vlog();
     vlog_ = VLog::open(data_dir + "/vlog.data");
   }
+
+  // 4. 清空成功后，由上层 LSM::clear() 继续重置、保存事务状态
+  // 然后初始化新 WAL
 }
 
 // Lab 4.1 刷盘形成sst文件

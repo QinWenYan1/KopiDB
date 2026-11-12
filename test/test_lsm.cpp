@@ -2541,6 +2541,83 @@ protected:
   std::shared_ptr<TranManager> manager;
 };
 
+// 目的：停止 WAL 后清空活跃表、冻结表和 SST 索引，并删除旧普通文件。
+// VLog 仅验证沿用的重新打开行为，不测试尚未实现的值分离读写；所有事务先正常结束。
+TEST_F(TranCommitTest, EngineClearRemovesStoredDataAndReopensVlog) {
+  auto disk = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  disk->put("disk", "old");
+  ASSERT_TRUE(disk->commit());
+  engine->flush();
+  auto frozen = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  frozen->put("frozen", "old");
+  ASSERT_TRUE(frozen->commit());
+  engine->memtable.frozen_cur_table();
+  auto current = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+  current->put("current", "old");
+  ASSERT_TRUE(current->commit());
+  ASSERT_GT(engine->memtable.get_cur_size(), 0u);
+  ASSERT_GT(engine->memtable.get_frozen_size(), 0u);
+  ASSERT_FALSE(engine->ssts.empty());
+  ASSERT_FALSE(engine->level_sst_ids.empty());
+  ASSERT_TRUE(engine->vlog_);
+  const auto dir = std::filesystem::path(test_dir);
+  FileObj::create_and_write((dir / "old-extra.bin").string(), {1, 2, 3});
+  manager->stop_wal();
+  std::vector<std::filesystem::path> old_files;
+  for (const auto &entry : std::filesystem::directory_iterator(dir)) {
+    if (entry.is_regular_file() && entry.path().filename() != "vlog.data")
+      old_files.push_back(entry.path());
+  }
+
+  ASSERT_NO_THROW(engine->clear());
+  EXPECT_EQ(engine->memtable.get_cur_size(), 0u);
+  EXPECT_EQ(engine->memtable.get_frozen_size(), 0u);
+  EXPECT_EQ(engine->memtable.get_total_size(), 0u);
+  EXPECT_TRUE(engine->ssts.empty());
+  EXPECT_TRUE(engine->level_sst_ids.empty());
+  for (const auto &path : old_files)
+    EXPECT_FALSE(std::filesystem::exists(path)) << path.string();
+  for (const char *key : {"disk", "frozen", "current"})
+    EXPECT_FALSE(engine->get(key, 0).has_value());
+  ASSERT_TRUE(engine->vlog_);
+  ASSERT_TRUE(std::filesystem::is_regular_file(dir / "vlog.data"));
+  auto reopened_vlog_file = FileObj::open((dir / "vlog.data").string(), false);
+  EXPECT_EQ(reopened_vlog_file.size(), 0u);
+}
+
+#ifndef _WIN32
+// 目的：目录可读取／遍历但不可写时，删除普通文件会真实失败，并向调用者抛出原异常。
+// 原文件仍可读写，旧实现即使吞掉删除异常，也能重新打开 VLog，因此本测试能区分两者。
+// 失败前的内存清理不要求自动撤销；权限在夹具析构管理器之前恢复，避免干扰收尾保存。
+TEST_F(TranCommitTest, EngineClearReportsFileDeletionFailure) {
+  if (::geteuid() == 0)
+    GTEST_SKIP() << "root may bypass directory write permissions";
+  manager->stop_wal();
+  const auto dir = std::filesystem::path(test_dir);
+  const auto kept = dir / "must-stay.bin";
+  const std::vector<uint8_t> bytes{11, 22, 33};
+  FileObj::create_and_write(kept.string(), bytes);
+  struct RestorePermissions {
+    std::filesystem::path path;
+    std::filesystem::perms permissions;
+    ~RestorePermissions() {
+      std::error_code ignored;
+      std::filesystem::permissions(path, permissions,
+                                   std::filesystem::perm_options::replace, ignored);
+    }
+  } restore{dir, std::filesystem::status(dir).permissions()};
+  std::filesystem::permissions(
+      dir, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec,
+      std::filesystem::perm_options::replace);
+  ASSERT_NO_THROW((void)FileObj::open((dir / "vlog.data").string(), false));
+
+  EXPECT_THROW(engine->clear(), std::filesystem::filesystem_error);
+  EXPECT_TRUE(std::filesystem::exists(kept));
+  auto file = FileObj::open(kept.string(), false);
+  EXPECT_EQ(file.read_to_slice(0, file.size()), bytes);
+}
+#endif
+
 // 点查回滚测试显式绑定组件，不依赖 Lab 5.5 尚未接通的 LSM 构造入口。
 class EngineGetRollbackTest : public TranCommitTest {};
 

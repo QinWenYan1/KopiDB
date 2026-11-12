@@ -26,7 +26,7 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 | [A6](#a6) | 待验证（代码路径疑点） | 待定 | 结束尝试失败后 put/remove 仍可能追加记录，使结束记录不再位于事务日志末尾 | TranContext::put/remove 的结束尝试检查及异常路径测试 | 未估时 |
 | [A7](#a7) | 已确认，待排期 | P1 | 状态文件直接覆盖写失败会破坏旧状态，阻碍后续启动 | write_tranc_id_file 的完整写入后替换；保存失败后的重试验证 | 未估时 |
 | [A8](#a8) | 待验证（代码路径疑点） | 待定 | 恢复刷盘失败可能留下正式名称的残缺 SST，阻碍下次加载 | SSTBuilder／FileObj 的文件发布与失败处理 | 未估时 |
-| [A9](#a9) | 处理中（两个管理器接口已验收） | P1 | clear 删除仍打开的 WAL，后续成功写入在异常退出后丢失 | LSM::clear 与 WAL 停止／重建、事务状态重置的必要联动 | 未估时 |
+| [A9](#a9) | 处理中（维护接口与 Engine 清空已验收） | P1 | clear 删除仍打开的 WAL，后续成功写入在异常退出后丢失 | LSM::clear 与 WAL 停止／重建、事务状态重置的必要联动 | 未估时 |
 
 A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 → A2 → A3 → A4 → 整体验收推进。A5 是接口约束改进建议，已确认随目录 5.2.3 的公开入口初始化整合处理，不计为第五项已确认缺陷，已于 2026-11-08 纳入 [PLAN](PLAN.md) 的阶段⑤，当前实现进度见 A5 条目。每进入一个新修复问题，先在聊天中写 issue 草稿供用户手动发布，再逐函数推进；没有自动创建远程 issue。具体执行与验收标准维护在 PLAN。
 
@@ -199,6 +199,8 @@ SSTBuilder::build（sst.cpp:503）调用 FileObj::create_and_write 直接写正�
 修复方向：先显式停止旧 WAL／等待清理线程，再清空存储，重置并保存管理器的相关状态，最后启动新 WAL；不能只在 clear 后创建新日志而让旧线程和句柄继续存活。具体函数、维护前提和验收标准进入 PLAN。 2026-11-12 已按用户要求细化为 stop_wal、reset_after_clear、Engine::clear、LSM::clear 及 LSM 析构错误收尾五个函数。stop_wal 新增 3/3 通过，证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-stop-wal-review-jhief_dw`；clear 尚未接入该接口，不能标为整体修复完成。删除文件失败须报告，不能按清空成功继续重置状态；不因此承诺原子 clear 或并发 clear。
 
 2026-11-12 A9 进展：reset_after_clear 新增 4/4 通过，保存重开后继续分配 ID 5、后续刷盘检查点推进到 5，旧 ready/aborted 已清理。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-reset-after-clear-review-cji6c5ba`。Engine::clear 错误传播、上层流程与析构收尾仍待完成，未重跑或宣称原失败回归已通过。
+
+2026-11-13 A9 进展：Engine::clear 已正确重抛文件删除异常，新增 2/2 通过、无跳过。正常清空及 POSIX 0500 目录下真实删除失败均已验证，权限在测试后恢复。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-engine-clear-review-o8b2rd63`。上层 LSM::clear 尚未接通、析构收尾待完成，原始失败回归未重跑，A9 不标记已解决。
 
 ## 验证记录
 
