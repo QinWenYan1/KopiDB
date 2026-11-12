@@ -1351,7 +1351,17 @@ void LSM::clear() {
   // 3. 存储确认清空后，再重置事务管理器的内存状态
   // 清理旧的待刷盘记录和回滚名单，检查点覆盖已被主动清除的旧编号
   // 下一个事务 ID 保持递增，不重新从 1 开始
+  tran_manager_->reset_after_clear();
 
+  // 4. 保存清空后的检查点和下一个事务 ID
+  // 即使清空后没有立刻写入新数据，关闭重开也能延续正确的编号
+  // 保存失败时不能继续启动新 WAL
+  tran_manager_->write_tranc_id_file();
+
+  // 5. 最后创建并打开新的 WAL，启动新的清理线程
+  // 后续 put/remove 会使用这个新日志文件
+  // 不会再向已经删除的旧文件句柄写入
+  tran_manager_->init_new_wal();
 }
 
 void LSM::flush() { auto max_tranc_id = engine->flush(); }
