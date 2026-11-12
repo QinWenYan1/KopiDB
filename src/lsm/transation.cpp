@@ -720,6 +720,20 @@ void TranManager::stop_wal() {
   // 文件删除和事务状态重置，由后续 clear 流程负责。
 }
 
+// TranManager::reset_after_clear()，由后续的 LSM::clear() 在存储成功清空后调用
+//    假设下一个 ID 是 6：
+//    nextTransactionId_     保持 6
+//    readyToFlushTrancIds_   清空
+//    aborted_tranc_ids_      清空
+//    flushedTrancIds_        变为 {5}
+void TranManager::reset_after_clear() {
+  // 1. 管理器状态使用同一把锁保护。
+  // 整段 clear 仍要求调用方停止并发操作。
+  std::lock_guard<std::mutex> lock(mutex_);
+
+
+}
+
 void TranManager::set_engine(std::shared_ptr<LSMEngine> engine) {
   engine_ = std::move(engine);
 }

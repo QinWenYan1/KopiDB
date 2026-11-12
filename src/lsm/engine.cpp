@@ -368,6 +368,17 @@ uint64_t LSMEngine::remove_batch(const std::vector<std::string> &keys,
   return 0;
 }
 
+// 清空引擎保存的数据：
+// 1. 清空活跃和冻结 MemTable 中的记录
+// 2. 清空各层 SST 的编号列表，以及引擎持有的 SST 对象
+// 3. 删除数据库目录中的普通文件，包括 SST、WAL 和事务状态文件
+// 4. 如果启用了 VLog，清理后重新创建空的 VLog
+//
+// 这是需要独占执行的维护操作：调用前应结束活跃事务、销毁迭代器
+// 并停止旧 WAL 及其清理线程，避免删除仍在使用的日志文件
+//
+// 本函数负责存储层的数据清空；清空后的事务状态重置、状态文件保存
+// 以及新 WAL 的初始化，需要由上层 LSM::clear() 流程继续完成
 void LSMEngine::clear() {
   memtable.clear();
   level_sst_ids.clear();

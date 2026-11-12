@@ -92,6 +92,10 @@ public:
   // 有活跃事务时拒绝停止，调用者应先提交或取消这些事务
   // 返回前，旧 WAL 的清理线程已经退出，日志文件句柄已经关闭
   void stop_wal();
+  // 供 clear 的独占维护流程使用。
+  // 调用前必须停止 WAL，并确认存储已经成功清空。
+  // 重置管理器内存状态，保留下一个事务 ID；文件保存由调用方负责。
+  void reset_after_clear();
   void init_new_wal();
   void set_engine(std::shared_ptr<LSMEngine> engine);
   // ! SERIALIZABLE（未完整实现）：允许创建上下文，不代表已提供完整隔离保证。
