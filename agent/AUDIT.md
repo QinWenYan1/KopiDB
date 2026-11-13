@@ -215,7 +215,7 @@ A9 在“调用方独占维护、无活跃事务和存活数据库迭代器”�
 
 ### A10：内部完成标记集中写入 SST 块，普通多 key 写入也会偏移超限
 
-记录日期：2026-11-13。类型：已复现缺陷，来自 Lab 5.5 阶段⑥整体验收。状态：处理中；Engine 与 MemTable 两步已完成联调，本轮 9/9 通过，含 6000 个不同 key、纯标记表、混合表版本／墓碑、失败保护、真实自动刷盘和只读事务结算。首次 5/7 的失败记录保留在 PLAN。当前仍需处理旧 SST 合并时的遗留标记及完成整体验收，尚未解决。普通写入口接通 WAL／完成登记后，每次独立写入都新增一个空 key、空 value 的完成标记，扩大了原刷盘路径未覆盖的标记数量。
+记录日期：2026-11-13。类型：已复现缺陷，来自 Lab 5.5 阶段⑥整体验收。状态：待整体验收；Engine 与 MemTable 两个必要函数已联调，本轮 9/9 通过，含 6000 个不同 key、纯标记表、混合表版本／墓碑、失败保护、真实自动刷盘和只读事务结算。首次 5/7 的失败记录保留在 PLAN。用户指出当前版本已不再生成 SST 标记，第三步旧 SST 整理由必修改为兼容旧数据时的可选处理；不宣称旧库风险已消除，也不将未运行的完整回归记为通过。普通写入口接通 WAL／完成登记后，每次独立写入都新增一个空 key、空 value 的完成标记，扩大了原刷盘路径未覆盖的标记数量。
 
 远程提交 `f5cebb8e7e774d68eda7d99928084121a6c5ab81` 已通过 GitHub 读取核实：[MemTable::flush_last](https://github.com/QinWenYan1/KopiDB/blob/f5cebb8e7e774d68eda7d99928084121a6c5ab81/src/memtable/memtable.cpp#L404-L420) 收集标记 ID 后仍将标记 builder.add；[SSTBuilder::add](https://github.com/QinWenYan1/KopiDB/blob/f5cebb8e7e774d68eda7d99928084121a6c5ab81/src/sst/sst.cpp#L384-L403) 对相同 key 使用 force_write；[Block::add_entry](https://github.com/QinWenYan1/KopiDB/blob/f5cebb8e7e774d68eda7d99928084121a6c5ab81/src/block/block.cpp#L179-L212) 的数据区偏移仍只有 uint16_t。每个标记占 12B，第 5463 条起始偏移为 5462×12=65544，超过 65535。
 
@@ -223,7 +223,7 @@ A9 在“调用方独占维护、无活跃事务和存活数据库迭代器”�
 
 影响：无法生成本次业务 SST；失败数据仍保留在内存，WAL 未因此被删除，不将现场描述成已发生永久数据丢失。析构会记录同类失败，单纯关闭重开查询可能依靠 WAL 重放而掩盖刷盘失败，因此必须显式验证 flush 成功。大规模 LSM／compaction 回归待修复后继续，不默默排除或记为通过。
 
-修复准备已核对：没有生产调用从 SST 空 key 标记重建完成状态。标记 ID 由 MemTable::flush_last 收集、Engine::flush 通知；重启使用状态文件和 WAL。已选定范围为 Engine::flush 处理纯标记无 SST 的完成通知、flush_last 消费标记而不将其写入 SST，以及 gen_sst_from_iter 清理旧 SST 标记。保留非空 key 墓碑、全部业务版本、现有编码与同业务 key 共块约束；混合表构建失败时不能提前报告完成 ID。具体步骤与验收标准见 PLAN；issue 与补充 QA 已在聊天交付，由用户手动发布，修复尚未验收。
+修复范围经校正为 Engine::flush 处理纯标记无 SST 的完成通知，以及 flush_last 消费标记而不将其写入 SST。没有生产调用从 SST 空 key 标记重建完成状态；重启使用状态文件和 WAL。保留非空 key 墓碑、全部业务版本、现有编码与同业务 key 共块约束；混合表构建失败时不能提前报告完成 ID。gen_sst_from_iter 的草案仅用于清理修复前旧 SST 中的标记，本轮未实施；若继续使用含此类旧记录的数据目录，合并时仍可能聚集并超限，需要另行选择兼容处理。具体步骤与验收标准见 PLAN；已交付 issue 中原第三项应理解为旧数据兼容的可选项，不能当作本轮仍缺失的正常写入功能。
 
 ## 验证记录
 
