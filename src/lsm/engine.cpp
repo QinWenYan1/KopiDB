@@ -1033,8 +1033,25 @@ LSM::LSM(std::string path)
 }
 
 LSM::~LSM() {
-  flush_all();
-  tran_manager_->write_tranc_id_file();
+  try{
+    // 1. 正常关闭时，先将剩余内存数据写入 SST
+    // 再保存事务状态和实际的刷盘进度
+    flush_all();
+    tran_manager_->write_tranc_id_file();
+  } catch (const std::exception &e) {
+    // 2. 析构可能发生在处理其他异常的过程中
+    // 不能让这里的刷盘或保存异常逃出析构，导致进程终止
+    //
+    // 析构没有返回值，因此通过日志记录具体原因
+    // 记录错误不代表数据或事务状态已经保存成功
+    spdlog::error(
+      "LSM: failed to flush or save state during destruction: {}",
+      e.what());
+  } catch (...) {
+    // 3. 非标准异常没有 what() 信息，也需要阻止它逃出析构。
+    spdlog::error(
+        "LSM: unknown error while flushing or saving state during destruction");
+  }
 }
 
 std::optional<std::string> LSM::get(const std::string &key) {
