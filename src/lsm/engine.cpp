@@ -498,11 +498,24 @@ uint64_t LSMEngine::flush() {
   //    无论是否生成 SST，都处理返回的完成 ID， 这是新设计为这样的原因
   //    返回不依赖 new_sst
   //    flush_last 保证：对应业务数据成功刷盘后，才输出这些 ID
+  //
+  //    当前 Engine 用空 vector 接收一张内存表的完成标记
+  //    这些标记的 key 都为空，跳表按版本降序排列
+  //    因此收集出的 ID 也是降序，例如 {3, 2, 1}
+  //
+  //    从尾向前访问，通知顺序就变为 1、2、3，无需额外排序
+  //    较小的已完成项先移出 ready 表，减少后续通知的重复扫描
   auto manager = tran_manager.lock();
 
-  for (uint64_t id : flushed_tranc_ids) {
-    // 只有完成标记、没有 SST 时，也要把标记 ID 计入返回值。
-    // 这个计算不依赖管理器是否存在。
+  // rbegin() 从最后一项开始；
+  // 反向迭代器的 ++ 会向数组前方移动，直到 rend()
+  for (auto it = flushed_tranc_ids.rbegin(); it != flushed_tranc_ids.rend(); ++it) {
+    // 只有完成标记、没有 SST 时，也要把标记 ID 计入返回值
+    // 这个计算不依赖管理器是否存在
+    const uint64_t id = *it; 
+
+    // 保留本次处理的最大 ID
+    // 即使没有管理器，或本次没有生成 SST，也要正确计算返回值
     max_processed_id = std::max(max_processed_id, id);
 
     if (manager) {
