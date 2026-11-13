@@ -177,6 +177,15 @@ void TranContext::remove(const std::string &key) {
         "TranContext::remove: transaction has already finished");
   }
 
+  // 空 key 保留给内部事务标记，用户不能删除它。
+  // 必须在追加 DELETE 记录之前拒绝，避免错误操作进入 WAL 或存储层。
+  //
+  // 参数错误只拒绝本次调用，不结束事务，
+  // 也不清空此前已经暂存的合法修改。
+  if (key.empty()) 
+    throw std::invalid_argument(
+        "TranContext::remove: key must not be empty");
+
   // 2. 所有隔离级别都需要先写入 operations 中
   // DELETE 只需要记录 key，删除发生在哪个版本由 tranc_id_ 标识
   operations.emplace_back(Record::deleteRecord(this->tranc_id_, key));

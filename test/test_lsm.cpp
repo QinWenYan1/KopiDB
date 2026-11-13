@@ -1739,6 +1739,42 @@ TEST_F(LSMTest, LSMDestructorContainsFlushFailureWithoutHidingExplicitErrors) {
 }
 #endif
 
+// 目的：6000 次普通独立写入使用不同的 key 和小 value，应能正常刷盘并重开读取。
+// 这不是用户给同一个 key 写入大量版本：每次 put 产生的内部完成标记虽然共用空 key，
+// 也不应让这组正常业务写入因标记集中在一个 Block 而触发 16 位偏移超限。
+TEST_F(LSMTest, ManyIndependentWritesCanFlush) {
+  auto &config = const_cast<TomlConfig &>(TomlConfig::getInstance());
+  struct RestoreLimits {
+    TomlConfig &config;
+    long long per_limit;
+    long long total_limit;
+    ~RestoreLimits() {
+      config.modify_lsm_per_mem_size_limit(per_limit);
+      config.modify_lsm_tol_mem_size_limit(total_limit);
+    }
+  } restore{config, config.getLsmPerMemSizeLimit(),
+             config.getLsmTolMemSizeLimit()};
+  // 让这组小记录完整留在内存，统一由下面的显式 flush 触发刷盘。
+  config.modify_lsm_per_mem_size_limit(16 * 1024 * 1024);
+  config.modify_lsm_tol_mem_size_limit(64 * 1024 * 1024);
+  constexpr int count = 6000;
+  {
+    LSM db(test_dir);
+    for (int i = 0; i < count; ++i)
+      db.put("independent-" + std::to_string(i), "v-" + std::to_string(i));
+    ASSERT_NO_THROW(db.flush_all());
+    for (int i : {0, count / 2, count - 1})
+      EXPECT_EQ(db.get("independent-" + std::to_string(i)),
+                std::make_optional("v-" + std::to_string(i)));
+  }
+  {
+    LSM reopened(test_dir);
+    for (int i : {0, count / 2, count - 1})
+      EXPECT_EQ(reopened.get("independent-" + std::to_string(i)),
+                std::make_optional("v-" + std::to_string(i)));
+  }
+}
+
 TEST_F(LSMTest, BasicOperations) {
   LSM lsm(test_dir);
 
@@ -2840,6 +2876,96 @@ class EngineGetRollbackTest : public TranCommitTest {};
 
 // 删除测试复用组件绑定与容量配置，分别检查暂存删除和立即删除。
 class TranRemoveTest : public TranCommitTest {};
+
+// 目的：四种隔离分支都在追加 DELETE、修改暂存表、WAL 或引擎数据之前拒绝空 key。
+// 错误调用保留此前合法修改，事务仍可继续删除合法 key 并提交其他修改。
+TEST_F(TranRemoveTest, RejectsEmptyKeyWithoutSideEffectsAndCanContinue) {
+  const auto read_wal = [&] {
+    auto file = FileObj::open(test_dir + "/wal.0", false);
+    return file.read_to_slice(0, file.size());
+  };
+  for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
+                     IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    auto context = manager->new_tranc(level);
+    const auto suffix = std::to_string(context->tranc_id_);
+    const auto kept = "kept-" + suffix;
+    const auto removed = "removed-" + suffix;
+    context->put(kept, "value");
+    context->put(removed, "value");
+    const auto operations_before = context->operations;
+    const auto pending_before = context->temp_map_;
+    const auto wal_before = read_wal();
+    const auto size_before = engine->memtable.get_total_size();
+    const auto kept_before = engine->get(kept, 0);
+    const auto removed_before = engine->get(removed, 0);
+
+    EXPECT_THROW(context->remove(""), std::invalid_argument);
+    EXPECT_EQ(context->operations, operations_before);
+    EXPECT_EQ(context->temp_map_, pending_before);
+    EXPECT_EQ(read_wal(), wal_before);
+    EXPECT_EQ(engine->memtable.get_total_size(), size_before);
+    EXPECT_EQ(engine->get(kept, 0), kept_before);
+    EXPECT_EQ(engine->get(removed, 0), removed_before);
+    EXPECT_FALSE(context->isCommited);
+    EXPECT_FALSE(context->isAborted);
+    EXPECT_EQ(context->get(kept), std::make_optional(std::string("value")));
+
+    context->remove(removed);
+    ASSERT_TRUE(context->commit());
+    EXPECT_EQ(engine->get(kept, 0),
+              std::make_optional(std::make_pair(std::string("value"),
+                                               context->tranc_id_)));
+    EXPECT_FALSE(engine->get(removed, 0).has_value());
+  }
+}
+
+// 目的：事务已提交或取消时，remove("") 应先报告事务已结束，而不是参数错误。
+// invalid_argument 继承 logic_error，分别捕获才能验证优先级；错误调用不得改变记录或数据。
+TEST_F(TranRemoveTest, FinishedStatePrecedesEmptyKeyValidation) {
+  const auto read_wal = [&] {
+    auto file = FileObj::open(test_dir + "/wal.0", false);
+    return file.read_to_slice(0, file.size());
+  };
+  for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
+                     IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ,
+                     IsolationLevel::SERIALIZABLE}) {
+    for (bool committed : {false, true}) {
+      SCOPED_TRACE(static_cast<int>(level));
+      SCOPED_TRACE(committed);
+      auto context = manager->new_tranc(level);
+      const auto key = "ended-" + std::to_string(context->tranc_id_);
+      context->put(key, "value");
+      if (committed) {
+        ASSERT_TRUE(context->commit());
+      } else {
+        ASSERT_TRUE(context->abort());
+      }
+      const auto operations_before = context->operations;
+      const auto pending_before = context->temp_map_;
+      const auto wal_before = read_wal();
+      const auto size_before = engine->memtable.get_total_size();
+      const auto value_before = engine->get(key, 0);
+
+      try {
+        context->remove("");
+        ADD_FAILURE() << "Ended transaction accepted remove";
+      } catch (const std::invalid_argument &) {
+        ADD_FAILURE() << "Empty-key validation ran before finished-state check";
+      } catch (const std::logic_error &) {
+        // 预期：先拒绝使用已结束的事务。
+      }
+      EXPECT_EQ(context->operations, operations_before);
+      EXPECT_EQ(context->temp_map_, pending_before);
+      EXPECT_EQ(read_wal(), wal_before);
+      EXPECT_EQ(engine->memtable.get_total_size(), size_before);
+      EXPECT_EQ(engine->get(key, 0), value_before);
+    }
+  }
+}
 
 // 目的：暂存删除要保留墓碑，覆盖本事务先前的写入和读缓存；提交前不影响引擎。
 // 场景：三个暂存型级别分别删除已有 key、重复删除和删除不存在的 key，
