@@ -1741,6 +1741,87 @@ TEST_F(MemTableFlushTest, EmptyFreezeAndActiveOnlyFlush) {
   EXPECT_EQ(it->second, "value");
 }
 
+// 目的：只有完成标记的表也能成功处理，不为这些标记创建空 SST。
+// 场景：冻结事务 5、7 的完成标记，输出列表中已有调用方保存的 ID 99。
+// 预期：返回空指针、不创建文件，追加两个 ID 并清空对应的内存占用。
+TEST_F(MemTableFlushTest, MarkerOnlyFlushReturnsIdsWithoutCreatingSst) {
+  MemTable table;
+  table.put("", "", 5);
+  table.put("", "", 7);
+  table.frozen_cur_table();
+  ASSERT_GT(table.get_frozen_size(), 0u);
+
+  std::vector<uint64_t> flushed_ids = {99};
+  auto path = (directory / "markers-only.sst").string();
+  SSTBuilder builder(256, false);
+  std::shared_ptr<SST> sst;
+  ASSERT_NO_THROW(sst = table.flush_last(builder, path, 1, flushed_ids, cache));
+
+  EXPECT_EQ(sst, nullptr);
+  EXPECT_FALSE(std::filesystem::exists(path));
+  EXPECT_EQ(table.get_total_size(), 0u);
+  EXPECT_EQ(table.get_frozen_size(), 0u);
+  EXPECT_EQ(table.get_cur_size(), 0u);
+  ASSERT_EQ(flushed_ids.size(), 3u);
+  EXPECT_EQ(flushed_ids.front(), 99u);
+  const std::unordered_set<uint64_t> actual_ids(flushed_ids.begin(),
+                                               flushed_ids.end());
+  const std::unordered_set<uint64_t> expected_ids = {99, 5, 7};
+  EXPECT_EQ(actual_ids, expected_ids);
+}
+
+// 目的：完成标记不进入 SST，但业务旧版本和墓碑必须完整保留。
+// 场景：K@3 为旧值、K@5 为墓碑、Z@6 为有效值，并带有 3/5/6/10 的完成标记。
+// 预期：原始 SST 只含三条业务记录，版本范围是 [3,6]；完成 ID 10 仍被输出。
+//       使用全版本迭代器检查物理记录，避免查询层隐藏标记而让测试误通过。
+TEST_F(MemTableFlushTest, MixedFlushOmitsMarkersButPreservesVersionsAndTombstones) {
+  MemTable table;
+  table.put("K", "old", 3);
+  table.remove("K", 5);
+  table.put("Z", "live", 6);
+  for (uint64_t id : {3u, 5u, 6u, 10u})
+    table.put("", "", id);
+
+  std::vector<uint64_t> flushed_ids = {99};
+  auto path = (directory / "mixed.sst").string();
+  SSTBuilder builder(256, true);
+  std::shared_ptr<SST> sst;
+  ASSERT_NO_THROW(sst = table.flush_last(builder, path, 1, flushed_ids, cache));
+  ASSERT_NE(sst, nullptr);
+  EXPECT_TRUE(std::filesystem::exists(path));
+  EXPECT_EQ(table.get_total_size(), 0u);
+  ASSERT_EQ(flushed_ids.size(), 5u);
+  EXPECT_EQ(flushed_ids.front(), 99u);
+  const std::unordered_set<uint64_t> actual_ids(flushed_ids.begin(),
+                                               flushed_ids.end());
+  const std::unordered_set<uint64_t> expected_ids = {99, 3, 5, 6, 10};
+  EXPECT_EQ(actual_ids, expected_ids);
+  const auto range = sst->get_tranc_id_range();
+  EXPECT_EQ(range.first, 3u);
+  EXPECT_EQ(range.second, 6u);
+
+  const std::vector<std::tuple<std::string, std::string, uint64_t>> expected = {
+      {"K", "", 5}, {"K", "old", 3}, {"Z", "live", 6}};
+  auto it = sst->begin(0, true);
+  for (const auto &[key, value, id] : expected) {
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(it->first, key);
+    EXPECT_EQ(it->second, value);
+    EXPECT_EQ(it.get_cur_tranc_id(), id);
+    ++it;
+  }
+  EXPECT_TRUE(it.is_end());
+
+  auto old = sst->get("K", 4);
+  ASSERT_TRUE(old.is_valid());
+  EXPECT_EQ(old->second, "old");
+  EXPECT_EQ(old.get_cur_tranc_id(), 3u);
+  auto deleted = sst->get("K", 0);
+  ASSERT_TRUE(deleted.is_valid());
+  EXPECT_TRUE(deleted->second.empty());
+  EXPECT_EQ(deleted.get_cur_tranc_id(), 5u);
+}
+
 int main(int argc, char **argv) {
   testing::InitGoogleTest(&argc, argv);
   init_spdlog_file();

@@ -402,7 +402,7 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
   cur_lock.unlock();
 
   // 4. 分别处理业务记录和事务完成标记。
-  // 完成 ID 暂存在局部容器中，不能现在就报告给调用方
+  //    完成 ID 暂存在局部容器中，不能现在就报告给调用方
   std::vector<uint64_t> pending_ids;
   bool has_business_entries = false; 
 
@@ -427,18 +427,24 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
   //    这样 build 成功后追加这些整数 ID 就不需要再次分配内存
   //    reserve 只改变容量，不会提前追加任何事务 ID
   flushed_tranc_ids.reserve(flushed_tranc_ids.size() + pending_ids.size());
-  auto sst = builder.build(sst_id, sst_path, block_cache);
 
-  // 6. 到这里说明 SST 已构建成功，可以提交内存中的状态变更
+  // 只有业务记录才需要生成 SST
+  // 如果整张表只有完成标记，保持空指针
+  // 继续执行下面的完成 ID 输出、移除表和扣减大小
+  std::shared_ptr<SST> sst; 
+  if (has_business_entries)
+    sst = builder.build(sst_id, sst_path, block_cache);
+
+  // 6. 业务数据已成功刷出，或者本表只有完成标记，可以提交状态变更
   //    如果前面的 add/build 抛异常，待刷数据仍保留在冻结队列中
   //    没有被提前移除，也没有提前报告事务已经刷盘
   //
-  // 只有标记的情况，例如：
-  //   A@5 已在更老的表中刷出，当前表只剩完成标记@5。
-  // 因为始终从最老的表开始处理，现在可以返回 ID 5，
-  // 不需要为了这个标记再创建一张空 SST。
+  //    只有标记的情况，例如：
+  //     A@5 已在更老的表中刷出，当前表只剩完成标记@5
+  //    因为始终从最老的表开始处理，现在可以返回 ID 5
+  //    不需要为了这个标记再创建一张空 SST
   //
-  // 只读事务也可能只有完成标记，本身没有业务数据需要刷盘
+  //    只读事务也可能只有完成标记，本身没有业务数据需要刷盘
   flushed_tranc_ids.insert(flushed_tranc_ids.end(), pending_ids.begin(),
                            pending_ids.end());
 

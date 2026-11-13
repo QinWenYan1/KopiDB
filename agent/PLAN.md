@@ -519,3 +519,7 @@ A9 按独占维护的既定范围标为已解决；README 已补充 clear 的使
 进入第二步，在聊天交付 flush_last 完整草案，用户手写业务代码。用 has_business_entries 决定是否 build；完成标记仅收集 ID，成功后再统一追加输出、移除最老表并扣减此前保存的大小。仅标记表返回 nullptr 和非空输出 ID，调用方已准备好接收。当前尚未修改该函数，也未新增或运行针对这一新路径的测试。Engine 中第 6 步残留的参考实现断句，以及第 7 步只描述 SST 最大版本的旧注释仍应同步文字；不作为阻塞下一函数的逻辑缺陷。
 
 2026-11-13 用户手写第二步期间，要求全局确认完成标记依赖。静态核查当前 src/include 及相关测试：查询／MVCC 按业务版本和管理器状态判断，查询层只跳过标记；恢复使用状态文件与 WAL，不扫描 SST 完成标记；get_tranc_id_range 的唯一生产调用位于 Engine::flush，已通过业务最大版本与完成 ID 分别取最大值保留返回含义。全版本归并测试仍应允许传递原始标记，不能由此推导 SST 必须持久化标记，过滤边界保持为 flush_last／gen_sst_from_iter。完成通知仍间接影响检查点、恢复和 WAL 清理，不取消该机制。当前 flush_last 正在手写，本轮依赖核查不作为函数修改验收，也未重跑测试；继续原三函数范围。
+
+2026-11-13 第二步首次检查：用户已正确过滤完成标记，并让业务记录继续进入 builder，但第 430 行仍无条件 builder.build，尚未使用 has_business_entries 控制构建。纯标记表因此抛出 Cannot build empty SST，第二步未通过，不进入第三步。table_size 使用 const auto& 绑定按值返回的临时值在当前作用域合法，不将其作为必须修改的问题。
+
+助手在 test/test_memtable.cpp 新增 MarkerOnlyFlushReturnsIdsWithoutCreatingSst、MixedFlushOmitsMarkersButPreservesVersionsAndTombstones 两项测试，分别验证纯标记表不建文件且返回完整 ID／内存归零，以及物理 SST 排除标记但保留业务旧版本与墓碑、正确计算业务版本范围。构建 test_memtable、test_lsm 成功；隔离运行 MemTableFlushTest.* 为 **4/5**，纯标记测试失败；LSM 的 ManyIndependentWritesCanFlush、DirectPutWritesWalAndRegistersAutomaticFlush 为 **1/2**，6000 个独立 key 已通过，自动刷盘测试同样因纯标记表失败。合计 **5/7**，无跳过／禁用；源码、头文件、测试和配置哈希在构建运行期间一致。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a10-memtable-review-aakssrn6`。下一步先将 build 放入 has_business_entries 条件内，再复测；助手未改业务代码。
