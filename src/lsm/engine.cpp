@@ -447,11 +447,19 @@ uint64_t LSMEngine::flush() {
   size_t new_sst_id = next_sst_id++;
   auto sst_path = get_sst_path(new_sst_id, 0);
 
-  // 4+5. 选 builder 模式, 把最老的冻结表刷成 L0 SST
-  // 4. 构造 SSTBuilder:
+  // 4. 处理最老的内存表, 选 builder 模式, 把最老的冻结表刷成 L0 SST
+  // 构造 SSTBuilder:
   //    - 若 WiscKey 阈值 > 0 且 vlog_ 存在, 使用 WiscKey 模式的构造函数
   //    - 否则使用普通模式
-  // 5. 调用 memtable.flush_last() 生成 SST 文件
+  // 
+  // 调用 memtable.flush_last() 生成 SST 文件
+  //
+  // flush_last 提供两个结果：
+  //   new_sst：本次生成的 SST，可能为空；
+  //   flushed_tranc_ids：本次可以登记刷盘完成的事务 ID。
+  //
+  // 例如 A@5 已经在之前刷盘，当前表只剩完成标记@5：
+  // 此时无需再创建 SST，但仍需要返回 ID 5，供下面通知管理器
   std::vector<uint64_t> flushed_tranc_ids;
   std::shared_ptr<SST> new_sst;
   size_t wk = TomlConfig::getInstance().getWisckeyValueThreshold();
@@ -466,31 +474,43 @@ uint64_t LSMEngine::flush() {
                                   flushed_tranc_ids, block_cache);
   }
 
-  // 等待写锁期间，其他线程可能已经刷完全部数据
-  // 本次没有生成 SST，直接返回，避免登记和解引用空指针
-  if (!new_sst) {
-    return 0;
+  // 5. 只有生成了 SST，才登记文件并读取其中的最大版本号
+  //
+  // 没有 SST 时不能直接 return：
+  // 本次仍可能处理了只有完成标记的内存表，需要继续登记事务状态
+  uint64_t max_processed_id = 0; 
+
+  if (new_sst) {
+    // 先让新 SST 被引擎正常管理，再报告事务刷盘完成
+    // 更新 ssts 和 level_sst_ids[0] (push_front 保证新的在前)
+    // 登记: id->SST 映射 + L0 队列头插 (新的在前, 查询从新到旧)
+    ssts[new_sst_id] = new_sst;
+    level_sst_ids[0].push_front(new_sst_id);
+
+    max_processed_id = new_sst->get_tranc_id_range().second;
   }
 
-  // 6. 更新 ssts 和 level_sst_ids[0] (push_front 保证新的在前)
-  //    登记: id->SST 映射 + L0 队列头插 (新的在前, 查询从新到旧)
-  ssts[new_sst_id] = new_sst;
-  level_sst_ids[0].push_front(new_sst_id);
 
-  // 7. 将 flushed_tranc_ids 通知给 tran_manager
+
+  // 6. 将 flushed_tranc_ids 通知给 tran_manager
   //    通知事务管理器哪些 tranc 已落盘
   //    参考实现这里没判空, 不炸纯属侥幸: flush_last 只给
-  //    "空key+空value" 的 checkpoint 标记 entry 收集 id, 普通写入恒空
-  //    我们补判空 (防御性偏离, 明说)
+  //    flush_last 必须保证：对应业务数据成功刷盘后，才输出这些 ID。
+  //    这里收到的是完成通知，不需要重新扫描 SST 验证
   if (auto tm = tran_manager.lock()) {
     for (auto &id : flushed_tranc_ids)
       tm->add_flushed_tranc_id(id);
   }
 
-  // 8. 返回本次刷入 SST 的最大 tranc_id
+  // 7. 返回本次刷入 SST 的最大 tranc_id
   //    返回新 SST 的 max_tranc_id
-  //    为什么返回 max？因为它的语义是水位线（watermark）：
-  //    回答"这次刷盘把数据 durable 到哪了"
+  //    为什么返回 max？因为它的语义是水位线：
+  //    回答"这次刷盘把数据持久化到哪了"
+  // 
+  //    这个最大值不是连续检查点：
+  //    返回 10，不代表事务 1～10 都已全部刷盘
+  //    连续检查点仍由事务管理器根据完成集合维护
+  //    如果本次什么都没有处理，返回值自然保持为 0
   return new_sst->get_tranc_id_range().second;
 }
 
