@@ -423,16 +423,19 @@ void LSMEngine::clear() {
 // Lab 4.1 刷盘形成sst文件
 uint64_t LSMEngine::flush() {
 
-  // 0. 若 memtable 为空直接返回 0
+  // 1. 内存表完全为空，没有业务数据或完成标记需要处理
   if (memtable.get_total_size() == 0)
     return 0;
 
-  // 1. 加 ssts_mtx 写锁
-  //    写锁: 要改 ssts / level_sst_ids, 与未来的读路径 get() 互斥
+  // 2. 加 ssts_mtx 写锁
+  //    刷盘会修改 SST 映射和层级列表(ssts / level_sst_ids) 与未来的读路径 get() 互斥
+  //    需要获取写锁
+  //    同时让多个线程的刷盘操作依次执行，避免同时修改这些结构
   std::unique_lock<std::shared_mutex> lock(ssts_mtx);
 
-  // 2. 若 L0 层 SST 数量 >= LsmSstLevelRatio, 先触发 full_compact(0)
-  //    L0 堆满 -> 先 compact (Lab 4.5 才实现, 现在是空桩, 调用无害先挂着)
+
+  //    L0 文件数量达到阈值时，先执行合并; 若 L0 层 SST 数量 >= LsmSstLevelRatio, 先触发 full_compact(0)
+  // 
   //    步骤 2 的 find(0) != end() 守卫：防 map 的 operator[] 凭空造出空 L0
   //    队列参与比较
   if (level_sst_ids.find(0) != level_sst_ids.end() &&
@@ -440,7 +443,7 @@ uint64_t LSMEngine::flush() {
           TomlConfig::getInstance().getLsmSstLevelRatio())
     full_compact(0);
 
-  // 3. 分配新的 sst_id: next_sst_id++
+  // 3. 为本次可能生成的 SST 准备编号和路径: 分配新的 sst_id: next_sst_id++
   size_t new_sst_id = next_sst_id++;
   auto sst_path = get_sst_path(new_sst_id, 0);
 
