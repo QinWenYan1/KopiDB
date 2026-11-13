@@ -380,11 +380,11 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
   std::unique_lock<std::shared_mutex> frozen_lock(frozen_mtx);
 
   // 2. 优先刷已有的冻结表；没有时，再冻结当前活跃表
-  //    复用刚修好的函数，避免在这里重复实现冻结逻辑
   if (frozen_tables.empty())
     frozen_cur_table_();
 
-  // 如果仍然为空，说明活跃表也没有数据，无须构建 SST
+  // 活跃表本身为空时，不会产生冻结表
+  // 此时没有任何记录需要处理，也不修改调用方的完成 ID 列表
   if (frozen_tables.empty()) {
     spdlog::debug(
         "MemTable--flush_last(): Current table is empty, returning null");
@@ -392,25 +392,35 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
   }
 
   // 3. 队尾是最早冻结的表
-  //    这里只保存引用，构建成功之前不能将它移出队列
+  //    先保存它及其大小，处理成功之前不能将它移出队列
   auto table = frozen_tables.back();
   const auto &table_size = table->get_size();
 
-  //    后续只访问冻结表，释放活跃表锁
-  //    不需要冻结的写入可以继续执行；需要冻结时仍会等待 frozen_mtx
-  //    冻结表锁继续持有，防止其他线程清除或重复刷出同一张表
+  // 后续只访问冻结表，释放活跃表锁
+  // 不需要冻结的写入可以继续执行；需要冻结时仍会等待 frozen_mtx
+  // 冻结表锁继续持有，防止其他线程清除或重复刷出同一张表
   cur_lock.unlock();
 
-  // 4. 暂存事务完成标记的 ID，暂时不修改调用方的输出列表
+  // 4. 分别处理业务记录和事务完成标记。
+  // 完成 ID 暂存在局部容器中，不能现在就报告给调用方
   std::vector<uint64_t> pending_ids;
-  for (const auto &[key, value, version] : table->flush()) {
-    if (key.empty() && value.empty())
-      // 本项目用“空 key + 空 value”记录事务完成标记
-      pending_ids.push_back(version);
+  bool has_business_entries = false; 
 
-    // 刷盘必须保留全部版本、墓碑和现有格式中的事务标记
-    // 不能像普通查询一样，只保留某个读取上限下的可见版本
-    builder.add(key, value, version);
+  for (const auto &[key, value, version] : table->flush()) {
+    if (key.empty() && value.empty()){
+      // 本项目用“空 key + 空 value”记录事务完成标记
+      // 完成标记只用于后续通知管理器，不需要作为 KV 写入 SST
+      // 如果继续写入，所有空 key 标记会聚集到同一个 Block
+      // 数量较多时就会超过 uint16_t 偏移的表示范围
+      pending_ids.push_back(version);
+      continue; 
+    }
+
+    // 业务记录保留全部版本
+    // 特别注意：非空 key、空 value 是墓碑，必须正常写入
+    // 否则更旧的值可能重新被查询到
+    builder.add(key, value, version); 
+    has_business_entries = true; 
   }
 
   // 5. 先预留输出空间
