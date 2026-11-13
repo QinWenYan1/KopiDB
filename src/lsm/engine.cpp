@@ -509,10 +509,11 @@ uint64_t LSMEngine::flush() {
 
   // rbegin() 从最后一项开始；
   // 反向迭代器的 ++ 会向数组前方移动，直到 rend()
-  for (auto it = flushed_tranc_ids.rbegin(); it != flushed_tranc_ids.rend(); ++it) {
+  for (auto it = flushed_tranc_ids.rbegin(); it != flushed_tranc_ids.rend();
+       ++it) {
     // 只有完成标记、没有 SST 时，也要把标记 ID 计入返回值
     // 这个计算不依赖管理器是否存在
-    const uint64_t id = *it; 
+    const uint64_t id = *it;
 
     // 保留本次处理的最大 ID
     // 即使没有管理器，或本次没有生成 SST，也要正确计算返回值
