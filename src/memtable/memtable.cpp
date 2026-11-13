@@ -432,6 +432,13 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
   // 6. 到这里说明 SST 已构建成功，可以提交内存中的状态变更
   //    如果前面的 add/build 抛异常，待刷数据仍保留在冻结队列中
   //    没有被提前移除，也没有提前报告事务已经刷盘
+  //
+  // 只有标记的情况，例如：
+  //   A@5 已在更老的表中刷出，当前表只剩完成标记@5。
+  // 因为始终从最老的表开始处理，现在可以返回 ID 5，
+  // 不需要为了这个标记再创建一张空 SST。
+  //
+  // 只读事务也可能只有完成标记，本身没有业务数据需要刷盘
   flushed_tranc_ids.insert(flushed_tranc_ids.end(), pending_ids.begin(),
                            pending_ids.end());
 
@@ -439,9 +446,18 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
   frozen_tables.pop_back();
   frozen_bytes -= table->get_size();
 
-  spdlog::info("MemTable--flush_last(): SST{} built successfully at '{}'",
-               sst_id, sst_path);
+  if(sst) {
+    spdlog::info("MemTable--flush_last(): SST{} built successfully at '{}'",
+                 sst_id, sst_path);
+  } else {
+    spdlog::info(
+        "MemTable--flush_last(): Processed {} transaction completion markers "
+        "without creating SST",
+        pending_ids.size());
+  }
 
+  // SST 通过返回值交给 Engine
+  // 完成 ID 通过引用参数 flushed_tranc_ids 交给 Engine
   return sst;
 }
 
@@ -479,7 +495,7 @@ void MemTable::frozen_cur_table_() {
 
 void MemTable::frozen_cur_table() {
   // Lab2.1 冻结活跃表（有锁版本）
-  // ? 加 cur_mtx 和 frozen_mtx 写锁后调用 frozen_cur_table_()
+  // 加 cur_mtx 和 frozen_mtx 写锁后调用 frozen_cur_table_()
   std::lock_guard<std::shared_mutex> table_lock(cur_mtx),
       frozen_lock(frozen_mtx);
   frozen_cur_table_();
