@@ -428,14 +428,13 @@ uint64_t LSMEngine::flush() {
     return 0;
 
   // 2. 加 ssts_mtx 写锁
-  //    刷盘会修改 SST 映射和层级列表(ssts / level_sst_ids) 与未来的读路径 get() 互斥
-  //    需要获取写锁
-  //    同时让多个线程的刷盘操作依次执行，避免同时修改这些结构
+  //    刷盘会修改 SST 映射和层级列表(ssts / level_sst_ids) 与未来的读路径 get()
+  //    互斥 需要获取写锁 同时让多个线程的刷盘操作依次执行，避免同时修改这些结构
   std::unique_lock<std::shared_mutex> lock(ssts_mtx);
 
-
-  //    L0 文件数量达到阈值时，先执行合并; 若 L0 层 SST 数量 >= LsmSstLevelRatio, 先触发 full_compact(0)
-  // 
+  //    L0 文件数量达到阈值时，先执行合并; 若 L0 层 SST 数量 >=
+  //    LsmSstLevelRatio, 先触发 full_compact(0)
+  //
   //    步骤 2 的 find(0) != end() 守卫：防 map 的 operator[] 凭空造出空 L0
   //    队列参与比较
   if (level_sst_ids.find(0) != level_sst_ids.end() &&
@@ -451,7 +450,7 @@ uint64_t LSMEngine::flush() {
   // 构造 SSTBuilder:
   //    - 若 WiscKey 阈值 > 0 且 vlog_ 存在, 使用 WiscKey 模式的构造函数
   //    - 否则使用普通模式
-  // 
+  //
   // 调用 memtable.flush_last() 生成 SST 文件
   //
   // flush_last 提供两个结果：
@@ -478,7 +477,7 @@ uint64_t LSMEngine::flush() {
   //
   // 没有 SST 时不能直接 return：
   // 本次仍可能处理了只有完成标记的内存表，需要继续登记事务状态
-  uint64_t max_processed_id = 0; 
+  uint64_t max_processed_id = 0;
 
   if (new_sst) {
     // 先让新 SST 被引擎正常管理，再报告事务刷盘完成
@@ -497,7 +496,7 @@ uint64_t LSMEngine::flush() {
   //    这里收到的是完成通知，不需要重新扫描 SST 验证
   //
   //    无论是否生成 SST，都处理返回的完成 ID， 这是新设计为这样的原因
-  //    返回不依赖 new_sst 
+  //    返回不依赖 new_sst
   //    flush_last 保证：对应业务数据成功刷盘后，才输出这些 ID
   auto manager = tran_manager.lock();
 
@@ -515,7 +514,7 @@ uint64_t LSMEngine::flush() {
   //    返回新 SST 的 max_tranc_id
   //    为什么返回 max？因为它的语义是水位线：
   //    回答"这次刷盘把数据持久化到哪了"
-  // 
+  //
   //    这个最大值不是连续检查点：
   //    返回 10，不代表事务 1～10 都已全部刷盘
   //    连续检查点仍由事务管理器根据完成集合维护
@@ -1065,7 +1064,7 @@ LSM::LSM(std::string path)
 }
 
 LSM::~LSM() {
-  try{
+  try {
     // 1. 正常关闭时，先将剩余内存数据写入 SST
     // 再保存事务状态和实际的刷盘进度
     flush_all();
@@ -1076,9 +1075,8 @@ LSM::~LSM() {
     //
     // 析构没有返回值，因此通过日志记录具体原因
     // 记录错误不代表数据或事务状态已经保存成功
-    spdlog::error(
-      "LSM: failed to flush or save state during destruction: {}",
-      e.what());
+    spdlog::error("LSM: failed to flush or save state during destruction: {}",
+                  e.what());
   } catch (...) {
     // 3. 非标准异常没有 what() 信息，也需要阻止它逃出析构。
     spdlog::error(
@@ -1383,19 +1381,19 @@ void LSM::remove_batch(const std::vector<std::string> &keys) {
   engine->put("", "", tranc_id);
 }
 
-void LSM::clear() { 
+void LSM::clear() {
   // 调用方必须保证整个清空过程没有并发数据库操作
   // 并已经销毁数据库迭代器；遍历结束不等于释放迭代器持有的锁
   //
   // 1. 先停止旧 WAL，等待清理线程退出并关闭日志文件
   // 如果还有活跃事务，stop_wal 会先抛异常
   // 此时还没有开始删除数据，调用者可以先结束事务再重试
-  tran_manager_->stop_wal(); 
+  tran_manager_->stop_wal();
 
   // 2. 清空存储层的数据和旧文件
   // 旧 WAL 已关闭，现在删除它不会留下继续写入的旧句柄
   // 删除失败会抛异常，下面的状态重置不会执行
-  engine->clear(); 
+  engine->clear();
 
   // 3. 存储确认清空后，再重置事务管理器的内存状态
   // 清理旧的待刷盘记录和回滚名单，检查点覆盖已被主动清除的旧编号
