@@ -215,7 +215,7 @@ A9 在“调用方独占维护、无活跃事务和存活数据库迭代器”�
 
 ### A10：内部完成标记集中写入 SST 块，普通多 key 写入也会偏移超限
 
-记录日期：2026-11-13。类型：已复现缺陷，来自 Lab 5.5 阶段⑥整体验收，纳入当前目标的必要修复，尚未修改业务代码。普通写入口接通 WAL／完成登记后，每次独立写入都新增一个空 key、空 value 的完成标记，扩大了原刷盘路径未覆盖的标记数量。
+记录日期：2026-11-13。类型：已复现缺陷，来自 Lab 5.5 阶段⑥整体验收。状态：处理中，用户已确认开始三函数修复；首轮交付 Engine::flush 草案，尚未修改业务代码。普通写入口接通 WAL／完成登记后，每次独立写入都新增一个空 key、空 value 的完成标记，扩大了原刷盘路径未覆盖的标记数量。
 
 远程提交 `f5cebb8e7e774d68eda7d99928084121a6c5ab81` 已通过 GitHub 读取核实：[MemTable::flush_last](https://github.com/QinWenYan1/KopiDB/blob/f5cebb8e7e774d68eda7d99928084121a6c5ab81/src/memtable/memtable.cpp#L404-L420) 收集标记 ID 后仍将标记 builder.add；[SSTBuilder::add](https://github.com/QinWenYan1/KopiDB/blob/f5cebb8e7e774d68eda7d99928084121a6c5ab81/src/sst/sst.cpp#L384-L403) 对相同 key 使用 force_write；[Block::add_entry](https://github.com/QinWenYan1/KopiDB/blob/f5cebb8e7e774d68eda7d99928084121a6c5ab81/src/block/block.cpp#L179-L212) 的数据区偏移仍只有 uint16_t。每个标记占 12B，第 5463 条起始偏移为 5462×12=65544，超过 65535。
 
@@ -223,7 +223,7 @@ A9 在“调用方独占维护、无活跃事务和存活数据库迭代器”�
 
 影响：无法生成本次业务 SST；失败数据仍保留在内存，WAL 未因此被删除，不将现场描述成已发生永久数据丢失。析构会记录同类失败，单纯关闭重开查询可能依靠 WAL 重放而掩盖刷盘失败，因此必须显式验证 flush 成功。大规模 LSM／compaction 回归待修复后继续，不默默排除或记为通过。
 
-修复准备已核对：没有生产调用从 SST 空 key 标记重建完成状态。标记 ID 由 MemTable::flush_last 收集、Engine::flush 通知；重启使用状态文件和 WAL。候选范围为 flush_last 消费标记而不将其写入 SST、Engine::flush 处理纯标记无 SST 的完成通知，以及 gen_sst_from_iter 清理旧 SST 标记。保留非空 key 墓碑、全部业务版本、现有编码与同业务 key 共块约束；混合表构建失败时不能提前报告完成 ID。具体步骤与验收标准见 PLAN；进入修复前按约定在聊天交付 issue。
+修复准备已核对：没有生产调用从 SST 空 key 标记重建完成状态。标记 ID 由 MemTable::flush_last 收集、Engine::flush 通知；重启使用状态文件和 WAL。已选定范围为 Engine::flush 处理纯标记无 SST 的完成通知、flush_last 消费标记而不将其写入 SST，以及 gen_sst_from_iter 清理旧 SST 标记。保留非空 key 墓碑、全部业务版本、现有编码与同业务 key 共块约束；混合表构建失败时不能提前报告完成 ID。具体步骤与验收标准见 PLAN；issue 与补充 QA 已在聊天交付，由用户手动发布，修复尚未验收。
 
 ## 验证记录
 

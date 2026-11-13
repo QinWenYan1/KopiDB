@@ -182,9 +182,8 @@ void TranContext::remove(const std::string &key) {
   //
   // 参数错误只拒绝本次调用，不结束事务，
   // 也不清空此前已经暂存的合法修改。
-  if (key.empty()) 
-    throw std::invalid_argument(
-        "TranContext::remove: key must not be empty");
+  if (key.empty())
+    throw std::invalid_argument("TranContext::remove: key must not be empty");
 
   // 2. 所有隔离级别都需要先写入 operations 中
   // DELETE 只需要记录 key，删除发生在哪个版本由 tranc_id_ 标识
@@ -742,19 +741,22 @@ void TranManager::reset_after_clear() {
 
   // 2. 必须先停止旧 WAL，再重置状态
   // 否则旧日志写入器和清理线程还在使用清空前的状态
-  if(wal)
-    throw std::logic_error("TranManager::reset_after_clear: WAL must be stopped first");
+  if (wal)
+    throw std::logic_error(
+        "TranManager::reset_after_clear: WAL must be stopped first");
 
   // 不能把尚未结束的事务直接当成已经处理完成
   // 调用方必须先提交或取消它们
   if (!activeTrans_.empty())
-    throw std::logic_error("TranManager::reset_after_clear: active transactions must finish first");
+    throw std::logic_error("TranManager::reset_after_clear: active "
+                           "transactions must finish first");
 
   // 3. 保留 ID 分配进度，清空后继续使用新的编号
   // 正常 next_id 至少为 1；0 是非法状态，也不能直接减一
-  const uint64_t next_id = nextTransactionId_.load(); 
+  const uint64_t next_id = nextTransactionId_.load();
   if (next_id == 0)
-    throw std::logic_error("TranManager::reset_after_clear: invalid next transaction ID"); 
+    throw std::logic_error(
+        "TranManager::reset_after_clear: invalid next transaction ID");
 
   // 4. 旧数据已经由 clear 删除，所有旧编号都不再需要恢复
   // 例如 next_id=6，就把检查点设为 5，新写入继续使用 6
@@ -763,15 +765,15 @@ void TranManager::reset_after_clear() {
   // 已删除的 1～5 不会再产生刷盘标记，检查点就会被缺口挡住
   //
   // 先准备新集合：如果分配失败，原来的管理器集合还没有改变
-  std::set<uint64_t> new_flushed_ids{next_id - 1}; 
+  std::set<uint64_t> new_flushed_ids{next_id - 1};
 
   // 5. 旧数据已不存在，不再需要等待它们刷盘，也无需保留其回滚名单
   readyToFlushTrancIds_.clear();
-  aborted_tranc_ids_.clear();  
+  aborted_tranc_ids_.clear();
 
   // 用新的单个检查点替换旧的连续进度和零散已刷盘 ID
   // 标准分配器下，交换集合不需要重新分配节点
-  flushedTrancIds_.swap(new_flushed_ids); 
+  flushedTrancIds_.swap(new_flushed_ids);
 }
 
 void TranManager::set_engine(std::shared_ptr<LSMEngine> engine) {
