@@ -1532,6 +1532,148 @@ TEST_F(LSMTest, DirectRemoveBatchLateOversizedKeyCancelsWholeBatch) {
   EXPECT_EQ(saved.getNextTransactionId(), 4u);
 }
 
+// 目的：正常 clear 与重复空 clear 都保留 ID 进度；新写入进入重新创建的 WAL。
+// 即使仍持有已结束的事务句柄也允许清空；关闭重开后旧数据消失，新数据和编号继续有效。
+TEST_F(LSMTest, ClearPreservesIdsAndWritesFreshWalAcrossRestart) {
+  {
+    LSM db(test_dir);
+    db.clear();
+    db.clear();
+    auto old = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+    ASSERT_EQ(old->tranc_id_, 1u);
+    old->put("old", "value");
+    ASSERT_TRUE(old->commit());
+    db.flush_all();
+    auto cancelled = db.begin_tran(IsolationLevel::READ_UNOP_COMMITTED);
+    ASSERT_EQ(cancelled->tranc_id_, 2u);
+    cancelled->put("cancelled", "dirty");
+    ASSERT_TRUE(cancelled->abort());
+
+    db.clear();
+    db.clear();
+    EXPECT_FALSE(db.get("old").has_value());
+    EXPECT_FALSE(db.get("cancelled").has_value());
+    EXPECT_TRUE(old->isCommited);
+    EXPECT_TRUE(cancelled->isAborted);
+    db.put("new", "value");
+    auto file = FileObj::open(test_dir + "/wal.0", false);
+    const auto records = Record::decode(file.read_to_slice(0, file.size()));
+    const std::vector<Record> expected{
+        Record::createRecord(3), Record::putRecord(3, "new", "value"),
+        Record::commitRecord(3)};
+    EXPECT_EQ(records, expected);
+  }
+  {
+    LSM reopened(test_dir);
+    EXPECT_FALSE(reopened.get("old").has_value());
+    EXPECT_FALSE(reopened.get("cancelled").has_value());
+    EXPECT_EQ(reopened.get("new"), std::make_optional(std::string("value")));
+    auto next = reopened.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+    EXPECT_EQ(next->tranc_id_, 4u);
+    ASSERT_TRUE(next->abort());
+  }
+}
+
+// 目的：存在活跃 RC 或 RU 事务时，clear 必须在删数据或停止原 WAL 之前拒绝。
+// 拒绝后保留旧数据和日志，原事务仍能继续写入、提交；全部结束后可以正常清空。
+TEST_F(LSMTest, ClearRejectsActiveTransactionsWithoutChangingDataOrWal) {
+  LSM db(test_dir);
+  auto base = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  base->put("kept", "old");
+  ASSERT_TRUE(base->commit());
+  db.flush_all();
+  const auto read_wal = [&] {
+    auto file = FileObj::open(test_dir + "/wal.0", false);
+    return file.read_to_slice(0, file.size());
+  };
+
+  for (auto level : {IsolationLevel::READ_OP_COMMITTED,
+                     IsolationLevel::READ_UNOP_COMMITTED}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    auto context = db.begin_tran(level);
+    const auto key = "active-" + std::to_string(context->tranc_id_);
+    context->put(key, "before");
+    const auto value_before = db.get(key);
+    const auto wal_before = read_wal();
+
+    EXPECT_THROW(db.clear(), std::logic_error);
+    EXPECT_EQ(db.get("kept"), std::make_optional(std::string("old")));
+    EXPECT_EQ(db.get(key), value_before);
+    EXPECT_EQ(read_wal(), wal_before);
+    context->put(key, "after");
+    ASSERT_TRUE(context->commit());
+    EXPECT_EQ(db.get(key), std::make_optional(std::string("after")));
+  }
+  EXPECT_NO_THROW(db.clear());
+  EXPECT_FALSE(db.get("kept").has_value());
+}
+
+#ifndef _WIN32
+// 目的：删除文件失败后，LSM 不重置事务状态，也不启动新的 WAL；恢复权限后可以重试。
+// 不要求失败时内存数据自动回退。权限 RAII 晚于 DB 创建，保证早于 DB 析构恢复权限。
+TEST_F(LSMTest, ClearDeletionFailurePreservesStateAndAllowsRetry) {
+  if (::geteuid() == 0)
+    GTEST_SKIP() << "root may bypass directory write permissions";
+  LSM db(test_dir);
+  auto base = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  base->put("old", "value");
+  ASSERT_TRUE(base->commit());
+  db.flush_all();
+  auto cancelled = db.begin_tran(IsolationLevel::READ_UNOP_COMMITTED);
+  cancelled->put("cancelled", "dirty");
+  ASSERT_TRUE(cancelled->abort());
+  auto manager = cancelled->tranManager_.lock();
+  ASSERT_TRUE(manager);
+  manager->write_tranc_id_file();
+  const auto dir = std::filesystem::path(test_dir);
+  const auto kept = dir / "must-stay.bin";
+  FileObj::create_and_write(kept.string(), {11, 22, 33});
+  const auto read_bytes = [](const std::filesystem::path &path) {
+    auto file = FileObj::open(path.string(), false);
+    return file.read_to_slice(0, file.size());
+  };
+  const auto state_before = read_bytes(dir / "tranc_id");
+  const auto wal_before = read_bytes(dir / "wal.0");
+  struct RestorePermissions {
+    std::filesystem::path path;
+    std::filesystem::perms permissions;
+    ~RestorePermissions() {
+      std::error_code ignored;
+      std::filesystem::permissions(path, permissions,
+                                   std::filesystem::perm_options::replace, ignored);
+    }
+  } restore{dir, std::filesystem::status(dir).permissions()};
+  std::filesystem::permissions(
+      dir, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec,
+      std::filesystem::perm_options::replace);
+
+  EXPECT_THROW(db.clear(), std::filesystem::filesystem_error);
+  EXPECT_TRUE(std::filesystem::exists(kept));
+  EXPECT_EQ(read_bytes(dir / "tranc_id"), state_before);
+  EXPECT_EQ(read_bytes(dir / "wal.0"), wal_before);
+  EXPECT_EQ(manager->get_checkpoint_tranc_id(), base->tranc_id_);
+  EXPECT_TRUE(manager->is_aborted(cancelled->tranc_id_));
+  EXPECT_FALSE(manager->write_to_wal({}));
+  EXPECT_FALSE(std::filesystem::exists(dir / "wal.1"));
+
+  std::filesystem::permissions(dir, restore.permissions,
+                               std::filesystem::perm_options::replace);
+  ASSERT_NO_THROW(db.clear());
+  EXPECT_FALSE(std::filesystem::exists(kept));
+  EXPECT_FALSE(db.get("old").has_value());
+  EXPECT_FALSE(db.get("cancelled").has_value());
+  EXPECT_FALSE(manager->is_aborted(cancelled->tranc_id_));
+  EXPECT_EQ(manager->get_checkpoint_tranc_id(), cancelled->tranc_id_);
+  db.put("new", "works");
+  EXPECT_EQ(db.get("new"), std::make_optional(std::string("works")));
+  const std::vector<Record> expected{
+      Record::createRecord(cancelled->tranc_id_ + 1),
+      Record::putRecord(cancelled->tranc_id_ + 1, "new", "works"),
+      Record::commitRecord(cancelled->tranc_id_ + 1)};
+  EXPECT_EQ(Record::decode(read_bytes(dir / "wal.0")), expected);
+}
+#endif
+
 TEST_F(LSMTest, BasicOperations) {
   LSM lsm(test_dir);
 
