@@ -504,8 +504,8 @@ A9 按独占维护的既定范围标为已解决；README 已补充 clear 的使
 
 已核对没有生产代码从 SST 中扫描完成标记来恢复事务状态：状态来自事务状态文件和 WAL；刷盘完成 ID 来自 MemTable::flush_last 收集并由 Engine::flush 通知管理器。2026-11-13 已在聊天交付 issue 和补充 QA，用户确认开始修复。按下列顺序逐函数推进：
 
-- [ ] ① LSMEngine::flush（当前函数）：仅有 SST 时先登记新文件；有无 SST 都处理成功返回的完成 ID，不能被现有 nullptr 提前返回截掉。返回业务 SST 最大版本与完成 ID 的最大值，计算不依赖管理器是否存在；该最大值不等于连续检查点。
-- [ ] ② MemTable::flush_last：精确识别空 key 且空 value 的完成标记，只暂存 ID、不写入 SSTBuilder。混合表仍等业务 SST 构建成功后才输出完成 ID／移除表；只有标记的表不构建空 SST，但须先预留输出空间，再输出完成 ID、消费表并扣减内存。
+- [x] ① LSMEngine::flush（代码检查及已有路径回归通过，纯标记通知待②联调）：仅有 SST 时先登记新文件；有无 SST 都处理成功返回的完成 ID，不能被现有 nullptr 提前返回截掉。返回业务 SST 最大版本与完成 ID 的最大值，计算不依赖管理器是否存在；该最大值不等于连续检查点。
+- [ ] ② MemTable::flush_last（当前函数）：精确识别空 key 且空 value 的完成标记，只暂存 ID、不写入 SSTBuilder。混合表仍等业务 SST 构建成功后才输出完成 ID／移除表；只有标记的表不构建空 SST，但须先预留输出空间，再输出完成 ID、消费表并扣减内存。
 - [ ] ③ LSMEngine::gen_sst_from_iter：处理旧 SST 的完成标记，不让 compaction 再次把它们聚入大块；保留非空 key 墓碑及全部业务版本，过滤后无业务记录时不生成空 SST，不在这里重复登记完成 ID。
 
 验收至少覆盖：6000 独立 key 的显式刷盘及重开；纯标记／只读事务的结算与内存归零；业务数据先刷出而标记单独留表的通知；混合表构建失败不提前报告 ID；旧 SST 标记整理后不再触发超限；正常墓碑、多版本、范围读取与恢复回归。
@@ -513,3 +513,7 @@ A9 按独占维护的既定范围标为已解决；README 已补充 clear 的使
 2026-11-13 第一步首次检查：用户已修改 Engine::flush，但尚未通过代码检查。已改为仅在 new_sst 非空时登记文件，并定义 max_processed_id；尾部仍有两处遗漏：完成 ID 未参与最大值计算，返回处仍无条件调用 new_sst->get_tranc_id_range()。后者在无 SST 分支会解引用空指针。当前先修正该尾段，不进入第二个函数；助手未代改业务代码，本轮未新增或运行测试。
 
 旧 flush_last 尚不会返回“nullptr＋非空完成 ID”，因此第一步即使构建通过，也不能声称新分支已经验证；第二步完成后联调。阶段⑥仍未验收。
+
+2026-11-13 第一步复查：用户已补齐完成 ID 汇总，并返回 max_processed_id；代码检查通过。xmake build test_lsm 成功，在独立临时目录运行 EngineFlushEmptyAndNonemptyTables、ConcurrentFlushRegistersOnlyOneSst、TransactionFlushRegistrationPreservesGaps、TransactionFlushRegistrationDuplicatesKeepCheckpoint，**4/4 通过**。前两项覆盖已有 Engine 空表／业务表与并发刷盘，后两项覆盖管理器登记规则；不能算作尚未接通的纯标记通知验收。源码／头文件／测试／配置哈希在构建运行期间一致，证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a10-engine-review-9blrgdg4`。
+
+进入第二步，在聊天交付 flush_last 完整草案，用户手写业务代码。用 has_business_entries 决定是否 build；完成标记仅收集 ID，成功后再统一追加输出、移除最老表并扣减此前保存的大小。仅标记表返回 nullptr 和非空输出 ID，调用方已准备好接收。当前尚未修改该函数，也未新增或运行针对这一新路径的测试。Engine 中第 6 步残留的参考实现断句，以及第 7 步只描述 SST 最大版本的旧注释仍应同步文字；不作为阻塞下一函数的逻辑缺陷。
