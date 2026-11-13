@@ -3037,6 +3037,89 @@ TEST_F(LSMStartupWALTest, MalformedWalStopsStartupAndPreservesLogs) {
 }
 
 #ifndef _WIN32
+// 目的：clear 保存状态失败仍向调用方报告；随后异常展开时，析构再次保存失败也不能终止进程。
+// 用目录占用 tranc_id，错误条件一直保留到 LSM 和管理器析构之后；外层仍接到原调用方异常。
+TEST_F(LSMStartupWALTest, ClearStateSaveFailurePreservesCallerExceptionOnDestruction) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  ASSERT_EXIT(
+      {
+        bool clear_reported_error = false;
+        try {
+          LSM db(test_dir);
+          db.put("old", "value");
+          const auto state_path = std::filesystem::path(test_dir) / "tranc_id";
+          std::filesystem::remove(state_path);
+          std::filesystem::create_directory(state_path);
+          try {
+            db.clear();
+          } catch (const std::runtime_error &e) {
+            if (std::string(e.what()).find("tranc_id") == std::string::npos)
+              std::_Exit(111);
+            clear_reported_error = true;
+          }
+          if (!clear_reported_error)
+            std::_Exit(112);
+          throw std::logic_error("caller failure after clear");
+        } catch (const std::logic_error &e) {
+          if (clear_reported_error &&
+              std::string(e.what()) == "caller failure after clear")
+            std::_Exit(0);
+          std::_Exit(113);
+        } catch (...) {
+          std::_Exit(114);
+        }
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  const auto dir = std::filesystem::path(test_dir);
+  EXPECT_TRUE(std::filesystem::is_directory(dir / "tranc_id"));
+  EXPECT_FALSE(std::filesystem::exists(dir / "wal.0"));
+}
+
+// 目的：clear 创建新 WAL 失败时明确抛错，仍能正常销毁对象；排除障碍后可重新打开数据库。
+// 不把初始化失败当成功，也不要求清空失败自动恢复此前已删除的旧数据。
+TEST_F(LSMStartupWALTest, ClearWalInitializationFailureAllowsDestructionAndReopen) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  ASSERT_EXIT(
+      {
+        try {
+          {
+            LSM db(test_dir);
+            db.put("old", "value");
+            const auto blocked = std::filesystem::path(test_dir) / "wal.0";
+            std::filesystem::remove(blocked);
+            std::filesystem::create_directory(blocked);
+            bool reported_error = false;
+            try {
+              db.clear();
+            } catch (const std::runtime_error &e) {
+              if (std::string(e.what()).find("wal.0") == std::string::npos)
+                std::_Exit(115);
+              reported_error = true;
+            }
+            if (!reported_error)
+              std::_Exit(116);
+          } // 故障目录仍在，这里实际执行 LSM 析构。
+          std::_Exit(0);
+        } catch (...) {
+          std::_Exit(117);
+        }
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  const auto dir = std::filesystem::path(test_dir);
+  ASSERT_TRUE(std::filesystem::is_directory(dir / "wal.0"));
+  ASSERT_TRUE(std::filesystem::remove(dir / "wal.0"));
+  LSM reopened(test_dir);
+  EXPECT_FALSE(reopened.get("old"));
+  reopened.put("after", "value");
+  EXPECT_EQ(reopened.get("after"), std::make_optional(std::string("value")));
+  const std::vector<Record> expected{
+      Record::createRecord(2), Record::putRecord(2, "after", "value"),
+      Record::commitRecord(2)};
+  EXPECT_EQ(read_wal_records(dir / "wal.0"), expected);
+}
+
 // 目的：clear 后成功返回的普通写入仍须有可恢复的 WAL，不能写入已被删除的旧日志句柄。
 // 单线程、没有事务上下文或迭代器；直接退出进程以排除析构刷盘掩盖日志丢失。
 TEST_F(LSMStartupWALTest, ClearThenDirectWriteSurvivesProcessExit) {

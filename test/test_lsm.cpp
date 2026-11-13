@@ -1674,6 +1674,71 @@ TEST_F(LSMTest, ClearDeletionFailurePreservesStateAndAllowsRetry) {
 }
 #endif
 
+#if GTEST_HAS_DEATH_TEST
+// 目的：同一种真实 SST 创建失败，显式 flush 仍抛异常，LSM 析构则记录错误并正常返回。
+// 在子进程中销毁 DB，避免旧实现的 terminate 杀死整套测试；threadsafe 模式避免继承线程锁。
+// 只用目录占住目标文件路径，不制造部分 SST 写入，也不注入私有字段或内存分配错误。
+TEST_F(LSMTest, LSMDestructorContainsFlushFailureWithoutHidingExplicitErrors) {
+  struct RestoreDeathTestStyle {
+    std::string value;
+    ~RestoreDeathTestStyle() { ::testing::FLAGS_gtest_death_test_style = value; }
+  } restore{::testing::FLAGS_gtest_death_test_style};
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+
+  ASSERT_EXIT(
+      {
+        try {
+          // 只调整子进程内的配置，保证这笔小事务仍在内存，等待本用例主动触发刷盘。
+          auto &config = const_cast<TomlConfig &>(TomlConfig::getInstance());
+          config.modify_lsm_per_mem_size_limit(1024 * 1024);
+          config.modify_lsm_tol_mem_size_limit(4 * 1024 * 1024);
+          {
+            LSM db(test_dir);
+            auto probe = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+            probe->put("key", "value");
+            if (!probe->commit())
+              std::_Exit(11);
+            auto engine = probe->engine_;
+            probe.reset(); // 已结束且释放上下文，没有活跃事务或迭代器。
+            if (engine->memtable.get_total_size() == 0)
+              std::_Exit(12);
+            std::filesystem::create_directory(
+                engine->get_sst_path(engine->next_sst_id, 0));
+
+            bool reported = false;
+            try {
+              db.flush();
+            } catch (const std::exception &) {
+              reported = true;
+            }
+            if (!reported || engine->memtable.get_total_size() == 0)
+              std::_Exit(13);
+
+            // 失败的 flush 已经分配过 SST ID，析构会使用下一个 ID 重试。
+            // 必须再次占住当前目标，否则析构可能写成功，无法验证异常处理。
+            std::filesystem::create_directory(
+                engine->get_sst_path(engine->next_sst_id, 0));
+          } // 在这里执行 LSM 析构；旧实现会 terminate，修正后应继续运行。
+          std::_Exit(0);
+        } catch (...) {
+          std::_Exit(14);
+        }
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  // 析构没有终止进程，不代表刷盘成功；原 COMMIT 日志和待恢复进度必须保留。
+  auto file = FileObj::open(test_dir + "/wal.0", false);
+  const auto records = Record::decode(file.read_to_slice(0, file.size()));
+  const std::vector<Record> expected{
+      Record::createRecord(1), Record::putRecord(1, "key", "value"),
+      Record::commitRecord(1)};
+  EXPECT_EQ(records, expected);
+  TranManager saved(test_dir);
+  EXPECT_EQ(saved.get_checkpoint_tranc_id(), 0u);
+  EXPECT_FALSE(saved.is_aborted(1));
+}
+#endif
+
 TEST_F(LSMTest, BasicOperations) {
   LSM lsm(test_dir);
 

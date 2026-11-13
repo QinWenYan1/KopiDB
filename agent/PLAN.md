@@ -4,7 +4,7 @@
 
 章节：目录 **5.2.3「崩溃恢复」**，文章标题 **Lab 5.5 崩溃恢复**。
 
-**进度：66.7%（4/6 阶段按所列范围验收通过）**。本轮 LSM::clear 五步调用已由用户接通，新增 3 项与原 A9 失败回归共 **4/4 通过**。clear 后成功写入的异常退出丢失问题已不再复现；当前进入 LSM 析构错误收尾，A9 尚待最终验收，A5 仍剩 TranContext::remove。阶段内部分完成不折算百分比。
+**进度：66.7%（4/6 阶段按所列范围验收通过）**。A9 清空／WAL 生命周期及析构收尾在约定范围验收完成，本轮相关 **17/17 通过**。当前进入 A5 最后一项：TranContext::remove 空 key 检查；完成后进入整体验收。阶段内部分完成不折算百分比。
 
 ## 本轮目标
 
@@ -26,7 +26,7 @@
 | ② 日志检查入口 | `TranManager::check_recover()` | 使用连续检查点调用 WAL::recover，原样返回候选记录；不改变事务状态／ID；读取失败正常上报 | 已验收：构建成功，新增 3/3 通过 |
 | ③ 初始化新日志 | `TranManager::init_new_wal()` | 新 WAL 能接收写入，旧日志不被提前删除或覆盖；不能把仅重放到内存的数据误记为已刷盘 | 已验收：新增 3/3，相关回归 4/4，通过；旧日志提示文字待同步 |
 | ④ 接通启动恢复 | `TranManager::restore_recovery_state(records)` → `LSM::LSM()`；复核启动／保存失败路径 | 组件绑定正确；区分提交／取消／未结束事务，恢复回滚过滤与 ID 进度；仅重放有效事务，重复正常重启结果正确；失败保留 WAL | 已验收所列范围：辅助函数 5/5，本轮启动相关 8/8；文件写失败后的自动重试边界见审计 |
-| ⑤ 必要接口衔接 | get → get_batch → 普通写入口、`commit(test_fail)`、A5 参数校验；必要的状态／关闭联动 | 普通写入同样受 WAL 保护；纯读取不制造事务 ID 缺口；故障点能留下可恢复的提交；非法参数在产生修改前拒绝 | 进行中：get、get_batch 及 TranContext::put 校验通过；LSM::put 相关 7/7、put_batch 新增 6/6、remove 相关 7/7 通过；remove_batch 新增 6/6、commit(test_fail) 相关 18/18 通过；当前 A9：stop_wal 3/3、reset_after_clear 4/4、Engine::clear 2/2 通过，LSM::clear 4/4 通过，当前析构收尾 |
+| ⑤ 必要接口衔接 | get → get_batch → 普通写入口、`commit(test_fail)`、A5 参数校验；必要的状态／关闭联动 | 普通写入同样受 WAL 保护；纯读取不制造事务 ID 缺口；故障点能留下可恢复的提交；非法参数在产生修改前拒绝 | 进行中：get、get_batch 及 TranContext::put 校验通过；LSM::put 相关 7/7、put_batch 新增 6/6、remove 相关 7/7 通过；remove_batch 新增 6/6、commit(test_fail) 相关 18/18 通过；当前 A9：stop_wal 3/3、reset_after_clear 4/4、Engine::clear 2/2 通过，A9 最终 17/17 通过；当前 A5 的 TranContext::remove |
 | ⑥ 整体验收 | 恢复用例、受影响回归、文档收尾 | 正常重启、绕过析构的进程退出、回滚／未提交版本已落 SST、恢复失败保留日志均有验证；报告真实通过范围与未覆盖边界 | 待开始 |
 
 ## 具体函数范围
@@ -388,7 +388,7 @@ LSMEngine::clear 删除文件失败当前只打印日志，实施时需使失败
 2. **TranManager::reset_after_clear()**（已验收 4/4）：仅在 WAL 已停止、存储成功清空后，清 ready/aborted，flushed 重建为 `{next_id - 1}`，next ID 保持单调递增。旧数据已按 clear 请求被明确丢弃，旧编号不能留下永远无法补齐的刷盘缺口。先准备新的集合，再替换状态；分配失败保证管理器状态未被部分改动，不宣称整个 clear 未发生修改。
 3. **LSMEngine::clear()**（已验收 2/2）：删除失败向上传递，使上层停止后续重置，不把删除失败当成功。
 4. **LSM::clear()**（已验收本轮范围 4/4）：依次 stop_wal → Engine::clear → reset_after_clear → write_tranc_id_file → init_new_wal。
-5. **LSM::~LSM()**：保持原关闭顺序，仅补析构错误捕获与日志，避免维护失败后的析构异常导致 terminate。
+5. **LSM::~LSM()**（已完成，A9 相关 17/17 验收）：保持原关闭顺序，仅补析构错误捕获与日志，避免维护失败后的析构异常导致 terminate。
 
 维护前提：调用方保证整段 clear 没有并发普通读写／事务操作，且已经销毁数据库迭代器（遍历到末尾不等于释放其 SST 读锁）；stop_wal 对活跃事务作显式检查，但 active 表为空不等于全局没有操作。当前不新增全局失败状态或并发 clear 调度器。维护失败后先处理错误、重试 clear 或销毁对象，不承诺可以继续正常开启事务；WAL 停止后，普通写入已有 write_to_wal 判空会明确失败。
 
@@ -456,12 +456,28 @@ stop_wal 的后续验收：无 WAL／重复停止安全；活跃事务时拒绝�
 
 test_wal、test_lsm 构建成功，隔离运行 **1/1 + 3/3 = 4/4 通过，无跳过**，各轮构建／运行期间相关源码和测试哈希一致。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-lsm-clear-review-9f2p_bmx`。A9 的原始丢数据场景已修复；析构错误收尾与保存／初始化失败后销毁对象的验收仍待完成，因此尚不关闭整个 A9。
 
-## 下一函数：LSM::~LSM
+## 已验收：LSM::~LSM
 
 当前位于 src/lsm/engine.cpp:1035。保持正常关闭的 flush_all → write_tranc_id_file 顺序，将这两次调用放入一个 try；捕获 std::exception 后记录具体错误，再以 catch(...) 记录未知错误，防止清理异常逃出析构。显式 clear／flush／flush_all 的异常上报不改变，不新增 close 接口或全局失败状态，也不手动清空组件指针。
 
 必要性：clear 保存或重新初始化失败后，调用方销毁对象时可能再次遇到刷盘／保存错误。当前 LSM 析构没有捕获，异常逃出会触发 terminate；TranManager 和 WAL 的析构已有相应错误捕获，LSM 需要补齐这一层。成员释放顺序保持原样，不能声称 LSM 的 flush 失败后管理器一定不再保存状态，因为管理器随后仍有自己的析构保存流程。
 
-用户实现后验收：正常关闭仍保存数据和进度；刷盘／状态保存失败时析构不终止进程，显式接口仍报告失败；异常展开时销毁 LSM 不覆盖原异常；结合 clear 初始化／保存失败后的错误收尾验收 A9。日志记录不代表数据或状态已成功保存，不扩大为原子 clear、任意 I/O 失败后的自动恢复或 A7/A8 修复。当前只交付聊天草案，尚未修改或运行该析构实现。
+用户实现后验收：正常关闭仍保存数据和进度；刷盘／状态保存失败时析构不终止进程，显式接口仍报告失败；异常展开时销毁 LSM 不覆盖原异常；结合 clear 初始化／保存失败后的错误收尾验收 A9。日志记录不代表数据或状态已成功保存，不扩大为原子 clear、任意 I/O 失败后的自动恢复或 A7/A8 修复。用户已实现该析构收尾，本轮验证见下文。
 
-A9 最终验收时同步 README 的 clear 使用条件：独占维护，先结束事务并销毁迭代器，成功返回后再继续数据库操作；保持用户说明简洁，不迁入内部测试与审计流水。
+A9 最终验收后已同步 README 的 clear 使用条件：独占维护，先结束事务并销毁迭代器，成功返回后再继续数据库操作；保持用户说明简洁，不迁入内部测试与审计流水。
+
+## 2026-11-13 析构收尾与 A9 验收完成
+
+用户的 LSM 析构保持 flush_all→状态保存的正常顺序，捕获标准与其他异常并记录，显式接口仍上报失败。成员释放顺序及 TranManager／WAL 已有析构捕获保持；助手未修改业务代码。
+
+新增 3 项真实错误用例：test_lsm 的 LSMDestructorContainsFlushFailureWithoutHidingExplicitErrors 使用目录分别占住显式 flush 和析构重试的 SST 目标，确认显式调用抛错、析构不终止进程，COMMIT 日志与待恢复检查点保留；test_wal 的 ClearStateSaveFailurePreservesCallerExceptionOnDestruction 用目录占住 tranc_id，clear 报错后原调用方异常在析构再次保存失败时仍能传到外层；ClearWalInitializationFailureAllowsDestructionAndReopen 用目录占住新 WAL 路径，clear 报错、对象可销毁，移除障碍后可重开并继续编号写入。均使用独立子进程，避免回归时 terminate 杀死整个套件，没有注入部分 SST 写入或新增业务故障接口。
+
+两个目标构建成功；A9 相关 test_wal **10/10**、test_lsm **7/7**，合计 **17/17 通过，无跳过**（新增 3、既有 14）。覆盖全部 StopWal／ResetAfterClear／EngineClear／LSM Clear、原 _Exit 失败回归及正常关闭重开。构建运行期间相关源码／测试哈希一致。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-clear-destructor-review-8bo00q9d`。
+
+A9 按独占维护的既定范围标为已解决；README 已补充 clear 的使用条件和失败可能部分清空的行为。没有据此声称并发 clear、原子 clear、任意文件损坏自动恢复或 A7/A8 已解决，也未将 A9 局部验收当作整个 Lab 回归通过。
+
+## 当前函数：TranContext::remove 的空 key 检查（A5 收尾）
+
+当前位置 src/lsm/transation.cpp:169，现有结束状态检查在 174–178，追加 DELETE 在 182。只在结束状态检查之后、当前 180 行记录操作说明之前添加 key.empty() 检查，抛 invalid_argument。错误不得追加 Record、修改暂存表／引擎或清空此前合法操作；已结束事务仍优先报告 logic_error。RU 先 WAL 后写墓碑、其他级别暂存墓碑的已验收逻辑保持。
+
+这是已经选入本轮且 issue 已交付的 A5 最后一处，不新增独立问题或重写整个函数。用户实现后补充当前各隔离分支的空 key 无副作用、结束检查优先级，以及合法删除回归；随后完成 A5 的 README 参数说明并进入阶段⑥整体验收。当前业务尚未加入此检查，助手只交付精确代码片段。

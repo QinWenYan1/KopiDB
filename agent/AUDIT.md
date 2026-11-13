@@ -26,7 +26,7 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 | [A6](#a6) | 待验证（代码路径疑点） | 待定 | 结束尝试失败后 put/remove 仍可能追加记录，使结束记录不再位于事务日志末尾 | TranContext::put/remove 的结束尝试检查及异常路径测试 | 未估时 |
 | [A7](#a7) | 已确认，待排期 | P1 | 状态文件直接覆盖写失败会破坏旧状态，阻碍后续启动 | write_tranc_id_file 的完整写入后替换；保存失败后的重试验证 | 未估时 |
 | [A8](#a8) | 待验证（代码路径疑点） | 待定 | 恢复刷盘失败可能留下正式名称的残缺 SST，阻碍下次加载 | SSTBuilder／FileObj 的文件发布与失败处理 | 未估时 |
-| [A9](#a9) | 原始回归已通过，待析构收尾 | P1 | clear 删除仍打开的 WAL，后续成功写入在异常退出后丢失 | LSM::clear 与 WAL 停止／重建、事务状态重置的必要联动 | 未估时 |
+| [A9](#a9) | 已解决（约定维护范围） | P1 | clear 删除仍打开的 WAL，后续成功写入在异常退出后丢失 | LSM::clear 与 WAL 停止／重建、事务状态重置的必要联动 | 未估时 |
 
 A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 → A2 → A3 → A4 → 整体验收推进。A5 是接口约束改进建议，已确认随目录 5.2.3 的公开入口初始化整合处理，不计为第五项已确认缺陷，已于 2026-11-08 纳入 [PLAN](PLAN.md) 的阶段⑤，当前实现进度见 A5 条目。每进入一个新修复问题，先在聊天中写 issue 草稿供用户手动发布，再逐函数推进；没有自动创建远程 issue。具体执行与验收标准维护在 PLAN。
 
@@ -188,7 +188,7 @@ SSTBuilder::build（sst.cpp:503）调用 FileObj::create_and_write 直接写正�
 
 ### A9：clear 后成功写入仍使用已删除的 WAL，异常退出丢失新值
 
-记录日期：2026-11-12。类型：已复现缺陷。状态：处理中。已纳入当前 Lab 5.5 PLAN 阶段⑤的必要 clear／状态／关闭联动，issue 已在聊天交付，stop_wal 与 reset_after_clear 已由用户实现；整体修复尚未完成。与 A7/A8 的文件失败原子性问题分别记录。
+记录日期：2026-11-12。类型：已复现缺陷。状态：2026-11-13 已解决（独占维护范围）。已按 Lab 5.5 PLAN 阶段⑤完成必要 clear／状态／关闭联动，issue 已在聊天交付，五个函数均由用户实现并验收。与 A7/A8 的文件失败原子性问题分别记录。
 
 已核实远程提交 `71c9d71bf584a69207d8529a4e5a1c583a70b75b`：[LSM::clear](https://github.com/QinWenYan1/KopiDB/blob/71c9d71bf584a69207d8529a4e5a1c583a70b75b/src/lsm/engine.cpp#L1313) 只调用 Engine::clear；[Engine::clear](https://github.com/QinWenYan1/KopiDB/blob/71c9d71bf584a69207d8529a4e5a1c583a70b75b/src/lsm/engine.cpp#L371-L397) 删除目录全部普通文件，包括 wal.* 和 tranc_id。管理器仍持有旧 WAL 与清理线程，文件句柄没有在删除前关闭。macOS 本轮运行中，后续小写入经旧句柄写出并返回成功，但目录里没有可供下次启动读取的 WAL。
 
@@ -203,6 +203,10 @@ SSTBuilder::build（sst.cpp:503）调用 FileObj::create_and_write 直接写正�
 2026-11-13 A9 进展：Engine::clear 已正确重抛文件删除异常，新增 2/2 通过、无跳过。正常清空及 POSIX 0500 目录下真实删除失败均已验证，权限在测试后恢复。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-engine-clear-review-o8b2rd63`。上层 LSM::clear 尚未接通、析构收尾待完成，原始失败回归未重跑，A9 不标记已解决。
 
 2026-11-13 A9 进展：LSM::clear 已按五步接通，原 ClearThenDirectWriteSurvivesProcessExit 保留原断言，从 0/1 转为 1/1。新增重复清空／ID 持久化、活跃事务拒绝、删除失败后恢复权限重试三项，本轮合计 **4/4 通过、无跳过**。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-lsm-clear-review-9f2p_bmx`。原始日志丢失场景已修复，析构错误收尾及相应失败场景尚待验收，未据此关闭整个 A9。
+
+2026-11-13 A9 验收完成：LSM 析构补齐错误捕获，相关 **17/17 通过、无跳过**（WAL 10、LSM 7；新增 3 项真实故障用例）。覆盖停止与状态重置、正常／重复 clear、活跃事务拒绝、删除失败后重试、原始 _Exit 回归、状态保存失败后的异常展开、WAL 初始化失败后的销毁／修复重开、显式 flush 报错而析构不终止进程。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-clear-destructor-review-8bo00q9d`；最终运行源码／测试哈希稳定。
+
+A9 在“调用方独占维护、无活跃事务和存活数据库迭代器”的已选范围内标为已解决；README 已补充该使用约定和清空失败可能部分删除数据的行为。不承诺并发／原子 clear、断电或任意文件损坏恢复，不包含 A7/A8 的文件发布与原子替换修复。
 
 ## 验证记录
 
