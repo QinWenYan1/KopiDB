@@ -404,23 +404,23 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
   // 4. 分别处理业务记录和事务完成标记。
   //    完成 ID 暂存在局部容器中，不能现在就报告给调用方
   std::vector<uint64_t> pending_ids;
-  bool has_business_entries = false; 
+  bool has_business_entries = false;
 
   for (const auto &[key, value, version] : table->flush()) {
-    if (key.empty() && value.empty()){
+    if (key.empty() && value.empty()) {
       // 本项目用“空 key + 空 value”记录事务完成标记
       // 完成标记只用于后续通知管理器，不需要作为 KV 写入 SST
       // 如果继续写入，所有空 key 标记会聚集到同一个 Block
       // 数量较多时就会超过 uint16_t 偏移的表示范围
       pending_ids.push_back(version);
-      continue; 
+      continue;
     }
 
     // 业务记录保留全部版本
     // 特别注意：非空 key、空 value 是墓碑，必须正常写入
     // 否则更旧的值可能重新被查询到
-    builder.add(key, value, version); 
-    has_business_entries = true; 
+    builder.add(key, value, version);
+    has_business_entries = true;
   }
 
   // 5. 先预留输出空间
@@ -431,7 +431,7 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
   // 只有业务记录才需要生成 SST
   // 如果整张表只有完成标记，保持空指针
   // 继续执行下面的完成 ID 输出、移除表和扣减大小
-  std::shared_ptr<SST> sst; 
+  std::shared_ptr<SST> sst;
   if (has_business_entries)
     sst = builder.build(sst_id, sst_path, block_cache);
 
@@ -440,7 +440,7 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
   //    没有被提前移除，也没有提前报告事务已经刷盘
   //
   //    只有标记的情况，例如：
-  //     A@5 已在更老的表中刷出，当前表只剩完成标记@5
+  //     A@5 已在更老的表中刷出，当前表只剩完成标记@
   //    因为始终从最老的表开始处理，现在可以返回 ID 5
   //    不需要为了这个标记再创建一张空 SST
   //
@@ -452,7 +452,7 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
   frozen_tables.pop_back();
   frozen_bytes -= table->get_size();
 
-  if(sst) {
+  if (sst) {
     spdlog::info("MemTable--flush_last(): SST{} built successfully at '{}'",
                  sst_id, sst_path);
   } else {

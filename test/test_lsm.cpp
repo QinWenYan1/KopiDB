@@ -1739,6 +1739,43 @@ TEST_F(LSMTest, LSMDestructorContainsFlushFailureWithoutHidingExplicitErrors) {
 }
 #endif
 
+// 目的：只读事务也能完成刷盘登记，不为其完成标记创建空 SST。
+// 场景：通过公开事务入口查询一个不存在的 key，提交后显式刷盘并正常关闭。
+// 预期：没有 SST 文件，持久化检查点覆盖这个事务，下一事务 ID 正确延续。
+TEST_F(LSMTest, ReadOnlyCommitFlushesMarkerWithoutCreatingSst) {
+  uint64_t committed_id = 0;
+  {
+    LSM db(test_dir);
+    auto context = db.begin_tran(IsolationLevel::REPEATABLE_READ);
+    committed_id = context->tranc_id_;
+    EXPECT_FALSE(context->get("missing").has_value());
+    ASSERT_TRUE(context->commit());
+    ASSERT_NO_THROW(db.flush_all());
+
+    for (const auto &entry : std::filesystem::directory_iterator(test_dir)) {
+      EXPECT_FALSE(entry.path().filename().string().starts_with("sst_"));
+    }
+  }
+
+  TranManager saved(test_dir);
+  EXPECT_EQ(saved.get_checkpoint_tranc_id(), committed_id);
+  EXPECT_EQ(saved.getNextTransactionId(), committed_id + 1);
+}
+
+// 目的：Engine 的刷盘返回值不依赖是否绑定事务管理器。
+// 场景：底层 Engine 单独处理只有完成标记的表，没有管理器接收通知。
+// 预期：返回本次最大 ID 8，清空内存且不登记 SST；再次刷空表返回 0。
+TEST_F(LSMTest, EngineMarkerOnlyFlushReturnsIdWithoutManager) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  engine->memtable.put("", "", 5);
+  engine->memtable.put("", "", 8);
+  EXPECT_EQ(engine->flush(), 8u);
+  EXPECT_EQ(engine->memtable.get_total_size(), 0u);
+  EXPECT_TRUE(engine->ssts.empty());
+  EXPECT_TRUE(engine->level_sst_ids.empty());
+  EXPECT_EQ(engine->flush(), 0u);
+}
+
 // 目的：6000 次普通独立写入使用不同的 key 和小 value，应能正常刷盘并重开读取。
 // 这不是用户给同一个 key 写入大量版本：每次 put 产生的内部完成标记虽然共用空 key，
 // 也不应让这组正常业务写入因标记集中在一个 Block 而触发 16 位偏移超限。

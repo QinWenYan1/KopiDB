@@ -4,7 +4,7 @@
 
 章节：目录 **5.2.3「崩溃恢复」**，文章标题 **Lab 5.5 崩溃恢复**。
 
-**进度：83.3%（5/6 阶段已完成单项验收）**。A5 最后输入检查构建成功，相关 **6/6 通过**；阶段⑤收尾完成。阶段⑥已运行基础 8 目标 **175/175**、完整 WAL **144/144**，但新增 6000 个独立 key 显式刷盘回归 **0/1**，发现 [A10](AUDIT.md#a10) 并阻塞整体验收。完整 test_lsm／test_compact 尚待该问题修复后完成，不能宣布本轮完成。
+**进度：83.3%（5/6 阶段已完成单项验收）**。A5 最后输入检查相关 **6/6 通过**；阶段⑤收尾完成。阶段⑥基础 8 目标 **175/175**、完整 WAL **144/144** 为此前回归结果；6000 个独立 key 首次刷盘失败发现的 [A10](AUDIT.md#a10) 已完成前两步修复，本轮针对性验证 **9/9**。当前处理旧 SST 合并时的完成标记，完整 test_lsm／test_compact 尚待完成修复后回归，不能宣布本轮完成。
 
 ## 本轮目标
 
@@ -27,7 +27,7 @@
 | ③ 初始化新日志 | `TranManager::init_new_wal()` | 新 WAL 能接收写入，旧日志不被提前删除或覆盖；不能把仅重放到内存的数据误记为已刷盘 | 已验收：新增 3/3，相关回归 4/4，通过；旧日志提示文字待同步 |
 | ④ 接通启动恢复 | `TranManager::restore_recovery_state(records)` → `LSM::LSM()`；复核启动／保存失败路径 | 组件绑定正确；区分提交／取消／未结束事务，恢复回滚过滤与 ID 进度；仅重放有效事务，重复正常重启结果正确；失败保留 WAL | 已验收所列范围：辅助函数 5/5，本轮启动相关 8/8；文件写失败后的自动重试边界见审计 |
 | ⑤ 必要接口衔接 | 普通查询／写入口、commit(test_fail)、A5 参数校验、A9 清空与关闭联动 | 普通写入受 WAL 保护；读取不制造 ID 缺口；故障开关可恢复；参数前置拒绝；清空生命周期正确 | 已完成单项验收，A5/A9 已解决；集成覆盖见阶段⑥ |
-| ⑥ 整体验收 | 当前 Lab 与此前存储层回归、发现问题的必要修复、文档收尾 | 全部适用测试与正常刷盘通过，报告实际边界；不将数据仅靠 WAL 恢复算作 SST 刷盘成功 | 进行中：基础 175/175、WAL 144/144；A10 刷盘回归 0/1 阻塞 |
+| ⑥ 整体验收 | 当前 Lab 与此前存储层回归、发现问题的必要修复、文档收尾 | 全部适用测试与正常刷盘通过，报告实际边界；不将数据仅靠 WAL 恢复算作 SST 刷盘成功 | 进行中：此前基础 175/175、WAL 144/144；A10 前两步 9/9，旧 SST 合并待处理 |
 
 ## 具体函数范围
 
@@ -504,9 +504,9 @@ A9 按独占维护的既定范围标为已解决；README 已补充 clear 的使
 
 已核对没有生产代码从 SST 中扫描完成标记来恢复事务状态：状态来自事务状态文件和 WAL；刷盘完成 ID 来自 MemTable::flush_last 收集并由 Engine::flush 通知管理器。2026-11-13 已在聊天交付 issue 和补充 QA，用户确认开始修复。按下列顺序逐函数推进：
 
-- [x] ① LSMEngine::flush（代码检查及已有路径回归通过，纯标记通知待②联调）：仅有 SST 时先登记新文件；有无 SST 都处理成功返回的完成 ID，不能被现有 nullptr 提前返回截掉。返回业务 SST 最大版本与完成 ID 的最大值，计算不依赖管理器是否存在；该最大值不等于连续检查点。
-- [ ] ② MemTable::flush_last（当前函数）：精确识别空 key 且空 value 的完成标记，只暂存 ID、不写入 SSTBuilder。混合表仍等业务 SST 构建成功后才输出完成 ID／移除表；只有标记的表不构建空 SST，但须先预留输出空间，再输出完成 ID、消费表并扣减内存。
-- [ ] ③ LSMEngine::gen_sst_from_iter：处理旧 SST 的完成标记，不让 compaction 再次把它们聚入大块；保留非空 key 墓碑及全部业务版本，过滤后无业务记录时不生成空 SST，不在这里重复登记完成 ID。
+- [x] ① LSMEngine::flush（代码检查、已有回归及②纯标记联调通过）：仅有 SST 时先登记新文件；有无 SST 都处理成功返回的完成 ID，不能被现有 nullptr 提前返回截掉。返回业务 SST 最大版本与完成 ID 的最大值，计算不依赖管理器是否存在；该最大值不等于连续检查点。
+- [x] ② MemTable::flush_last（修正后联调 9/9）：精确识别空 key 且空 value 的完成标记，只暂存 ID、不写入 SSTBuilder。混合表仍等业务 SST 构建成功后才输出完成 ID／移除表；只有标记的表不构建空 SST，但须先预留输出空间，再输出完成 ID、消费表并扣减内存。
+- [ ] ③ LSMEngine::gen_sst_from_iter（当前函数）：处理旧 SST 的完成标记，不让 compaction 再次把它们聚入大块；保留非空 key 墓碑及全部业务版本，过滤后无业务记录时不生成空 SST，不在这里重复登记完成 ID。
 
 验收至少覆盖：6000 独立 key 的显式刷盘及重开；纯标记／只读事务的结算与内存归零；业务数据先刷出而标记单独留表的通知；混合表构建失败不提前报告 ID；旧 SST 标记整理后不再触发超限；正常墓碑、多版本、范围读取与恢复回归。
 
@@ -523,3 +523,7 @@ A9 按独占维护的既定范围标为已解决；README 已补充 clear 的使
 2026-11-13 第二步首次检查：用户已正确过滤完成标记，并让业务记录继续进入 builder，但第 430 行仍无条件 builder.build，尚未使用 has_business_entries 控制构建。纯标记表因此抛出 Cannot build empty SST，第二步未通过，不进入第三步。table_size 使用 const auto& 绑定按值返回的临时值在当前作用域合法，不将其作为必须修改的问题。
 
 助手在 test/test_memtable.cpp 新增 MarkerOnlyFlushReturnsIdsWithoutCreatingSst、MixedFlushOmitsMarkersButPreservesVersionsAndTombstones 两项测试，分别验证纯标记表不建文件且返回完整 ID／内存归零，以及物理 SST 排除标记但保留业务旧版本与墓碑、正确计算业务版本范围。构建 test_memtable、test_lsm 成功；隔离运行 MemTableFlushTest.* 为 **4/5**，纯标记测试失败；LSM 的 ManyIndependentWritesCanFlush、DirectPutWritesWalAndRegistersAutomaticFlush 为 **1/2**，6000 个独立 key 已通过，自动刷盘测试同样因纯标记表失败。合计 **5/7**，无跳过／禁用；源码、头文件、测试和配置哈希在构建运行期间一致。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a10-memtable-review-aakssrn6`。下一步先将 build 放入 has_business_entries 条件内，再复测；助手未改业务代码。
+
+2026-11-13 第二步复查通过：用户已按 has_business_entries 条件构建 SST，纯标记表返回空指针并照常输出 ID／清理内存。复测上轮相同 7 项，并新增 ReadOnlyCommitFlushesMarkerWithoutCreatingSst（公开只读事务提交、无 SST、正常关闭后检查点与 ID 延续）及 EngineMarkerOnlyFlushReturnsIdWithoutManager（未绑定管理器时仍返回完成 ID 最大值，无 SST、内存归零）。两个目标构建成功，本轮 **9/9 通过**（MemTable 5、LSM 4），源码／头文件／测试／配置哈希一致，未禁用或削弱原断言。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a10-memtable-retest-dq7cx_9_`。其中真实自动刷盘测试已覆盖业务数据先刷出、完成标记随后单独处理并推进检查点，因此第一步新增的通知分支已联调。
+
+当前第三步仅交付 gen_sst_from_iter 完整草案，由用户手写：在 builder.add 前识别精确空 key＋空 value，推进迭代器后 continue，不设置 has_pending_entries，不登记完成 ID。现有收尾判断允许过滤后无输出；full_compact 调用方能够处理空 new_ssts。随后补旧 SST 标记聚合及纯标记整理测试，再完成整体验收，不将前两步通过算作 A10 已解决。
