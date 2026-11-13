@@ -490,16 +490,25 @@ uint64_t LSMEngine::flush() {
     max_processed_id = new_sst->get_tranc_id_range().second;
   }
 
-
-
   // 6. 将 flushed_tranc_ids 通知给 tran_manager
   //    通知事务管理器哪些 tranc 已落盘
   //    参考实现这里没判空, 不炸纯属侥幸: flush_last 只给
-  //    flush_last 必须保证：对应业务数据成功刷盘后，才输出这些 ID。
+  //    flush_last 必须保证：对应业务数据成功刷盘后，才输出这些 ID
   //    这里收到的是完成通知，不需要重新扫描 SST 验证
-  if (auto tm = tran_manager.lock()) {
-    for (auto &id : flushed_tranc_ids)
-      tm->add_flushed_tranc_id(id);
+  //
+  //    无论是否生成 SST，都处理返回的完成 ID， 这是新设计为这样的原因
+  //    返回不依赖 new_sst 
+  //    flush_last 保证：对应业务数据成功刷盘后，才输出这些 ID
+  auto manager = tran_manager.lock();
+
+  for (uint64_t id : flushed_tranc_ids) {
+    // 只有完成标记、没有 SST 时，也要把标记 ID 计入返回值。
+    // 这个计算不依赖管理器是否存在。
+    max_processed_id = std::max(max_processed_id, id);
+
+    if (manager) {
+      manager->add_flushed_tranc_id(id);
+    }
   }
 
   // 7. 返回本次刷入 SST 的最大 tranc_id
@@ -511,7 +520,7 @@ uint64_t LSMEngine::flush() {
   //    返回 10，不代表事务 1～10 都已全部刷盘
   //    连续检查点仍由事务管理器根据完成集合维护
   //    如果本次什么都没有处理，返回值自然保持为 0
-  return new_sst->get_tranc_id_range().second;
+  return max_processed_id;
 }
 
 std::string LSMEngine::get_sst_path(size_t sst_id, size_t target_level) {

@@ -215,7 +215,7 @@ A9 在“调用方独占维护、无活跃事务和存活数据库迭代器”�
 
 ### A10：内部完成标记集中写入 SST 块，普通多 key 写入也会偏移超限
 
-记录日期：2026-11-13。类型：已复现缺陷，来自 Lab 5.5 阶段⑥整体验收。状态：处理中，用户已确认开始三函数修复；首轮交付 Engine::flush 草案，尚未修改业务代码。普通写入口接通 WAL／完成登记后，每次独立写入都新增一个空 key、空 value 的完成标记，扩大了原刷盘路径未覆盖的标记数量。
+记录日期：2026-11-13。类型：已复现缺陷，来自 Lab 5.5 阶段⑥整体验收。状态：处理中，用户已开始三函数修复；Engine::flush 首次修改尚漏掉完成 ID 汇总及空 SST 安全返回，代码检查未通过，具体步骤见 PLAN。普通写入口接通 WAL／完成登记后，每次独立写入都新增一个空 key、空 value 的完成标记，扩大了原刷盘路径未覆盖的标记数量。
 
 远程提交 `f5cebb8e7e774d68eda7d99928084121a6c5ab81` 已通过 GitHub 读取核实：[MemTable::flush_last](https://github.com/QinWenYan1/KopiDB/blob/f5cebb8e7e774d68eda7d99928084121a6c5ab81/src/memtable/memtable.cpp#L404-L420) 收集标记 ID 后仍将标记 builder.add；[SSTBuilder::add](https://github.com/QinWenYan1/KopiDB/blob/f5cebb8e7e774d68eda7d99928084121a6c5ab81/src/sst/sst.cpp#L384-L403) 对相同 key 使用 force_write；[Block::add_entry](https://github.com/QinWenYan1/KopiDB/blob/f5cebb8e7e774d68eda7d99928084121a6c5ab81/src/block/block.cpp#L179-L212) 的数据区偏移仍只有 uint16_t。每个标记占 12B，第 5463 条起始偏移为 5462×12=65544，超过 65535。
 
