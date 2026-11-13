@@ -179,7 +179,7 @@ int main() {
 
 **`commit()` 的测试参数**：正常业务使用 `tx->commit()`，`test_fail` 默认为 `false`。`commit(true)` 仅供恢复测试：暂存型事务确认提交日志写出后，故意跳过修改的应用，仍登记提交并返回 `true`，由测试关闭重启来验证日志重放。这个 `true` 不表示当前实例的数据已经更新；开关不会主动终止进程，读未提交事务会忽略它并正常提交。
 
-使用非空 key；空 value 表示删除，删除操作使用 `remove(key)`。项目目前用于学习，尚不提供 WAL 崩溃恢复保证。
+公开写入接口拒绝空 key，`put`／`put_batch` 也拒绝空 value，空参数会抛出 `std::invalid_argument`；删除请使用 `remove`／`remove_batch`。批量参数有一项不合法时，整批在写入前被拒绝。项目目前用于学习，尚不提供 WAL 崩溃恢复保证。
 
 ---
 

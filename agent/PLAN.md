@@ -4,7 +4,7 @@
 
 章节：目录 **5.2.3「崩溃恢复」**，文章标题 **Lab 5.5 崩溃恢复**。
 
-**进度：66.7%（4/6 阶段按所列范围验收通过）**。A9 清空／WAL 生命周期及析构收尾在约定范围验收完成，本轮相关 **17/17 通过**。当前进入 A5 最后一项：TranContext::remove 空 key 检查；完成后进入整体验收。阶段内部分完成不折算百分比。
+**进度：83.3%（5/6 阶段已完成单项验收）**。A5 最后输入检查构建成功，相关 **6/6 通过**；阶段⑤收尾完成。阶段⑥已运行基础 8 目标 **175/175**、完整 WAL **144/144**，但新增 6000 个独立 key 显式刷盘回归 **0/1**，发现 [A10](AUDIT.md#a10) 并阻塞整体验收。完整 test_lsm／test_compact 尚待该问题修复后完成，不能宣布本轮完成。
 
 ## 本轮目标
 
@@ -26,8 +26,8 @@
 | ② 日志检查入口 | `TranManager::check_recover()` | 使用连续检查点调用 WAL::recover，原样返回候选记录；不改变事务状态／ID；读取失败正常上报 | 已验收：构建成功，新增 3/3 通过 |
 | ③ 初始化新日志 | `TranManager::init_new_wal()` | 新 WAL 能接收写入，旧日志不被提前删除或覆盖；不能把仅重放到内存的数据误记为已刷盘 | 已验收：新增 3/3，相关回归 4/4，通过；旧日志提示文字待同步 |
 | ④ 接通启动恢复 | `TranManager::restore_recovery_state(records)` → `LSM::LSM()`；复核启动／保存失败路径 | 组件绑定正确；区分提交／取消／未结束事务，恢复回滚过滤与 ID 进度；仅重放有效事务，重复正常重启结果正确；失败保留 WAL | 已验收所列范围：辅助函数 5/5，本轮启动相关 8/8；文件写失败后的自动重试边界见审计 |
-| ⑤ 必要接口衔接 | get → get_batch → 普通写入口、`commit(test_fail)`、A5 参数校验；必要的状态／关闭联动 | 普通写入同样受 WAL 保护；纯读取不制造事务 ID 缺口；故障点能留下可恢复的提交；非法参数在产生修改前拒绝 | 进行中：get、get_batch 及 TranContext::put 校验通过；LSM::put 相关 7/7、put_batch 新增 6/6、remove 相关 7/7 通过；remove_batch 新增 6/6、commit(test_fail) 相关 18/18 通过；当前 A9：stop_wal 3/3、reset_after_clear 4/4、Engine::clear 2/2 通过，A9 最终 17/17 通过；当前 A5 的 TranContext::remove |
-| ⑥ 整体验收 | 恢复用例、受影响回归、文档收尾 | 正常重启、绕过析构的进程退出、回滚／未提交版本已落 SST、恢复失败保留日志均有验证；报告真实通过范围与未覆盖边界 | 待开始 |
+| ⑤ 必要接口衔接 | 普通查询／写入口、commit(test_fail)、A5 参数校验、A9 清空与关闭联动 | 普通写入受 WAL 保护；读取不制造 ID 缺口；故障开关可恢复；参数前置拒绝；清空生命周期正确 | 已完成单项验收，A5/A9 已解决；集成覆盖见阶段⑥ |
+| ⑥ 整体验收 | 当前 Lab 与此前存储层回归、发现问题的必要修复、文档收尾 | 全部适用测试与正常刷盘通过，报告实际边界；不将数据仅靠 WAL 恢复算作 SST 刷盘成功 | 进行中：基础 175/175、WAL 144/144；A10 刷盘回归 0/1 阻塞 |
 
 ## 具体函数范围
 
@@ -476,8 +476,36 @@ A9 最终验收后已同步 README 的 clear 使用条件：独占维护，先�
 
 A9 按独占维护的既定范围标为已解决；README 已补充 clear 的使用条件和失败可能部分清空的行为。没有据此声称并发 clear、原子 clear、任意文件损坏自动恢复或 A7/A8 已解决，也未将 A9 局部验收当作整个 Lab 回归通过。
 
-## 当前函数：TranContext::remove 的空 key 检查（A5 收尾）
+## 已验收：TranContext::remove 的空 key 检查（A5 收尾）
 
 当前位置 src/lsm/transation.cpp:169，现有结束状态检查在 174–178，追加 DELETE 在 182。只在结束状态检查之后、当前 180 行记录操作说明之前添加 key.empty() 检查，抛 invalid_argument。错误不得追加 Record、修改暂存表／引擎或清空此前合法操作；已结束事务仍优先报告 logic_error。RU 先 WAL 后写墓碑、其他级别暂存墓碑的已验收逻辑保持。
 
-这是已经选入本轮且 issue 已交付的 A5 最后一处，不新增独立问题或重写整个函数。用户实现后补充当前各隔离分支的空 key 无副作用、结束检查优先级，以及合法删除回归；随后完成 A5 的 README 参数说明并进入阶段⑥整体验收。当前业务尚未加入此检查，助手只交付精确代码片段。
+这是已经选入本轮且 issue 已交付的 A5 最后一处，不新增独立问题或重写整个函数。用户实现后补充当前各隔离分支的空 key 无副作用、结束检查优先级，以及合法删除回归；随后完成 A5 的 README 参数说明并进入阶段⑥整体验收。用户现已加入此检查，本轮验收如下。
+
+## 2026-11-13 A5 收尾与阶段⑤单项验收完成
+
+用户在结束检查之后、DELETE 追加之前正确拒绝空 key。新增 TranRemoveTest 的 2 项，覆盖四个当前隔离分支无操作记录／暂存／WAL／数据副作用，合法修改保留且可继续删除提交；真实结束后优先报告 logic_error，而非其子类 invalid_argument。结合原有 4 项合法删除测试，构建成功、**6/6 通过**，运行源码／测试哈希一致。证据目录见本轮总验收根目录的 a5 子目录。README 已同步全部公开写入口的空参数规则；A5 标记已解决，业务代码未代改。
+
+## 2026-11-13 阶段⑥首轮回归与阻塞
+
+验收范围为 11 个目标：test_config、test_skiplist、test_memtable、test_block、test_blockmeta、test_utils、test_sst、test_block_cache、test_lsm、test_compact、test_wal。test_wisckey 和 test_redis 是尚未开始的后续模块，本轮不运行；不使用包含它们的 run-all-tests。当前 LSM/WAL/compact 不再以未完成 Lab 为由排除恢复用例。
+
+已完成 8 个基础目标：Config 1、SkipList 31、MemTable 49、Block 37、BlockMeta 6、Utils/Bloom 15、SST 29、BlockCache 7，共 **175/175 通过**。test_config 依赖 ../../../../config.toml，首轮普通临时 cwd 不满足路径；已用四层嵌套临时 cwd 指向复制的配置重新运行 1/1，最终仅计正确路径这次结果。完整 test_wal **144/144 通过**，包括 Record、WAL、恢复与既有故障检查；不能据此声称 A7/A8 等已记录故障边界已解决。
+
+新增 LSMTest.ManyIndependentWritesCanFlush：6000 个不同 key、小 value，perMem=16MiB、total=64MiB，显式 flush_all；实际 **0/1**，抛 length_error：Block::add_entry: entry offset exceeds uint16_t limit。源码／测试在运行期间哈希一致。不是空参数检查错误，也不是未完成 Lab 6；每次普通写入的空 key 完成标记集中到一个块触发限制，已登记 A10。
+
+证据根目录：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-lab55-final-review-6nk6rqu6`。regression-summary.json 区分完整目标、单项验证、阻塞与未执行目标；a5、marker-baseline 分别保存参数检查与标记失败现场。完整 test_lsm 和 test_compact 尚未执行，先处理已复现阻塞，再完成大规模回归；没有把失败测试禁用或排除，也不将未运行计为通过。
+
+收尾仍需同步少量过期说明：init_new_wal 的 Cleaning up old WAL files 日志、Engine::flush 称 compaction 为空桩的注释、flush_all 的旧最大 ID 更新注释，以及测试夹具称 LSM 入口未接通的说明。它们不作为新增功能 bug，本轮未代改业务注释。
+
+## 当前阻塞：A10 完成标记进入 SST 导致普通写入无法刷盘
+
+这是阶段⑥发现的当前目标必要修复，先交付 issue，再逐函数设计／实现，不扩大 A6～A8 的排期。代码与现场见 [A10](AUDIT.md#a10)。保留既定 Block 编码、同业务 key 多版本共块和超限抛异常策略；不通过放宽检查、删除墓碑或改造迭代器绕过问题。
+
+已核对没有生产代码从 SST 中扫描完成标记来恢复事务状态：状态来自事务状态文件和 WAL；刷盘完成 ID 来自 MemTable::flush_last 收集并由 Engine::flush 通知管理器。候选最小范围为三个函数：
+
+- MemTable::flush_last：精确识别空 key 且空 value 的完成标记，只暂存 ID、不写入 SSTBuilder。混合表仍等业务 SST 构建成功后才输出完成 ID／移除表；只有标记的表不构建空 SST，但须消费表、扣减内存并返回完成 ID。
+- LSMEngine::flush：仅有 SST 时登记新文件；有无 SST 都处理成功返回的完成 ID，不能被现有 nullptr 提前返回截掉。保留原返回值中业务版本与完成 ID 最大值的含义，它仍不等于连续检查点。
+- LSMEngine::gen_sst_from_iter：处理旧 SST 的完成标记，不让 compaction 再次把它们聚入大块；保留非空 key 墓碑及全部业务版本，过滤后无业务记录时不生成空 SST，不在这里重复登记完成 ID。
+
+验收至少覆盖：6000 独立 key 的显式刷盘及重开；纯标记／只读事务的结算与内存归零；业务数据先刷出而标记单独留表的通知；混合表构建失败不提前报告 ID；旧 SST 标记整理后不再触发超限；正常墓碑、多版本、范围读取与恢复回归。当前只完成问题确认和范围准备，未修改业务实现，不把候选方案当作已验收。

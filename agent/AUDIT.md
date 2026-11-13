@@ -22,11 +22,12 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 | [A2](#a2) | 已解决 | P1 | RC/RR/SERIALIZABLE 可以读到其他 RU 事务的未提交版本，RR 缓存可延续错误 | TranContext::get、Engine 读取策略、TranManager 状态查询的必要联动 | 2～4 小时 |
 | [A3](#a3) | 已解决 | P1 | compaction 最后一批刚好落盘后，又构建空 SST 并抛异常 | LSMEngine::gen_sst_from_iter 的收尾判空 | 20～40 分钟 |
 | [A4](#a4) | 已解决 | P2 | 大记录之后不同 key 无法正常换块，被提前的偏移检查拒绝 | Block::add_entry 的检查顺序，验证 SSTBuilder::add 衔接 | 20～40 分钟 |
-| [A5](#a5) | 处理中（改进建议） | 待定 | 公开写入接口校验空 key／空 value，避免误用保留标记 | LSM／TranContext 写入口及批量参数预检查 | 未估时 |
+| [A5](#a5) | 已解决（接口约束） | 待定 | 公开写入接口校验空 key／空 value，避免误用保留标记 | LSM／TranContext 写入口及批量参数预检查 | 未估时 |
 | [A6](#a6) | 待验证（代码路径疑点） | 待定 | 结束尝试失败后 put/remove 仍可能追加记录，使结束记录不再位于事务日志末尾 | TranContext::put/remove 的结束尝试检查及异常路径测试 | 未估时 |
 | [A7](#a7) | 已确认，待排期 | P1 | 状态文件直接覆盖写失败会破坏旧状态，阻碍后续启动 | write_tranc_id_file 的完整写入后替换；保存失败后的重试验证 | 未估时 |
 | [A8](#a8) | 待验证（代码路径疑点） | 待定 | 恢复刷盘失败可能留下正式名称的残缺 SST，阻碍下次加载 | SSTBuilder／FileObj 的文件发布与失败处理 | 未估时 |
 | [A9](#a9) | 已解决（约定维护范围） | P1 | clear 删除仍打开的 WAL，后续成功写入在异常退出后丢失 | LSM::clear 与 WAL 停止／重建、事务状态重置的必要联动 | 未估时 |
+| [A10](#a10) | 已复现，整体验收阻塞 | P1 | 普通写入的完成标记集中进同一 SST 块，6000 个独立 key 无法刷盘 | MemTable 刷盘、Engine 完成通知及旧 SST 标记整理 | 未估时 |
 
 A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 → A2 → A3 → A4 → 整体验收推进。A5 是接口约束改进建议，已确认随目录 5.2.3 的公开入口初始化整合处理，不计为第五项已确认缺陷，已于 2026-11-08 纳入 [PLAN](PLAN.md) 的阶段⑤，当前实现进度见 A5 条目。每进入一个新修复问题，先在聊天中写 issue 草稿供用户手动发布，再逐函数推进；没有自动创建远程 issue。具体执行与验收标准维护在 PLAN。
 
@@ -124,7 +125,7 @@ A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 
 
 ### A5：明确公开写入接口对空 key／空 value 的处理策略
 
-类型：API 约束改进建议。状态：处理中。2026-11-08 已纳入 [Lab 5.5 计划](PLAN.md) 阶段⑤；截至 2026-11-12，TranContext::put 与四个 LSM 写入口的校验已验收；仅 TranContext::remove 仍待补齐，尚未整体解决。原记录／方向确认日期：2026-10-31。
+类型：API 约束改进建议。状态：2026-11-13 已解决。2026-11-08 纳入 Lab 5.5 阶段⑤；六个公开写入口的空参数校验均已实现并验收。原记录／方向确认日期：2026-10-31。
 
 背景：用户询问误传空 key 或空 value 的结果。现有约定将空 key 保留给内部事务标记，将空 value 解释为墓碑；这不是已确认支持普通空字符串数据的接口。本条讨论是否让公开写入口主动报参数错误，不能只因缺少额外防护就判定现有实现违反已接受契约。
 
@@ -143,6 +144,8 @@ A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 
 2026-11-12：LSM::remove 已在分配 ID 前拒绝空 key，相关参数、DELETE 日志、数据／历史版本、检查点和恢复场景 7/7 通过。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-direct-remove-review-us7jp4yl`。剩余 LSM::remove_batch 与 TranContext::remove 尚待补齐，A5 仍为处理中。
 
 2026-11-12：LSM::remove_batch 已完成空批次与整批空 key 预检查；后部非法输入不分配 ID／写日志或删除前部值，相关新增 6/6 通过。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-direct-remove-batch-review-inf09t0f`。A5 仅剩 TranContext::remove，尚不标记整体完成。
+
+2026-11-13 A5 验收完成：TranContext::remove 最后一处空 key 检查由用户实现，新增 2 项和既有 4 项删除测试共 6/6 通过；结束状态优先、无日志／数据副作用和后续合法操作均验证。六个写入口的输入约束全部接通，README 已同步，底层合法墓碑与内部标记未被禁止。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-lab55-final-review-6nk6rqu6/a5`。本问题关闭不代表阶段⑥整体验收已经通过。
 
 边界：底层仍需允许合法墓碑和内部事务标记，不把拒绝空数据的检查机械加到 SkipList、MemTable、Block 或 SST。若未来需要保存普通空字符串值，需单独讨论记录类型表示，不在当前 A2 中修改编码。
 
@@ -207,6 +210,20 @@ SSTBuilder::build（sst.cpp:503）调用 FileObj::create_and_write 直接写正�
 2026-11-13 A9 验收完成：LSM 析构补齐错误捕获，相关 **17/17 通过、无跳过**（WAL 10、LSM 7；新增 3 项真实故障用例）。覆盖停止与状态重置、正常／重复 clear、活跃事务拒绝、删除失败后重试、原始 _Exit 回归、状态保存失败后的异常展开、WAL 初始化失败后的销毁／修复重开、显式 flush 报错而析构不终止进程。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-clear-destructor-review-8bo00q9d`；最终运行源码／测试哈希稳定。
 
 A9 在“调用方独占维护、无活跃事务和存活数据库迭代器”的已选范围内标为已解决；README 已补充该使用约定和清空失败可能部分删除数据的行为。不承诺并发／原子 clear、断电或任意文件损坏恢复，不包含 A7/A8 的文件发布与原子替换修复。
+
+<a id="a10"></a>
+
+### A10：内部完成标记集中写入 SST 块，普通多 key 写入也会偏移超限
+
+记录日期：2026-11-13。类型：已复现缺陷，来自 Lab 5.5 阶段⑥整体验收，纳入当前目标的必要修复，尚未修改业务代码。普通写入口接通 WAL／完成登记后，每次独立写入都新增一个空 key、空 value 的完成标记，扩大了原刷盘路径未覆盖的标记数量。
+
+远程提交 `f5cebb8e7e774d68eda7d99928084121a6c5ab81` 已通过 GitHub 读取核实：[MemTable::flush_last](https://github.com/QinWenYan1/KopiDB/blob/f5cebb8e7e774d68eda7d99928084121a6c5ab81/src/memtable/memtable.cpp#L404-L420) 收集标记 ID 后仍将标记 builder.add；[SSTBuilder::add](https://github.com/QinWenYan1/KopiDB/blob/f5cebb8e7e774d68eda7d99928084121a6c5ab81/src/sst/sst.cpp#L384-L403) 对相同 key 使用 force_write；[Block::add_entry](https://github.com/QinWenYan1/KopiDB/blob/f5cebb8e7e774d68eda7d99928084121a6c5ab81/src/block/block.cpp#L179-L212) 的数据区偏移仍只有 uint16_t。每个标记占 12B，第 5463 条起始偏移为 5462×12=65544，超过 65535。
+
+本地新增 LSMTest.ManyIndependentWritesCanFlush：6000 个不同 key、小 value，perMem=16MiB／total=64MiB，全部写入后显式 flush_all。构建成功，实际 **0/1 通过**，抛 std::length_error，描述为 Block::add_entry: entry offset exceeds uint16_t limit。源码和测试哈希稳定。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-lab55-final-review-6nk6rqu6/marker-baseline`。不是单个业务 key 被用户写入大量版本，也不属于尚未开始的 Lab 6；这是内部标记被作为同 key 数据持久化导致的正常写入障碍。
+
+影响：无法生成本次业务 SST；失败数据仍保留在内存，WAL 未因此被删除，不将现场描述成已发生永久数据丢失。析构会记录同类失败，单纯关闭重开查询可能依靠 WAL 重放而掩盖刷盘失败，因此必须显式验证 flush 成功。大规模 LSM／compaction 回归待修复后继续，不默默排除或记为通过。
+
+修复准备已核对：没有生产调用从 SST 空 key 标记重建完成状态。标记 ID 由 MemTable::flush_last 收集、Engine::flush 通知；重启使用状态文件和 WAL。候选范围为 flush_last 消费标记而不将其写入 SST、Engine::flush 处理纯标记无 SST 的完成通知，以及 gen_sst_from_iter 清理旧 SST 标记。保留非空 key 墓碑、全部业务版本、现有编码与同业务 key 共块约束；混合表构建失败时不能提前报告完成 ID。具体步骤与验收标准见 PLAN；进入修复前按约定在聊天交付 issue。
 
 ## 验证记录
 
