@@ -132,9 +132,25 @@ std::string VLog::read_value(uint64_t offset, uint32_t value_size) {
     uint16_t key_len = 0; 
     std::memcpy(&key_len, key_len_bytes.data(), sizeof(key_len)); 
 
-    // ? 先读 key_len 以跳过 key, 再定位 value 起始位置
-    // ? value 起始 = offset + 2 + key_len + 4
-    return ""; 
+    // 3. 跳过 value 前面的三个字段：
+    // [key_len:2][key:key_len][value_len:4]
+    // 例如 offset=100、key="cat"，value 从 100+2+3+4=109 开始
+    const uint64_t header_size = sizeof(uint16_t) + static_cast<uint64_t>(key_len) + sizeof(uint32_t); 
+    const uint64_t remaining = file_size - offset; 
+
+    // 先确认能跳过头部，再检查剩余字节够不够读取 value
+    // SST 引用已提供 value_size，本节按 Lab 直接使用这个长度
+    if (header_size > remaining || value_size > remaining - header_size)
+        throw std::out_of_range("VLog::read_value: value exceeds file size");
+
+    // 4. 只读取 value，不把后面的 CRC 当作 value 返回
+    // 这里沿用 Lab 的读取策略，不做 CRC 校验
+    // 上面的边界检查也不等于内容完整性校验
+    const uint64_t value_offset = offset + header_size; 
+    auto value_bytes = file_.read_to_slice(value_offset, value_size); 
+
+    // 按字节区间构造字符串，保留 value 中的空字节
+    return std::string(value_bytes.begin(), value_bytes.end()); 
 }
 
 uint64_t VLog::tail_offset() const {
