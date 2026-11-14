@@ -8,13 +8,13 @@
 
 用户手写业务源码和头文件，助手逐函数提供中文注释、检查实现、补测试及维护记录。已有函数体也须按 Lab 独立推导；已验收的无关逻辑不整段重写。Redis 移除的独立代写授权已结束。
 
-进度：**0%（0/4 阶段验收）**。`VLog::open` 和 `append` 已通过代码检查及 7 项专项测试；VLog 阶段尚未完成。用户已写入原版 read_value，并明确要求加入 CRC 校验。当前交付带 CRC 的完整替换草案，临时构建通过 14/14 专项测试，等待用户加入业务源码后复核，不把草案结果计为源码验收。
+进度：**0%（0/4 阶段验收）**。用户源码的 `open/append/read_value` 已通过代码检查和 18/18 VLog 测试，包括 CRC、并发读写与原有用例。阶段①尚有 sync 辅助收尾；当前函数为 `VLog::sync`，草案在聊天中交付，等待用户实现。
 
 ## 阶段与验收标准
 
 | 阶段 | 按顺序处理的函数／工作 | 验收标准 | 状态 |
 | --- | --- | --- | --- |
-| ① Lab 7.1：VLog | `VLog::open` → `append` → `read_value`；复核直接相关辅助函数 | 新建为空、重开不截断；多条记录可按返回偏移读回，二进制内容不变；读取时核对长度和 CRC，损坏／截断明确报错；偏移和编码长度正确，共享文件访问正确同步 | 进行中，open/append 已通过，当前 read_value |
+| ① Lab 7.1：VLog | `VLog::open` → `append` → `read_value`；复核直接相关辅助函数 | 新建为空、重开不截断；多条记录可按返回偏移读回，二进制内容不变；读取时核对长度和 CRC，损坏／截断明确报错；偏移和编码长度正确，共享文件访问正确同步 | 三核心已通过，当前 sync 辅助收尾 |
 | ② Lab 7.2：SST 支持 | 确定记录类型表达 → WiscKey 版 `SSTBuilder` 构造 → `add` → `build` → `SST::open` → `resolve_value` | 同表的小 value、VLog 引用与墓碑不会混淆；阈值边界正确；构建／重开后点查与遍历还原原值，版本号不变；普通内联 SST 仍可读 | 待开始 |
 | ③ Lab 7.3：Engine 集成 | `LSMEngine` 构造 → `flush` → `gen_sst_from_iter`；联动复核清库、配置及引用传递 | 启用／禁用两种配置均可用；真实刷盘、合并、重开及清库后再次写入正确；合并明确区分原始引用与完整值，验证是否重复追加 VLog；状态通知及回滚过滤不退化 | 待开始 |
 | ④ 联调与验收 | 完整 WiscKey 测试和受影响存储／事务／恢复回归，更新结果 | 真实启用非零阈值验证 CRUD、批查、遍历、版本过滤、取消事务、合并和正常重开；默认关闭模式通过回归；报告实际测试范围和未验证边界 | 待开始 |
@@ -27,11 +27,12 @@
 
 - [x] `VLog::open(const std::string &path)`：复用 FileObj 创建／非截断打开；失败传播异常。用户实现已检查，创建空文件、保留二进制内容后重开、父目录不存在时抛异常共 3/3 通过。函数上方残留的 Lab 6.1 注释应改为 Lab 7.1，属于非阻塞文字修正。
 - [x] `VLog::append(const std::string &key, const std::string &value)`：用户已修正 value_len 类型和记录总长度；固定字节布局／CRC、65536 字节二进制值、重开续写偏移、超长 key 拒绝共 4/4 通过。锁范围及追加失败处理静态检查通过；并发和 I/O 失败路径尚未实测。`<limits>` 已直接包含。
-- [ ] `VLog::read_value(uint64_t offset, uint32_t value_size)`：读取含 CRC 的完整记录，核对记录里的 value_len 与 SST 引用长度一致；CRC 覆盖 key_len/key/value_len/value，匹配后才返回 value。按用户确认的新要求替换此前只检查边界的读取方案。
-- [ ] 直接联动复核 `tail_offset()`、`sync()`、`del_vlog()`：底层 StdFile 共用 fstream，协调同一对象的定位、读取和追加；检查 sync 返回值的处理。它们不是默认全部重写的 Lab 桩；确需修改时先说明调用依据。
-- [ ] 测试随函数推进：open 独立测试已补充并通过；追加／重开续写／二进制／长度／并发测试随后补齐。原有 3 项 VLog 联合测试依赖 append/read_value，本轮未运行，不因 open 通过就宣称 VLog 已完成。
+- [x] `VLog::read_value(uint64_t offset, uint32_t value_size)`：用户已实现整记录范围检查、引用长度核对和 CRC 校验；正常二进制／空值／重开、各字段损坏、截断、极端偏移均通过。保留原 lock_guard，未要求切换 unique_lock。
+- [x] `tail_offset()`、`del_vlog()` 的直接调用复核：tail_offset 当前仅由测试顺序调用，不要求为假设并发加锁；del_vlog 唯一生产调用在排他的 clear，且目录清理已先移除文件，保持当前行为，不新增文件不存在错误。
+- [ ] `VLog::sync()` 辅助收尾：用 append_mtx_ 保护共享 fstream 的刷新，检查 FileObj::sync 返回值，失败抛 runtime_error，供后续 7.2 SSTBuilder::build 的 VLog 刷新衔接使用。明确这是本地整合需要，不是 Lab 7.1 原文额外列出的核心函数；接入调用留到阶段②。
+- [x] VLog 核心测试：18/18 通过，包括新增双写双读场景。原有 3 项用例已迁移到独占目录，名称、断言与工作量保持，避免使用固定 /tmp 路径。sync 收尾仍需相应验证。
 
-当前修改范围：按用户最新要求，在 `src/vlog/vlog.cpp` 现有 `VLog::read_value` 上局部增加校验，保留 lock_guard 及 key_len/header_size/remaining 的计算，仅替换尾部边界检查到 return；不改声明、成员、文件格式或调用方。用 key_len 和 value_size 计算整条记录含 CRC 的长度，边界检查通过才读取；CRC 及长度核对均沿用现有锁范围，不要求改用 unique_lock。长度或 CRC 不匹配抛 runtime_error，越界／截断抛 out_of_range。CRC 用于检测损坏，不提供纠错或断电持久性保证。辅助函数的共享 fstream 访问随后复核，Lab 7.1 注释标注仍需补齐。
+当前修改范围：`src/vlog/vlog.cpp` 的 `VLog::sync()`（本轮核对位于 177 行）；无需改声明、成员或文件格式。沿用互斥锁并传播刷新失败。FileObj::sync 当前为 fstream::flush，不将它解释为 fsync；Lab 7.1 注释标注仍需补齐。当前 read_value 的 CRC 已验收，但它不提供纠错或断电持久性保证。
 
 2026-11-14 方案调整依据：Lab／作者参考跳过读取 CRC；用户明确要求加入校验。写入校验码本身不能发现后来发生的内容变化，SST 的校验只覆盖其存储内容，不能代替 VLog 校验；不采用文档中“写入 CRC 就保证完整性”的解释。完整记录本来就保存 CRC，因此本轮只调整读取函数及对应测试。
 
@@ -70,3 +71,5 @@
 2026-11-14 CRC 专项：新增 `VLogReadTest` 7 项，覆盖独立固定样本、65536 字节二进制值／空值／不同偏移与重开、key/value/CRC 与长度字段损坏、引用长度不符、截断和极端偏移。当前仓库未加 CRC 的 read_value **3/7 通过，4 项失败**；将聊天草案保存到临时文件，独立编译该对象替代链接中的 libvlog 后，open/append/read 专项 **14/14 通过**。只运行这些独占目录测试，未运行旧固定 /tmp 用例或用户 test_lsm；源码前后哈希一致，助手未改业务源码。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-vlog-crc-draft-6e_ieqce`，包含基线／草案 JSON、完整编译链接及运行命令、日志与业务源码哈希。草案验证不代表用户尚未加入的代码已验收。
 
 2026-11-15：用户要求基于现有实现局部追加 CRC。修订草案只替换函数尾部，保留原 lock_guard 和头部计算；临时构建再次 **14/14 通过**，业务源码哈希未变。沿用上述证据目录，新增 `vlog-crc-minimal.cpp`、`minimal-commands.json`、`minimal-results.json` 及日志；仍等待用户手动加入后复核。
+
+2026-11-15 用户 CRC 实现验收：构建成功，运行 `--gtest_filter=VLog*`，**18/18 通过**（open 3、append 4、read 8、原有 VLog 3）。新增并发用例为两写线程各追加 48 条，两读线程各读取种子 128 次，join 后核对全部记录、偏移连续无重叠及总尾位置；未引入并发 tail/sync/clear 要求。原有 3 项测试仅迁移隔离路径及清理方式，断言不变。首次构建因本机 libc++ 不支持测试使用的 jthread/stop_token 失败，已由助手改为 std::thread 并补异常时 join，重建和测试通过，不是业务失败。业务源码哈希稳定，无 test_lsm 干预。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-vlog-read-review-020wppt1`，含首次／最终构建日志、运行命令、GTest JSON、源码哈希。未运行尚未接通的 SST/Engine WiscKey 测试。

@@ -5,7 +5,11 @@
 #include "vlog/vlog.h"
 #include "block/block_cache.h"
 #include "utils/files.h"
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
@@ -14,6 +18,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 using namespace tiny_lsm;
@@ -286,6 +291,117 @@ TEST_F(VLogReadTest, ReadsBinaryLargeAndEmptyValuesAcrossReopen) {
   }
 }
 
+TEST_F(VLogReadTest, ConcurrentAppendsAndReadsPreserveRecordsAndOffsets) {
+  // 两个写线程追加不同记录，两个读线程反复读取不同位置的种子记录，
+  // 验证同一 VLog 的读写定位互不干扰，且追加返回的记录范围没有重叠。
+  auto vlog = VLog::open((dir_ / "concurrent.data").string());
+  struct Record {
+    std::string key;
+    std::string value;
+    uint64_t offset = 0;
+  };
+  std::vector<Record> seeds{
+      {"seed-a", "first-value"},
+      {"seed-binary", std::string("\0\xffseed", 6)},
+      {"seed-empty", ""}};
+  for (auto &record : seeds) {
+    record.offset = vlog->append(record.key, record.value);
+  }
+
+  constexpr size_t writer_count = 2;
+  constexpr size_t reader_count = 2;
+  constexpr size_t records_per_writer = 48;
+  constexpr size_t reads_per_reader = 128;
+  std::array<std::vector<Record>, writer_count> written;
+  for (size_t writer = 0; writer < writer_count; ++writer) {
+    for (size_t i = 0; i < records_per_writer; ++i) {
+      const auto id = std::to_string(writer) + "/" + std::to_string(i);
+      written[writer].push_back(
+          {"key/" + id, "value/" + id + std::string(i % 17 + 1, '\0')});
+    }
+  }
+
+  // 每个线程只写自己的结果槽；主线程在 join 后统一检查，避免断言中止线程。
+  std::array<std::exception_ptr, writer_count + reader_count> errors{};
+  std::array<size_t, reader_count> read_counts{};
+  std::atomic<bool> start{false};
+  std::vector<std::thread> workers;
+  workers.reserve(writer_count + reader_count);
+  try {
+    for (size_t worker = 0; worker < writer_count + reader_count; ++worker) {
+      workers.emplace_back([&, worker] {
+        try {
+          while (!start.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+          }
+          if (worker < writer_count) {
+            for (auto &record : written[worker]) {
+              record.offset = vlog->append(record.key, record.value);
+              std::this_thread::yield();
+            }
+          } else {
+            const size_t reader = worker - writer_count;
+            for (size_t i = 0; i < reads_per_reader; ++i) {
+              const auto &record = seeds[(i + reader) % seeds.size()];
+              if (vlog->read_value(record.offset,
+                                   static_cast<uint32_t>(record.value.size())) !=
+                  record.value) {
+                throw std::runtime_error("并发读取种子记录内容不一致");
+              }
+              ++read_counts[reader];
+              std::this_thread::yield();
+            }
+          }
+        } catch (...) {
+          errors[worker] = std::current_exception();
+        }
+      });
+    }
+  } catch (...) {
+    // 创建后续线程失败时，先放行并回收已经启动的线程。
+    // 避免析构仍可 join 的 std::thread 导致 terminate。
+    start.store(true, std::memory_order_release);
+    for (auto &worker : workers) {
+      worker.join();
+    }
+    throw;
+  }
+  start.store(true, std::memory_order_release);
+  for (auto &worker : workers) {
+    worker.join();
+  }
+
+  for (size_t worker = 0; worker < errors.size(); ++worker) {
+    if (errors[worker]) {
+      EXPECT_NO_THROW(std::rethrow_exception(errors[worker])) << worker;
+    }
+  }
+  for (const auto count : read_counts) {
+    EXPECT_EQ(count, reads_per_reader);
+  }
+
+  std::vector<Record> all_records = seeds;
+  for (const auto &records : written) {
+    all_records.insert(all_records.end(), records.begin(), records.end());
+  }
+  std::sort(all_records.begin(), all_records.end(),
+            [](const Record &left, const Record &right) {
+              return left.offset < right.offset;
+            });
+  uint64_t expected_offset = 0;
+  for (const auto &record : all_records) {
+    SCOPED_TRACE(record.key);
+    EXPECT_EQ(record.offset, expected_offset);
+    EXPECT_EQ(vlog->read_value(record.offset,
+                              static_cast<uint32_t>(record.value.size())),
+              record.value);
+    // 文件格式：2 字节 key_len、key、4 字节 value_len、value、4 字节 CRC。
+    expected_offset += 2 + record.key.size() + 4 + record.value.size() + 4;
+  }
+  // tail_offset 仅在线程全部结束后读取，不扩展其并发使用约定。
+  EXPECT_EQ(vlog->tail_offset(), expected_offset);
+}
+
 TEST_F(VLogReadTest, RejectsCorruptedKeyValueAndChecksum) {
   // 分别破坏 key、value 首尾及 CRC 首尾；长度不变，必须靠 CRC 发现损坏。
   for (const size_t byte_offset : {2u, 7u, 9u, 10u, 13u}) {
@@ -371,21 +487,23 @@ TEST_F(VLogReadTest, RejectsOutOfRangeOffsets) {
   }
 }
 
-TEST(VLogAppendRead, Single) {
-    std::string path = "/tmp/test_vlog_single.data";
-    std::filesystem::remove(path);
+// 原有三个 VLog 用例改用独占目录，保留测试名称和原有断言。
+class VLogAppendRead : public VLogOpenTest {};
+class VLogMultiAppend : public VLogOpenTest {};
+class VLogReopen : public VLogOpenTest {};
+
+TEST_F(VLogAppendRead, Single) {
+    const std::string path = (dir_ / "single.data").string();
 
     auto vlog = VLog::open(path);
     uint64_t off = vlog->append("hello", "world");
     EXPECT_EQ(off, 0u);
     EXPECT_EQ(vlog->read_value(off, 5), "world");
 
-    std::filesystem::remove(path);
 }
 
-TEST(VLogMultiAppend, HundredRecords) {
-    std::string path = "/tmp/test_vlog_multi.data";
-    std::filesystem::remove(path);
+TEST_F(VLogMultiAppend, HundredRecords) {
+    const std::string path = (dir_ / "multi.data").string();
 
     auto vlog = VLog::open(path);
     std::vector<uint64_t> offsets;
@@ -403,12 +521,10 @@ TEST(VLogMultiAppend, HundredRecords) {
         EXPECT_EQ(got, values[i]) << "mismatch at i=" << i;
     }
 
-    std::filesystem::remove(path);
 }
 
-TEST(VLogReopen, PersistAndContinue) {
-    std::string path = "/tmp/test_vlog_reopen.data";
-    std::filesystem::remove(path);
+TEST_F(VLogReopen, PersistAndContinue) {
+    const std::string path = (dir_ / "reopen.data").string();
 
     uint64_t off0, off1;
     {
@@ -424,7 +540,6 @@ TEST(VLogReopen, PersistAndContinue) {
         EXPECT_EQ(vlog->read_value(off1, 6), "value1");
     }
 
-    std::filesystem::remove(path);
 }
 
 // ---- SST WiscKey tests -----------------------------------------------
