@@ -1,8 +1,6 @@
 #ifndef _WIN32
 #include "utils/mmap_file.h"
 #include <cstdint>
-#include <errno.h>
-#include <stdexcept>
 #include <string.h>
 #include <sys/stat.h>
 #include <vector>
