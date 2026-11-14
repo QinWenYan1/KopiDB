@@ -177,7 +177,7 @@ uint64_t VLog::tail_offset() const {
 // file_.sync() 会返回成功或失败，但这里忽略了结果
 // 后续 SSTBuilder::build 需要先刷新 VLog；
 // 刷新失败时，应该中止构建，不能继续把引用写进 SST
-void VLog::sync() { 
+void VLog::sync() {
   // 1. 刷新也会操作同一个 fstream
   // 与 append/read_value 使用同一把锁，避免刷新和读写同时操作文件流
   std::lock_guard<std::mutex> lock(append_mtx_);
@@ -185,7 +185,7 @@ void VLog::sync() {
   // 2. 将刷新失败传给调用方
   // 后续 SSTBuilder::build 调用这里时，如果 VLog 刷新失败
   // 异常会中止构建，避免继续把尚未成功刷出的记录引用写入 SST
-  if (!file_.sync()) 
+  if (!file_.sync())
     throw std::runtime_error("VLog::sync: failed to flush file");
 
   // 当前底层是 fstream::flush：把流缓冲交给操作系统
