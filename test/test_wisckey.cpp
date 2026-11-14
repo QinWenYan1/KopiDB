@@ -150,6 +150,43 @@ TEST_F(VLogAppendTest, WritesRecordLayoutAndChecksum) {
   EXPECT_EQ(actual, expected);
 }
 
+TEST_F(VLogAppendTest, PreservesValueBeyondUint16Length) {
+  // 65536 字节刚好超过 uint16_t 上限，验证 value_len 使用完整的 4 字节。
+  // 负载包含空字节和高位字节；独立读文件检查全部内容，避免依赖 read_value。
+  const auto path = dir_ / "vlog.data";
+  const std::string key = "k";
+  std::string value(65536, '\0');
+  for (size_t i = 0; i < value.size(); ++i) {
+    value[i] = static_cast<char>(i % 256);
+  }
+  const size_t value_len_offset = 2 + key.size();
+  const size_t payload_offset = value_len_offset + 4;
+  const size_t record_size = payload_offset + value.size() + 4;
+  {
+    auto vlog = VLog::open(path.string());
+    EXPECT_EQ(vlog->append(key, value), 0u);
+    EXPECT_EQ(vlog->tail_offset(), record_size);
+  }
+  EXPECT_EQ(std::filesystem::file_size(path), record_size);
+
+  std::ifstream input(path, std::ios::binary);
+  ASSERT_TRUE(input.is_open());
+  const std::string actual{std::istreambuf_iterator<char>(input),
+                           std::istreambuf_iterator<char>()};
+  ASSERT_FALSE(input.bad());
+  ASSERT_EQ(actual.size(), record_size);
+
+  // 当前小端平台：按文件字节解析长度，不能复用 VLog 的编码或读取逻辑。
+  uint32_t stored_value_len = 0;
+  for (size_t i = 0; i < 4; ++i) {
+    stored_value_len |=
+        static_cast<uint32_t>(static_cast<uint8_t>(actual[value_len_offset + i]))
+        << (8 * i);
+  }
+  EXPECT_EQ(stored_value_len, 65536u);
+  EXPECT_EQ(actual.substr(payload_offset, value.size()), value);
+}
+
 TEST_F(VLogAppendTest, ContinuesAtPreviousRecordEndAfterReopen) {
   // 第一条记录占 19 字节；关闭重开后，第二条必须紧接其后。
   // 第二条含空字节和高位字节，长度为 13，不能按 C 字符串截断。
