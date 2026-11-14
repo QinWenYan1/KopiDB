@@ -5,9 +5,14 @@
 #include "vlog/vlog.h"
 #include "block/block_cache.h"
 #include "utils/files.h"
+#include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <gtest/gtest.h>
+#include <iterator>
+#include <stdexcept>
 #include <string>
+#include <system_error>
 #include <vector>
 
 using namespace tiny_lsm;
@@ -30,6 +35,94 @@ static std::shared_ptr<BlockCache> make_cache() {
 }
 
 // ---- VLog unit tests -----------------------------------------------
+
+class VLogOpenTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    // 每项测试原子创建独占目录，避免触碰其他进程正在使用的数据。
+    const auto root = std::filesystem::temp_directory_path();
+    const auto stamp =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    for (int attempt = 0; attempt < 100; ++attempt) {
+      const auto candidate =
+          root / ("kopidb-vlog-open-" + std::to_string(stamp) + "-" +
+                  std::to_string(attempt));
+      std::error_code error;
+      if (std::filesystem::create_directory(candidate, error)) {
+        dir_ = candidate;
+        return;
+      }
+      ASSERT_TRUE(!error || error == std::errc::file_exists) << error.message();
+    }
+    FAIL() << "无法创建独占的 VLog 测试目录";
+  }
+
+  ~VLogOpenTest() override {
+    // 即使断言提前结束，夹具析构也会清理本次测试自己的目录。
+    if (!dir_.empty()) {
+      std::error_code error;
+      std::filesystem::remove_all(dir_, error);
+    }
+  }
+
+  std::filesystem::path dir_;
+};
+
+TEST_F(VLogOpenTest, CreatesEmptyFile) {
+  // 父目录已由调用方准备；首次打开应创建长度为零的文件。
+  const auto path = dir_ / "vlog.data";
+  ASSERT_FALSE(std::filesystem::exists(path));
+
+  auto vlog = VLog::open(path.string());
+
+  ASSERT_NE(vlog, nullptr);
+  ASSERT_TRUE(std::filesystem::is_regular_file(path));
+  EXPECT_EQ(std::filesystem::file_size(path), 0u);
+  EXPECT_EQ(vlog->tail_offset(), 0u);
+}
+
+TEST_F(VLogOpenTest, PreservesBinaryContentsAcrossReopen) {
+  // 直接预置含空字节和高位字节的内容，不依赖尚未实现的追加、读取接口。
+  const auto path = dir_ / "vlog.data";
+  const std::string expected{'k', '\0', 'v', static_cast<char>(0xff), '\0'};
+  {
+    std::ofstream seed(path, std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(seed.is_open());
+    seed.write(expected.data(), static_cast<std::streamsize>(expected.size()));
+    seed.close();
+    ASSERT_TRUE(seed.good());
+  }
+
+  // 首次打开和关闭后的再次打开，都必须保留长度与逐字节内容。
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    SCOPED_TRACE(attempt);
+    {
+      auto vlog = VLog::open(path.string());
+      ASSERT_NE(vlog, nullptr);
+      EXPECT_EQ(vlog->tail_offset(), expected.size());
+    }
+
+    EXPECT_EQ(std::filesystem::file_size(path), expected.size());
+    std::ifstream input(path, std::ios::binary);
+    ASSERT_TRUE(input.is_open());
+    const std::string actual{std::istreambuf_iterator<char>(input),
+                             std::istreambuf_iterator<char>()};
+    EXPECT_FALSE(input.bad());
+    EXPECT_EQ(actual, expected);
+  }
+}
+
+TEST_F(VLogOpenTest, ThrowsWhenParentDirectoryDoesNotExist) {
+  // open 不负责创建父目录；文件层打开失败应向调用方传播异常。
+  const auto parent = dir_ / "missing_parent";
+  const auto path = parent / "vlog.data";
+  ASSERT_FALSE(std::filesystem::exists(parent));
+
+  EXPECT_THROW(VLog::open(path.string()), std::runtime_error);
+
+  EXPECT_FALSE(std::filesystem::exists(parent));
+  EXPECT_FALSE(std::filesystem::exists(path));
+}
 
 TEST(VLogAppendRead, Single) {
     std::string path = "/tmp/test_vlog_single.data";

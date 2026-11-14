@@ -49,14 +49,37 @@ std::shared_ptr<VLog> VLog::open(const std::string &path) {
     return vlog;
 }
 
+// Lab 6.1 追加一条 KV 记录到 VLog, 返回记录起始偏移量
+// 记录格式: [key_len:uint16][key][val_len:uint32][value][crc32:uint32]
 uint64_t VLog::append(const std::string &key, const std::string &value) {
-    // TODO: Lab 6.1 追加一条 KV 记录到 VLog, 返回记录起始偏移量
-    // ? 记录格式: [key_len:uint16][key][val_len:uint32][value][crc32:uint32]
+
+    // 1. 先检查长度，再转换为文件中的固定宽度字段
+    // 例如 key 长度为 65536，直接转成 uint16_t 会变成 0
+    // 读端就会把后面的 key 字节误当成其他字段
+    if (key.size() > std::numeric_limits<uint16_t>::max()) 
+        throw std::length_error("VLog::append: key is too large");
+  
+    if (value.size() > std::numeric_limits<uint32_t>::max()) 
+        throw std::length_error("VLog::append: value is too large");
+    
+    const uint16_t key_len = static_cast<uint16_t>(key.size()); 
+    const uint16_t value_len = static_cast<uint32_t>(value.size());
+    
+    // 2. 先在本次调用自己的缓冲区中编码，不访问共享文件
+    // 布局：[key长度:2][key][value长度:4][value][CRC:4]
+    // 用 size_t 计算总长度，避免用窄整数求和时溢出
+    const size_t record_size =  sizeof(key_len) + key.size() +
+                                sizeof(value_len) + sizeof(value.size()) + sizeof(uint32_t); 
+
+    std::vector<uint8_t> buf(record_size); 
+    size_t pos = 0; 
+
+    
+
     // ? CRC32 覆盖除自身之外的所有字段
     // ? 注意: 需要加 append_mtx_ 互斥锁
     // ? offset = file_.size() (追加前的文件大小即为本次记录的起始位置)
-    std::lock_guard<std::mutex> lock(append_mtx_);
-    return 0;
+
 }
 
 std::string VLog::read_value(uint64_t offset, uint32_t value_size) {

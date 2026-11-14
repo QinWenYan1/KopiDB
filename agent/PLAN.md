@@ -8,13 +8,13 @@
 
 用户手写业务源码和头文件，助手逐函数提供中文注释、检查实现、补测试及维护记录。已有函数体也须按 Lab 独立推导；已验收的无关逻辑不整段重写。Redis 移除的独立代写授权已结束。
 
-进度：**0%（0/4 阶段验收）**。资料阅读和计划准备不计功能完成。当前函数：`VLog::open`，草案已在聊天中交付，等待用户实现。
+进度：**0%（0/4 阶段验收）**。`VLog::open` 已通过代码检查及 3 项专项测试；VLog 阶段尚未完成。当前函数：`VLog::append`，草案在聊天中交付，等待用户实现。
 
 ## 阶段与验收标准
 
 | 阶段 | 按顺序处理的函数／工作 | 验收标准 | 状态 |
 | --- | --- | --- | --- |
-| ① Lab 7.1：VLog | `VLog::open` → `append` → `read_value`；复核直接相关辅助函数 | 新建为空、重开不截断；多条记录可按返回偏移读回，二进制内容不变；偏移和编码长度正确，超限及读写失败明确报告；共享文件访问正确同步 | 进行中，当前 open |
+| ① Lab 7.1：VLog | `VLog::open` → `append` → `read_value`；复核直接相关辅助函数 | 新建为空、重开不截断；多条记录可按返回偏移读回，二进制内容不变；偏移和编码长度正确，超限及读写失败明确报告；共享文件访问正确同步 | 进行中，open 已通过，当前 append |
 | ② Lab 7.2：SST 支持 | 确定记录类型表达 → WiscKey 版 `SSTBuilder` 构造 → `add` → `build` → `SST::open` → `resolve_value` | 同表的小 value、VLog 引用与墓碑不会混淆；阈值边界正确；构建／重开后点查与遍历还原原值，版本号不变；普通内联 SST 仍可读 | 待开始 |
 | ③ Lab 7.3：Engine 集成 | `LSMEngine` 构造 → `flush` → `gen_sst_from_iter`；联动复核清库、配置及引用传递 | 启用／禁用两种配置均可用；真实刷盘、合并、重开及清库后再次写入正确；合并明确区分原始引用与完整值，验证是否重复追加 VLog；状态通知及回滚过滤不退化 | 待开始 |
 | ④ 联调与验收 | 完整 WiscKey 测试和受影响存储／事务／恢复回归，更新结果 | 真实启用非零阈值验证 CRUD、批查、遍历、版本过滤、取消事务、合并和正常重开；默认关闭模式通过回归；报告实际测试范围和未验证边界 | 待开始 |
@@ -25,13 +25,13 @@
 
 文件：`include/vlog/vlog.h`、`src/vlog/vlog.cpp`。
 
-- [ ] `VLog::open(const std::string &path)`：保留现有接口，复用 FileObj 创建／非截断打开；失败传播异常，不返回不可用对象。父目录由调用者准备，Engine 已有该步骤。
+- [x] `VLog::open(const std::string &path)`：复用 FileObj 创建／非截断打开；失败传播异常。用户实现已检查，创建空文件、保留二进制内容后重开、父目录不存在时抛异常共 3/3 通过。函数上方残留的 Lab 6.1 注释应改为 Lab 7.1，属于非阻塞文字修正。
 - [ ] `VLog::append(const std::string &key, const std::string &value)`：按 `[key_len:u16][key][value_len:u32][value][crc:u32]` 编码，检查长度可表示；CRC 覆盖此前全部字段；取得尾偏移并追加整条记录，返回记录起点。
 - [ ] `VLog::read_value(uint64_t offset, uint32_t value_size)`：按记录头定位 value，返回指定长度的字节；说明长度／文件边界和 CRC 的实际读取策略，不把“写入了 CRC”解释为“读取已验证完整性”。
 - [ ] 直接联动复核 `tail_offset()`、`sync()`、`del_vlog()`：底层 StdFile 共用 fstream，协调同一对象的定位、读取和追加；检查 sync 返回值的处理。它们不是默认全部重写的 Lab 桩；确需修改时先说明调用依据。
-- [ ] 补充 open 独立测试，再随 append/read_value 完成追加／重开／二进制／长度／并发相关测试。当前 3 项 VLog 原测试依赖 append/read_value，不能在 open 完成后就宣称 VLog 已通过。
+- [ ] 测试随函数推进：open 独立测试已补充并通过；追加／重开续写／二进制／长度／并发测试随后补齐。原有 3 项 VLog 联合测试依赖 append/read_value，本轮未运行，不因 open 通过就宣称 VLog 已完成。
 
-当前首函数的修改范围仅 `src/vlog/vlog.cpp` 中 `VLog::open`；不需要新增成员、改声明或调用方。骨架上的“Lab 6.1”是章节标注错误，本次修改函数时同步改为 Lab 7.1。
+当前修改范围：`src/vlog/vlog.cpp` 中 `VLog::append`，增加 `<limits>`；不需要新增成员、改声明或调用方。草案沿用作者 VLog 的 memcpy 字段编码，先检查长度，再锁外编码和计算 CRC；锁内取得文件尾偏移、追加并检查返回值。后续 read_value／辅助函数统一复核共享 fstream 的锁，不提前宣称所有并发访问已接通。
 
 ## ②③ 开始编码前需要确定的衔接
 
@@ -55,4 +55,8 @@
 
 本轮不加入 VLog GC；它属于教程明确未要求的后续扩展。公开 API、事务可见性及既有编码上限沿用现状；测试使用现有写接口可接受的数据规模。普通刷新仍按当前文件层能力验收，不将本章通过等同于断电持久性。全局延期问题继续留在 STATE/AUDIT。
 
-当前仅完成阅读、设计范围核对和首函数草案；未修改业务代码，未运行 WiscKey 测试。
+## 当前验收记录
+
+2026-11-14：`xmake build -j 2 test_wisckey` 成功；独立临时目录内仅运行 `--gtest_filter=VLogOpenTest.*`，**3/3 通过，零失败／禁用**。新增测试位于 `test/test_wisckey.cpp`，使用原子创建的独占临时目录，不依赖 append/read_value，不改原有用例。失败场景中的打开错误日志是预期异常，测试通过。
+
+证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-vlog-open-review-n6kzzsdd`，包含构建／测试日志、GTest JSON、命令和业务源码前后哈希（保持一致）。append 草案仅在临时文件通过语法检查，尚未做功能验收；助手未改业务源码。没有停止、重启或运行用户的 test_lsm，也没有访问其测试数据。
