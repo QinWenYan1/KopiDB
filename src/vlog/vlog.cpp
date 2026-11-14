@@ -74,7 +74,28 @@ uint64_t VLog::append(const std::string &key, const std::string &value) {
     std::vector<uint8_t> buf(record_size); 
     size_t pos = 0; 
 
-    
+    // pos 表示缓冲区中下一个待写位置
+    // 每放入一个字段，就向后移动该字段占用的字节数
+    std::memcpy(buf.data() + pos, &key_len, sizeof(key_len)); 
+    pos += sizeof(key_len); 
+
+    std::memcpy(buf.data() + pos, key.data(), key.size()); 
+    pos += key.size();
+
+    std::memcpy(buf.data() + pos, &value_len, sizeof(value_len)); 
+    pos += sizeof(value_len);
+
+    std::memcpy(buf.data() + pos, value.data(), value.size()); 
+    pos += value.size();
+
+    // 3. 此时 [0, pos) 包含长度字段、key 和 value
+    // CRC 只覆盖这些内容，不包含最后即将写入的 CRC 自身
+    const uint32_t crc = crc32_compute(buf.data(), pos); 
+    std::memcpy(buf.data() + pos, &crc, sizeof(crc)); 
+
+
+
+
 
     // ? CRC32 覆盖除自身之外的所有字段
     // ? 注意: 需要加 append_mtx_ 互斥锁
