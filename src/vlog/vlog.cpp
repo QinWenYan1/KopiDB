@@ -1,9 +1,11 @@
 #include "vlog/vlog.h"
 #include "spdlog/spdlog.h"
+#include "utils/files.h"
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 
@@ -25,19 +27,25 @@ static uint32_t crc32_compute(const uint8_t *data, size_t len) {
     return crc ^ 0xFFFFFFFF;
 }
 
+// Lab 6.1 打开或创建 VLog 文件
 std::shared_ptr<VLog> VLog::open(const std::string &path) {
-    // TODO: Lab 6.1 打开或创建 VLog 文件
-    // ? 1. 若文件不存在则创建空文件 (std::ofstream)
-    // ? 2. 用 FileObj::open(path, false) 打开 (不截断, 保留已有记录)
-    // ? 3. 记录 path_ 和 file_
-    auto vlog = std::make_shared<VLog>();
-    vlog->path_ = path;
-    if (!std::filesystem::exists(path)) {
-        std::ofstream f(path, std::ios::binary);
-    }
-    vlog->file_ = FileObj::open(path, false);
+    // 1. 父目录由调用方准备；这里只负责这个文件
+    auto vlog = std::make_shared<VLog>(); 
+    vlog->path_ = path; 
+
+    // 2. FileObj::open 的 create=true 带有“截断文件”的含义
+    // 因此只有文件不存在时才使用 true，创建一个空文件
+    //
+    // 文件已存在时必须使用 false：
+    // 例如 SST 记录了 offset=100，重开后该位置的旧数据必须还在
+    const bool create = !std::filesystem::exists(path); 
+    vlog->file_ = FileObj::open(path, create); 
+
+    // FileObj::open 失败会抛异常，不会继续返回不可用的 VLog。
+    // 此处打开成功后，再记录日志并把对象交给调用方。
     spdlog::info("VLog::open: opened vlog at {}, size={}", path,
-                 vlog->file_.size());
+                vlog->file_.size());
+
     return vlog;
 }
 
