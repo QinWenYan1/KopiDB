@@ -19,25 +19,6 @@ LSM_BLOCK_CACHE_CAPACITY = 1024
 # LRU-K K value for cache
 LSM_BLOCK_CACHE_K = 8
 
-# Redis related headers and separators
-[redis]
-# Prefix for expiration time keys
-REDIS_EXPIRE_HEADER = "REDIS_EXPIRE_"
-# Prefix for hash value keys
-REDIS_HASH_VALUE_PREFFIX = "REDIS_HASH_VALUE_"
-# Prefix for hash field keys
-REDIS_FIELD_PREFIX = "REDIS_FIELD_"
-# Separator for hash fields
-REDIS_FIELD_SEPARATOR = "$" # Represented as a string
-# Separator for list elements
-REDIS_LIST_SEPARATOR = "#" # Represented as a string
-# Prefix for sorted set keys
-REDIS_SORTED_SET_PREFIX = "REDIS_SORTED_SET_"
-# Length reserved for sorted set scores (as part of the key)
-REDIS_SORTED_SET_SCORE_LEN = 32
-# Prefix for set keys
-REDIS_SET_PREFIX = "REDIS_SET_"
-
 # Bloom Filter Configuration
 [bloom_filter]
 # Expected number of elements

@@ -14,7 +14,6 @@ end
 -- add_repositories("local-repo build")  -- 作者本地的私有仓库残留，build/ 不在 git 中，禁用
 
 add_requires("gtest")
-add_requires("asio")
 add_requires("pybind11")
 add_requires("spdlog", { system = false })
 add_requires("toml11", { system = false })
@@ -95,13 +94,6 @@ target("lsm")
     add_packages("toml11", "spdlog")
     add_includedirs("include", {public = true})
 
-target("redis")
-    set_kind("static")
-    add_deps("lsm")
-    add_files("src/redis_wrapper/*.cpp")
-    add_packages("toml11", "spdlog")
-    add_includedirs("include", {public = true})
-
 -- ============ 共享库目标（供外部使用） ============
 
 target("lsm_shared")
@@ -109,8 +101,7 @@ target("lsm_shared")
     add_files("src/logger/*.cpp", "src/config/*.cpp", "src/utils/*.cpp",
               "src/vlog/*.cpp",
               "src/iterator/*.cpp", "src/skiplist/*.cpp", "src/memtable/*.cpp",
-              "src/block/*.cpp", "src/sst/*.cpp", "src/wal/*.cpp", "src/lsm/*.cpp",
-              "src/redis_wrapper/*.cpp")
+              "src/block/*.cpp", "src/sst/*.cpp", "src/wal/*.cpp", "src/lsm/*.cpp")
     add_packages("toml11", "spdlog")
     add_includedirs("include", {public = true})  -- 确保包含路径正确
     set_targetdir("$(buildir)/lib")
@@ -219,14 +210,6 @@ target("test_compact")
     add_packages("gtest", "toml11", "spdlog")
     add_includedirs("include", {public = true})
 
-target("test_redis")
-    set_kind("binary")
-    set_group("tests")
-    add_files("test/test_redis.cpp")
-    add_deps("logger", "redis", "memtable", "iterator")
-    add_includedirs("include", {public = true})
-    add_packages("gtest", "toml11", "spdlog")
-
 target("test_wal")
     set_kind("binary")
     set_group("tests")
@@ -249,7 +232,7 @@ target("example")
     set_kind("binary")
     add_files("example/main.cpp")
     add_deps("logger", "config", "utils", "iterator", "skiplist", 
-             "memtable", "block", "sst", "wal", "lsm", "redis")
+             "memtable", "block", "sst", "wal", "lsm")
     add_includedirs("include")  -- 显式添加包含路径
     set_targetdir("$(buildir)/bin")
 
@@ -257,16 +240,8 @@ target("debug")
     set_kind("binary")
     add_files("example/debug.cpp")
     add_deps("logger", "config", "utils", "iterator", "skiplist", 
-             "memtable", "block", "sst", "wal", "lsm", "redis")
+             "memtable", "block", "sst", "wal", "lsm")
     add_includedirs("include")  -- 显式添加包含路径
-    set_targetdir("$(buildir)/bin")
-
-target("server")
-    set_kind("binary")
-    add_files("server/src/*.cpp")
-    add_deps("redis")
-    add_includedirs("include", {public = true})
-    add_packages("asio")
     set_targetdir("$(buildir)/bin")
 
 -- ============ Python 绑定 ============

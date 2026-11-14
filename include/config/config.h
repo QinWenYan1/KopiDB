@@ -22,16 +22,6 @@ private:
   int lsm_block_cache_capacity_;
   int lsm_block_cache_k_;
 
-  // --- Redis Headers/Separators ---
-  std::string redis_expire_header_;
-  std::string redis_hash_value_preffix_;
-  std::string redis_field_prefix_;
-  char redis_field_separator_;
-  char redis_list_separator_;
-  std::string redis_sorted_set_prefix_;
-  int redis_sorted_set_score_len_;
-  std::string redis_set_prefix_;
-
   // --- Bloom Filter ---
   int bloom_filter_expected_size_;
   double bloom_filter_expected_error_rate_;
@@ -64,15 +54,6 @@ public:
 
   int getLsmBlockCacheCapacity() const;
   int getLsmBlockCacheK() const;
-
-  const std::string &getRedisExpireHeader() const;
-  const std::string &getRedisHashValuePreffix() const;
-  const std::string &getRedisFieldPrefix() const;
-  char getRedisFieldSeparator() const;
-  char getRedisListSeparator() const;
-  const std::string &getRedisSortedSetPrefix() const;
-  int getRedisSortedSetScoreLen() const;
-  const std::string &getRedisSetPrefix() const;
 
   int getBloomFilterExpectedSize() const;
   double getBloomFilterExpectedErrorRate() const;

@@ -17,16 +17,6 @@ void TomlConfig::setDefaultValues() {
   lsm_block_cache_capacity_ = 1024; // Default: 1024
   lsm_block_cache_k_ = 8;           // Default: 8
 
-  // --- Redis Headers/Separators ---
-  redis_expire_header_ = "REDIS_EXPIRE_";
-  redis_hash_value_preffix_ = "REDIS_HASH_VALUE_";
-  redis_field_prefix_ = "REDIS_FIELD_";
-  redis_field_separator_ = '$';
-  redis_list_separator_ = '#';
-  redis_sorted_set_prefix_ = "REDIS_SORTED_SET_";
-  redis_sorted_set_score_len_ = 32;
-  redis_set_prefix_ = "REDIS_SET_";
-
   // --- Bloom Filter ---
   bloom_filter_expected_size_ = 65536;
   bloom_filter_expected_error_rate_ = 0.1;
@@ -93,28 +83,6 @@ bool TomlConfig::loadFromFile(const std::string &filePath) {
         cache_config.at("LSM_BLOCK_CACHE_CAPACITY").as_integer();
     lsm_block_cache_k_ = cache_config.at("LSM_BLOCK_CACHE_K").as_integer();
 
-    // --- Load Redis Headers/Separators ---
-    auto redis_config = config["redis"];
-
-    redis_expire_header_ = redis_config.at("REDIS_EXPIRE_HEADER").as_string();
-    redis_hash_value_preffix_ =
-        redis_config.at("REDIS_HASH_VALUE_PREFFIX").as_string();
-    redis_field_prefix_ = redis_config.at("REDIS_FIELD_PREFIX").as_string();
-
-    redis_field_separator_ =
-        redis_config.at("REDIS_FIELD_SEPARATOR").as_string()[0];
-
-    redis_list_separator_ =
-        redis_config.at("REDIS_LIST_SEPARATOR").as_string()[0];
-
-    redis_sorted_set_prefix_ =
-        redis_config.at("REDIS_SORTED_SET_PREFIX").as_string();
-
-    redis_sorted_set_score_len_ =
-        redis_config.at("REDIS_SORTED_SET_SCORE_LEN").as_integer();
-
-    redis_set_prefix_ = redis_config.at("REDIS_SET_PREFIX").as_string();
-
     // --- Load Bloom Filter ---
     auto bloom_config = config["bloom_filter"];
 
@@ -161,29 +129,6 @@ int TomlConfig::getLsmBlockCacheCapacity() const {
   return lsm_block_cache_capacity_;
 }
 int TomlConfig::getLsmBlockCacheK() const { return lsm_block_cache_k_; }
-
-const std::string &TomlConfig::getRedisExpireHeader() const {
-  return redis_expire_header_;
-}
-const std::string &TomlConfig::getRedisHashValuePreffix() const {
-  return redis_hash_value_preffix_;
-}
-const std::string &TomlConfig::getRedisFieldPrefix() const {
-  return redis_field_prefix_;
-}
-char TomlConfig::getRedisFieldSeparator() const {
-  return redis_field_separator_;
-}
-char TomlConfig::getRedisListSeparator() const { return redis_list_separator_; }
-const std::string &TomlConfig::getRedisSortedSetPrefix() const {
-  return redis_sorted_set_prefix_;
-}
-int TomlConfig::getRedisSortedSetScoreLen() const {
-  return redis_sorted_set_score_len_;
-}
-const std::string &TomlConfig::getRedisSetPrefix() const {
-  return redis_set_prefix_;
-}
 
 int TomlConfig::getBloomFilterExpectedSize() const {
   return bloom_filter_expected_size_;
@@ -238,18 +183,6 @@ bool TomlConfig::saveToFile(const std::string &filePath) {
     config["lsm"]["cache"]["LSM_BLOCK_CACHE_CAPACITY"] =
         lsm_block_cache_capacity_;
     config["lsm"]["cache"]["LSM_BLOCK_CACHE_K"] = lsm_block_cache_k_;
-
-    // --- Redis Headers/Separators ---
-    config["redis"]["REDIS_EXPIRE_HEADER"] = redis_expire_header_;
-    config["redis"]["REDIS_HASH_VALUE_PREFFIX"] = redis_hash_value_preffix_;
-    config["redis"]["REDIS_FIELD_PREFIX"] = redis_field_prefix_;
-    config["redis"]["REDIS_FIELD_SEPARATOR"] =
-        std::string(1, redis_field_separator_);
-    config["redis"]["REDIS_LIST_SEPARATOR"] =
-        std::string(1, redis_list_separator_);
-    config["redis"]["REDIS_SORTED_SET_PREFIX"] = redis_sorted_set_prefix_;
-    config["redis"]["REDIS_SORTED_SET_SCORE_LEN"] = redis_sorted_set_score_len_;
-    config["redis"]["REDIS_SET_PREFIX"] = redis_set_prefix_;
 
     // --- Bloom Filter ---
     config["bloom_filter"]["BLOOM_FILTER_EXPECTED_SIZE"] =

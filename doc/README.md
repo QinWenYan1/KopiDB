@@ -27,7 +27,6 @@
 | 10-mvcc.md | Lab 5 | MVCC / SequenceNumber | 待写 |
 | 11-wal.md | — | WAL 与崩溃恢复 | 待写 |
 | 12-wisckey.md | — | WiscKey 键值分离 | 待写 |
-| 13-redis.md | — | 网络层 / RESP 协议 | 待写 |
 
 ## 信息源优先级
 

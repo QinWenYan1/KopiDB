@@ -2,41 +2,32 @@
 
 最后更新：2026-11-14。
 
-## 上一轮已完成：Lab 5.5 崩溃恢复
+## 已完成：移除 Redis 组件
 
-目录 **5.2.3「崩溃恢复」**已完成约定范围的功能验收，进度 **100%（6/6 阶段）**。旧实施流水已从当前计划清理，完成摘要与边界保存在 [STATE](STATE.md#已完成lab-55-崩溃恢复)，问题及性能证据保存在 [AUDIT](AUDIT.md)。
+目标：专注提供库接口的嵌入式 LSM 数据库，移除 Redis 包装、协议服务、专属配置和测试。用户明确授权助手独立完成本轮业务代码、测试与文档修改，用户参与最终验收；该授权仅限本轮，后续 Lab 继续沿用原有逐函数教学方式。
 
-| 阶段 | 状态 |
-| --- | --- |
-| ① 收集 WAL 日志 | 已验收 |
-| ② 管理器恢复检查入口 | 已验收 |
-| ③ 初始化新 WAL | 已验收 |
-| ④ 接通启动恢复 | 已验收 |
-| ⑤ 公开接口、clear 与关闭衔接 | 已验收 |
-| ⑥ 最终回归与记录收尾 | 已验收 |
+进度：**100%（5/5 阶段验收）**。等待用户最终审阅。
 
-最终受影响的完整目标：LSM 171/171、Compact 5/5、WAL 144/144，共320项；此前未受影响的存储目标177/177，源码哈希核对后复用结果，当前适用测试合计 **497项全部完成**。定向10项属于重复子集，不另计总数。未缩减数据、禁用用例或削弱断言，当前无助手启动的后台测试。
+| 阶段 | 结果与验收 | 状态 |
+| --- | --- | --- |
+| ① 删除专属组件 | 移除 redis_wrapper、server、test_redis 和 RESP 笔记；LSM/MVCC/WAL/SST/SDK 源码保留，有效源码无悬空引用 | 已验收 |
+| ② 清理构建依赖 | 删除三个专属目标与 Asio 依赖，清理共享库／示例依赖；全部现有目标重新构建成功，共享库无 Redis 符号 | 已验收 |
+| ③ 清理配置 | 清除成员、getter、默认／加载／保存段、宏与 TOML 节；新增非默认配置加载和保存测试均通过，配置套件 3/3 | 已验收 |
+| ④ 整理文档与产物 | README 保留原资料并明确嵌入式定位；学习索引和路线同步；旧专属产物及过时 Release 产物清理，63 项编译数据库无移除组件 | 已验收 |
+| ⑤ 回归验收 | 本轮实跑 497/497；C++ example/debug 与 Python 扩展 CRUD、事务、重启冒烟通过；源码哈希稳定，独立复核通过 | 已验收 |
 
-A11 三步均完成：反向通知代码检查 → 定向验证 → 耗时比较与大规模回归。两个十万条用例由 **189.896s→5.288s**、**191.736s→5.257s**；此前未完成的 BigPersistence、BigPersistence2、TombstoneDefaultConfig 均已通过。该性能数据仅描述实测用例，不推广为所有场景的加速保证。
+## 验收证据
 
-证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a11-review-cowmepgu`，汇总见 `lab55-closure.json`，性能对比见 `persistence-comparison.json`。全局未选事项和非阻塞说明清理统一留在 STATE/AUDIT，不继续占用当前实施清单。
+- 构建：`xmake build -r -a -j 6`，全部现有目标成功，保持 Debug 模式。WiscKey 目标仅构建，不把其尚未实现的行为计为通过。
+- 实跑：Config 3、SkipList 31、MemTable 51、Block 37、BlockMeta 6、Utils 15、SST 29、BlockCache 7、LSM 169、Compact 5、WAL 144，合计 **497 项，零失败、禁用或跳过**。
+- 明确排除并复用先前结果：`LSMTest.BigPersistence`、`LSMTest.BigPersistence2`。验证核心引擎实现未变、两个函数体未变、原始测试文件只差两处后补注释、非 Redis 配置值保持一致；未重复运行约 30 分钟的大规模测试。原有 497 项加本轮新增配置 2 项，当前适用集合为 **499 项**，不声称这 499 项全由本轮重跑。
+- C++ 示例直接运行通过。Python 扩展在指定 `PYTHONPATH` 和 `DYLD_LIBRARY_PATH=build/lib` 后通过 CRUD、提交／取消、flush 与重开验证；只设置 PYTHONPATH 时遇到既有 macOS 动态库定位问题，详细边界记录在 STATE/AUDIT，本轮不宣称 Python 安装包已可直接发布。
+- 原测试断言与数据规模未改，核心 LSM／事务／WAL／迭代器业务逻辑未修改。测试运行期间代码哈希一致。没有 Git 写操作，当前无助手启动的后台测试。
 
-## 下一步：确认 Lab 6.1 的目标与边界
+原始证据目录：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-remove-redis-7tjk4sfe`。包含构建命令／日志、各套件命令与 GTest JSON、冒烟结果、源码哈希、生成物清理清单、既有测试复用依据、`closure.json` 汇总。首次构建受沙箱依赖文件锁限制，使用本机依赖缓存权限后成功；首次 Python 导入失败日志与指定库路径后的成功日志均保留。
 
-作者目录已核对：下一站是 **Lab 6 Redis 兼容 → Lab 6.1 简单字符串**，WiscKey 属于 Lab 7。
+## 下一步：Lab 7 WiscKey
 
-已阅读 [Lab 6 总览](https://github.com/Vanilla-Beauty/tiny-lsm/blob/lab-doc-2/src/lab6/lab6-Redis.md) 和 [Lab 6.1 简单字符串](https://github.com/Vanilla-Beauty/tiny-lsm/blob/lab-doc-2/src/lab6/lab6.1-String.md)，并定位作者相关参考入口。当前只完成阅读准备，尚未开始该章节的业务实现；先确认目标与接口约定，再拆实施阶段与验收标准。
+按用户确认的路线跳过 Lab 6。下一轮依次推进 **7.1 VLog → 7.2 SST 支持 → 7.3 Engine 集成**，开始前阅读对应 Lab，列明具体函数和验收标准，再逐函数实现。当前未提前实现 Lab 7。
 
-文档指定的七个函数位于 `src/redis_wrapper/redis_wrapper.cpp`，顺序为：
-
-1. `RedisWrapper::redis_set`
-2. `RedisWrapper::redis_expire`
-3. `RedisWrapper::redis_ttl`
-4. `RedisWrapper::redis_get`
-5. `RedisWrapper::redis_incr`
-6. `RedisWrapper::redis_decr`
-7. `RedisWrapper::redis_del`
-
-正式实施前核对：RESP 返回与现有转发层的契约、过期信息保存及查询方式、INCR/DECR 等组合操作的同步边界，以及 Redis 空字符串与底层空 key/value 保留约定如何衔接。根据已有代码和 Lab 推导方案，不因参考函数已有函数体就跳过独立实现，也不自动重写其他辅助入口。
-
-沿用既定协作：业务代码由用户手写，助手给带中文注释的实现及精确位置；测试由助手补充。一次处理一个函数，用户说“检查并下一个”后，检查通过再继续。
+Lab 5.5 的既有验收、性能对照和全局限制仍保留在 STATE/AUDIT；后续项目完善和打包单独规划，不作为本轮删除的附带重构。
