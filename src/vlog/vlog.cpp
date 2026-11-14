@@ -5,11 +5,11 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <vector>
-#include <limits>
 
 namespace tiny_lsm {
 
@@ -117,40 +117,41 @@ uint64_t VLog::append(const std::string &key, const std::string &value) {
 // Lab 6.1 从指定 offset 读取 value
 // 记录布局: [key_len:2][key:key_len][val_len:4][value:val_len][crc:4]
 std::string VLog::read_value(uint64_t offset, uint32_t value_size) {
-    // 1. 读取也会改变底层 fstream 的游标，因此要与 append 共用同一把锁
-    // 两个读取同时执行，也可能互相改变读取位置，不能只保护写入
-    std::lock_guard<std::mutex> lock(append_mtx_); 
+  // 1. 读取也会改变底层 fstream 的游标，因此要与 append 共用同一把锁
+  // 两个读取同时执行，也可能互相改变读取位置，不能只保护写入
+  std::lock_guard<std::mutex> lock(append_mtx_);
 
-    // 2. 格式嗅探
-    // 确认 offset 处至少还有 2 字节，可以读取 key_len
-    // 先比较 offset，再用减法检查，避免 offset + 2 溢出
-    const uint64_t file_size = file_.size(); 
-    if (offset > file_size || file_size - offset < sizeof(uint16_t))
-        throw std::out_of_range("VLog::read_value: incomplete key length"); 
+  // 2. 格式嗅探
+  // 确认 offset 处至少还有 2 字节，可以读取 key_len
+  // 先比较 offset，再用减法检查，避免 offset + 2 溢出
+  const uint64_t file_size = file_.size();
+  if (offset > file_size || file_size - offset < sizeof(uint16_t))
+    throw std::out_of_range("VLog::read_value: incomplete key length");
 
-    auto key_len_bytes = file_.read_to_slice(offset, sizeof(uint16_t)); 
-    uint16_t key_len = 0; 
-    std::memcpy(&key_len, key_len_bytes.data(), sizeof(key_len)); 
+  auto key_len_bytes = file_.read_to_slice(offset, sizeof(uint16_t));
+  uint16_t key_len = 0;
+  std::memcpy(&key_len, key_len_bytes.data(), sizeof(key_len));
 
-    // 3. 跳过 value 前面的三个字段：
-    // [key_len:2][key:key_len][value_len:4]
-    // 例如 offset=100、key="cat"，value 从 100+2+3+4=109 开始
-    const uint64_t header_size = sizeof(uint16_t) + static_cast<uint64_t>(key_len) + sizeof(uint32_t); 
-    const uint64_t remaining = file_size - offset; 
+  // 3. 跳过 value 前面的三个字段：
+  // [key_len:2][key:key_len][value_len:4]
+  // 例如 offset=100、key="cat"，value 从 100+2+3+4=109 开始
+  const uint64_t header_size =
+      sizeof(uint16_t) + static_cast<uint64_t>(key_len) + sizeof(uint32_t);
+  const uint64_t remaining = file_size - offset;
 
-    // 先确认能跳过头部，再检查剩余字节够不够读取 value
-    // SST 引用已提供 value_size，本节按 Lab 直接使用这个长度
-    if (header_size > remaining || value_size > remaining - header_size)
-        throw std::out_of_range("VLog::read_value: value exceeds file size");
+  // 先确认能跳过头部，再检查剩余字节够不够读取 value
+  // SST 引用已提供 value_size，本节按 Lab 直接使用这个长度
+  if (header_size > remaining || value_size > remaining - header_size)
+    throw std::out_of_range("VLog::read_value: value exceeds file size");
 
-    // 4. 只读取 value，不把后面的 CRC 当作 value 返回
-    // 这里沿用 Lab 的读取策略，不做 CRC 校验
-    // 上面的边界检查也不等于内容完整性校验
-    const uint64_t value_offset = offset + header_size; 
-    auto value_bytes = file_.read_to_slice(value_offset, value_size); 
+  // 4. 只读取 value，不把后面的 CRC 当作 value 返回
+  // 这里沿用 Lab 的读取策略，不做 CRC 校验
+  // 上面的边界检查也不等于内容完整性校验
+  const uint64_t value_offset = offset + header_size;
+  auto value_bytes = file_.read_to_slice(value_offset, value_size);
 
-    // 按字节区间构造字符串，保留 value 中的空字节
-    return std::string(value_bytes.begin(), value_bytes.end()); 
+  // 按字节区间构造字符串，保留 value 中的空字节
+  return std::string(value_bytes.begin(), value_bytes.end());
 }
 
 uint64_t VLog::tail_offset() const {
