@@ -1,5 +1,9 @@
 # KopiDB
 
+<p align="center">
+  <img src="assets/kopidb-logo.png" alt="KopiDB 像素咖啡标志" width="720">
+</p>
+
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://isocpp.org/wiki/faq/cpp20) [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/QinWenYan1/KopiDB) [![Build](https://img.shields.io/badge/build-Xmake-green.svg)](https://xmake.io) [![RocksDB DeepWiki](https://img.shields.io/badge/RocksDB-DeepWiki-purple.svg)](https://deepwiki.com/facebook/rocksdb)
 
 KopiDB 是一个用于学习数据库实现的 C++20 嵌入式 LSM-tree KV 引擎，包含有序读写、SST 存储、多版本读取和事务接口。应用程序通过库接口直接使用数据库，无需启动独立服务。
