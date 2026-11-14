@@ -9,6 +9,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <vector>
+#include <limits>
 
 namespace tiny_lsm {
 
@@ -113,12 +114,27 @@ uint64_t VLog::append(const std::string &key, const std::string &value) {
   return offset;
 }
 
+// Lab 6.1 从指定 offset 读取 value
+// 记录布局: [key_len:2][key:key_len][val_len:4][value:val_len][crc:4]
 std::string VLog::read_value(uint64_t offset, uint32_t value_size) {
-  // TODO: Lab 6.1 从指定 offset 读取 value
-  // ? 记录布局: [key_len:2][key:key_len][val_len:4][value:val_len][crc:4]
-  // ? 先读 key_len 以跳过 key, 再定位 value 起始位置
-  // ? value 起始 = offset + 2 + key_len + 4
-  return "";
+    // 1. 读取也会改变底层 fstream 的游标，因此要与 append 共用同一把锁
+    // 两个读取同时执行，也可能互相改变读取位置，不能只保护写入
+    std::lock_guard<std::mutex> lock(append_mtx_); 
+
+    // 2. 格式嗅探
+    // 确认 offset 处至少还有 2 字节，可以读取 key_len
+    // 先比较 offset，再用减法检查，避免 offset + 2 溢出
+    const uint64_t file_size = file_.size(); 
+    if (offset > file_size || file_size - offset < sizeof(uint16_t))
+        throw std::out_of_range("VLog::read_value: incomplete key length"); 
+
+    auto key_len_bytes = file_.read_to_slice(offset, sizeof(uint16_t)); 
+    uint16_t key_len = 0; 
+    std::memcpy(&key_len, key_len_bytes.data(), sizeof(key_len)); 
+
+    // ? 先读 key_len 以跳过 key, 再定位 value 起始位置
+    // ? value 起始 = offset + 2 + key_len + 4
+    return ""; 
 }
 
 uint64_t VLog::tail_offset() const {
