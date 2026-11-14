@@ -216,6 +216,161 @@ TEST_F(VLogAppendTest, RejectsOversizedKeyWithoutChangingFile) {
   EXPECT_EQ(vlog->tail_offset(), 0u);
 }
 
+// 复用独占目录；损坏样本直接写入文件，不依赖 append 产生相同错误。
+class VLogReadTest : public VLogOpenTest {
+protected:
+  static std::vector<uint8_t> golden_record() {
+    // 当前小端布局的 k/abc，CRC32 独立核对为 0x7a443de8。
+    return {0x01, 0x00, 0x6b, 0x03, 0x00, 0x00, 0x00,
+            0x61, 0x62, 0x63, 0xe8, 0x3d, 0x44, 0x7a};
+  }
+
+  void write_bytes(const std::filesystem::path &path,
+                   const std::vector<uint8_t> &bytes) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(output.is_open());
+    if (!bytes.empty()) {
+      output.write(reinterpret_cast<const char *>(bytes.data()),
+                   static_cast<std::streamsize>(bytes.size()));
+    }
+    output.close();
+    ASSERT_TRUE(output.good());
+  }
+};
+
+TEST_F(VLogReadTest, ReadsGoldenRecord) {
+  // 固定样本独立验证读取布局与 CRC，避免写读两端同错仍然通过。
+  const auto path = dir_ / "golden.data";
+  ASSERT_NO_FATAL_FAILURE(write_bytes(path, golden_record()));
+
+  auto vlog = VLog::open(path.string());
+  EXPECT_EQ(vlog->read_value(0, 3), "abc");
+}
+
+TEST_F(VLogReadTest, ReadsBinaryLargeAndEmptyValuesAcrossReopen) {
+  // 65536 字节验证 value_len 不会截成 uint16_t；内容遍历所有字节值。
+  // 空 value 也有完整记录及 CRC，不能因为长度为零就跳过读取校验。
+  const auto path = dir_ / "values.data";
+  std::string large_value(65536, '\0');
+  for (size_t i = 0; i < large_value.size(); ++i) {
+    large_value[i] = static_cast<char>(i % 256);
+  }
+  const std::vector<std::string> keys{
+      "large", "empty", std::string("k\0\xff", 3)};
+  const std::vector<std::string> values{
+      large_value, "", std::string("\0\xffv\0", 4)};
+  std::vector<uint64_t> offsets;
+  {
+    auto vlog = VLog::open(path.string());
+    for (size_t i = 0; i < keys.size(); ++i) {
+      offsets.push_back(vlog->append(keys[i], values[i]));
+    }
+    ASSERT_EQ(offsets.front(), 0u);
+    ASSERT_GT(offsets[1], offsets[0]);
+    ASSERT_GT(offsets[2], offsets[1]);
+
+    // 倒序读取不同 offset，检查每次读取都重新定位，不受前一次游标影响。
+    for (size_t i = values.size(); i-- > 0;) {
+      SCOPED_TRACE(i);
+      EXPECT_EQ(vlog->read_value(offsets[i],
+                                static_cast<uint32_t>(values[i].size())),
+                values[i]);
+    }
+  }
+  auto reopened = VLog::open(path.string());
+  for (size_t i = 0; i < values.size(); ++i) {
+    SCOPED_TRACE(i);
+    EXPECT_EQ(reopened->read_value(offsets[i],
+                                  static_cast<uint32_t>(values[i].size())),
+              values[i]);
+  }
+}
+
+TEST_F(VLogReadTest, RejectsCorruptedKeyValueAndChecksum) {
+  // 分别破坏 key、value 首尾及 CRC 首尾；长度不变，必须靠 CRC 发现损坏。
+  for (const size_t byte_offset : {2u, 7u, 9u, 10u, 13u}) {
+    SCOPED_TRACE(byte_offset);
+    auto bytes = golden_record();
+    bytes[byte_offset] ^= 0x01;
+    const auto path = dir_ / ("corrupt-" + std::to_string(byte_offset) + ".data");
+    ASSERT_NO_FATAL_FAILURE(write_bytes(path, bytes));
+
+    // 每个错误场景使用新对象，避免失败后的 fstream 状态影响下一项检查。
+    auto vlog = VLog::open(path.string());
+    EXPECT_THROW(vlog->read_value(0, 3), std::runtime_error);
+  }
+}
+
+TEST_F(VLogReadTest, RejectsCorruptedLengthFields) {
+  // key_len 改为 0 会错位解析；value_len 的四个字节都必须参与长度核对。
+  // 这些样本按调用方长度计算仍在文件内，应报告内容不一致。
+  for (const size_t byte_offset : {0u, 3u, 4u, 5u, 6u}) {
+    SCOPED_TRACE(byte_offset);
+    auto bytes = golden_record();
+    bytes[byte_offset] ^= 0x01;
+    const auto path = dir_ / ("length-" + std::to_string(byte_offset) + ".data");
+    ASSERT_NO_FATAL_FAILURE(write_bytes(path, bytes));
+
+    auto vlog = VLog::open(path.string());
+    EXPECT_THROW(vlog->read_value(0, 3), std::runtime_error);
+  }
+
+  // key_len 高位损坏使记录范围超出文件，应在分配、读取整条记录前拒绝。
+  auto bytes = golden_record();
+  bytes[1] = 0xff;
+  const auto path = dir_ / "oversized-key-length.data";
+  ASSERT_NO_FATAL_FAILURE(write_bytes(path, bytes));
+  auto vlog = VLog::open(path.string());
+  EXPECT_THROW(vlog->read_value(0, 3), std::out_of_range);
+}
+
+TEST_F(VLogReadTest, RejectsMismatchedReferenceValueLength) {
+  // 后面放另一条完整记录，让偏大的引用长度仍落在文件内；
+  // 长度不符必须明确拒绝，不能返回前缀，也不能跨进 CRC 或下一条记录。
+  auto bytes = golden_record();
+  const auto second_record = golden_record();
+  bytes.insert(bytes.end(), second_record.begin(), second_record.end());
+  const auto path = dir_ / "reference-length.data";
+  ASSERT_NO_FATAL_FAILURE(write_bytes(path, bytes));
+
+  for (const uint32_t value_size : {0u, 2u, 4u}) {
+    SCOPED_TRACE(value_size);
+    auto vlog = VLog::open(path.string());
+    EXPECT_THROW(vlog->read_value(0, value_size), std::runtime_error);
+  }
+}
+
+TEST_F(VLogReadTest, RejectsTruncatedRecord) {
+  // 覆盖 key_len/头部/payload 截断，以及 payload 完整但 CRC 缺失或不足 4 字节。
+  for (const size_t file_size : {0u, 1u, 2u, 6u, 9u, 10u, 11u, 12u, 13u}) {
+    SCOPED_TRACE(file_size);
+    auto bytes = golden_record();
+    bytes.resize(file_size);
+    const auto path = dir_ / ("truncated-" + std::to_string(file_size) + ".data");
+    ASSERT_NO_FATAL_FAILURE(write_bytes(path, bytes));
+
+    auto vlog = VLog::open(path.string());
+    EXPECT_THROW(vlog->read_value(0, 3), std::out_of_range);
+  }
+}
+
+TEST_F(VLogReadTest, RejectsOutOfRangeOffsets) {
+  const auto path = dir_ / "offsets.data";
+  const auto bytes = golden_record();
+  ASSERT_NO_FATAL_FAILURE(write_bytes(path, bytes));
+  const uint64_t file_size = bytes.size();
+
+  // 剩 1 字节、恰好 EOF、超过 EOF 以及 UINT64_MAX 都不能读取 key_len。
+  // 最大偏移还验证边界检查不会因 offset + 长度溢出而误放行。
+  for (const uint64_t offset :
+       {file_size - 1, file_size, file_size + 1,
+        std::numeric_limits<uint64_t>::max()}) {
+    SCOPED_TRACE(offset);
+    auto vlog = VLog::open(path.string());
+    EXPECT_THROW(vlog->read_value(offset, 3), std::out_of_range);
+  }
+}
+
 TEST(VLogAppendRead, Single) {
     std::string path = "/tmp/test_vlog_single.data";
     std::filesystem::remove(path);
