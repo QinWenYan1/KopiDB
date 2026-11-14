@@ -1831,7 +1831,11 @@ TEST_F(LSMTest, BasicOperations) {
   EXPECT_FALSE(lsm.get("nonexistent").has_value());
 }
 
-// Test persistence across restarts
+// 目的：验证普通写入和删除在正常关闭、重开后仍然正确。
+// 场景：写入 key0～key99999，每逢 i 为非零的 10 的倍数就删除 key(i-10)，
+//       共 100000 次 put、9999 次 remove；离开作用域触发析构刷盘，然后重开。
+// 预期：存活 key 的 value 与参考 map 一致，被删除及从未写入的 key 不存在。
+//       这是正常重启测试，不模拟异常退出；计时覆盖整个用例，不只是 flush。
 TEST_F(LSMTest, Persistence) {
   std::unordered_map<std::string, std::string> kvs;
   int num = 100000;
@@ -2898,7 +2902,7 @@ TEST_F(TranCommitTest, EngineClearReportsFileDeletionFailure) {
 }
 #endif
 
-// 点查回滚测试显式绑定组件，不依赖 Lab 5.5 尚未接通的 LSM 构造入口。
+// 点查回滚测试显式绑定组件，直接验证 Engine 层；LSM 启动恢复由独立用例验证。
 class EngineGetRollbackTest : public TranCommitTest {};
 
 
@@ -4500,6 +4504,48 @@ TEST_F(LSMTest, TransactionFlushRegistrationDuplicatesKeepCheckpoint) {
   manager.add_flushed_tranc_id(4);
   EXPECT_EQ(manager.get_checkpoint_tranc_id(), 4u);
   EXPECT_EQ(manager.get_flushed_tranc_ids(), (std::set<uint64_t>{4}));
+}
+
+// 目的：一批完成通知不能越过尚未刷盘的已提交事务，并继续正确结算回滚事务。
+// 场景：最老表含事务 1/3/5 的标记，事务 2 的数据和标记仍在较新的表，4 已回滚。
+// 预期：第一次刷盘返回 5，但检查点停在 1；刷出事务 2 后才推进到 5。
+//       同时检查旧值被有效墓碑遮住、回滚名单保留，不依赖通知循环的具体写法。
+TEST_F(LSMTest, EngineFlushBatchPreservesGapAndRollbackState) {
+  auto engine = std::make_shared<LSMEngine>(test_dir);
+  auto manager = bind_test_manager(engine);
+  for (uint64_t id = 1; id <= 5; ++id) {
+    ASSERT_EQ(manager->getNextTransactionId(), id);
+    manager->add_ready_to_flush_tranc_id(
+        id, id == 4 ? TransactionState::ABORTED
+                    : TransactionState::OP_COMMITTED);
+  }
+
+  engine->memtable.put("K", "old", 1);
+  engine->memtable.remove("K", 3);
+  engine->memtable.put("Z", "live", 5);
+  for (uint64_t id : {1u, 3u, 5u})
+    engine->memtable.put("", "", id);
+  engine->memtable.frozen_cur_table();
+
+  // 较早分配 ID 的事务可以更晚写入不同的 key，其记录位于较新的内存表。
+  engine->memtable.put("pending", "value-2", 2);
+  engine->memtable.put("", "", 2);
+
+  EXPECT_EQ(engine->flush(), 5u);
+  EXPECT_EQ(manager->get_checkpoint_tranc_id(), 1u);
+  EXPECT_EQ(manager->get_flushed_tranc_ids(),
+            (std::set<uint64_t>{1, 3, 4, 5}));
+  EXPECT_TRUE(manager->is_aborted(4));
+  EXPECT_GT(engine->memtable.get_total_size(), 0u);
+  EXPECT_FALSE(engine->get("K", 0).has_value());
+  EXPECT_EQ(engine->get("pending", 0),
+            std::make_optional(std::make_pair(std::string("value-2"), uint64_t{2})));
+
+  EXPECT_EQ(engine->flush(), 2u);
+  EXPECT_EQ(engine->memtable.get_total_size(), 0u);
+  EXPECT_EQ(manager->get_checkpoint_tranc_id(), 5u);
+  EXPECT_EQ(manager->get_flushed_tranc_ids(), (std::set<uint64_t>{5}));
+  EXPECT_TRUE(manager->is_aborted(4));
 }
 
 // 目的：空管理器也保存下一个 ID 和初始检查点，直接采用固定布局，不写格式标识。

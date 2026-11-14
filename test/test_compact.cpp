@@ -57,6 +57,11 @@ static void write_filler_keys(LSMEngine &eng, TranManager &mgr, int count,
   }
 }
 
+// 目的：验证普通写入和删除在正常关闭、重开后保持存在性。
+// 场景：写入 100000 个补零至六位的 key（如 key000001），并执行 9999 次删除。
+// 预期：重开后存活 key 仍存在，已删除及从未写入的 key 不存在。
+//       本用例没有逐项比较存活 value，也没有断言 compaction 必须发生；
+//       专门的合并／多版本场景由本套件其他用例验证。
 TEST_F(CompactTest, Persistence) {
   std::unordered_map<std::string, std::string> kvs;
   int num = 100000;
