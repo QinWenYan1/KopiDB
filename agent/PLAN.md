@@ -1,6 +1,6 @@
 # KopiDB 当前计划
 
-最后更新：2026-11-14。
+最后更新：2026-11-15。
 
 ## 目标：Lab 7 WiscKey 键值分离
 
@@ -31,7 +31,7 @@
 - [ ] 直接联动复核 `tail_offset()`、`sync()`、`del_vlog()`：底层 StdFile 共用 fstream，协调同一对象的定位、读取和追加；检查 sync 返回值的处理。它们不是默认全部重写的 Lab 桩；确需修改时先说明调用依据。
 - [ ] 测试随函数推进：open 独立测试已补充并通过；追加／重开续写／二进制／长度／并发测试随后补齐。原有 3 项 VLog 联合测试依赖 append/read_value，本轮未运行，不因 open 通过就宣称 VLog 已完成。
 
-当前修改范围：`src/vlog/vlog.cpp` 中 `VLog::read_value`；不需要新增成员、改声明、文件格式或调用方。读取 key_len 后用它和 value_size 计算整条记录含 CRC 的长度，边界检查通过才读取；使用与 append 相同的 mutex，读取结束后 unique_lock 提前解锁，长度核对和 CRC 计算只使用本地缓冲区。长度或 CRC 不匹配抛 runtime_error，越界／截断抛 out_of_range。CRC 用于检测损坏，不提供纠错或断电持久性保证。辅助函数的共享 fstream 访问随后复核，Lab 7.1 注释标注仍需补齐。
+当前修改范围：按用户最新要求，在 `src/vlog/vlog.cpp` 现有 `VLog::read_value` 上局部增加校验，保留 lock_guard 及 key_len/header_size/remaining 的计算，仅替换尾部边界检查到 return；不改声明、成员、文件格式或调用方。用 key_len 和 value_size 计算整条记录含 CRC 的长度，边界检查通过才读取；CRC 及长度核对均沿用现有锁范围，不要求改用 unique_lock。长度或 CRC 不匹配抛 runtime_error，越界／截断抛 out_of_range。CRC 用于检测损坏，不提供纠错或断电持久性保证。辅助函数的共享 fstream 访问随后复核，Lab 7.1 注释标注仍需补齐。
 
 2026-11-14 方案调整依据：Lab／作者参考跳过读取 CRC；用户明确要求加入校验。写入校验码本身不能发现后来发生的内容变化，SST 的校验只覆盖其存储内容，不能代替 VLog 校验；不采用文档中“写入 CRC 就保证完整性”的解释。完整记录本来就保存 CRC，因此本轮只调整读取函数及对应测试。
 
@@ -68,3 +68,5 @@
 2026-11-14 append 修正后复测：新增 65536 字节二进制 value 场景，检查完整 4 字节长度与全部 payload；构建成功，`VLogOpenTest.*:VLogAppendTest.*` **7/7 通过**（open 3、append 4）。运行期间业务源码哈希一致，测试全部使用独占临时目录，未干预用户 test_lsm。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-vlog-append-recheck-ricj1pqk`。read_value 草案另存临时文件，仅通过语法检查，功能测试待用户实现后进行；助手未改业务源码。
 
 2026-11-14 CRC 专项：新增 `VLogReadTest` 7 项，覆盖独立固定样本、65536 字节二进制值／空值／不同偏移与重开、key/value/CRC 与长度字段损坏、引用长度不符、截断和极端偏移。当前仓库未加 CRC 的 read_value **3/7 通过，4 项失败**；将聊天草案保存到临时文件，独立编译该对象替代链接中的 libvlog 后，open/append/read 专项 **14/14 通过**。只运行这些独占目录测试，未运行旧固定 /tmp 用例或用户 test_lsm；源码前后哈希一致，助手未改业务源码。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-vlog-crc-draft-6e_ieqce`，包含基线／草案 JSON、完整编译链接及运行命令、日志与业务源码哈希。草案验证不代表用户尚未加入的代码已验收。
+
+2026-11-15：用户要求基于现有实现局部追加 CRC。修订草案只替换函数尾部，保留原 lock_guard 和头部计算；临时构建再次 **14/14 通过**，业务源码哈希未变。沿用上述证据目录，新增 `vlog-crc-minimal.cpp`、`minimal-commands.json`、`minimal-results.json` 及日志；仍等待用户手动加入后复核。

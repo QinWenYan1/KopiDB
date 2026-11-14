@@ -1,6 +1,7 @@
 #include "vlog/vlog.h"
 #include "spdlog/spdlog.h"
 #include "utils/files.h"
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -139,19 +140,32 @@ std::string VLog::read_value(uint64_t offset, uint32_t value_size) {
       sizeof(uint16_t) + static_cast<uint64_t>(key_len) + sizeof(uint32_t);
   const uint64_t remaining = file_size - offset;
 
-  // 先确认能跳过头部，再检查剩余字节够不够读取 value
-  // SST 引用已提供 value_size，本节按 Lab 直接使用这个长度
-  if (header_size > remaining || value_size > remaining - header_size)
-    throw std::out_of_range("VLog::read_value: value exceeds file size");
+  // 4. 读取整条记录，范围必须包含最后的 4 字节 CRC
+  // 不能只检查 value 是否完整，否则 CRC 缺失时仍可能返回数据
+  const uint64_t record_size = header_size + static_cast<uint64_t>(value_size) + sizeof(uint32_t); 
+  if(record_size > remaining)
+    throw std::out_of_range("VLog::read_value: incomplete record");
 
-  // 4. 只读取 value，不把后面的 CRC 当作 value 返回
-  // 这里沿用 Lab 的读取策略，不做 CRC 校验
-  // 上面的边界检查也不等于内容完整性校验
-  const uint64_t value_offset = offset + header_size;
-  auto value_bytes = file_.read_to_slice(value_offset, value_size);
+  auto record = file_.read_to_slice(offset, static_cast<size_t>(record_size)); 
 
-  // 按字节区间构造字符串，保留 value 中的空字节
-  return std::string(value_bytes.begin(), value_bytes.end());
+  // 5. 核对 VLog 中保存的 value 长度与 SST 引用给出的长度
+  // 二者不一致时，按 value_size 找到的 CRC 位置也可能不正确
+  uint32_t stored_value_size = 0; 
+  std::memcpy(&stored_value_size, record.data() + sizeof(uint16_t) + key_len, sizeof(uint32_t)); 
+  if (stored_value_size != value_size)
+    throw std::runtime_error("VLog::read_value: value length mismatch");
+
+  // 6. 取出末尾保存的 CRC，再对它前面的全部字节重新计算
+  // 覆盖范围是 key_len、key、value_len 和 value，不包含 CRC 自身
+  const size_t crc_offset = record.size() - sizeof(uint32_t); 
+  uint32_t stored_crc = 0; 
+  std::memcpy(&stored_crc, record.data()+crc_offset, sizeof(uint32_t)); 
+
+  if (crc32_compute(record.data(), crc_offset) != stored_crc)
+    throw std::runtime_error("VLog::read_value: CRC mismatch");
+
+  // 7. 校验通过后，返回头部结束到 CRC 开始之间的 value 字节
+  return std::string(record.begin() + header_size, record.begin() + crc_offset);
 }
 
 uint64_t VLog::tail_offset() const {
