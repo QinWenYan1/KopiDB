@@ -142,24 +142,26 @@ std::string VLog::read_value(uint64_t offset, uint32_t value_size) {
 
   // 4. 读取整条记录，范围必须包含最后的 4 字节 CRC
   // 不能只检查 value 是否完整，否则 CRC 缺失时仍可能返回数据
-  const uint64_t record_size = header_size + static_cast<uint64_t>(value_size) + sizeof(uint32_t); 
-  if(record_size > remaining)
+  const uint64_t record_size =
+      header_size + static_cast<uint64_t>(value_size) + sizeof(uint32_t);
+  if (record_size > remaining)
     throw std::out_of_range("VLog::read_value: incomplete record");
 
-  auto record = file_.read_to_slice(offset, static_cast<size_t>(record_size)); 
+  auto record = file_.read_to_slice(offset, static_cast<size_t>(record_size));
 
   // 5. 核对 VLog 中保存的 value 长度与 SST 引用给出的长度
   // 二者不一致时，按 value_size 找到的 CRC 位置也可能不正确
-  uint32_t stored_value_size = 0; 
-  std::memcpy(&stored_value_size, record.data() + sizeof(uint16_t) + key_len, sizeof(uint32_t)); 
+  uint32_t stored_value_size = 0;
+  std::memcpy(&stored_value_size, record.data() + sizeof(uint16_t) + key_len,
+              sizeof(uint32_t));
   if (stored_value_size != value_size)
     throw std::runtime_error("VLog::read_value: value length mismatch");
 
   // 6. 取出末尾保存的 CRC，再对它前面的全部字节重新计算
   // 覆盖范围是 key_len、key、value_len 和 value，不包含 CRC 自身
-  const size_t crc_offset = record.size() - sizeof(uint32_t); 
-  uint32_t stored_crc = 0; 
-  std::memcpy(&stored_crc, record.data()+crc_offset, sizeof(uint32_t)); 
+  const size_t crc_offset = record.size() - sizeof(uint32_t);
+  uint32_t stored_crc = 0;
+  std::memcpy(&stored_crc, record.data() + crc_offset, sizeof(uint32_t));
 
   if (crc32_compute(record.data(), crc_offset) != stored_crc)
     throw std::runtime_error("VLog::read_value: CRC mismatch");
