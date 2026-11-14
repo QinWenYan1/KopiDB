@@ -10,6 +10,7 @@
 #include <fstream>
 #include <gtest/gtest.h>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -122,6 +123,60 @@ TEST_F(VLogOpenTest, ThrowsWhenParentDirectoryDoesNotExist) {
 
   EXPECT_FALSE(std::filesystem::exists(parent));
   EXPECT_FALSE(std::filesystem::exists(path));
+}
+
+// 复用独占临时目录；这些测试直接检查文件，不依赖 read_value 的实现。
+class VLogAppendTest : public VLogOpenTest {};
+
+TEST_F(VLogAppendTest, WritesRecordLayoutAndChecksum) {
+  // 当前小端平台：k/abc 应占 2+1+4+3+4=14 字节。
+  // 固定样本的 CRC32 为 0x7a443de8（用独立的 zlib CRC32 核对），
+  // 逐字节验证长度字段宽度、字段位置和校验值，避免写读两端同错仍通过。
+  const auto path = dir_ / "vlog.data";
+  {
+    auto vlog = VLog::open(path.string());
+    EXPECT_EQ(vlog->append("k", "abc"), 0u);
+    EXPECT_EQ(vlog->tail_offset(), 14u);
+  }
+
+  std::ifstream input(path, std::ios::binary);
+  ASSERT_TRUE(input.is_open());
+  const std::vector<uint8_t> actual{std::istreambuf_iterator<char>(input),
+                                   std::istreambuf_iterator<char>()};
+  ASSERT_FALSE(input.bad());
+  const std::vector<uint8_t> expected{
+      0x01, 0x00, 0x6b, 0x03, 0x00, 0x00, 0x00,
+      0x61, 0x62, 0x63, 0xe8, 0x3d, 0x44, 0x7a};
+  EXPECT_EQ(actual, expected);
+}
+
+TEST_F(VLogAppendTest, ContinuesAtPreviousRecordEndAfterReopen) {
+  // 第一条记录占 19 字节；关闭重开后，第二条必须紧接其后。
+  // 第二条含空字节和高位字节，长度为 13，不能按 C 字符串截断。
+  const auto path = dir_ / "vlog.data";
+  {
+    auto vlog = VLog::open(path.string());
+    EXPECT_EQ(vlog->append("a", "12345678"), 0u);
+    EXPECT_EQ(vlog->tail_offset(), 19u);
+  }
+  {
+    auto vlog = VLog::open(path.string());
+    EXPECT_EQ(vlog->tail_offset(), 19u);
+    EXPECT_EQ(vlog->append("b", std::string("\0\xff", 2)), 19u);
+    EXPECT_EQ(vlog->tail_offset(), 32u);
+  }
+  EXPECT_EQ(std::filesystem::file_size(path), 32u);
+}
+
+TEST_F(VLogAppendTest, RejectsOversizedKeyWithoutChangingFile) {
+  // key 长度字段只能保存 uint16_t；拒绝后文件应保持空，
+  // 不能把无法表示的记录部分写入或悄悄截短 key。
+  auto vlog = VLog::open((dir_ / "vlog.data").string());
+  const std::string oversized_key(
+      static_cast<size_t>(std::numeric_limits<uint16_t>::max()) + 1, 'k');
+
+  EXPECT_THROW(vlog->append(oversized_key, "v"), std::length_error);
+  EXPECT_EQ(vlog->tail_offset(), 0u);
 }
 
 TEST(VLogAppendRead, Single) {

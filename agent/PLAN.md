@@ -8,7 +8,7 @@
 
 用户手写业务源码和头文件，助手逐函数提供中文注释、检查实现、补测试及维护记录。已有函数体也须按 Lab 独立推导；已验收的无关逻辑不整段重写。Redis 移除的独立代写授权已结束。
 
-进度：**0%（0/4 阶段验收）**。`VLog::open` 已通过代码检查及 3 项专项测试；VLog 阶段尚未完成。当前函数：`VLog::append`，草案在聊天中交付，等待用户实现。
+进度：**0%（0/4 阶段验收）**。`VLog::open` 已通过代码检查及 3 项专项测试；VLog 阶段尚未完成。当前函数：`VLog::append`，用户已实现，检查发现两处编码笔误；新增专项测试 1/3 通过，修正后复测再进入 read_value。
 
 ## 阶段与验收标准
 
@@ -26,7 +26,7 @@
 文件：`include/vlog/vlog.h`、`src/vlog/vlog.cpp`。
 
 - [x] `VLog::open(const std::string &path)`：复用 FileObj 创建／非截断打开；失败传播异常。用户实现已检查，创建空文件、保留二进制内容后重开、父目录不存在时抛异常共 3/3 通过。函数上方残留的 Lab 6.1 注释应改为 Lab 7.1，属于非阻塞文字修正。
-- [ ] `VLog::append(const std::string &key, const std::string &value)`：按 `[key_len:u16][key][value_len:u32][value][crc:u32]` 编码，检查长度可表示；CRC 覆盖此前全部字段；取得尾偏移并追加整条记录，返回记录起点。
+- [ ] `VLog::append(const std::string &key, const std::string &value)`：用户实现的锁范围、长度检查及追加失败处理符合方案；当前 value_len 误声明为 uint16_t，应为 uint32_t，记录总长度误用 sizeof(value.size())，应为 value.size()。补直接包含 <limits>。这两处修正前不进入 read_value。
 - [ ] `VLog::read_value(uint64_t offset, uint32_t value_size)`：按记录头定位 value，返回指定长度的字节；说明长度／文件边界和 CRC 的实际读取策略，不把“写入了 CRC”解释为“读取已验证完整性”。
 - [ ] 直接联动复核 `tail_offset()`、`sync()`、`del_vlog()`：底层 StdFile 共用 fstream，协调同一对象的定位、读取和追加；检查 sync 返回值的处理。它们不是默认全部重写的 Lab 桩；确需修改时先说明调用依据。
 - [ ] 测试随函数推进：open 独立测试已补充并通过；追加／重开续写／二进制／长度／并发测试随后补齐。原有 3 项 VLog 联合测试依赖 append/read_value，本轮未运行，不因 open 通过就宣称 VLog 已完成。
@@ -60,3 +60,5 @@
 2026-11-14：`xmake build -j 2 test_wisckey` 成功；独立临时目录内仅运行 `--gtest_filter=VLogOpenTest.*`，**3/3 通过，零失败／禁用**。新增测试位于 `test/test_wisckey.cpp`，使用原子创建的独占临时目录，不依赖 append/read_value，不改原有用例。失败场景中的打开错误日志是预期异常，测试通过。
 
 证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-vlog-open-review-n6kzzsdd`，包含构建／测试日志、GTest JSON、命令和业务源码前后哈希（保持一致）。append 草案仅在临时文件通过语法检查，尚未做功能验收；助手未改业务源码。没有停止、重启或运行用户的 test_lsm，也没有访问其测试数据。
+
+2026-11-14 append 初次检查：构建成功，独占临时目录内运行新增 `VLogAppendTest.*`，**1/3 通过、2 项失败**。超长 key 拒绝且不改文件通过；固定记录布局／CRC、重开续写偏移失败。k/abc 应为 14 字节，实际为 17 字节；value_len 字段实际占 2 字节，与设计的 4 字节不符。仅测试 value 长度不超过 8 的安全输入，没有执行当前实现会越界的大值写入。原有依赖 read_value 的测试未运行，未干预用户 test_lsm。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-vlog-append-review-4__jgw16`；构建／测试日志、JSON 和业务源码哈希已保存，测试期间代码稳定，助手未改业务源码。

@@ -64,13 +64,13 @@ uint64_t VLog::append(const std::string &key, const std::string &value) {
     throw std::length_error("VLog::append: value is too large");
 
   const uint16_t key_len = static_cast<uint16_t>(key.size());
-  const uint16_t value_len = static_cast<uint32_t>(value.size());
+  const uint32_t value_len = static_cast<uint32_t>(value.size());
 
   // 2. 先在本次调用自己的缓冲区中编码，不访问共享文件
   // 布局：[key长度:2][key][value长度:4][value][CRC:4]
   // 用 size_t 计算总长度，避免用窄整数求和时溢出
   const size_t record_size = sizeof(key_len) + key.size() + sizeof(value_len) +
-                             sizeof(value.size()) + sizeof(uint32_t);
+                             value.size() + sizeof(uint32_t);
 
   std::vector<uint8_t> buf(record_size);
   size_t pos = 0;
