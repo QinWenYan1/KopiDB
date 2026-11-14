@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -93,14 +94,22 @@ uint64_t VLog::append(const std::string &key, const std::string &value) {
     const uint32_t crc = crc32_compute(buf.data(), pos); 
     std::memcpy(buf.data() + pos, &crc, sizeof(crc)); 
 
+    // 4. 从读取文件尾位置到写完整条记录，必须持有同一把锁
+    // 否则两个写线程可能都看到文件长 100，返回相同的 offset
+    // 编码在锁外完成，可以缩短其他写线程等待文件锁的时间
+    std::lock_guard<std::mutex> lock(append_mtx_); 
+    const uint64_t offset = static_cast<uint64_t>(file_.size()); 
 
+    // offset = file_.size() (追加前的文件大小即为本次记录的起始位置)
+    if(!file_.append(buf))
+        throw std::runtime_error("VLog::append: failed to write record");
 
+    spdlog::trace("VLog::append: wrote record at offset={}, key_len={}, "
+            "val_len={}", offset, key_len, value_len);
 
-
-    // ? CRC32 覆盖除自身之外的所有字段
-    // ? 注意: 需要加 append_mtx_ 互斥锁
-    // ? offset = file_.size() (追加前的文件大小即为本次记录的起始位置)
-
+    // 返回整条记录的起点，不是 value 的起点。
+    // 后续 read_value 会先读取 key_len，再跳过 key 和 value_len。
+    return offset;
 }
 
 std::string VLog::read_value(uint64_t offset, uint32_t value_size) {
