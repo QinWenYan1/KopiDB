@@ -493,7 +493,7 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   // 5. extra information 段: 老格式 24B; WiscKey 模式 26B (多一个storage_mode +
   // 魔数)
   //    [meta_offset:u32][bloom_offset:u32][min_tranc:u64][max_tranc:u64]
-  size_t footer_size = (storage_mode_ == 1) ? 26 : 24;
+  size_t footer_size = (storage_mode_ == 1) ? WISCKEY_FOOTER_SIZE : OLD_FOOTER_SIZE;
   size_t footer_base = data.size();
   data.resize(footer_base + footer_size);
   uint8_t *p = data.data() + footer_base;
@@ -508,7 +508,7 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   if (storage_mode_ == 1) {
     data[data.size() - 2] = storage_mode_;
     // 'k'/0x4B 魔数 放入到对应位置 (WiscKey lab 在定义正式常量)
-    data[data.size() - 1] = 0x4B;
+    data[data.size() - 1] = WISCKEY_MAGIC;
   }
 
   // 6. 先刷新 VLog 中的原值，再创建保存引用的 SST 文件
