@@ -621,6 +621,122 @@ TEST_F(VLogReopen, PersistAndContinue) {
 
 // ---- SST WiscKey tests -----------------------------------------------
 
+class SSTBuilderWiscKeyTest : public VLogOpenTest {};
+
+TEST_F(SSTBuilderWiscKeyTest, ZeroThresholdKeepsOrdinaryModeWithAnyVLog) {
+  const std::string value = "123456789012";
+  for (bool has_vlog : {false, true}) {
+    SCOPED_TRACE(has_vlog);
+    const std::string suffix = has_vlog ? "with-vlog" : "without-vlog";
+    const auto vlog_path = dir_ / (suffix + ".data");
+    const auto sst_path = dir_ / (suffix + ".sst");
+    auto vlog = has_vlog ? VLog::open(vlog_path.string()) : nullptr;
+    auto cache = make_cache();
+
+    SSTBuilder builder(4096, true, vlog, 0);
+    builder.add("key", value, 1);
+    auto sst = builder.build(0, sst_path.string(), cache);
+    ASSERT_FALSE(sst->is_wisckey());
+    auto it = sst->get("key", 1);
+    ASSERT_FALSE(it.is_end());
+    EXPECT_EQ(it.value(), value);
+
+    // 阈值为零时保存普通格式，12 字节原文在无 VLog 重开后仍须原样返回。
+    auto reopened = SST::open(
+        0, FileObj::open(sst_path.string(), false), make_cache());
+    ASSERT_FALSE(reopened->is_wisckey());
+    auto reopened_it = reopened->get("key", 1);
+    ASSERT_FALSE(reopened_it.is_end());
+    EXPECT_EQ(reopened_it.value(), value);
+    if (has_vlog) {
+      EXPECT_EQ(vlog->tail_offset(), 0u);
+      EXPECT_EQ(std::filesystem::file_size(vlog_path), 0u);
+    } else {
+      EXPECT_FALSE(std::filesystem::exists(vlog_path));
+    }
+  }
+}
+
+TEST_F(SSTBuilderWiscKeyTest, RejectsNonzeroThresholdWithoutVLog) {
+  for (size_t threshold : std::array<size_t, 4>{1, 12, 13, 64}) {
+    SCOPED_TRACE(threshold);
+    for (bool has_bloom : {false, true}) {
+      SCOPED_TRACE(has_bloom);
+      EXPECT_THROW(SSTBuilder(4096, has_bloom, nullptr, threshold),
+                   std::invalid_argument);
+    }
+  }
+}
+
+TEST_F(SSTBuilderWiscKeyTest, PositiveThresholdPreservesModeAndDependencies) {
+  for (size_t threshold : std::array<size_t, 4>{1, 12, 13, 64}) {
+    SCOPED_TRACE(threshold);
+    for (bool has_bloom : {false, true}) {
+      SCOPED_TRACE(has_bloom);
+      const std::string suffix =
+          std::to_string(threshold) + (has_bloom ? "-bloom" : "-plain");
+      auto vlog = VLog::open((dir_ / (suffix + ".data")).string());
+      SSTBuilder builder(4096, has_bloom, vlog, threshold);
+      EXPECT_EQ(vlog->tail_offset(), 0u);
+
+      // 短值均小于 12 字节；分离值严格超过传入阈值，单独检查构造参数传递。
+      const std::string inline_value(std::min(threshold, size_t{11}), 'i');
+      const std::string separated_value(threshold + 1, 'v');
+      builder.add("aaa", inline_value, 1);
+      EXPECT_EQ(vlog->tail_offset(), 0u);
+      builder.add("bbb", separated_value, 1);
+      EXPECT_EQ(vlog->tail_offset(), 2u + 3u + 4u + separated_value.size() + 4u);
+
+      auto sst = builder.build(0, (dir_ / (suffix + ".sst")).string(),
+                               make_cache());
+      ASSERT_TRUE(sst->is_wisckey());
+      // 调用方释放自己的指针后，构建所得 SST 仍持有读回分离值所需的 VLog。
+      vlog.reset();
+      auto inline_it = sst->get("aaa", 1);
+      ASSERT_FALSE(inline_it.is_end());
+      EXPECT_EQ(inline_it.value(), inline_value);
+      auto separated_it = sst->get("bbb", 1);
+      ASSERT_FALSE(separated_it.is_end());
+      EXPECT_EQ(separated_it.value(), separated_value);
+    }
+  }
+}
+
+TEST_F(SSTBuilderWiscKeyTest, OrdinaryConstructorPreservesBloomOptions) {
+  const std::string value = "123456789012";
+  for (bool has_bloom : {false, true}) {
+    SCOPED_TRACE(has_bloom);
+    const auto path = dir_ / (has_bloom ? "bloom.sst" : "plain.sst");
+    SSTBuilder builder(4096, has_bloom);
+    builder.add("aaa", value, 1);
+    builder.add("zzz", "last", 1);
+    auto sst = builder.build(0, path.string(), make_cache());
+
+    // 普通格式 footer 为 24 字节；Bloom 段为空或存在应与构造选项一致。
+    auto file = FileObj::open(path.string(), false);
+    const auto footer_base = file.size() - 24;
+    const auto bloom_offset = file.read_uint32(file.size() - 20);
+    if (has_bloom) {
+      EXPECT_LT(bloom_offset, footer_base);
+    } else {
+      EXPECT_EQ(bloom_offset, footer_base);
+    }
+
+    auto reopened = SST::open(
+        0, FileObj::open(path.string(), false), make_cache());
+    for (const auto &table : {sst, reopened}) {
+      EXPECT_FALSE(table->is_wisckey());
+      auto first = table->get("aaa", 1);
+      ASSERT_FALSE(first.is_end());
+      EXPECT_EQ(first.value(), value);
+      auto last = table->get("zzz", 1);
+      ASSERT_FALSE(last.is_end());
+      EXPECT_EQ(last.value(), "last");
+      EXPECT_TRUE(table->get("mmm", 1).is_end());
+    }
+  }
+}
+
 TEST(SSTWiscKeyBuildRead, ThresholdSeparation) {
     std::string dir = tmp_dir("sst_wisckey");
     std::string vlog_path = dir + "/vlog.data";
