@@ -322,10 +322,10 @@ SSTBuilder::SSTBuilder(size_t block_size, bool has_bloom,
   // 即使调用的是四参数构造函数，也保持普通模式
   // 否则写入端保存原文，读取端却可能将 12 字节原文当成引用
   if (wisckey_threshold == 0)
-      return; 
+    return;
 
   // 3. 非零阈值表示请求启用 WiscKey，需要有效的 VLog 接收分离的值。
-  if (!vlog) 
+  if (!vlog)
     throw std::invalid_argument("SSTBuilder: WiscKey requires a VLog");
 
   // 4. 保存依赖和阈值，启用 WiscKey 模式。
