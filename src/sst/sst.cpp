@@ -497,13 +497,13 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   size_t footer_base = data.size();
   data.resize(footer_base + footer_size);
   uint8_t *p = data.data() + footer_base;
-  memcpy(p, &meta_offset, sizeof(uint32_t));
+  std::memcpy(p, &meta_offset, sizeof(uint32_t));
   p += sizeof(uint32_t);
-  memcpy(p, &bloom_off, sizeof(uint32_t));
+  std::memcpy(p, &bloom_off, sizeof(uint32_t));
   p += sizeof(uint32_t);
-  memcpy(p, &min_tranc_id_, sizeof(uint64_t));
+  std::memcpy(p, &min_tranc_id_, sizeof(uint64_t));
   p += sizeof(uint64_t);
-  memcpy(p, &max_tranc_id_, sizeof(uint64_t));
+  std::memcpy(p, &max_tranc_id_, sizeof(uint64_t));
 
   if (storage_mode_ == 1) {
     data[data.size() - 2] = storage_mode_;
@@ -511,7 +511,12 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
     data[data.size() - 1] = 0x4B;
   }
 
-  // 6. 整个 data 一次落盘整个 SST
+  // 6. 先刷新 VLog 中的原值，再创建保存引用的 SST 文件
+  // VLog 刷新失败会抛异常，不能继续创建 SST
+  // MemTable::flush_last 会保留待刷盘数据，不提前登记刷盘完成
+  if(storage_mode_ == 1)
+    vlog_->sync(); 
+
   FileObj file = FileObj::create_and_write(path, data);
 
   // 7. 组装 SST 描述对象（SSTBuilder 是 SST 的 friend, 可直接填私有成员）
