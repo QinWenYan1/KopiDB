@@ -933,6 +933,169 @@ TEST_F(SSTBuilderAddTest, KeepsVersionsAndTombstoneTogetherAcrossBlocks) {
   EXPECT_EQ(vlog->tail_offset(), expected_tail);
 }
 
+class SSTBuilderBuildTest : public VLogOpenTest {};
+
+TEST_F(SSTBuilderBuildTest, PreservesFooterAndDependenciesAcrossBuildAndReopen) {
+  const uint64_t base = uint64_t{1} << 40;
+  const std::string value(21, 'v');
+  for (bool wisckey : {false, true}) {
+    SCOPED_TRACE(wisckey);
+    for (bool has_bloom : {false, true}) {
+      SCOPED_TRACE(has_bloom);
+      const auto suffix = std::string(wisckey ? "wisckey" : "ordinary") +
+                          (has_bloom ? "-bloom" : "-plain");
+      const auto path = dir_ / (suffix + ".sst");
+      const auto vlog_path = dir_ / (suffix + ".data");
+      std::weak_ptr<VLog> retained_vlog;
+      std::shared_ptr<SST> sst;
+      {
+        auto vlog = wisckey ? VLog::open(vlog_path.string()) : nullptr;
+        retained_vlog = vlog;
+        auto builder = wisckey ? SSTBuilder(4096, has_bloom, vlog, 1)
+                               : SSTBuilder(4096, has_bloom);
+        builder.add("aaa", value, base + 9);
+        builder.add("bbb", "i", base + 5);
+        builder.add("ccc", "", base + 7);
+        builder.add("zzz", value, base + 3);
+        // build 前不读 VLog 或查询尾位置，刷新必须由 build 完成。
+        sst = builder.build(37, path.string(), make_cache());
+        if (wisckey) {
+          // 两条分离记录各占 2+3+4+21+4=34 字节，独立检查磁盘长度。
+          EXPECT_EQ(std::filesystem::file_size(vlog_path), 68u);
+        }
+      }
+
+      ASSERT_NE(sst, nullptr);
+      auto file = FileObj::open(path.string(), false);
+      const size_t footer_size = wisckey ? 26 : 24;
+      ASSERT_GE(file.size(), footer_size);
+      const size_t footer_base = file.size() - footer_size;
+      const auto meta_offset = file.read_uint32(footer_base);
+      const auto bloom_offset = file.read_uint32(footer_base + 4);
+      ASSERT_LT(meta_offset, bloom_offset);
+      if (has_bloom) {
+        ASSERT_LT(bloom_offset, footer_base);
+      } else {
+        // 关闭 Bloom 时，bloom_offset 恰好位于 24B/26B footer 起点。
+        ASSERT_EQ(bloom_offset, footer_base);
+      }
+      EXPECT_EQ(file.read_uint64(footer_base + 8), base + 3);
+      EXPECT_EQ(file.read_uint64(footer_base + 16), base + 9);
+      const auto metadata = BlockMeta::decode_meta_from_slice(
+          file.read_to_slice(meta_offset, bloom_offset - meta_offset));
+      ASSERT_EQ(metadata.size(), 1u);
+      EXPECT_EQ(metadata.front().offset, 0u);
+      EXPECT_EQ(metadata.front().first_key, "aaa");
+      EXPECT_EQ(metadata.front().last_key, "zzz");
+      if (wisckey) {
+        EXPECT_EQ(file.read_uint8(footer_base + 24), 1u);
+        EXPECT_EQ(file.read_uint8(footer_base + 25), 0x4bu);
+        // builder 与调用方指针都已销毁，返回的 SST 仍须持有 VLog。
+        EXPECT_FALSE(retained_vlog.expired());
+      }
+
+      // open 独立重开 VLog 与 SST，不借用 build 保留的 VLog 对象或块缓存。
+      auto reopened_vlog = wisckey ? VLog::open(vlog_path.string()) : nullptr;
+      const std::weak_ptr<VLog> reopened_dependency = reopened_vlog;
+      auto reopened = SST::open(37, FileObj::open(path.string(), false),
+                                make_cache(), reopened_vlog);
+      reopened_vlog.reset();
+      if (wisckey) EXPECT_FALSE(reopened_dependency.expired());
+
+      for (const auto &table : {sst, reopened}) {
+        ASSERT_NE(table, nullptr);
+        EXPECT_EQ(table->is_wisckey(), wisckey);
+        EXPECT_EQ(table->get_sst_id(), 37u);
+        EXPECT_EQ(table->get_first_key(), "aaa");
+        EXPECT_EQ(table->get_last_key(), "zzz");
+        EXPECT_EQ(table->sst_size(), file.size());
+        ASSERT_EQ(table->num_blocks(), 1u);
+        EXPECT_EQ(table->get_tranc_id_range(),
+                  std::make_pair(base + 3, base + 9));
+        auto first = table->get("aaa", base + 9);
+        ASSERT_FALSE(first.is_end());
+        EXPECT_EQ(first.value(), value);
+        EXPECT_EQ(first.get_cur_tranc_id(), base + 9);
+        auto short_value = table->get("bbb", base + 9);
+        ASSERT_FALSE(short_value.is_end());
+        EXPECT_EQ(short_value.value(), "i");
+        auto tombstone = table->get("ccc", base + 9);
+        ASSERT_FALSE(tombstone.is_end());
+        EXPECT_TRUE(tombstone.value().empty());
+        auto last = table->get("zzz", base + 9);
+        ASSERT_FALSE(last.is_end());
+        EXPECT_EQ(last.value(), value);
+        EXPECT_EQ(last.get_cur_tranc_id(), base + 3);
+        EXPECT_TRUE(table->get("aaa", base + 8).is_end());
+      }
+    }
+  }
+}
+
+TEST_F(SSTBuilderBuildTest, RejectsEmptyBuilderWithoutCreatingSST) {
+  auto vlog = VLog::open((dir_ / "empty.data").string());
+  for (bool wisckey : {false, true}) {
+    SCOPED_TRACE(wisckey);
+    const auto path = dir_ / (wisckey ? "wisckey.sst" : "ordinary.sst");
+    auto builder = wisckey ? SSTBuilder(4096, false, vlog, 1)
+                           : SSTBuilder(4096, false);
+    EXPECT_THROW(builder.build(0, path.string(), make_cache()),
+                 std::runtime_error);
+    EXPECT_FALSE(std::filesystem::exists(path));
+  }
+}
+
+#ifndef _WIN32
+class SSTBuilderBuildDeathTest : public VLogOpenTest {};
+
+TEST_F(SSTBuilderBuildDeathTest, StopsBeforeCreatingSSTWhenVLogSyncFails) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_EXIT(
+      {
+        // threadsafe 子进程会重建夹具；_exit 前清理它自己的独占目录。
+        const auto exit_child = [&](int code) {
+          std::error_code error;
+          std::filesystem::remove_all(dir_, error);
+          _exit(error ? 99 : code);
+        };
+        try {
+          const auto vlog_path = dir_ / "values.data";
+          const auto sst_path = dir_ / "result.sst";
+          auto vlog = VLog::open(vlog_path.string());
+          SSTBuilder builder(4096, false, vlog, 1);
+          try {
+            // 32 字节记录先成功进入缓冲，不能把 add 失败当作 build 失败。
+            builder.add("k", std::string(21, 'v'), 1);
+          } catch (...) {
+            exit_child(94);
+          }
+          if (std::filesystem::file_size(vlog_path) != 0u) exit_child(94);
+
+          // 限制只作用于子进程，且在 add 成功后才启用。
+          struct rlimit limits;
+          if (getrlimit(RLIMIT_FSIZE, &limits) != 0) exit_child(90);
+          limits.rlim_cur = 0;
+          if (std::signal(SIGXFSZ, SIG_IGN) == SIG_ERR) exit_child(91);
+          if (setrlimit(RLIMIT_FSIZE, &limits) != 0) exit_child(92);
+
+          try {
+            builder.build(0, sst_path.string(), make_cache());
+          } catch (const std::runtime_error &error) {
+            if (std::string(error.what()).find("VLog::sync:") != 0)
+              exit_child(95);
+            exit_child(std::filesystem::exists(sst_path) ? 97 : 0);
+          } catch (...) {
+            exit_child(96);
+          }
+          exit_child(2);
+        } catch (...) {
+          exit_child(93);
+        }
+      },
+      ::testing::ExitedWithCode(0), "");
+}
+#endif
+
 TEST(SSTWiscKeyBuildRead, ThresholdSeparation) {
     std::string dir = tmp_dir("sst_wisckey");
     std::string vlog_path = dir + "/vlog.data";

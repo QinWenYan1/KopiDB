@@ -1,6 +1,6 @@
 # KopiDB 全局问题账本
 
-最后更新：2026-11-14。A1～A5、A9 已解决，A10 已在当前版本数据范围解决，A11 已完成优化及回归验证。当前 Lab 5.5 适用的 497 项测试均已完成；A6/A8 保持待验证，A7 保持待排期，不能据此宣称全库无缺陷。新增 A12 为既有 Python SDK 的 macOS 动态库定位问题，留到用户计划中的打包阶段；未作为 Redis 移除的附带修复。验收与性能数据见相应条目，项目状态见 [STATE.md](STATE.md)。
+最后更新：2026-11-16。A1～A5、A9 已解决，A10 已在当前版本数据范围解决，A11 已完成优化及回归验证。当前 Lab 5.5 适用的 497 项测试均已完成；A6/A8 保持待验证，A7 保持待排期，不能据此宣称全库无缺陷。新增 A12 为既有 Python SDK 的 macOS 动态库定位问题，留到用户计划中的打包阶段；未作为 Redis 移除的附带修复。验收与性能数据见相应条目，项目状态见 [STATE.md](STATE.md)。
 
 本文件持续记录全局发现，规则见 [audit-to-plan](skills/audit-to-plan/SKILL.md)。选择问题开始处理时，在 [PLAN.md](PLAN.md) 按编号展开执行步骤，并在这里更新状态和计划链接；验收后保留原条目，补充解决日期与证据。项目现状和全局约定见 [STATE.md](STATE.md)。
 
@@ -30,6 +30,8 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 | [A10](#a10) | 已解决（当前版本数据） | P1 | 普通写入的完成标记集中进同一 SST 块，6000 个独立 key 无法刷盘 | MemTable 刷盘与 Engine 完成通知；旧 SST 兼容另行处理 | 未估时 |
 | [A11](#a11) | 已解决（本批倒序扫描） | P2 | 单批完成 ID 倒序通知导致待处理表重复扫描 | Engine::flush 反向访问完成 ID | 代码与定向验证约 5～10 分钟，大规模回归另计 |
 | [A12](#a12) | 已复现，留待打包阶段 | P2 | macOS Python 扩展缺少同目录动态库定位，包加载器与构建后缀不一致 | xmake 的平台库路径、SDK 包文件名与加载器 | 未估时 |
+| [A13](#a13) | 已复现，首版后处理 | P1（损坏输入） | 元数据数量未校验，单 bit 损坏后把有数据的 SST 当空表 | BlockMeta 有界解码与 SST::open 布局验证 | 未估时 |
+| [A14](#a14) | 已复现，首版后处理 | P1（损坏输入） | Bloom 单 bit 损坏导致点查／批查漏读，遍历仍能看到数据 | Bloom 完整性保护或 SST 元信息校验覆盖；需先确定编码方案 | 未估时 |
 
 A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 → A2 → A3 → A4 → 整体验收推进。A5 是接口约束改进建议，已确认随目录 5.2.3 的公开入口初始化整合处理，不计为第五项已确认缺陷，已于 2026-11-08 纳入 [PLAN](PLAN.md) 的阶段⑤，当前实现进度见 A5 条目。每进入一个新修复问题，先在聊天中写 issue 草稿供用户手动发布，再逐函数推进；没有自动创建远程 issue。具体执行与验收标准维护在 PLAN。
 
@@ -277,6 +279,59 @@ A10/A11 最终验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/k
 - 代码依据：`xmake.lua:270` 对所有非 Windows 平台使用 `$ORIGIN`，macOS 未配置相邻动态库的有效查找路径；`xmake.lua:114` 生成 `.so`，`sdk/tinylsm/setup.py:21` 复制 `.so`，而 `sdk/tinylsm/tinylsm/core/__init__.py:19` 的 macOS 分支加载 `.dylib`。后缀不一致通过代码确认，当前未打包 wheel，不把代码核查写成 wheel 实测失败。
 - 后续方向：打包时统一各平台输出、安装和加载约定，验证在干净环境中安装／导入／执行数据库操作。裸扩展设置库路径后通过，不等于安装包已经可直接发布。
 - 本轮未修改 SDK 或相关 rpath 行。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-remove-redis-7tjk4sfe/smoke_python`，同时保留首次失败与显式库路径后的通过日志和命令。
+
+<a id="sst-validation-audit-2026-11-16"></a>
+
+### 2026-11-16：SST 损坏检测的定向全流程核查
+
+**延期决定（2026-11-16）：** 用户明确要求本次发现的损坏检测问题全部先记账、首版上线后再逐项处理，不阻塞现有 Lab 7 主线。包括 A13、A14、下表 WiscKey mode 损坏及相关 footer／元信息校验覆盖。保持未修复状态和复现证据，不增加当前编码变更或额外防护任务；正常文件的 WiscKey 读写衔接仍按原计划完成。
+
+范围：用户询问 open 的 magic／候选偏移／metadata hash 能否防止静默错误，并要求结合整个 DB 流程考虑。本次只核对与该问题相关的公开写入、刷盘、正常关闭、新进程重开、点查／批查／全量及谓词遍历，不是全库审计、并发审计或断电恢复验收。所有损坏均由诊断程序在数据库正常关闭后主动注入到独占目录副本；不代表未损坏文件的普通 CRUD 已出现这些失败。
+
+实验流程：公开 LSM::put → 显式 flush_all → 验证原值 → 正常析构／退出进程 → 复制数据库 → 修改 SST 或 VLog 指定字节 → 新进程重开并调用公开查询。全部场景检查点为 1，WAL::recover 的候选事务数为 0，排除了旧内存对象、BlockCache 和 WAL 回填掩盖现象。open 检测到的异常会经 Engine 构造或查询直接传出；上层不会普遍替校验缺口兜底。
+
+| 注入内容 | 实测结果 |
+| --- | --- |
+| 普通 SST 未损坏对照 | get/get_batch/全量遍历/单键范围均返回原值 |
+| metadata count 1→0，只改 1 bit | SST/DB 打开成功；get/get_batch 返回 nullopt，遍历和范围为空，无异常（A13） |
+| Bloom 目标 bit 1→0，只改 1 bit | SST/DB 打开成功；get/get_batch 返回 nullopt，但全量／范围遍历仍返回原值，无异常（A14） |
+| Bloom 位图全部清零（本样本只有 4 个置位 bit） | 与上一项一致，作为额外诊断变体 |
+| WiscKey 未损坏对照，阈值 64、原值 128B | 公开四种查询均正确返回原值 |
+| WiscKey footer mode 1→0，只改 1 bit | DB 打开成功；公开四种查询均返回 12B 引用而非 128B 原值，无异常 |
+| WiscKey SST 的 Block value 字节翻转 1 bit | DB 能打开，公开 get 抛 Block::decode: CRC32 mismatch |
+| VLog 的 value 字节翻转 1 bit | DB 能打开，公开 get 抛 VLog::read_value: CRC mismatch |
+
+WiscKey mode 的结果原为 Lab 7.2 核查中发现的损坏输入缺口，不另计已验收模块的新缺陷；现已随本批问题明确延期至首版后，不作为当前正常格式重开的验收阻塞。该实验只有正常的大值分离，不依赖尚未配套的 >=12 内联判定，也不是 hash 碰撞。正在开发的 resolve_value 精确引用长度规则仍按原 PLAN 完成，不混算损坏检查问题。
+
+普通 SST 证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-corruption-ifu1fwhk`。包含独立 driver、harness、编译／链接命令、全部标准输出与退出码（runs.json）、原文件布局及逐字节修改（mutations.json）、源码及链接库哈希。
+
+WiscKey 与 CRC 对照证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-validation-audit-mnoojz8t`。包含 driver、配置、构建／编译／链接命令、seed/control/mode_zero/block_byte_changed/vlog_byte_changed 日志、runs.json、mutations.json 和源码前后哈希。先重新构建 test_wisckey 刷新静态库，再链接临时诊断程序；未运行 test_lsm 或完整单元测试套件。两组源码哈希均稳定，业务源码及现有测试集未修改。
+
+诊断成功复现问题不等于正确性验收通过；这些临时诊断用于确认事实，选中修复时应转换为对应正式测试集中的回归用例。
+
+<a id="a13"></a>
+
+### A13：元数据数量损坏后静默漏读
+
+发现日期：2026-11-16。分类：已复现的损坏输入校验缺口；状态：按用户 2026-11-16 决定延期至首版之后，未修复。普通 SST 同样受影响，不归因于尚未完成的 WiscKey。
+
+位置：`src/block/blockmeta.cpp` 的 encode_meta_to_slice／decode_meta_from_slice（当前第 60～69、85～107、133 行），以及 `src/sst/sst.cpp` 的 SST::open（当前第 90～111 行）。metadata hash 只覆盖 entries，不含 num_entries；decode 按数量解析时缺少逐字段剩余长度检查及最终完整消费检查；open 接受空 metadata。
+
+已复现：正常 LSM 写入一个 key 并完整刷盘关闭后，将 SST metadata 数量从 1 改为 0（本样本 byte 44，01→00，仅 1 bit）；文件长度、entries 及 hash、Bloom、footer 全部保持原样。重开未抛异常，SST 块数为 0，公开 get/get_batch 返回不存在，遍历和范围返回空。预期：识别为损坏并报错，不能将有效业务数据静默隐藏。详细流程与证据见上方定向核查记录。
+
+最小方向：BlockMeta 解码先限制数量，再逐字段检查剩余长度，并要求恰好消费 entries 区域；open 校验区段关系、拒绝不可能由 builder 生成的空元数据。可保持现有编码布局修复已复现的 count 问题；这不等于补齐所有元信息 checksum 覆盖。后续可联动修改这些函数；用户已明确本轮不并入 Lab 7.2，保留证据，首版后再确定修复方案。
+
+<a id="a14"></a>
+
+### A14：Bloom 位图损坏导致静默漏读及查询接口不一致
+
+发现日期：2026-11-16。分类：已复现的损坏输入完整性缺口；状态：按用户 2026-11-16 决定延期至首版之后，未修复。正常未损坏 Bloom 的假阳性语义没有改变，本项不是 Bloom 算法在健康数据上产生假阴性。
+
+位置：`src/utils/bloom_filter.cpp:182` 的 decode 校验头部、参数及位图长度，但没有位图 checksum；`src/sst/sst.cpp` 的 get/find_block_idx 在 Bloom 阴性时跳过读取 Block。metadata hash 不覆盖 Bloom，后续 Block CRC 没有执行机会。
+
+已复现：正常公开写入并关闭后，只将目标 key 所需的一个 Bloom bit 从 1 清为 0（本样本 byte 1841，08→00）；其余文件内容及长度不变。重开成功，get/get_batch 返回不存在，全量和单键范围遍历仍能读到正确值，所有接口均无异常。另验证整个 bitmap 清零，结果一致。预期：发现损坏并明确处理，不能继续信任受损 Bloom 给出“key 不存在”的结论。
+
+下一步需要明确校验覆盖与失败策略：可考虑保护 Bloom 本身，或在 SST 层统一保护 metadata（含数量）、Bloom 与 footer；不能靠增加几个偏移范围检查解决这个 bit 损坏问题。涉及编码与旧文件处理的方案要先讨论，不能擅自修改磁盘格式。footer 中合法范围内的事务 ID 变化同样未被现有 checksum 覆盖，仅静态确认、未在本次实验中注入，不将其冒充已复现案例。证据见上方定向核查记录。
 
 ## 验证记录
 
