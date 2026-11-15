@@ -313,19 +313,27 @@ SSTBuilder::SSTBuilder(size_t block_size, bool has_bloom)
 
 SSTBuilder::SSTBuilder(size_t block_size, bool has_bloom,
                        std::shared_ptr<VLog> vlog, size_t wisckey_threshold)
-    : block(block_size), vlog_(std::move(vlog)),
-      wisckey_threshold_(wisckey_threshold), storage_mode_(1),
-      block_size(block_size) {
-  // WiscKey 模式构造函数: vlog 用于大 value 分离存储
-  if (has_bloom) {
-    bloom_filter = std::make_shared<BloomFilter>(
-        TomlConfig::getInstance().getBloomFilterExpectedSize(),
-        TomlConfig::getInstance().getBloomFilterExpectedErrorRate());
-  }
-  meta_entries.clear();
-  data.clear();
-  first_key.clear();
-  last_key.clear();
+    : SSTBuilder(block_size, has_bloom) {
+  // 1. 委托已有的普通构造函数准备 Block 和可选的 Bloom Filter
+  // storage_mode_、vlog_、wisckey_threshold_ 在头文件中已默认初始化
+  // 此时分别为 0、空指针和 0，即普通内联模式
+
+  // 2. 阈值为 0 表示关闭值分离
+  // 即使调用的是四参数构造函数，也保持普通模式
+  // 否则写入端保存原文，读取端却可能将 12 字节原文当成引用
+  if (wisckey_threshold == 0)
+      return; 
+
+  // 3. 非零阈值表示请求启用 WiscKey，需要有效的 VLog 接收分离的值。
+  if (!vlog) 
+    throw std::invalid_argument("SSTBuilder: WiscKey requires a VLog");
+
+  // 4. 保存依赖和阈值，启用 WiscKey 模式。
+  // 哪些 value 需要分离，由后面的 add 按约定判断；
+  // 构造函数本身不会写入 VLog 或创建 SST 文件。
+  vlog_ = std::move(vlog);
+  wisckey_threshold_ = wisckey_threshold;
+  storage_mode_ = 1;
 }
 
 // Lab 3.5 添加键值对
