@@ -22,6 +22,9 @@ static constexpr size_t OLD_FOOTER_SIZE =
 // New WiscKey footer size (26 bytes)
 static constexpr size_t WISCKEY_FOOTER_SIZE = OLD_FOOTER_SIZE + 2;
 
+// 引用布局：[offset:uint64][value_size:uint32]，读写使用同一长度
+static constexpr size_t VLOG_REF_SIZE = sizeof(uint64_t) + sizeof(uint32_t); 
+
 // **************************************************
 // SST
 // **************************************************
@@ -341,9 +344,8 @@ SSTBuilder::SSTBuilder(size_t block_size, bool has_bloom,
 // 每收下一条 entry, last_key 就刷新一次
 void SSTBuilder::add(const std::string &key, const std::string &value,
                      uint64_t tranc_id) {
-  // ? 尝试向 block 添加 entry; 若返回 false (block满) 先调用 finish_block()
-  // 再添加 ? 注意: 相同 key 必须在同一个 block 中 (force_write = key ==
-  // last_key) ? 更新 last_key
+  // 尝试向 block 添加 entry; 若返回 false (block满) 先调用 finish_block()再添加
+  // 注意: 相同 key 必须在同一个 block 中 (force_write = key == last_key) 更新 last_key
 
   // 1.  首个 block 的 first key 只在第一次调用时记录（构造时已 clear）
   //     后续每个新 block 的 first_key 在步骤 6 里更新
@@ -359,21 +361,23 @@ void SSTBuilder::add(const std::string &key, const std::string &value,
   max_tranc_id_ = std::max(max_tranc_id_, tranc_id);
   min_tranc_id_ = std::min(min_tranc_id_, tranc_id);
 
-  // 4.  WiscKey 模式下: 若 value 非空且超过 wisckey_threshold_, 将 value 写入
-  // vlog
+  // 4.  WiscKey 模式下: 若 value 非空超过 wisckey_threshold_ 或等于vlog 引用长度, 将 value 写入 vlog
   //     并将 vlog 引用 [offset:8][size:4] 作为 actual_value
   //
   // WiscKey 是什么: 一种"值分离"设计
-  //  默认模式下 value 跟着 key 一起住进 block（inline）
-  //  但 LSM 的 compaction 会反复重写 SST，大 value
-  //  每次都被原样重搬一遍（写放大） WiscKey 的做法：大 value 不写进
-  //  block，追加到一个专门的日志文件（vlog） block 里只存一张 12 字节的"提货单"
-  //  [offset:8][size:4]，读的时候拿单子去 vlog 取货
-  //  就像搬家：钥匙串随身带，大家具走物流
+  // 默认模式下 value 跟着 key 一起住进 block（inline）
+  // 但 LSM 的 compaction 会反复重写 SST，大 value
+  // 每次都被原样重搬一遍（写放大） WiscKey 的做法：大 value 不写进
+  // block，追加到一个专门的日志文件（vlog） block 里只存一张 12 字节的"提货单"
+  // [offset:8][size:4]，读的时候拿单子去 vlog 取货
+  // 就像搬家：钥匙串随身带，大家具走物流
+  // 
+  // 默认把原始 value 写入 Block
+  // vlog_ref 放在 if 外，保证后面的 block.add_entry 使用它时仍然有效
   const std::string *actual_value = &value;
   std::string vlog_ref;
   if (storage_mode_ == 1 && vlog_ && !value.empty() && wisckey_threshold_ > 0 &&
-      value.size() > wisckey_threshold_) {
+      (value.size() > wisckey_threshold_ || value.size() == VLOG_REF_SIZE)) {
     // 空value (tombstone 删除标记) 永不分离: 没体积还可省白送一次 IO
     // 把 value 本体追加到 vlog
     // 文件末尾，返回写入位置的偏移量——相当于物流揽件后给你的单号
