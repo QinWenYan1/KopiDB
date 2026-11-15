@@ -4,11 +4,13 @@
 #include "sst/sst_iterator.h"
 #include "vlog/vlog.h"
 #include "block/block_cache.h"
+#include "block/block_iterator.h"
 #include "utils/files.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -19,6 +21,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #ifndef _WIN32
@@ -735,6 +738,199 @@ TEST_F(SSTBuilderWiscKeyTest, OrdinaryConstructorPreservesBloomOptions) {
       EXPECT_TRUE(table->get("mmm", 1).is_end());
     }
   }
+}
+
+class SSTBuilderAddTest : public VLogOpenTest {
+protected:
+  static std::string binary_value(size_t length) {
+    std::string value(length, '\0');
+    for (size_t i = 0; i < length; ++i) {
+      value[i] = static_cast<char>((i * 37) % 256);
+    }
+    return value;
+  }
+
+  static void check_raw_value(const std::string &raw,
+                              const std::string &expected,
+                              const std::shared_ptr<VLog> &vlog,
+                              bool separated, uint64_t expected_offset) {
+    if (!separated) {
+      EXPECT_EQ(raw, expected);
+      return;
+    }
+
+    // 直接核对 Block 中的 12 字节引用，不经过尚待配套的 resolve_value。
+    ASSERT_EQ(raw.size(), 12u);
+    uint64_t offset = 0;
+    uint32_t value_size = 0;
+    std::memcpy(&offset, raw.data(), sizeof(offset));
+    std::memcpy(&value_size, raw.data() + sizeof(offset), sizeof(value_size));
+    ASSERT_EQ(offset, expected_offset);
+    ASSERT_EQ(value_size, expected.size());
+    ASSERT_NE(vlog, nullptr);
+    EXPECT_EQ(vlog->read_value(offset, value_size), expected);
+  }
+
+  void check_separation_cases(
+      size_t threshold, const std::vector<std::pair<size_t, bool>> &cases) {
+    SCOPED_TRACE(threshold);
+    const auto suffix = std::to_string(threshold);
+    auto vlog = VLog::open((dir_ / (suffix + ".data")).string());
+    SSTBuilder builder(4096, true, vlog, threshold);
+    std::vector<std::string> values;
+    std::vector<uint64_t> offsets;
+    uint64_t expected_tail = 0;
+    for (size_t i = 0; i < cases.size(); ++i) {
+      SCOPED_TRACE(cases[i].first);
+      const auto key = "key" + std::to_string(i);
+      values.push_back(binary_value(cases[i].first));
+      offsets.push_back(expected_tail);
+      builder.add(key, values.back(), i + 1);
+      if (cases[i].second) {
+        expected_tail += 2 + key.size() + 4 + values.back().size() + 4;
+      }
+      EXPECT_EQ(vlog->tail_offset(), expected_tail);
+    }
+
+    // 本轮只验收 add；由测试显式刷新，不要求 build 已接入 VLog::sync。
+    vlog->sync();
+    auto sst = builder.build(0, (dir_ / (suffix + ".sst")).string(),
+                             make_cache());
+    ASSERT_TRUE(sst->is_wisckey());
+    ASSERT_EQ(sst->num_blocks(), 1u);
+    auto block = sst->read_block(0);
+    ASSERT_EQ(block->size(), cases.size());
+    for (size_t i = 0; i < cases.size(); ++i) {
+      SCOPED_TRACE(cases[i].first);
+      const auto raw = block->get_value_binary("key" + std::to_string(i), 0);
+      ASSERT_TRUE(raw.has_value());
+      check_raw_value(*raw, values[i], vlog, cases[i].second, offsets[i]);
+    }
+    EXPECT_EQ(vlog->tail_offset(), expected_tail);
+  }
+};
+
+TEST_F(SSTBuilderAddTest, ReservesReferenceLengthAtThreshold64) {
+  // 12 字节必须分离；13、63 和恰好等于阈值的 64 字节仍保存完整原文。
+  check_separation_cases(64, {{0, false}, {11, false}, {12, true},
+                              {13, false}, {63, false}, {64, false},
+                              {65, true}});
+}
+
+TEST_F(SSTBuilderAddTest, HandlesSmallThresholdBoundaries) {
+  // 预期逐项列出，独立覆盖严格大于阈值与保留长度相交的边界。
+  check_separation_cases(1, {{0, false}, {1, false}, {2, true},
+                             {11, true}, {12, true}, {13, true}});
+  check_separation_cases(12, {{0, false}, {11, false}, {12, true}, {13, true}});
+  check_separation_cases(13, {{0, false}, {11, false}, {12, true},
+                              {13, false}, {14, true}});
+}
+
+TEST_F(SSTBuilderAddTest, OrdinaryAndZeroThresholdKeepOriginalBytes) {
+  auto vlog = VLog::open((dir_ / "unused.data").string());
+  SSTBuilder ordinary(4096, true);
+  SSTBuilder zero_with_vlog(4096, true, vlog, 0);
+  SSTBuilder zero_without_vlog(4096, false, nullptr, 0);
+  const std::array<SSTBuilder *, 3> builders{
+      &ordinary, &zero_with_vlog, &zero_without_vlog};
+  const std::array<std::string, 3> values{
+      binary_value(12), binary_value(65), std::string{}};
+
+  for (size_t i = 0; i < builders.size(); ++i) {
+    SCOPED_TRACE(i);
+    for (size_t j = 0; j < values.size(); ++j) {
+      builders[i]->add("key" + std::to_string(j), values[j], j + 1);
+      EXPECT_EQ(vlog->tail_offset(), 0u);
+    }
+    auto sst = builders[i]->build(
+        i, (dir_ / (std::to_string(i) + ".sst")).string(), make_cache());
+    ASSERT_FALSE(sst->is_wisckey());
+    ASSERT_EQ(sst->num_blocks(), 1u);
+    auto block = sst->read_block(0);
+    ASSERT_EQ(block->size(), values.size());
+    for (size_t j = 0; j < values.size(); ++j) {
+      const auto raw = block->get_value_binary("key" + std::to_string(j), 0);
+      ASSERT_TRUE(raw.has_value());
+      EXPECT_EQ(*raw, values[j]);
+    }
+    EXPECT_EQ(vlog->tail_offset(), 0u);
+    EXPECT_EQ(std::filesystem::file_size(dir_ / "unused.data"), 0u);
+  }
+}
+
+TEST_F(SSTBuilderAddTest, KeepsVersionsAndTombstoneTogetherAcrossBlocks) {
+  struct Record {
+    std::string key;
+    std::string value;
+    uint64_t tranc_id;
+    bool separated;
+    uint64_t offset;
+  };
+  // 使用超过 32 位的真实版本号，同时检查墓碑、内联值和引用的编码。
+  const uint64_t base = uint64_t{1} << 40;
+  const std::vector<Record> records{
+      {"aaa", binary_value(11), base + 6, false, 0},
+      {"mmm", "", base + 9, false, 0},
+      {"mmm", binary_value(12), base + 7, true, 0},
+      {"mmm", binary_value(13), base + 5, false, 0},
+      {"mmm", binary_value(65), base + 3, true, 25},
+      {"mmm", binary_value(11), base + 1, false, 0},
+      {"zzz", binary_value(64), base + 2, false, 0}};
+  auto vlog = VLog::open((dir_ / "versions.data").string());
+  // 同 key 的版本组实际超过 64 字节，必须强制留在同一块；下个 key 换块。
+  SSTBuilder builder(64, true, vlog, 64);
+  uint64_t expected_tail = 0;
+  for (const auto &record : records) {
+    builder.add(record.key, record.value, record.tranc_id);
+    if (record.separated) {
+      expected_tail += 2 + record.key.size() + 4 + record.value.size() + 4;
+    }
+    EXPECT_EQ(vlog->tail_offset(), expected_tail);
+  }
+  vlog->sync();
+  auto sst = builder.build(0, (dir_ / "versions.sst").string(), make_cache());
+  ASSERT_GE(sst->num_blocks(), 2u);
+  const auto range = sst->get_tranc_id_range();
+  EXPECT_EQ(range.first, base + 1);
+  EXPECT_EQ(range.second, base + 9);
+
+  size_t record_index = 0;
+  size_t group_block = sst->num_blocks();
+  size_t group_versions = 0;
+  for (size_t block_index = 0; block_index < sst->num_blocks(); ++block_index) {
+    SCOPED_TRACE(block_index);
+    auto block = sst->read_block(block_index);
+    for (BlockIterator it(block, size_t{0}, 0, true); !it.is_end(); ++it) {
+      ASSERT_LT(record_index, records.size());
+      const auto &expected = records[record_index++];
+      SCOPED_TRACE(expected.tranc_id);
+      EXPECT_EQ(it->first, expected.key);
+      EXPECT_EQ(it.get_cur_tranc_id(), expected.tranc_id);
+      check_raw_value(it->second, expected.value, vlog, expected.separated,
+                      expected.offset);
+      if (it->first == "mmm") {
+        if (group_versions == 0) {
+          group_block = block_index;
+        }
+        EXPECT_EQ(block_index, group_block);
+        ++group_versions;
+      }
+    }
+  }
+  EXPECT_EQ(record_index, records.size());
+  ASSERT_EQ(group_versions, 5u);
+  auto block = sst->read_block(group_block);
+  auto tombstone = block->get_value_binary("mmm", base + 9);
+  ASSERT_TRUE(tombstone.has_value());
+  EXPECT_TRUE(tombstone->empty());
+  auto inline_value = block->get_value_binary("mmm", base + 6);
+  ASSERT_TRUE(inline_value.has_value());
+  EXPECT_EQ(*inline_value, binary_value(13));
+  auto reference = block->get_value_binary("mmm", base + 4);
+  ASSERT_TRUE(reference.has_value());
+  check_raw_value(*reference, binary_value(65), vlog, true, 25);
+  EXPECT_FALSE(block->get_value_binary("mmm", base).has_value());
+  EXPECT_EQ(vlog->tail_offset(), expected_tail);
 }
 
 TEST(SSTWiscKeyBuildRead, ThresholdSeparation) {
