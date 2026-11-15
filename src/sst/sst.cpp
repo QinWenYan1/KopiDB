@@ -65,10 +65,11 @@ std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
     // 防止巧合：老格式尾字节是 max_tranc_id 的最高字节，恰好恰好 0x4B
     // 理论上可能 双重保险: 按 26B 假设读出候选 meta_offset
     uint32_t meta_off = sst->file.read_uint32(file_size - WISCKEY_FOOTER_SIZE);
+
     // 这个meta offset 必须落在 footer / extra info 前面的位置才算这个
-    // footer_size 的确是 WISCKEY_FOOTER_SIZE: [block][meta][bloom][extra info /
-    // footer] 如果是老格式 24B 那里是 [bloom 最后2字节] -> 不是任何偏移, 是垃圾
-    // → 没有理由 < size-26 这也是格式嗅探的通用套路：magic byte
+    // footer_size 是 WISCKEY_FOOTER_SIZE的话: [block][meta][bloom][extra info / footer] 
+    // 如果是老格式 24B 那里是 [bloom 最后2字节] -> 不是任何偏移, 是垃圾
+    // → 很有可能 < size-26 这也是格式嗅探的通用套路：magic byte
     // 负责立案，布局不变式负责定罪 即使绕开了还有第三道：你自己写的 hash 校验
     if (meta_off < file_size - WISCKEY_FOOTER_SIZE) {
       footer_size = WISCKEY_FOOTER_SIZE;
