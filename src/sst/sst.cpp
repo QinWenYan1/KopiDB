@@ -239,14 +239,18 @@ size_t SST::sst_size() const { return file.size(); }
 size_t SST::get_sst_id() const { return sst_id; }
 
 std::string SST::resolve_value(const std::string &raw_value) const {
-  // WiscKey 模式下: raw_value 是 12 字节的 vlog 引用 [offset:8][size:4]
-  // 普通模式下直接返回 raw_value
+  // 普通模式的 value 原样返回；空 value 是墓碑
+  // WiscKey 模式中，12 字节是引用，其余非空长度是内联值
   if (storage_mode_ == 0 || raw_value.empty()) {
     return raw_value;
   }
-  if (raw_value.size() < 12) {
+  // 写入端已保证：恰好 12 字节的原值也会被分离
+  // 因此 WiscKey SST 中只有恰好等于引用长度的值才需要解引用
+  // 其他长度可能是内联原文，例如阈值 64 时的 13 字节值
+  if (raw_value.size() != VLOG_REF_SIZE) {
     return raw_value;
   }
+
   uint64_t off = 0;
   uint32_t sz = 0;
   memcpy(&off, raw_value.data(), sizeof(uint64_t));
