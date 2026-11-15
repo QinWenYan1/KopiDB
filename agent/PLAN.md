@@ -8,14 +8,14 @@
 
 用户手写业务源码和头文件，助手逐函数提供中文注释、检查实现、补测试及维护记录。已有函数体也须按 Lab 独立推导；已验收的无关逻辑不整段重写。Redis 移除的独立代写授权已结束。
 
-进度：**0%（0/4 阶段验收）**。用户源码的 `open/append/read_value` 已通过代码检查和 18/18 VLog 测试，包括 CRC、并发读写与原有用例。阶段①尚有 sync 辅助收尾；当前函数为 `VLog::sync`，草案在聊天中交付，等待用户实现。
+进度：**25%（1/4 阶段验收）**。阶段① VLog 已完成，用户源码的 open/append/read_value/sync 通过代码检查及 20/20 VLog 测试。当前进入阶段② SST 支持：先确定内联值与引用的区分方式，再逐函数实现 WiscKey 版 SSTBuilder 构造函数（src/sst/sst.cpp:314）。
 
 ## 阶段与验收标准
 
 | 阶段 | 按顺序处理的函数／工作 | 验收标准 | 状态 |
 | --- | --- | --- | --- |
-| ① Lab 7.1：VLog | `VLog::open` → `append` → `read_value`；复核直接相关辅助函数 | 新建为空、重开不截断；多条记录可按返回偏移读回，二进制内容不变；读取时核对长度和 CRC，损坏／截断明确报错；偏移和编码长度正确，共享文件访问正确同步 | 三核心已通过，当前 sync 辅助收尾 |
-| ② Lab 7.2：SST 支持 | 确定记录类型表达 → WiscKey 版 `SSTBuilder` 构造 → `add` → `build` → `SST::open` → `resolve_value` | 同表的小 value、VLog 引用与墓碑不会混淆；阈值边界正确；构建／重开后点查与遍历还原原值，版本号不变；普通内联 SST 仍可读 | 待开始 |
+| ① Lab 7.1：VLog | `VLog::open` → `append` → `read_value`；复核直接相关辅助函数 | 新建为空、重开不截断；多条记录可按返回偏移读回，二进制内容不变；读取时核对长度和 CRC，损坏／截断明确报错；偏移和编码长度正确，共享文件访问正确同步 | 已验收，20/20 |
+| ② Lab 7.2：SST 支持 | 确定记录类型表达 → WiscKey 版 `SSTBuilder` 构造 → `add` → `build` → `SST::open` → `resolve_value` | 同表的小 value、VLog 引用与墓碑不会混淆；阈值边界正确；构建／重开后点查与遍历还原原值，版本号不变；普通内联 SST 仍可读 | 当前：编码设计，尚未修改业务代码 |
 | ③ Lab 7.3：Engine 集成 | `LSMEngine` 构造 → `flush` → `gen_sst_from_iter`；联动复核清库、配置及引用传递 | 启用／禁用两种配置均可用；真实刷盘、合并、重开及清库后再次写入正确；合并明确区分原始引用与完整值，验证是否重复追加 VLog；状态通知及回滚过滤不退化 | 待开始 |
 | ④ 联调与验收 | 完整 WiscKey 测试和受影响存储／事务／恢复回归，更新结果 | 真实启用非零阈值验证 CRUD、批查、遍历、版本过滤、取消事务、合并和正常重开；默认关闭模式通过回归；报告实际测试范围和未验证边界 | 待开始 |
 
@@ -29,10 +29,10 @@
 - [x] `VLog::append(const std::string &key, const std::string &value)`：用户已修正 value_len 类型和记录总长度；固定字节布局／CRC、65536 字节二进制值、重开续写偏移、超长 key 拒绝共 4/4 通过。锁范围及追加失败处理静态检查通过；并发和 I/O 失败路径尚未实测。`<limits>` 已直接包含。
 - [x] `VLog::read_value(uint64_t offset, uint32_t value_size)`：用户已实现整记录范围检查、引用长度核对和 CRC 校验；正常二进制／空值／重开、各字段损坏、截断、极端偏移均通过。保留原 lock_guard，未要求切换 unique_lock。
 - [x] `tail_offset()`、`del_vlog()` 的直接调用复核：tail_offset 当前仅由测试顺序调用，不要求为假设并发加锁；del_vlog 唯一生产调用在排他的 clear，且目录清理已先移除文件，保持当前行为，不新增文件不存在错误。
-- [ ] `VLog::sync()` 辅助收尾：用 append_mtx_ 保护共享 fstream 的刷新，检查 FileObj::sync 返回值，失败抛 runtime_error，供后续 7.2 SSTBuilder::build 的 VLog 刷新衔接使用。明确这是本地整合需要，不是 Lab 7.1 原文额外列出的核心函数；接入调用留到阶段②。
-- [x] VLog 核心测试：18/18 通过，包括新增双写双读场景。原有 3 项用例已迁移到独占目录，名称、断言与工作量保持，避免使用固定 /tmp 路径。sync 收尾仍需相应验证。
+- [x] `VLog::sync()` 辅助收尾：用户已实现加锁和刷新失败抛 runtime_error；正常刷新、POSIX 子进程真实刷新失败传播两项测试通过。供后续 7.2 SSTBuilder::build 的 VLog 刷新衔接使用，调用接入留到阶段②。它是本地整合需要，不是 Lab 7.1 原文额外列出的核心函数。
+- [x] VLog 核心与辅助测试：20/20 通过，包括双写双读、正常刷新及真实刷新失败。原有 3 项用例已迁移到独占目录，名称、断言与工作量保持，避免使用固定 /tmp 路径。
 
-当前修改范围：`src/vlog/vlog.cpp` 的 `VLog::sync()`（本轮核对位于 177 行）；无需改声明、成员或文件格式。沿用互斥锁并传播刷新失败。FileObj::sync 当前为 fstream::flush，不将它解释为 fsync；Lab 7.1 注释标注仍需补齐。当前 read_value 的 CRC 已验收，但它不提供纠错或断电持久性保证。
+阶段①收尾范围：FileObj::sync 当前为 fstream::flush，不将它解释为 fsync；CRC 不提供纠错或断电持久性保证。剩余非阻塞文字整理：三个函数上方 Lab 6.1 应改为 Lab 7.1；sync 前“这里忽略了结果”已经过时，应改为当前会传播失败的描述。这些文字不影响上述功能验收，助手未代改业务源码。
 
 2026-11-14 方案调整依据：Lab／作者参考跳过读取 CRC；用户明确要求加入校验。写入校验码本身不能发现后来发生的内容变化，SST 的校验只覆盖其存储内容，不能代替 VLog 校验；不采用文档中“写入 CRC 就保证完整性”的解释。完整记录本来就保存 CRC，因此本轮只调整读取函数及对应测试。
 
@@ -73,3 +73,5 @@
 2026-11-15：用户要求基于现有实现局部追加 CRC。修订草案只替换函数尾部，保留原 lock_guard 和头部计算；临时构建再次 **14/14 通过**，业务源码哈希未变。沿用上述证据目录，新增 `vlog-crc-minimal.cpp`、`minimal-commands.json`、`minimal-results.json` 及日志；仍等待用户手动加入后复核。
 
 2026-11-15 用户 CRC 实现验收：构建成功，运行 `--gtest_filter=VLog*`，**18/18 通过**（open 3、append 4、read 8、原有 VLog 3）。新增并发用例为两写线程各追加 48 条，两读线程各读取种子 128 次，join 后核对全部记录、偏移连续无重叠及总尾位置；未引入并发 tail/sync/clear 要求。原有 3 项测试仅迁移隔离路径及清理方式，断言不变。首次构建因本机 libc++ 不支持测试使用的 jthread/stop_token 失败，已由助手改为 std::thread 并补异常时 join，重建和测试通过，不是业务失败。业务源码哈希稳定，无 test_lsm 干预。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-vlog-read-review-020wppt1`，含首次／最终构建日志、运行命令、GTest JSON、源码哈希。未运行尚未接通的 SST/Engine WiscKey 测试。
+
+2026-11-15 阶段①最终验收：用户 sync 加锁与失败传播检查通过，新增正常刷新后独立文件流可读、子进程 RLIMIT_FSIZE=0 注入真实刷新失败共 2 项。失败场景确认 append 已成功返回，再由 sync 抛出自身的 runtime_error；资源限制与信号处理只作用于测试子进程，退出前清理其独占目录。构建成功，`--gtest_filter=VLog*` **20/20 通过**，零失败／禁用。源码哈希稳定，未干预 test_lsm，未运行阶段②③尚未完成的测试。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-vlog-stage1-final-js3muu44`，包含命令、构建／测试日志、GTest JSON、业务源码前后哈希。阶段①完成，整体 25%。

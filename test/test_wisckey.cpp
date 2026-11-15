@@ -21,6 +21,12 @@
 #include <thread>
 #include <vector>
 
+#ifndef _WIN32
+#include <csignal>
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
+
 using namespace tiny_lsm;
 
 // ---- helpers -------------------------------------------------------
@@ -220,6 +226,77 @@ TEST_F(VLogAppendTest, RejectsOversizedKeyWithoutChangingFile) {
   EXPECT_THROW(vlog->append(oversized_key, "v"), std::length_error);
   EXPECT_EQ(vlog->tail_offset(), 0u);
 }
+
+class VLogSyncTest : public VLogOpenTest {};
+
+TEST_F(VLogSyncTest, FlushesRecordBeforeVLogIsClosed) {
+  const auto path = dir_ / "vlog.data";
+  auto vlog = VLog::open(path.string());
+  ASSERT_EQ(vlog->append("k", "abc"), 0u);
+
+  // 直接刷新，不先查询尾位置或读取 VLog，避免其他操作隐式刷新缓冲。
+  ASSERT_NO_THROW(vlog->sync());
+
+  // VLog 仍然打开；独立文件流必须能看到整条记录及其 CRC。
+  std::ifstream input(path, std::ios::binary);
+  ASSERT_TRUE(input.is_open());
+  const std::vector<uint8_t> actual{std::istreambuf_iterator<char>(input),
+                                   std::istreambuf_iterator<char>()};
+  ASSERT_FALSE(input.bad());
+  const std::vector<uint8_t> expected{
+      0x01, 0x00, 0x6b, 0x03, 0x00, 0x00, 0x00,
+      0x61, 0x62, 0x63, 0xe8, 0x3d, 0x44, 0x7a};
+  EXPECT_EQ(actual, expected);
+}
+
+#ifndef _WIN32
+class VLogSyncDeathTest : public VLogOpenTest {};
+
+TEST_F(VLogSyncDeathTest, ReportsFlushFailure) {
+  // 重新执行子进程，避免在已有线程的进程中直接 fork 后访问文件流。
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_EXIT(
+      {
+        // threadsafe 会重新运行夹具；_exit 不析构，需清理子进程自己的目录。
+        const auto exit_child = [&](int code) {
+          std::error_code error;
+          std::filesystem::remove_all(dir_, error);
+          _exit(error ? 99 : code);
+        };
+
+        struct rlimit limits;
+        if (getrlimit(RLIMIT_FSIZE, &limits) != 0) exit_child(90);
+        limits.rlim_cur = 0;
+        if (std::signal(SIGXFSZ, SIG_IGN) == SIG_ERR) exit_child(91);
+        if (setrlimit(RLIMIT_FSIZE, &limits) != 0) exit_child(92);
+
+        try {
+          auto vlog = VLog::open((dir_ / "vlog.data").string());
+          try {
+            // 总长 32 字节，预期先进入流缓冲；append 提前失败必须单独报错。
+            if (vlog->append("k", std::string(21, 'v')) != 0u) exit_child(94);
+          } catch (...) {
+            exit_child(94);
+          }
+
+          try {
+            vlog->sync();
+          } catch (const std::runtime_error &error) {
+            // 只接受 sync 自己向上传递的刷新异常，不能以其他异常冒充成功。
+            exit_child(std::string(error.what()).find("VLog::sync:") == 0
+                           ? 0
+                           : 95);
+          } catch (...) {
+            exit_child(96);
+          }
+          exit_child(2);
+        } catch (...) {
+          exit_child(93);
+        }
+      },
+      ::testing::ExitedWithCode(0), "");
+}
+#endif
 
 // 复用独占目录；损坏样本直接写入文件，不依赖 append 产生相同错误。
 class VLogReadTest : public VLogOpenTest {
