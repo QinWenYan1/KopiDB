@@ -265,8 +265,8 @@ bool SST::is_wisckey() const { return storage_mode_ == 1; }
 // Lab 3.6 返回起始位置迭代器
 // 返回 SstIterator(shared_from_this(), tranc_id, keep_all_versions)
 SstIterator SST::begin(uint64_t tranc_id, bool keep_all_versions,
-                       const std::function<bool(uint64_t)> &is_aborted, 
-                      ValueReadMode value_read_mode) {
+                       const std::function<bool(uint64_t)> &is_aborted,
+                       ValueReadMode value_read_mode) {
   // 将本次遍历的版本条件、回滚判断和读取模式交给新迭代器
   // 迭代器在构造时保存这些条件，后续定位和推进继续沿用
   return SstIterator(shared_from_this(), tranc_id, keep_all_versions,

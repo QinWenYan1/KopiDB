@@ -428,7 +428,7 @@ SstIterator::merge_sst_iterator(std::vector<SstIterator> iter_vec,
       // 输入迭代器已经保存了读取模式：
       // Query 返回原值，Compaction 返回 SST 的存储字节
       // 直接取用它的输出，不在这里再次调用 resolve_value
-      auto entry = *iter; 
+      auto entry = *iter;
 
       // 在推进之前取得当前记录的类型
       // 保证这个标志与下面放入堆中的 value 对应
@@ -436,13 +436,9 @@ SstIterator::merge_sst_iterator(std::vector<SstIterator> iter_vec,
 
       // 移动的是本地临时 entry，不会移空迭代器的缓存
       // 保留原来的 SST 来源 ID 和真实版本号，排序规则不变
-      it_begin.items.emplace(
-          std::move(entry.first), 
-          std::move(entry.second),
-          iter.m_sst->get_sst_id(), 
-          0, 
-          iter.get_cur_tranc_id(),
-          is_ref);
+      it_begin.items.emplace(std::move(entry.first), std::move(entry.second),
+                             iter.m_sst->get_sst_id(), 0,
+                             iter.get_cur_tranc_id(), is_ref);
       ++iter;
     }
   }

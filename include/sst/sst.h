@@ -3,6 +3,7 @@
 #include "block/block.h"
 #include "block/block_cache.h"
 #include "block/blockmeta.h"
+#include "iterator/iterator.h" // ValueReadMode 的定义
 #include "utils/bloom_filter.h"
 #include "utils/files.h"
 #include "vlog/vlog.h"
@@ -13,13 +14,12 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include "iterator/iterator.h" // ValueReadMode 的定义
 
 namespace tiny_lsm {
 
 // VLog 引用布局：[offset:uint64][value_size:uint32]
 // SST 读写和迭代器类型判断共用这个长度
-inline constexpr size_t VLOG_REF_SIZE = sizeof(uint64_t) + sizeof(uint32_t); 
+inline constexpr size_t VLOG_REF_SIZE = sizeof(uint64_t) + sizeof(uint32_t);
 
 class SstIterator;
 
@@ -126,11 +126,12 @@ public:
 
   std::optional<std::pair<SstIterator, SstIterator>>
   iters_monotony_predicate(std::function<bool(const std::string &)> predicate);
-  
+
   // 创建本次遍历使用的迭代器，默认按普通查询返回原值
   // 合并入口可以显式选择 Compaction，保留 SST 的存储字节
   SstIterator begin(uint64_t tranc_id, bool keep_all_versions = false,
-                    const std::function<bool(uint64_t)> &is_aborted = {}, ValueReadMode value_read_mode = ValueReadMode::Query);
+                    const std::function<bool(uint64_t)> &is_aborted = {},
+                    ValueReadMode value_read_mode = ValueReadMode::Query);
   SstIterator end();
 
   std::pair<uint64_t, uint64_t> get_tranc_id_range() const;
