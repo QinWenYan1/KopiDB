@@ -1,6 +1,6 @@
 # KopiDB 全局问题账本
 
-最后更新：2026-11-16。A1～A5、A9 已解决，A10 已在当前版本数据范围解决，A11 已完成优化及回归验证。当前 Lab 5.5 适用的 497 项测试均已完成；A6/A8 保持待验证，A7 保持待排期，不能据此宣称全库无缺陷。新增 A12 为既有 Python SDK 的 macOS 动态库定位问题，留到用户计划中的打包阶段；未作为 Redis 移除的附带修复。验收与性能数据见相应条目，项目状态见 [STATE.md](STATE.md)。
+最后更新：2026-11-17。A1～A5、A9 已解决，A10 已在当前版本数据范围解决，A11 已完成优化及回归验证。当前 Lab 5.5 适用的 497 项测试均已完成；A6/A8 保持待验证，A7 保持待排期，不能据此宣称全库无缺陷。新增 A12 为既有 Python SDK 的 macOS 动态库定位问题，留到用户计划中的打包阶段；未作为 Redis 移除的附带修复。验收与性能数据见相应条目，项目状态见 [STATE.md](STATE.md)。
 
 本文件持续记录全局发现，规则见 [audit-to-plan](skills/audit-to-plan/SKILL.md)。选择问题开始处理时，在 [PLAN.md](PLAN.md) 按编号展开执行步骤，并在这里更新状态和计划链接；验收后保留原条目，补充解决日期与证据。项目现状和全局约定见 [STATE.md](STATE.md)。
 
@@ -384,3 +384,5 @@ WiscKey 与 CRC 对照证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T
 2026-11-16 A15 阶段①完成：Base默认getter、SearchItem内存标志及Heap当前条目getter由用户实现。新增两项组合测试覆盖标志随key／版本／来源排序、推进、可见性及墓碑过滤保持，空/end安全；连同原迭代器测试11/11通过。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-heap-review-4b0txle4`。进度1/6，尚未接通SST原始值模式及Engine优化，不宣称已消除重复VLog读写。
 
 2026-11-16 A15 阶段②命名及构造进展：用户确定读取模式使用Query/Compaction，分别对应还原原值／保留存储字节；先前方案中的Resolved/Stored由此命名替代，职责不变。顺序构造保存模式已检查，默认查询回归33/33通过（test_sst29＋SSTResolveValueTest4）。下一步update_current，尚未宣称合并路径已不读VLog。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-sst-ctor-review-nfjk4owe`。
+
+2026-11-17 A15 update_current验收：Query还原原值、Compaction保留存储字节，*/->的缓存更新已通过新增2项测试及既有回归，最终35/35通过；无VLog指针的Compaction访问引用成功，Query负对照抛错。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-sst-cache-review-54mo13rt`。value()、类型getter及完整合并输入尚待后续接通，进度仍1/6，不把组件结果当作优化完成。

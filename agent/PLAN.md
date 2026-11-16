@@ -1,12 +1,12 @@
 # KopiDB 当前计划
 
-最后更新：2026-11-16。
+最后更新：2026-11-17。
 
 ## 目标：A15 合并时复用已有 VLog 引用
 
 问题与证据见 [AUDIT A15](AUDIT.md#a15)。上一轮 Lab 7 已完成约定范围的验收，结果归入 [STATE](STATE.md)。本轮只优化合并的数据传递路径：目标 SST 仍启用 WiscKey 时，已有 VLog 引用直接写入新 SST，不为搬运引用读取或重新追加原值；普通查询仍返回完整 value。
 
-优化前基线已采集；阶段①已验收，新引用标志组合测试2项及原迭代器回归9项共11/11通过。阶段②的SstIterator顺序构造已检查，默认读取回归33/33通过；当前下一函数为update_current。进度：**16.7%（1/6 阶段验收）**。用户手写业务源码与头文件，助手逐函数提供带中文注释的实现、检查、补测试和维护记录；一次只推进一个业务函数。
+优化前基线已采集；阶段①已验收，新引用标志组合测试2项及原迭代器回归9项共11/11通过。阶段②顺序构造和update_current已检查，按模式读取／缓存专项及回归最终35/35通过；当前下一函数为value()。进度：**16.7%（1/6 阶段验收）**。用户手写业务源码与头文件，助手逐函数提供带中文注释的实现、检查、补测试和维护记录；一次只推进一个业务函数。
 
 ## 已核对的设计与边界
 
@@ -23,7 +23,7 @@
 | 阶段 | 具体函数（阶段内仍逐个处理） | 验收标准 | 状态 |
 | --- | --- | --- | --- |
 | ① 内存类型信息 | BaseIterator::is_vlog_ref（新增默认实现）→ SearchItem 构造函数 → HeapIterator::is_vlog_ref（新增） | 旧调用默认非引用；堆推进后类型与当前条目对应；空堆安全返回false；原排序不变 | 已验收，11/11通过 |
-| ② SST 存储值读取 | SstIterator 顺序构造 → update_current → value → is_vlog_ref（新增）→ SST::begin；共享VLOG_REF_SIZE | 默认查询返回原值；Compaction返回原始字节且不读VLog；普通12B原值不误判；跨块/seek/结束状态保持规则 | 进行中，顺序构造已检查，待update_current |
+| ② SST 存储值读取 | SstIterator 顺序构造 → update_current → value → is_vlog_ref（新增）→ SST::begin；共享VLOG_REF_SIZE | 默认查询返回原值；Compaction返回原始字节且不读VLog；普通12B原值不误判；跨块/seek/结束状态保持规则 | 进行中，构造／缓存已检查，待value() |
 | ③ 合并中传递类型 | SstIterator::merge_sst_iterator → ConcactIterator构造 → operator++ → is_vlog_ref（新增）→ TwoMergeIterator::is_vlog_ref（新增） | L0堆、跨SST拼接与双路归并均保留字节及类型；比较与推进不触发解引用；版本和来源优先级不变 | 待开始 |
 | ④ Builder 复用引用 | add_stored_entry（新增私有）→ add → add_vlog_ref（新增） | 引用直写保持字节与VLog尾位置不变；普通12B原值仍正确分离；原组块、Bloom、版本范围和墓碑规则通过回归 | 待开始 |
 | ⑤ Engine 接通 | full_l0_l1_compact → full_common_compact → gen_sst_from_iter | 启用模式的两级合并复用引用，换输出表后仍正确；普通/WiscKey混合可合并；禁用后读出原值并生成普通SST | 待开始 |
@@ -99,4 +99,8 @@ SearchItem检查证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopid
 
 阶段②顺序构造验收（2026-11-16）：用户采用 `ValueReadMode::Query / Compaction` 命名，枚举、默认成员、顺序构造声明及定义一致，参数在初始化列表保存；按key构造沿用默认Query。构建test_sst/test_wisckey成功，test_sst全量29/29和SSTResolveValueTest四项4/4，共33/33通过。此处验收参数保存与默认查询兼容，尚未实现Compaction按模式取值。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-sst-ctor-review-nfjk4owe`，源码／测试在检查期间稳定，助手未代改业务。
 
-当前下一函数：`src/sst/sst_iterator.cpp:362` 的 `update_current()`。保留原缓存／有效块守卫；仅Query调用resolve_value，Compaction保持原始存储字节，成功后移动到cached_value。现有seek/seek_first/++已清缓存，无需新增守卫或改变定位逻辑。operator*与operator->共用此函数；value()、merge_sst_iterator仍在后续步骤接通。此轮仅提供下一函数草案，尚未写入业务源码或验证新的Compaction返回行为。
+update_current已完成（2026-11-17）：用户仅在Query时resolve，成功后移动到cached_value；Compaction保留原始存储字节。新增SSTIteratorReadModeTest两项验证普通/WiscKey两模式的*/->、12B原文/引用、内联值、墓碑、全宽版本，及没有VLog依赖时跨块、seek、seek_first与重复读取的缓存更新；Query读取同一引用抛错作负对照。现有缓存失效逻辑可以沿用。
+
+缓存验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-sst-cache-review-54mo13rt`。test_sst与test_wisckey构建成功，最终test_sst29/29、SSTResolveValueTest4/4、SSTIteratorReadModeTest2/2，共35/35通过。检查中用户提交了源码格式调整，因此按新源码重建复测；前一次29项结果另存test_sst-before-format，不重复计数。最终运行期间业务与测试哈希稳定；助手补2项测试，未代改业务。未调用尚未接通的Compaction.value()或Sst类型getter，不将此项验收扩大为整个合并链路已优化。
+
+当前下一函数：`src/sst/sst_iterator.cpp:248` 的 `SstIterator::value()`。草案先用is_valid拒绝无效位置，再复用update_current并返回cached_value->second的副本，使value()/operator*/operator->统一遵守读取模式；不移动走缓存内容。operator*中关于无条件resolve的旧两行注释同步改为按模式填充缓存的说明，函数逻辑无需变更。草案待用户手写，尚未验收。
