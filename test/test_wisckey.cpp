@@ -1,4 +1,5 @@
 #include "lsm/engine.h"
+#include "lsm/level_iterator.h"
 #include "config/config.h"
 #include "sst/sst.h"
 #include "sst/sst_iterator.h"
@@ -10,14 +11,18 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <gtest/gtest.h>
+#include <iostream>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -1397,6 +1402,495 @@ TEST_F(SSTTombstoneInline, EmptyValueAlwaysInline) {
 }
 
 // ---- LSM integration tests ------------------------------------------
+
+class EngineInitializationTest : public VLogOpenTest {};
+
+TEST_F(EngineInitializationTest, CreatesDirectoryAndEmptyVLog) {
+  // 夹具只提供父目录，数据库目录由 Engine 构造函数创建。
+  const auto data_path = dir_ / "new_database";
+  const auto vlog_path = data_path / "vlog.data";
+  ASSERT_FALSE(std::filesystem::exists(data_path));
+
+  LSMEngine engine(data_path.string());
+
+  EXPECT_EQ(engine.data_dir, data_path.string());
+  ASSERT_TRUE(std::filesystem::is_directory(data_path));
+  ASSERT_TRUE(std::filesystem::is_regular_file(vlog_path));
+  ASSERT_NE(engine.vlog_, nullptr);
+  EXPECT_EQ(engine.vlog_->tail_offset(), 0u);
+  EXPECT_EQ(std::filesystem::file_size(vlog_path), 0u);
+  EXPECT_NE(engine.block_cache, nullptr);
+  EXPECT_TRUE(engine.ssts.empty());
+  EXPECT_TRUE(engine.level_sst_ids.empty());
+  EXPECT_EQ(engine.next_sst_id, 1u);
+  EXPECT_EQ(engine.cur_max_level, 0u);
+}
+
+TEST_F(EngineInitializationTest, LoadsMixedSSTModesWithWiscKeyDisabled) {
+  // 当前阈值只控制后续写入，不能使已有 WiscKey SST 失去 VLog 依赖。
+  ASSERT_EQ(TomlConfig::getInstance().getWisckeyValueThreshold(), 0u);
+  const auto vlog_path = dir_ / "vlog.data";
+  const uint64_t base = uint64_t{1} << 40;
+  struct Record {
+    std::string key;
+    std::string value;
+    uint64_t tranc_id;
+  };
+  const std::array<Record, 3> wisckey_records{{
+      {"aaa", std::string("12-byte\0raw!", 12), base + 1},
+      {"aab", make_value(65, 'L'), base + 2},
+      {"aac", "short", base + 3},
+  }};
+  const Record ordinary_record{
+      "zzz", std::string("plain\0value!", 12), base + 4};
+
+  {
+    auto vlog = VLog::open(vlog_path.string());
+    auto cache = make_cache();
+    SSTBuilder wisckey_builder(4096, true, vlog, 64);
+    for (const auto &record : wisckey_records) {
+      wisckey_builder.add(record.key, record.value, record.tranc_id);
+    }
+    auto wisckey_sst =
+        wisckey_builder.build(7, (dir_ / "sst_7.0").string(), cache);
+    ASSERT_TRUE(wisckey_sst->is_wisckey());
+
+    SSTBuilder ordinary_builder(4096, true);
+    ordinary_builder.add(ordinary_record.key, ordinary_record.value,
+                         ordinary_record.tranc_id);
+    auto ordinary_sst =
+        ordinary_builder.build(11, (dir_ / "sst_11.2").string(), cache);
+    ASSERT_FALSE(ordinary_sst->is_wisckey());
+  }
+  // 原 builder、SST、缓存和 VLog 均已销毁，读取只能依靠 Engine 新建的依赖。
+  const auto original_vlog_size = std::filesystem::file_size(vlog_path);
+  ASSERT_GT(original_vlog_size, 0u);
+
+  LSMEngine engine(dir_.string());
+
+  ASSERT_EQ(TomlConfig::getInstance().getWisckeyValueThreshold(), 0u);
+  ASSERT_NE(engine.vlog_, nullptr);
+  EXPECT_EQ(engine.vlog_->tail_offset(), original_vlog_size);
+  EXPECT_EQ(std::filesystem::file_size(vlog_path), original_vlog_size);
+  ASSERT_EQ(engine.ssts.size(), 2u);
+  ASSERT_EQ(engine.level_sst_ids.size(), 2u);
+  ASSERT_EQ(engine.level_sst_ids.count(0), 1u);
+  ASSERT_EQ(engine.level_sst_ids.count(2), 1u);
+  EXPECT_EQ(engine.level_sst_ids.at(0), (std::deque<size_t>{7}));
+  EXPECT_EQ(engine.level_sst_ids.at(2), (std::deque<size_t>{11}));
+  EXPECT_EQ(engine.next_sst_id, 12u);
+  EXPECT_EQ(engine.cur_max_level, 2u);
+
+  ASSERT_EQ(engine.ssts.count(7), 1u);
+  const auto &wisckey_sst = engine.ssts.at(7);
+  ASSERT_TRUE(wisckey_sst->is_wisckey());
+  EXPECT_EQ(wisckey_sst->get_sst_id(), 7u);
+  EXPECT_EQ(wisckey_sst->get_first_key(), "aaa");
+  EXPECT_EQ(wisckey_sst->get_last_key(), "aac");
+  EXPECT_EQ(wisckey_sst->get_tranc_id_range(),
+            std::make_pair(base + 1, base + 3));
+  for (const auto &record : wisckey_records) {
+    SCOPED_TRACE(record.key);
+    auto it = wisckey_sst->get(record.key, 0);
+    ASSERT_FALSE(it.is_end());
+    EXPECT_EQ(it.key(), record.key);
+    EXPECT_EQ(it.value(), record.value);
+    EXPECT_EQ(it.get_cur_tranc_id(), record.tranc_id);
+  }
+
+  ASSERT_EQ(engine.ssts.count(11), 1u);
+  const auto &ordinary_sst = engine.ssts.at(11);
+  ASSERT_FALSE(ordinary_sst->is_wisckey());
+  EXPECT_EQ(ordinary_sst->get_sst_id(), 11u);
+  auto ordinary_it = ordinary_sst->get(ordinary_record.key, 0);
+  ASSERT_FALSE(ordinary_it.is_end());
+  EXPECT_EQ(ordinary_it.key(), ordinary_record.key);
+  EXPECT_EQ(ordinary_it.value(), ordinary_record.value);
+  EXPECT_EQ(ordinary_it.get_cur_tranc_id(), ordinary_record.tranc_id);
+  EXPECT_EQ(std::filesystem::file_size(vlog_path), original_vlog_size);
+}
+
+#ifndef _WIN32
+class WiscKeyFlushDeathTest : public VLogOpenTest {
+protected:
+  static void check_public_reads(
+      LSM &db,
+      const std::vector<std::pair<std::string, std::string>> &records) {
+    std::vector<std::string> keys;
+    for (const auto &[key, value] : records) {
+      SCOPED_TRACE(key);
+      const auto actual = db.get(key);
+      ASSERT_TRUE(actual.has_value());
+      EXPECT_EQ(*actual, value);
+      keys.push_back(key);
+    }
+    EXPECT_FALSE(db.get("deleted").has_value());
+    EXPECT_FALSE(db.get("missing").has_value());
+    keys.push_back("deleted");
+    keys.push_back("missing");
+
+    const auto batch = db.get_batch(keys);
+    ASSERT_EQ(batch.size(), keys.size());
+    for (size_t i = 0; i < records.size(); ++i) {
+      EXPECT_EQ(batch[i].first, records[i].first);
+      ASSERT_TRUE(batch[i].second.has_value());
+      EXPECT_EQ(*batch[i].second, records[i].second);
+    }
+    EXPECT_EQ(batch[records.size()].first, "deleted");
+    EXPECT_FALSE(batch[records.size()].second.has_value());
+    EXPECT_EQ(batch.back().first, "missing");
+    EXPECT_FALSE(batch.back().second.has_value());
+
+    auto it = db.begin(0);
+    for (size_t i = 0; i < records.size(); ++i) {
+      ASSERT_FALSE(it.is_end());
+      EXPECT_EQ(*it, records[i]);
+      EXPECT_EQ(it.get_cur_tranc_id(), i + 1);
+      ++it;
+    }
+    EXPECT_TRUE(it.is_end());
+    EXPECT_EQ(it, db.end());
+  }
+
+  static void run_flush_and_reopen(const std::filesystem::path &dir) {
+    // 子进程首次访问配置前，只创建文件；避免构造任何存储组件抢先初始化单例。
+    const auto config_path = dir / "wisckey.toml";
+    std::ofstream config_file(config_path);
+    ASSERT_TRUE(config_file.is_open());
+    config_file << R"toml([lsm.core]
+LSM_TOL_MEM_SIZE_LIMIT = 67108864
+LSM_PER_MEM_SIZE_LIMIT = 4194304
+LSM_BLOCK_SIZE = 4096
+LSM_SST_LEVEL_RATIO = 4
+[lsm.cache]
+LSM_BLOCK_CACHE_CAPACITY = 256
+LSM_BLOCK_CACHE_K = 2
+[bloom_filter]
+BLOOM_FILTER_EXPECTED_SIZE = 65536
+BLOOM_FILTER_EXPECTED_ERROR_RATE = 0.1
+[lsm.wisckey]
+WISCKEY_VALUE_THRESHOLD = 64
+)toml";
+    config_file.close();
+    ASSERT_TRUE(config_file.good());
+    ASSERT_EQ(TomlConfig::getInstance(config_path.string())
+                  .getWisckeyValueThreshold(), 64u);
+
+    std::vector<std::pair<std::string, std::string>> records;
+    for (const size_t length : {11u, 12u, 13u, 64u, 65u}) {
+      std::string value(length, '\0');
+      for (size_t i = 0; i < length; ++i) {
+        value[i] = static_cast<char>((i * 37) % 256);
+      }
+      records.emplace_back("key_" + std::to_string(length), std::move(value));
+    }
+
+    const auto data_path = dir / "database";
+    const auto vlog_path = data_path / "vlog.data";
+    {
+      LSM db(data_path.string());
+      for (const auto &[key, value] : records) {
+        db.put(key, value);
+      }
+      db.put("deleted", records.back().second);
+      db.remove("deleted");
+      // 大内存上限保证本例由显式 flush_all 触发值分离。
+      EXPECT_EQ(std::filesystem::file_size(vlog_path), 0u);
+      db.flush_all();
+
+      ASSERT_GT(std::filesystem::file_size(vlog_path), 0u);
+      size_t sst_count = 0;
+      for (const auto &entry : std::filesystem::directory_iterator(data_path)) {
+        if (!entry.is_regular_file() ||
+            !entry.path().filename().string().starts_with("sst_")) {
+          continue;
+        }
+        ++sst_count;
+        auto file = FileObj::open(entry.path().string(), false);
+        ASSERT_GE(file.size(), 26u);
+        EXPECT_EQ(file.read_uint8(file.size() - 1), 0x4bu);
+        EXPECT_EQ(file.read_uint8(file.size() - 2), 1u);
+      }
+      ASSERT_GT(sst_count, 0u);
+      ASSERT_NO_FATAL_FAILURE(check_public_reads(db, records));
+    }
+
+    // 前一个 LSM 已正常关闭；新实例从相同目录加载后仍返回完整原值和墓碑语义。
+    {
+      LSM reopened(data_path.string());
+      ASSERT_NO_FATAL_FAILURE(check_public_reads(reopened, records));
+    }
+  }
+};
+
+TEST_F(WiscKeyFlushDeathTest, FlushesSeparatedValuesAndReopensThroughPublicAPI) {
+  // 重执行隔离 TomlConfig 单例，使本例确实使用非零阈值且不影响其他测试。
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_EXIT(
+      {
+        int exit_code = 0;
+        try {
+          run_flush_and_reopen(dir_);
+          exit_code = ::testing::Test::HasFailure() ? 1 : 0;
+        } catch (const std::exception &error) {
+          ADD_FAILURE() << error.what();
+          exit_code = 90;
+        } catch (...) {
+          exit_code = 91;
+        }
+        // helper 返回或抛异常均已析构数据库；随后清理子进程自己的独占目录。
+        std::error_code error;
+        std::filesystem::remove_all(dir_, error);
+        std::_Exit(error ? 99 : exit_code);
+      },
+      ::testing::ExitedWithCode(0), "");
+}
+
+class WiscKeyCompactionDeathTest : public VLogOpenTest {
+protected:
+  using Expected =
+      std::map<std::string, std::pair<std::string, uint64_t>>;
+
+  static std::string binary_value(size_t length, unsigned seed) {
+    std::string value(length, '\0');
+    for (size_t i = 0; i < length; ++i) {
+      value[i] = static_cast<char>((i * 37 + seed) % 256);
+    }
+    return value;
+  }
+
+  static void configure(const std::filesystem::path &dir) {
+    // 先用较大的单表上限控制源 SST 数量；合并前再缩小目标 SST 大小。
+    // threadsafe 子进程首次访问配置，保证真实启用值分离且不污染其他测试。
+    const auto path = dir / "wisckey.toml";
+    std::ofstream output(path);
+    ASSERT_TRUE(output.is_open());
+    output << R"toml([lsm.core]
+LSM_TOL_MEM_SIZE_LIMIT = 67108864
+LSM_PER_MEM_SIZE_LIMIT = 1048576
+LSM_BLOCK_SIZE = 128
+LSM_SST_LEVEL_RATIO = 2
+[lsm.cache]
+LSM_BLOCK_CACHE_CAPACITY = 64
+LSM_BLOCK_CACHE_K = 2
+[bloom_filter]
+BLOOM_FILTER_EXPECTED_SIZE = 4096
+BLOOM_FILTER_EXPECTED_ERROR_RATE = 0.1
+[lsm.wisckey]
+WISCKEY_VALUE_THRESHOLD = 64
+)toml";
+    output.close();
+    ASSERT_TRUE(output.good());
+    const auto &config = TomlConfig::getInstance(path.string());
+    ASSERT_EQ(config.getWisckeyValueThreshold(), 64u);
+    ASSERT_EQ(config.getLsmSstLevelRatio(), 2);
+  }
+
+  static size_t count_level(const std::filesystem::path &dir, size_t level) {
+    size_t count = 0;
+    for (const auto &entry : std::filesystem::directory_iterator(dir)) {
+      const auto name = entry.path().filename().string();
+      if (entry.is_regular_file() && name.starts_with("sst_") &&
+          name.ends_with("." + std::to_string(level))) {
+        ++count;
+      }
+    }
+    return count;
+  }
+
+  static void check_sst_modes(const std::filesystem::path &dir) {
+    // 每张新输出表都必须沿用 WiscKey 模式，尤其覆盖 gen_sst_from_iter
+    // 达到目标大小后重建 builder 的分支，不能只有第一张表正确。
+    for (const auto &entry : std::filesystem::directory_iterator(dir)) {
+      if (!entry.is_regular_file() ||
+          !entry.path().filename().string().starts_with("sst_")) {
+        continue;
+      }
+      SCOPED_TRACE(entry.path().string());
+      auto file = FileObj::open(entry.path().string(), false);
+      ASSERT_GE(file.size(), 26u);
+      EXPECT_EQ(file.read_uint8(file.size() - 1), 0x4bu);
+      EXPECT_EQ(file.read_uint8(file.size() - 2), 1u);
+    }
+  }
+
+  static void check_scan(LSM &db, uint64_t snapshot,
+                         const Expected &expected) {
+    // 使用公开的带版本遍历，核对历史值、真实版本和墓碑处理；
+    // helper 结束时销毁迭代器，避免持有 SST 读锁后又触发刷盘。
+    auto it = db.begin(snapshot);
+    for (const auto &[key, record] : expected) {
+      SCOPED_TRACE(key);
+      ASSERT_FALSE(it.is_end());
+      EXPECT_EQ(it->first, key);
+      EXPECT_EQ(it->second, record.first);
+      EXPECT_EQ(it.get_cur_tranc_id(), record.second);
+      ++it;
+    }
+    EXPECT_TRUE(it.is_end());
+    EXPECT_EQ(it, db.end());
+  }
+
+  static void check_latest(LSM &db, const Expected &expected) {
+    std::vector<std::string> keys;
+    for (const auto &[key, record] : expected) {
+      SCOPED_TRACE(key);
+      const auto value = db.get(key);
+      ASSERT_TRUE(value.has_value());
+      EXPECT_EQ(*value, record.first);
+      keys.push_back(key);
+    }
+    keys.push_back("b_deleted");
+    keys.push_back("missing");
+    EXPECT_FALSE(db.get("b_deleted").has_value());
+    EXPECT_FALSE(db.get("missing").has_value());
+    const auto batch = db.get_batch(keys);
+    ASSERT_EQ(batch.size(), keys.size());
+    for (size_t i = 0; i < keys.size(); ++i) {
+      SCOPED_TRACE(keys[i]);
+      EXPECT_EQ(batch[i].first, keys[i]);
+      const auto found = expected.find(keys[i]);
+      if (found == expected.end()) {
+        EXPECT_FALSE(batch[i].second.has_value());
+      } else {
+        ASSERT_TRUE(batch[i].second.has_value());
+        EXPECT_EQ(*batch[i].second, found->second.first);
+      }
+    }
+    ASSERT_NO_FATAL_FAILURE(check_scan(db, 0, expected));
+  }
+
+  static void run_compaction(const std::filesystem::path &dir,
+                              bool include_deeper_level) {
+    ASSERT_NO_FATAL_FAILURE(configure(dir));
+    const auto data_dir = dir / "database";
+    const auto vlog_path = data_dir / "vlog.data";
+    Expected first_snapshot;
+    Expected second_snapshot;
+    Expected latest;
+    uint64_t first_id = 0;
+    uint64_t second_id = 0;
+
+    {
+      LSM db(data_dir.string());
+      auto first = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+      first_id = first->tranc_id_;
+      const std::vector<std::pair<std::string, size_t>> records{
+          {"a_versioned", 65}, {"b_deleted", 128}, {"c_twelve", 12},
+          {"d_inline11", 11}, {"e_inline13", 13}, {"f_boundary", 64},
+          {"g_large", 200}};
+      for (const auto &[key, length] : records) {
+        auto value = binary_value(length, 1);
+        first->put(key, value);
+        latest[key] = {std::move(value), first_id};
+      }
+      // 这些内联小值让合并结果足够大，确保目标层实际输出多张 SST；
+      // 测试规模固定且很小，不依赖写入上万条数据才能触发合并。
+      for (int i = 0; i < 32; ++i) {
+        const auto key = "x_filler_" + std::to_string(100 + i);
+        auto value = binary_value(63, static_cast<unsigned>(i));
+        first->put(key, value);
+        latest[key] = {std::move(value), first_id};
+      }
+      ASSERT_TRUE(first->commit());
+      first.reset();
+      first_snapshot = latest;
+      db.flush_all();
+      ASSERT_EQ(count_level(data_dir, 0), 1u);
+
+      auto second = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+      second_id = second->tranc_id_;
+      latest["a_versioned"] = {binary_value(128, 2), second_id};
+      latest["c_twelve"] = {binary_value(12, 2), second_id};
+      second->put("a_versioned", latest.at("a_versioned").first);
+      second->put("c_twelve", latest.at("c_twelve").first);
+      second->remove("b_deleted");
+      latest.erase("b_deleted");
+      ASSERT_TRUE(second->commit());
+      second.reset();
+      second_snapshot = latest;
+
+      // RU 已写入存储的取消版本也参与后续合并，但查询必须继续跳过它。
+      auto cancelled = db.begin_tran(IsolationLevel::READ_UNOP_COMMITTED);
+      const uint64_t cancelled_id = cancelled->tranc_id_;
+      cancelled->put("a_versioned", binary_value(200, 3));
+      ASSERT_TRUE(cancelled->abort());
+      cancelled.reset();
+      db.flush_all();
+      ASSERT_EQ(count_level(data_dir, 0), 2u);
+      ASSERT_EQ(count_level(data_dir, 1), 0u);
+
+      auto &config = const_cast<TomlConfig &>(TomlConfig::getInstance());
+      config.modify_lsm_per_mem_size_limit(128);
+      const int trigger_count = include_deeper_level ? 3 : 1;
+      for (int i = 0; i < trigger_count; ++i) {
+        const auto key = "zz_trigger_" + std::to_string(i);
+        const auto value = binary_value(11, static_cast<unsigned>(i));
+        db.put(key, value);
+        latest[key] = {value, cancelled_id + 1 + static_cast<uint64_t>(i)};
+        const auto before = std::filesystem::file_size(vlog_path);
+        db.flush_all();
+        const auto after = std::filesystem::file_size(vlog_path);
+        // 这里只记录性能基线，不要求 VLog 必须增长：之后引用复用优化
+        // 应仍能通过本测试。触发记录为 11B 内联值，本次刷盘无新分离值。
+        std::cout << "WiscKey compaction flush " << i
+                  << ": VLog before=" << before << ", after=" << after
+                  << "; trigger value is inline (11B)" << std::endl;
+        if (i == 0) {
+          ASSERT_GT(count_level(data_dir, 1), 1u);
+          ASSERT_EQ(count_level(data_dir, 2), 0u);
+        }
+      }
+
+      if (include_deeper_level) {
+        // L2 不为空只能来自 full_common_compact；多张输出同时覆盖
+        // 更深层 gen_sst_from_iter 的 builder 重建与收尾。
+        ASSERT_GT(count_level(data_dir, 2), 1u);
+      }
+      ASSERT_NO_FATAL_FAILURE(check_sst_modes(data_dir));
+      ASSERT_NO_FATAL_FAILURE(check_latest(db, latest));
+      ASSERT_NO_FATAL_FAILURE(check_scan(db, first_id, first_snapshot));
+      ASSERT_NO_FATAL_FAILURE(check_scan(db, second_id, second_snapshot));
+    }
+
+    // 正常关闭后重新打开，重新加载 VLog 和 SST，不能借助旧内存表或缓存。
+    {
+      LSM reopened(data_dir.string());
+      ASSERT_NO_FATAL_FAILURE(check_latest(reopened, latest));
+      ASSERT_NO_FATAL_FAILURE(check_scan(reopened, first_id, first_snapshot));
+      ASSERT_NO_FATAL_FAILURE(check_scan(reopened, second_id, second_snapshot));
+      ASSERT_NO_FATAL_FAILURE(check_sst_modes(data_dir));
+      ASSERT_GT(count_level(data_dir, include_deeper_level ? 2 : 1), 1u);
+    }
+  }
+
+  static void run_child(const std::filesystem::path &dir, bool deeper) {
+    int exit_code = 0;
+    try {
+      run_compaction(dir, deeper);
+      exit_code = ::testing::Test::HasFailure() ? 1 : 0;
+    } catch (const std::exception &error) {
+      ADD_FAILURE() << error.what();
+      exit_code = 90;
+    } catch (...) {
+      exit_code = 91;
+    }
+    std::error_code error;
+    std::filesystem::remove_all(dir, error);
+    std::_Exit(error ? 99 : exit_code);
+  }
+};
+
+TEST_F(WiscKeyCompactionDeathTest, L0MergePreservesValuesVersionsAndReopens) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_EXIT(run_child(dir_, false), ::testing::ExitedWithCode(0), "");
+}
+
+TEST_F(WiscKeyCompactionDeathTest, DeeperMergePreservesValuesVersionsAndReopens) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_EXIT(run_child(dir_, true), ::testing::ExitedWithCode(0), "");
+}
+#endif
 
 TEST(WiscKeyDisabled, AllInlineFull) {
     std::string dir = tmp_dir("lsm_disabled");

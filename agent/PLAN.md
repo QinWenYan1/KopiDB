@@ -8,7 +8,7 @@
 
 用户手写业务源码和头文件，助手逐函数提供中文注释、检查实现、补测试及维护记录。已有函数体也须按 Lab 独立推导；已验收的无关逻辑不整段重写。Redis 移除的独立代写授权已结束。
 
-进度：**50%（2/4 阶段验收）**。阶段① VLog 已完成；阶段② SST 正常功能链已验收，本轮 WiscKey 的 SST 组件 20/20、普通 SST 29/29，共 49/49 通过。进入阶段③：按 Lab 7.3 配置→初始化→刷盘→合并的顺序，先补已列入计划的 TomlConfig::saveToFile 阈值保存，再验证 Engine 已有接线。
+进度：**50%（2/4 阶段验收）**。阶段①②已验收。阶段③配置保存已检查，配置3/3、Engine初始化2项及真实开启分离的公开刷盘1项，共6/6通过。gen_sst_from_iter 正常合并专项2/2通过，下一函数为 LSMEngine::clear 的联动验收；引用复用优化紧接本 PLAN 完成后开展，排期与评估见 STATE/AUDIT。
 
 ## 阶段与验收标准
 
@@ -16,7 +16,7 @@
 | --- | --- | --- | --- |
 | ① Lab 7.1：VLog | `VLog::open` → `append` → `read_value`；复核直接相关辅助函数 | 新建为空、重开不截断；多条记录可按返回偏移读回，二进制内容不变；读取时核对长度和 CRC，损坏／截断明确报错；偏移和编码长度正确，共享文件访问正确同步 | 已验收，20/20 |
 | ② Lab 7.2：SST 支持 | 已确认保留引用长度 → WiscKey 版 `SSTBuilder` 构造 → `add` → `build` → `SST::open` → `resolve_value` | 12 字节原值强制分离、读端只识别恰好 12 字节引用；阈值／墓碑／普通模式正确；构建及重开后还原原值，版本号不变 | 已验收，本轮组件及普通回归49/49 |
-| ③ Lab 7.3：Engine 集成 | 配置保存联动 → 核查 `LSMEngine` 构造 → `flush` → `gen_sst_from_iter`；复核清库与引用传递 | 启用／禁用两种配置均可用；真实刷盘、合并、重开及清库后再次写入正确；合并明确区分原始引用与完整值，验证是否重复追加 VLog；状态通知及回滚过滤不退化 | 当前：补保存 WiscKey 阈值 |
+| ③ Lab 7.3：Engine 集成 | 配置保存联动 → 核查 `LSMEngine` 构造 → `flush` → `gen_sst_from_iter`；复核清库与引用传递 | 启用／禁用两种配置均可用；真实刷盘、合并、重开及清库后再次写入正确；合并读取完整值后按当前阈值重新编码，验证结果并记录 VLog 写入量；状态通知及回滚过滤不退化 | 配置/初始化/flush/合并通过，待清库验收 |
 | ④ 联调与验收 | 完整 WiscKey 测试和受影响存储／事务／恢复回归，更新结果 | 真实启用非零阈值验证 CRUD、批查、遍历、版本过滤、取消事务、合并和正常重开；默认关闭模式通过回归；报告实际测试范围和未验证边界 | 待开始 |
 
 百分比按验收通过阶段数计算，不代表工时比例；阶段中一个函数完成，不算整阶段完成。
@@ -49,20 +49,20 @@
 
 ## ③ Engine：当前步骤与必要联动
 
-- [ ] `TomlConfig::saveToFile`（当前）：在 `src/config/config.cpp:193` 写文件前，保存 `lsm.wisckey.WISCKEY_VALUE_THRESHOLD`。loadFromFile 已读取这一路径，保存端遗漏会使重新生成的配置在下次加载时退回默认 0；现有配置一直存在时不触发，不描述为普通重启必然关闭 WiscKey。只补一个已有字段，不添加 getter/setter 或新参数。已有保存测试已补阈值断言，待用户实现后运行；不计入本轮49项通过。
-- [ ] `LSMEngine::LSMEngine`：现有代码已先创建目录、无条件打开 VLog，再加载 SST 并传同一 VLog。正常实现静态核对无缺项，不为形式重写；需验证当前配置关闭后仍能重开原 WiscKey SST。
-- [ ] `LSMEngine::flush`：已有按阈值选择 builder 与传入 VLog 的路径；验证真实非零配置、完整原值和真实版本、完成 ID 通知。VLog 刷新已由 build 处理，不在 Engine 再重复刷新。
-- [ ] `LSMEngine::gen_sst_from_iter`：首次与换表后的 builder 均已带阈值／VLog，仍需正常合并集成与实际写入量核查。当前迭代器会解引用成完整 value，add 会重新追加分离值；不得将其描述为“只搬引用、值完全不重写”。引用复用的具体方案／首版取舍在进入此函数前说明，尚未擅自选定优化或延期。
+- [x] `TomlConfig::saveToFile`：用户已补保存 lsm.wisckey.WISCKEY_VALUE_THRESHOLD，配置3/3通过，包含非默认1536读取及重新生成配置后字段保留。仅补已有字段，不增加接口；现有配置一直存在时原来也不受遗漏影响。
+- [x] `LSMEngine::LSMEngine`：现有无条件打开VLog并传给SST::open的实现通过2项测试。验证新库创建空VLog、当前阈值0时加载预建普通/WiscKey SST，原构建对象全部销毁后由新Engine恢复依赖，核对层级、下一ID、全宽版本和12B二进制原值/65B大值/短值。此项直接验证构造职责，不冒充公开DB跨配置完整切换测试。
+- [x] `LSMEngine::flush`：现有接线通过真实非零配置的公开LSM集成测试。独立子进程加载阈值64，写入11/12/13/64/65B二进制值及删除，显式flush_all后VLog非空、SST模式1，get/get_batch/遍历及正常重开均返回正确原值和版本。未触发compaction，不将此项记作合并已验收。VLog刷新由build完成，不在Engine重复刷新。
+- [x] `LSMEngine::gen_sst_from_iter`：现有首次与换表后的 builder 均正确携带阈值／VLog，真实版本和同 key 分组保留；2/2 新测试验证真实开启分离的 L0→L1 与 L1→L2、多张输出 SST、12B 原值／内联／大值、墓碑、历史快照、回滚过滤及正常重开。无需重写业务代码。当前仍解引用并重新追加：两次实际合并观察 VLog 为 880→1760→2640B；测试只记录变化，不要求以后必须重复写入。
 - [ ] `LSMEngine::clear` 联动验收：沿用已有独占维护及 VLog 重建流程，检查清库后再次写入／刷盘／重开；不自动列为源码重写任务。
 
-当前只交付 saveToFile 的局部新增字段，语法检查通过；业务代码由用户加入。Engine 三个主函数的既有接线不等于阶段③已通过，实际集成测试在随后执行。
+当前配置、构造与 flush 已验证。2026-11-16 用户确认先完成原计划，本轮验收现有 gen_sst_from_iter 路径，已有正确业务逻辑不为形式重写；整阶段仍未完成。
 
 ## ②③ 仍需核对的衔接
 
 这些属于本章实现设计，尚不当作已完成模块的独立 bug，也不要求当前提前修改：
 
-1. **混合存储规则已确定，等待实现。** 以上述保留引用长度规则为准；不继续实施类型字节草案。构造、写入和读取必须对模式解释一致，不能声明 WiscKey 模式后又将 12 字节原值静默内联。
-2. **合并拿到的到底是什么。** 本地 `SstIterator::update_current` 会调用 `resolve_value`，`gen_sst_from_iter` 消费的可能是完整值。教程中“迭代器透明还原 value”与“合并直接搬 12 字节引用”的描述不能同时直接套用。7.2／7.3 实施前推导引用传递方式，列清必要的声明、调用方和拟新增接口后再逐函数落地；不预先要求重构全部迭代器。
+1. **混合存储规则已实现并完成组件验收。** 以上述保留引用长度规则为准；不继续实施类型字节草案。构造、写入和读取必须对模式解释一致，不能声明 WiscKey 模式后又将 12 字节原值静默内联。
+2. **合并拿到的到底是什么。** 本地 `SstIterator::update_current` 会调用 `resolve_value`，`gen_sst_from_iter` 消费的可能是完整值。教程中“迭代器透明还原 value”与“合并直接搬 12 字节引用”的描述不能同时直接套用。本轮按实际完整值路径验收，不宣称已经复用引用，不在当前阶段改造迭代器接口。
 3. **已有辅助路径。** 复核 `SstIterator::update_current/operator*/operator->` 的值暴露、`SST::is_wisckey`、`LSMEngine::clear`、`TomlConfig::loadFromFile/saveToFile/getWisckeyValueThreshold` 和配置项。已有正确行为保留；SST 刷盘前的 VLog 刷新顺序也在此确认。
 4. **测试确实启用功能。** 当前测试的部分 Persistence／Compaction 场景没有设置非零阈值；测试名不能证明经过 VLog。测试配置使用项目已有的大写 `WISCKEY_VALUE_THRESHOLD`，并检查实际 VLog／SST 状态。现有固定 /tmp 路径需要改为测试独占临时目录，单纯切换工作目录不够。
 
@@ -110,3 +110,7 @@
 2026-11-16 恢复首版主线验收：用户已明确将新发现的损坏检测问题延期，本轮仅验证原计划 build/open 正常行为及既有刷新失败传播。新增 3 项 SSTBuilderBuild 测试，运行 `--gtest_filter=SSTBuilder*` **11/11 通过**（构造 4、add 4、build 3）。双模式×有无 Bloom 检查 footer、首尾键、块数、完整事务号、模式和普通读取，独立重开 SST/VLog 并释放调用方指针后仍可读回；空 builder 拒绝；子进程 add 成功后用文件大小限制使 build 的 VLog::sync 失败，确认异常前缀及 SST 尚未创建。源码哈希稳定，未增加字段损坏测试，未运行 test_lsm。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-build-open-review-ewz356f7`。open 现有正常路径通过复核，无需逻辑改写；其过强的校验注释为非阻塞文字整理，不据此扩大完整性承诺。resolve_value 的单行草案仅通过语法检查，混合长度读取待用户实现后验收。
 
 2026-11-16 阶段②最终验收：用户 resolve_value 精确引用长度判断检查通过。新增4项 SSTResolveValueTest：混合长度各读取入口与重开，小／零阈值和普通构造，跨块快照／回滚／墓碑／全版本，缺 VLog 的原有延迟报错。5项旧SST组件用例仅迁移独占目录，名称及原断言保留，PutRemove原1→2插入次序保留；3项Engine用例逐字未改、留阶段③。构建 test_wisckey/test_sst 成功，隔离目录实际运行 SST*:WiscKeyPutGet.*:WiscKeyPutRemove.* **20/20** 与 test_sst **29/29**，合计 **49/49**，零失败／禁用。没有重跑VLog20项或test_lsm；没有新增延期的SST损坏用例。测试前后业务源码与测试哈希稳定；构建后只澄清新增测试的一句注释，执行逻辑不变。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-lab72-final-iay2qss5`，含构建日志、两套件JSON/日志、summary.json及哈希。阶段②完成，整体50%。同目录配置保存草案仅语法检查通过；test_config新增保存阈值断言尚未运行，等待用户完成下一函数。
+
+2026-11-16 阶段③入口验收：用户配置保存修改检查通过。构建 test_config/test_wisckey 成功；独立目录运行配置3/3、新Engine初始化2项＋真实WiscKey公开刷盘1项3/3，合计6/6。新测试直接加入test/test_wisckey.cpp，公开刷盘在threadsafe子进程首次加载阈值64，正常析构后清理目录，不增加setter。构造关闭模式测试使用合法预建SST并销毁原依赖，阈值0由新Engine加载；公开刷盘测试同一非零配置下关闭重开，不混同为跨配置公共API测试。业务源码哈希稳定，未运行test_lsm或尚未决定范围的合并优化。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-engine-wisckey-entry-khowakuj`，包含构建日志、两套件命令/JSON/日志、summary与源码哈希。
+
+2026-11-16 合并专项验收：`xmake build -j 2 test_wisckey` 成功，隔离运行 `WiscKeyCompactionDeathTest.*` **2/2 通过**，零失败／禁用。两项均通过公开 LSM 事务及 flush_all 触发真实合并，非零阈值64；39个初始key、历史修改／删除／RU取消和少量触发记录，检查多张WiscKey输出表、点查／批查／快照遍历及正常关闭重开。触发记录为11B内联值，本身不新增VLog原值；L0合并观察880→1760B，深层场景随后1760→2640B，中间无合并刷盘保持1760B。测试没有把重复增长写为功能断言，便于后续优化对比。业务源码哈希稳定，没有运行或干预test_lsm。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wisckey-compaction-review-x2qi3o3f`，包含构建、命令、日志、GTest JSON、源文件前后哈希和summary。下一步是clear联动验收，阶段③尚未完成。
