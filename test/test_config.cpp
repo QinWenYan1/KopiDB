@@ -92,6 +92,10 @@ void check_storage_config_save() {
   const auto &cache = saved.at("lsm").at("cache");
   EXPECT_EQ(cache.at("LSM_BLOCK_CACHE_CAPACITY").as_integer(), 37);
   EXPECT_EQ(cache.at("LSM_BLOCK_CACHE_K").as_integer(), 3);
+  // WiscKey 阈值也必须保存，重新生成配置后仍应保持原来的分离设置。
+  ASSERT_TRUE(saved.at("lsm").contains("wisckey"));
+  const auto &wisckey = saved.at("lsm").at("wisckey");
+  EXPECT_EQ(wisckey.at("WISCKEY_VALUE_THRESHOLD").as_integer(), 1536);
   const auto &bloom = saved.at("bloom_filter");
   EXPECT_EQ(bloom.at("BLOOM_FILTER_EXPECTED_SIZE").as_integer(), 12345);
   EXPECT_DOUBLE_EQ(bloom.at("BLOOM_FILTER_EXPECTED_ERROR_RATE").as_floating(),

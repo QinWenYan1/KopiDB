@@ -14,6 +14,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <gtest/gtest.h>
 #include <iterator>
 #include <limits>
@@ -1096,8 +1097,232 @@ TEST_F(SSTBuilderBuildDeathTest, StopsBeforeCreatingSSTWhenVLogSyncFails) {
 }
 #endif
 
-TEST(SSTWiscKeyBuildRead, ThresholdSeparation) {
-    std::string dir = tmp_dir("sst_wisckey");
+// 复用独占目录和二进制样本；读取断言只经过 SST 的公开读取入口。
+class SSTResolveValueTest : public SSTBuilderAddTest {
+protected:
+  struct Record {
+    std::string key;
+    std::string value;
+    uint64_t tranc_id;
+  };
+
+  static void check_iterator(SstIterator &it, const Record &expected) {
+    ASSERT_FALSE(it.is_end());
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(it.get_cur_tranc_id(), expected.tranc_id);
+    // 先复制迭代器，再分别验证各读取入口，避免先前解引用的缓存影响断言。
+    auto key_it = it;
+    auto arrow_it = it;
+    auto value_it = it;
+    EXPECT_EQ(key_it.key(), expected.key);
+    EXPECT_EQ(arrow_it->first, expected.key);
+    EXPECT_EQ(arrow_it->second, expected.value);
+    EXPECT_EQ(*it, std::make_pair(expected.key, expected.value));
+    EXPECT_EQ(value_it.value(), expected.value);
+  }
+
+  static void check_view(
+      const std::shared_ptr<SST> &sst, uint64_t snapshot,
+      const std::vector<Record> &expected,
+      const std::function<bool(uint64_t)> &is_aborted = {}) {
+    auto it = sst->begin(snapshot, false, is_aborted);
+    for (const auto &record : expected) {
+      SCOPED_TRACE(record.key);
+      auto found = sst->get(record.key, snapshot, is_aborted);
+      check_iterator(found, record);
+      check_iterator(it, record);
+      ++it;
+    }
+    EXPECT_TRUE(it.is_end());
+    EXPECT_EQ(it, sst->end());
+  }
+};
+
+TEST_F(SSTResolveValueTest, MixedLengthsReadThroughEveryInterfaceAfterReopen) {
+  const uint64_t base = uint64_t{1} << 40;
+  const std::array<size_t, 7> lengths{0, 11, 12, 13, 63, 64, 65};
+  const auto path = dir_ / "mixed.sst";
+  const auto vlog_path = dir_ / "mixed.data";
+  auto vlog = VLog::open(vlog_path.string());
+  SSTBuilder builder(128, true, vlog, 64);
+  std::vector<Record> records;
+  for (size_t i = 0; i < lengths.size(); ++i) {
+    records.push_back({"key" + std::to_string(i), binary_value(lengths[i]),
+                       base + i + 1});
+    const auto &record = records.back();
+    builder.add(record.key, record.value, record.tranc_id);
+  }
+  auto sst = builder.build(71, path.string(), make_cache());
+  // 独立重开文件、VLog 和缓存，不能借用 build 留下的读取状态。
+  auto reopened = SST::open(71, FileObj::open(path.string(), false), make_cache(),
+                            VLog::open(vlog_path.string()));
+  for (const auto &table : {sst, reopened}) {
+    ASSERT_TRUE(table->is_wisckey());
+    ASSERT_GE(table->num_blocks(), 2u);
+    check_view(table, base + 100, records);
+    EXPECT_TRUE(table->get("missing", base + 100).is_end());
+    auto range = sst_iters_monotony_predicate(
+        table, base + 100, [](const std::string &key) {
+          return key < "key1" ? 1 : (key > "key5" ? -1 : 0);
+        });
+    ASSERT_TRUE(range.has_value());
+    auto it = range->first;
+    for (size_t i = 1; i <= 5; ++i) {
+      ASSERT_NE(it, range->second);
+      check_iterator(it, records[i]);
+      ++it;
+    }
+    EXPECT_EQ(it, range->second);
+  }
+}
+
+TEST_F(SSTResolveValueTest, SmallAndDisabledThresholdsPreserveOriginalBytes) {
+  const std::array<size_t, 7> lengths{0, 1, 2, 11, 12, 13, 14};
+  const std::array<size_t, 5> thresholds{1, 12, 13, 0, 0};
+  // 最后一轮使用普通二参数构造；阈值 0 则验证四参数关闭路径。
+  for (size_t variant = 0; variant < thresholds.size(); ++variant) {
+    const auto threshold = thresholds[variant];
+    SCOPED_TRACE(variant);
+    const auto suffix = std::to_string(variant);
+    const auto path = dir_ / (suffix + ".sst");
+    const auto vlog_path = dir_ / (suffix + ".data");
+    auto vlog = VLog::open(vlog_path.string());
+    auto builder = variant == 4 ? SSTBuilder(4096, false)
+                                : SSTBuilder(4096, true, vlog, threshold);
+    std::vector<Record> records;
+    for (size_t i = 0; i < lengths.size(); ++i) {
+      records.push_back({"key" + std::to_string(i), binary_value(lengths[i]),
+                         i + 1});
+      const auto &record = records.back();
+      builder.add(record.key, record.value, record.tranc_id);
+    }
+    auto sst = builder.build(variant, path.string(), make_cache());
+    auto reopened = SST::open(
+        variant, FileObj::open(path.string(), false), make_cache(),
+        threshold == 0 ? nullptr : VLog::open(vlog_path.string()));
+    for (const auto &table : {sst, reopened}) {
+      EXPECT_EQ(table->is_wisckey(), threshold != 0);
+      check_view(table, 100, records);
+    }
+    if (threshold == 0) {
+      EXPECT_EQ(vlog->tail_offset(), 0u);
+      EXPECT_EQ(std::filesystem::file_size(vlog_path), 0u);
+    }
+  }
+}
+
+TEST_F(SSTResolveValueTest, KeepsSnapshotsAndAbortedVersionsAcrossBlocks) {
+  const uint64_t base = uint64_t{1} << 40;
+  // 与 MemTable 刷盘一致：key 升序，同 key 的真实版本降序。
+  const std::vector<Record> records{
+      {"aaa", binary_value(12), base + 12},
+      {"bbb", binary_value(65), base + 11},
+      {"bbb", binary_value(13), base + 7},
+      {"bbb", binary_value(12), base + 3},
+      {"ccc", "", base + 10},
+      {"ccc", binary_value(65), base + 4},
+      {"ddd", binary_value(64), base + 9},
+      {"ddd", binary_value(12), base + 5},
+      {"eee", binary_value(11), base + 2},
+      {"zzz", binary_value(65), base + 1}};
+  const auto is_aborted = [base](uint64_t version) {
+    return version == base + 12 || version == base + 11 || version == base + 9;
+  };
+  const auto path = dir_ / "versions.sst";
+  const auto vlog_path = dir_ / "versions.data";
+  auto vlog = VLog::open(vlog_path.string());
+  SSTBuilder builder(64, true, vlog, 64);
+  for (const auto &record : records) {
+    builder.add(record.key, record.value, record.tranc_id);
+  }
+  auto sst = builder.build(73, path.string(), make_cache());
+  auto reopened = SST::open(73, FileObj::open(path.string(), false), make_cache(),
+                            VLog::open(vlog_path.string()));
+  for (const auto &table : {sst, reopened}) {
+    ASSERT_GE(table->num_blocks(), 4u);
+    EXPECT_EQ(table->get_tranc_id_range(), std::make_pair(base + 1, base + 12));
+    check_view(table, 0, {records[0], records[1], records[4], records[6],
+                          records[8], records[9]});
+    check_view(table, 0,
+               {records[2], records[4], records[7], records[8], records[9]},
+               is_aborted);
+    check_view(table, base + 6,
+               {records[3], records[5], records[7], records[8], records[9]},
+               is_aborted);
+    check_view(table, base, {}, is_aborted);
+    EXPECT_TRUE(table->get("aaa", 0, is_aborted).is_end());
+    EXPECT_TRUE(table->get("bbb", base + 2, is_aborted).is_end());
+
+    auto range = sst_iters_monotony_predicate(
+        table, 0,
+        [](const std::string &key) {
+          return key < "bbb" ? 1 : (key > "ddd" ? -1 : 0);
+        },
+        is_aborted);
+    ASSERT_TRUE(range.has_value());
+    auto range_it = range->first;
+    for (const auto index : {2u, 4u, 7u}) {
+      ASSERT_NE(range_it, range->second);
+      check_iterator(range_it, records[index]);
+      ++range_it;
+    }
+    EXPECT_EQ(range_it, range->second);
+
+    // 保留全部版本时，解引用仍返回原文，版本号仍是记录自身的 64 位值。
+    auto all = table->begin(0, true);
+    for (const auto &record : records) {
+      check_iterator(all, record);
+      EXPECT_EQ(all.get_tranc_id(), record.tranc_id);
+      ++all;
+    }
+    EXPECT_TRUE(all.is_end());
+    auto filtered = table->begin(base + 10, true, is_aborted);
+    for (const auto index : {2u, 3u, 4u, 5u, 7u, 8u, 9u}) {
+      check_iterator(filtered, records[index]);
+      EXPECT_EQ(filtered.get_tranc_id(), records[index].tranc_id);
+      ++filtered;
+    }
+    EXPECT_TRUE(filtered.is_end());
+  }
+}
+
+TEST_F(SSTResolveValueTest, MissingVLogThrowsOnlyWhenReferenceIsDereferenced) {
+  const auto path = dir_ / "missing-vlog.sst";
+  auto vlog = VLog::open((dir_ / "values.data").string());
+  SSTBuilder builder(4096, true, vlog, 64);
+  builder.add("aaa", "", 4);
+  builder.add("bbb", binary_value(13), 3);
+  builder.add("ccc", binary_value(12), 2);
+  builder.add("ddd", binary_value(65), 1);
+  builder.build(74, path.string(), make_cache());
+
+  // open 和定位只读取 SST；现有约定在首次解析引用时报告依赖缺失。
+  std::shared_ptr<SST> sst;
+  ASSERT_NO_THROW(sst = SST::open(74, FileObj::open(path.string(), false),
+                                 make_cache()));
+  ASSERT_TRUE(sst->is_wisckey());
+  auto tombstone = sst->get("aaa", 4);
+  check_iterator(tombstone, {"aaa", "", 4});
+  auto inline_value = sst->get("bbb", 4);
+  check_iterator(inline_value, {"bbb", binary_value(13), 3});
+  for (const auto &key : {"ccc", "ddd"}) {
+    SCOPED_TRACE(key);
+    auto it = sst->get(key, 4);
+    ASSERT_FALSE(it.is_end());
+    EXPECT_THROW(it.value(), std::runtime_error);
+    EXPECT_THROW((void)*it, std::runtime_error);
+    EXPECT_THROW((void)it.operator->(), std::runtime_error);
+  }
+}
+
+class SSTWiscKeyBuildRead : public VLogOpenTest {};
+class SSTBackwardCompat : public VLogOpenTest {};
+class SSTTombstoneInline : public VLogOpenTest {};
+class WiscKeyPutGet : public VLogOpenTest {};
+class WiscKeyPutRemove : public VLogOpenTest {};
+
+TEST_F(SSTWiscKeyBuildRead, ThresholdSeparation) {
+    std::string dir = dir_.string();
     std::string vlog_path = dir + "/vlog.data";
     std::string sst_path = dir + "/sst_00000.0";
 
@@ -1131,12 +1356,10 @@ TEST(SSTWiscKeyBuildRead, ThresholdSeparation) {
     EXPECT_EQ((*it).second, "also-short");
     ++it;
     EXPECT_TRUE(it.is_end());
-
-    std::filesystem::remove_all(dir);
 }
 
-TEST(SSTBackwardCompat, OldFormat) {
-    std::string dir = tmp_dir("sst_compat");
+TEST_F(SSTBackwardCompat, OldFormat) {
+    std::string dir = dir_.string();
     std::string sst_path = dir + "/sst_00001.0";
     auto cache = make_cache();
 
@@ -1154,12 +1377,10 @@ TEST(SSTBackwardCompat, OldFormat) {
 
     auto it = sst2->begin(1);
     EXPECT_EQ((*it).second, "bar");
-
-    std::filesystem::remove_all(dir);
 }
 
-TEST(SSTTombstoneInline, EmptyValueAlwaysInline) {
-    std::string dir = tmp_dir("sst_tombstone");
+TEST_F(SSTTombstoneInline, EmptyValueAlwaysInline) {
+    std::string dir = dir_.string();
     std::string vlog_path = dir + "/vlog.data";
     std::string sst_path = dir + "/sst_00002.0";
     auto vlog = VLog::open(vlog_path);
@@ -1173,8 +1394,6 @@ TEST(SSTTombstoneInline, EmptyValueAlwaysInline) {
     auto it = sst->begin(1);
     EXPECT_FALSE(it.is_end());
     EXPECT_EQ((*it).second, ""); // tombstone survives as empty
-
-    std::filesystem::remove_all(dir);
 }
 
 // ---- LSM integration tests ------------------------------------------
@@ -1202,8 +1421,8 @@ TEST(WiscKeyDisabled, AllInlineFull) {
     std::filesystem::remove_all(dir);
 }
 
-TEST(WiscKeyPutGet, LargeValueViaVLog) {
-    std::string dir = tmp_dir("lsm_putget");
+TEST_F(WiscKeyPutGet, LargeValueViaVLog) {
+    std::string dir = dir_.string();
     std::string vlog_path = dir + "/vlog.data";
 
     {
@@ -1222,11 +1441,10 @@ TEST(WiscKeyPutGet, LargeValueViaVLog) {
         EXPECT_FALSE(it.is_end());
         EXPECT_EQ((*it).second, large);
     }
-    std::filesystem::remove_all(dir);
 }
 
-TEST(WiscKeyPutRemove, TombstoneCorrect) {
-    std::string dir = tmp_dir("lsm_remove");
+TEST_F(WiscKeyPutRemove, TombstoneCorrect) {
+    std::string dir = dir_.string();
     std::string vlog_path = dir + "/vlog.data";
 
     {
@@ -1249,7 +1467,6 @@ TEST(WiscKeyPutRemove, TombstoneCorrect) {
         // Second entry is the tombstone at tranc_id=2
         EXPECT_EQ((*it).second, "");
     }
-    std::filesystem::remove_all(dir);
 }
 
 TEST(WiscKeyPersistence, FlushAndReopen) {
