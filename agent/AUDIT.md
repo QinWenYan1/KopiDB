@@ -382,3 +382,5 @@ WiscKey 与 CRC 对照证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T
 2026-11-16 A15 优化前计时基线完成：`WiscKeyCompactionBenchmarkDeathTest.MeasuresReferenceCompactionCost` 定向1/1通过，预热1轮、正式5轮。四张L0、10000个key×4096B、阈值64，Debug；同一seed每轮复制新目录，计时仅Engine::flush（含内联触发记录的固定刷盘开销），生成／复制／打开／put／逐条读取校验均在计时外。正式耗时ms依次3186.886583、3160.391500、3181.784583、3167.836667、3180.269917；中位数3180.269917ms。每轮VLog41200000→82400000B，新增41200000B（约39.3MiB），这是文件增长而非物理磁盘I/O。所有原值／版本与合并状态均正确。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-baseline-ike5lafd`，包含旧二进制和完整复测材料。未更改业务源码，优化尚未实现；下一步给出BaseIterator默认类型getter草案。
 
 2026-11-16 A15 阶段①完成：Base默认getter、SearchItem内存标志及Heap当前条目getter由用户实现。新增两项组合测试覆盖标志随key／版本／来源排序、推进、可见性及墓碑过滤保持，空/end安全；连同原迭代器测试11/11通过。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-heap-review-4b0txle4`。进度1/6，尚未接通SST原始值模式及Engine优化，不宣称已消除重复VLog读写。
+
+2026-11-16 A15 阶段②命名及构造进展：用户确定读取模式使用Query/Compaction，分别对应还原原值／保留存储字节；先前方案中的Resolved/Stored由此命名替代，职责不变。顺序构造保存模式已检查，默认查询回归33/33通过（test_sst29＋SSTResolveValueTest4）。下一步update_current，尚未宣称合并路径已不读VLog。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-sst-ctor-review-nfjk4owe`。
