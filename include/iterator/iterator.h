@@ -35,14 +35,14 @@ public:
   virtual bool is_end() const = 0;
   virtual bool is_valid() const = 0;
   virtual uint64_t get_cur_tranc_id() const = 0; 
-  // 当前输出的 value 是否已经是 VLog 引用
-  // 后续合并写出时：
-  //   true  → 直接保存引用；
-  //   false → 按普通原值交给 SSTBuilder::add()
+  // 返回迭代器当前指向记录的 value 类型
+  // true：value 是 VLog 引用，合并时可以直接保存到新 SST
+  // false：value 是原值（空值表示墓碑），交给 add() 按原有规则处理
   //
-  // 默认按原值处理，能输出引用的派生迭代器再重写这个函数
-  // 不能仅凭长度判断：普通原值也可能恰好是 12 字节
-  // 此默认实现不访问当前元素，空迭代器也能安全返回 false
+  // 执行 ++ 后，这个函数回答的是新当前位置的 value 类型
+  // 默认返回 false，输出原值的迭代器可以直接沿用
+  // 能输出引用的派生迭代器再重写，返回当前记录保存的类型标志
+  // 默认实现不访问记录，空迭代器也能安全调用
   virtual bool is_vlog_ref() const { return false; }
 };
 
@@ -61,13 +61,19 @@ struct SearchItem {
   size_t idx_;
   int level_; // 来自sst的level
 
+  // 保存本条记录的 value_ 是否为已有 VLog 引用
+  // 调用方判断好类型后传入，SearchItem 只负责保存这个结果
+  // 堆调整记录顺序时，标志会跟着记录一起移动，不参与排序
+  bool is_vlog_ref_ = false;
+
   SearchItem() = default;
-  SearchItem(std::string k, std::string v, size_t i, int l, uint64_t tranc_id)
+  SearchItem(std::string k, std::string v, size_t i, int l, uint64_t tranc_id, bool is_vlog_ref = false)
       : key_(std::move(k)), 
         value_(std::move(v)), 
         tranc_id_(tranc_id),
         idx_(i), 
-        level_(l) {}
+        level_(l), 
+        is_vlog_ref_(is_vlog_ref){}
 };
 
 bool operator<(const SearchItem &a, const SearchItem &b);

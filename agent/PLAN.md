@@ -84,7 +84,9 @@
 ## 当前执行位置
 
 - [x] BaseIterator::is_vlog_ref：用户实现为const虚函数，默认false且不读取当前元素；代码核对及 `xmake build -j 2 test_lsm` 通过，全部相关派生类无须新增override即可编译。本轮仅检查／编译，未新增镜像默认返回值的测试，也未重跑业务套件。
-- [ ] SearchItem构造：下一函数。先在 `include/iterator/iterator.h:62` 的level_成员后加 `bool is_vlog_ref_ = false`，再替换当前:65的有参构造，新增末尾默认false参数并保存。默认构造保持不变，依靠成员默认值初始化。只保存类型信息，不按长度推断，不改变比较规则。
+- [ ] SearchItem构造：下一函数。先在 `include/iterator/iterator.h:62` 的level_成员后加 `bool is_vlog_ref_ = false`，再替换当前:65的有参构造，新增末尾默认false参数并保存。默认构造保持不变，依靠成员默认值初始化。SearchItem只保存调用方已经判断好的类型，不自行识别引用，不改变比较规则。
 - [ ] HeapIterator::is_vlog_ref：待SearchItem完成后逐函数推进，阶段①仍未验收。
 
 检查证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-base-getter-review-5g73f_b9`，包含构建日志、源码前后哈希与summary；业务源码在检查期间稳定，助手未代改。已核对现有生产与测试的五参创建方式，新增末尾默认参数兼容现有调用。issue已在聊天交付、未发布；继续用户手写、助手检查及补测试的方式。
+
+注释澄清：is_vlog_ref()报告当前输出记录的value类型，++后对应新记录；SearchItem::is_vlog_ref_保存每条记录的类型。WiscKey SST的原始存储值仍可按12B长度识别引用，约定不变。已在聊天重新给出职责明确的Base注释及SearchItem草案；当前源码尚未加入SearchItem标志，不能跳到Heap getter验收。本轮为注释／草案讲解，未改业务源码或重跑测试。
