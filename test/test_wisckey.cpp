@@ -1890,6 +1890,162 @@ TEST_F(WiscKeyCompactionDeathTest, DeeperMergePreservesValuesVersionsAndReopens)
   ::testing::FLAGS_gtest_death_test_style = "threadsafe";
   EXPECT_EXIT(run_child(dir_, true), ::testing::ExitedWithCode(0), "");
 }
+
+class WiscKeyClearDeathTest : public VLogOpenTest {
+protected:
+  static void check_records(
+      LSM &db, const std::map<std::string, std::string> &expected,
+      uint64_t old_version) {
+    std::vector<std::string> keys;
+    for (const auto &[key, value] : expected) {
+      EXPECT_EQ(db.get(key), std::optional<std::string>(value));
+      keys.push_back(key);
+    }
+    for (const auto &key : {"old_only", "old_memory", "deleted"}) {
+      EXPECT_FALSE(db.get(key).has_value());
+      keys.push_back(key);
+    }
+    const auto batch = db.get_batch(keys);
+    ASSERT_EQ(batch.size(), keys.size());
+    for (size_t i = 0; i < keys.size(); ++i) {
+      EXPECT_EQ(batch[i].first, keys[i]);
+      const auto found = expected.find(keys[i]);
+      if (found == expected.end()) {
+        EXPECT_FALSE(batch[i].second.has_value());
+      } else {
+        EXPECT_EQ(batch[i].second, std::optional<std::string>(found->second));
+      }
+    }
+    // helper 返回时销毁迭代器，随后才允许 clear 或 flush 获取写锁。
+    auto it = db.begin(0);
+    for (const auto &[key, value] : expected) {
+      ASSERT_FALSE(it.is_end());
+      EXPECT_EQ(it->first, key);
+      EXPECT_EQ(it->second, value);
+      EXPECT_GT(it.get_cur_tranc_id(), old_version);
+      ++it;
+    }
+    EXPECT_TRUE(it.is_end());
+  }
+
+  static void run_clear(const std::filesystem::path &dir, size_t threshold) {
+    // 两种配置分别在新进程中初始化单例；清库约定为排他操作，
+    // 测试不会让事务或迭代器存活到 clear 调用期间。
+    const auto config_path = dir / "wisckey.toml";
+    std::ofstream config(config_path);
+    ASSERT_TRUE(config.is_open());
+    config << R"toml([lsm.core]
+LSM_TOL_MEM_SIZE_LIMIT = 67108864
+LSM_PER_MEM_SIZE_LIMIT = 1048576
+LSM_BLOCK_SIZE = 4096
+LSM_SST_LEVEL_RATIO = 4
+[lsm.cache]
+LSM_BLOCK_CACHE_CAPACITY = 64
+LSM_BLOCK_CACHE_K = 2
+[bloom_filter]
+BLOOM_FILTER_EXPECTED_SIZE = 4096
+BLOOM_FILTER_EXPECTED_ERROR_RATE = 0.1
+[lsm.wisckey]
+WISCKEY_VALUE_THRESHOLD = )toml" << threshold << '\n';
+    config.close();
+    ASSERT_TRUE(config.good());
+    ASSERT_EQ(TomlConfig::getInstance(config_path.string())
+                  .getWisckeyValueThreshold(), threshold);
+
+    const auto data_dir = dir / "database";
+    const auto vlog_path = data_dir / "vlog.data";
+    const std::map<std::string, std::string> replacements{
+        {"inline", std::string("new\0inline", 10)},
+        {"reused", std::string(200, 'N')},
+        {"twelve", std::string("new\0twelve!!", 12)}};
+    uint64_t old_version = 0;
+    {
+      LSM db(data_dir.string());
+      db.put("reused", std::string(200, 'O'));
+      db.put("twelve", std::string(12, 'O'));
+      db.put("old_only", "persisted");
+      db.flush_all();
+      // 先实际查询，令旧块进入缓存；清库后复用 key 不能返回旧缓存值。
+      EXPECT_EQ(db.get("reused"), std::optional<std::string>(std::string(200, 'O')));
+      EXPECT_EQ(db.get("twelve"), std::optional<std::string>(std::string(12, 'O')));
+      EXPECT_EQ(std::filesystem::file_size(vlog_path) > 0, threshold != 0);
+      db.put("old_memory", "not flushed");
+      {
+        auto it = db.begin(0);
+        for (; !it.is_end(); ++it) {
+          old_version = std::max(old_version, it.get_cur_tranc_id());
+        }
+      }
+
+      db.clear();
+      ASSERT_TRUE(std::filesystem::is_regular_file(vlog_path));
+      EXPECT_EQ(std::filesystem::file_size(vlog_path), 0u);
+      for (const auto &entry : std::filesystem::directory_iterator(data_dir)) {
+        EXPECT_FALSE(entry.path().filename().string().starts_with("sst_"));
+      }
+      EXPECT_FALSE(db.get("reused").has_value());
+      EXPECT_FALSE(db.get("twelve").has_value());
+      ASSERT_NO_FATAL_FAILURE(check_records(db, {}, old_version));
+
+      // 空库再 clear 一次仍可正常使用，不依赖旧 VLog/SST 句柄。
+      db.clear();
+      EXPECT_EQ(std::filesystem::file_size(vlog_path), 0u);
+      for (const auto &[key, value] : replacements) {
+        db.put(key, value);
+      }
+      db.put("deleted", std::string(200, 'D'));
+      db.remove("deleted");
+      db.flush_all();
+      EXPECT_EQ(std::filesystem::file_size(vlog_path) > 0, threshold != 0);
+
+      size_t sst_count = 0;
+      for (const auto &entry : std::filesystem::directory_iterator(data_dir)) {
+        if (!entry.is_regular_file() ||
+            !entry.path().filename().string().starts_with("sst_")) {
+          continue;
+        }
+        // 只核对存储模式，不在第二个对象上读取或修改数据库记录。
+        auto sst = SST::open(++sst_count,
+                             FileObj::open(entry.path().string(), false),
+                             make_cache());
+        EXPECT_EQ(sst->is_wisckey(), threshold != 0);
+      }
+      EXPECT_GT(sst_count, 0u);
+      ASSERT_NO_FATAL_FAILURE(check_records(db, replacements, old_version));
+    }
+    // 销毁原 DB 后从磁盘重开，验证新引用指向新 VLog，旧记录不会复活。
+    {
+      LSM reopened(data_dir.string());
+      ASSERT_NO_FATAL_FAILURE(check_records(reopened, replacements, old_version));
+    }
+  }
+
+  static void run_child(const std::filesystem::path &dir, size_t threshold) {
+    int exit_code = 0;
+    try {
+      run_clear(dir, threshold);
+      exit_code = ::testing::Test::HasFailure() ? 1 : 0;
+    } catch (const std::exception &error) {
+      ADD_FAILURE() << error.what();
+      exit_code = 90;
+    } catch (...) {
+      exit_code = 91;
+    }
+    std::error_code error;
+    std::filesystem::remove_all(dir, error);
+    std::_Exit(error ? 99 : exit_code);
+  }
+};
+
+TEST_F(WiscKeyClearDeathTest, RecreatesVLogAndPersistsNewValues) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_EXIT(run_child(dir_, 64), ::testing::ExitedWithCode(0), "");
+}
+
+TEST_F(WiscKeyClearDeathTest, DisabledModeRemainsUsableAfterClear) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_EXIT(run_child(dir_, 0), ::testing::ExitedWithCode(0), "");
+}
 #endif
 
 TEST(WiscKeyDisabled, AllInlineFull) {
