@@ -1,6 +1,7 @@
 #include "logger/logger.h"
 #include "wal/record.h"
 #include "lsm/engine.h"
+#include "config/config.h"
 #include "lsm/transaction.h"
 #include "wal/wal.h"
 #include <chrono>
@@ -3420,6 +3421,14 @@ TEST_F(LSMStartupWALTest, ProcessExitRestoresTransactionsWithoutDestructors) {
         }
       },
       ::testing::ExitedWithCode(0), "");
+
+  // Lab 7 还会用阈值 1 独立运行本例；退出前留下真实 VLog 数据，
+  // 后续重启验证才覆盖“已有值引用 + WAL 恢复回滚状态”的组合。
+  if (TomlConfig::getInstance().getWisckeyValueThreshold() == 1) {
+    const auto vlog_path = std::filesystem::path(test_dir) / "vlog.data";
+    ASSERT_TRUE(std::filesystem::is_regular_file(vlog_path));
+    ASSERT_GT(std::filesystem::file_size(vlog_path), 0u);
+  }
 
   for (int restart = 0; restart < 2; ++restart) {
     SCOPED_TRACE(restart);

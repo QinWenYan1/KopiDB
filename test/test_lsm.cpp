@@ -3460,6 +3460,15 @@ TEST_F(TranReadVisibilityTest, ContextReadsFilterUncommittedSstVersions) {
   engine->flush();
   ASSERT_EQ(engine->memtable.get_total_size(), 0u);
 
+  // Lab 7 回归会另用阈值 1 运行本例；确认脏值确实进入 VLog，
+  // 避免只验证普通 SST，就误认为已覆盖值分离后的读取隔离。
+  if (TomlConfig::getInstance().getWisckeyValueThreshold() == 1) {
+    ASSERT_GT(engine->vlog_->tail_offset(), 0u);
+    for (const auto &[id, sst] : engine->ssts) {
+      EXPECT_TRUE(sst->is_wisckey());
+    }
+  }
+
   auto check_committed = [](const std::shared_ptr<TranContext> &reader) {
     EXPECT_EQ(reader->get("updated"), std::make_optional(std::string("old")));
     EXPECT_EQ(reader->get("restored"), std::make_optional(std::string("keep")));
@@ -5613,6 +5622,13 @@ TEST_F(TranCommitTest, RollbackStateSurvivesFlushCompactionAndRestart) {
   ASSERT_FALSE(engine->level_sst_ids[1].empty());
   EXPECT_EQ(manager->get_checkpoint_tranc_id(), last_id);
   EXPECT_TRUE(manager->is_aborted(cancelled_id));
+  // 阈值 1 的专项运行必须真实经过 WiscKey 合并，再核对范围与回滚结果。
+  if (TomlConfig::getInstance().getWisckeyValueThreshold() == 1) {
+    ASSERT_GT(engine->vlog_->tail_offset(), 0u);
+    for (const auto &[id, sst] : engine->ssts) {
+      EXPECT_TRUE(sst->is_wisckey());
+    }
+  }
   check_visible();
 
   // 原始 SST 仍有取消版本，证明查询正确依赖回滚名单，而不是记录偶然被删除。

@@ -44,13 +44,6 @@ static std::string make_value(size_t sz, char fill = 'x') {
     return std::string(sz, fill);
 }
 
-static std::string tmp_dir(const std::string &name) {
-    std::string p = "/tmp/test_wisckey_" + name;
-    std::filesystem::remove_all(p);
-    std::filesystem::create_directories(p);
-    return p;
-}
-
 static std::shared_ptr<BlockCache> make_cache() {
     return std::make_shared<BlockCache>(256, 2);
 }
@@ -2048,8 +2041,15 @@ TEST_F(WiscKeyClearDeathTest, DisabledModeRemainsUsableAfterClear) {
 }
 #endif
 
-TEST(WiscKeyDisabled, AllInlineFull) {
-    std::string dir = tmp_dir("lsm_disabled");
+// 原有三个 Engine 用例使用独占目录，保留原数据规模与断言。
+// 默认阈值 0 下验证普通模式；真正开启分离的刷盘／合并／重开
+// 由上方显式配置非零阈值的集成用例覆盖。
+class WiscKeyDisabled : public VLogOpenTest {};
+class WiscKeyPersistence : public VLogOpenTest {};
+class WiscKeyCompaction : public VLogOpenTest {};
+
+TEST_F(WiscKeyDisabled, AllInlineFull) {
+    const std::string dir = dir_.string();
     {
         const_cast<TomlConfig &>(TomlConfig::getInstance())
             .modify_lsm_tol_mem_size_limit(64 * 1024 * 1024);
@@ -2068,7 +2068,6 @@ TEST(WiscKeyDisabled, AllInlineFull) {
             EXPECT_EQ(res.value(), make_value(100, 'v'));
         }
     }
-    std::filesystem::remove_all(dir);
 }
 
 TEST_F(WiscKeyPutGet, LargeValueViaVLog) {
@@ -2119,8 +2118,8 @@ TEST_F(WiscKeyPutRemove, TombstoneCorrect) {
     }
 }
 
-TEST(WiscKeyPersistence, FlushAndReopen) {
-    std::string dir = tmp_dir("lsm_persist");
+TEST_F(WiscKeyPersistence, FlushAndReopen) {
+    const std::string dir = dir_.string();
 
     const int N = 200;
     const size_t SMALL = 10;
@@ -2154,11 +2153,10 @@ TEST(WiscKeyPersistence, FlushAndReopen) {
         }
     }
 
-    std::filesystem::remove_all(dir);
 }
 
-TEST(WiscKeyCompaction, L0L1Compact) {
-    std::string dir = tmp_dir("lsm_compact");
+TEST_F(WiscKeyCompaction, L0L1Compact) {
+    const std::string dir = dir_.string();
 
     {
         // Small mem limit forces many flushes -> compaction
@@ -2181,7 +2179,6 @@ TEST(WiscKeyCompaction, L0L1Compact) {
         }
     }
 
-    std::filesystem::remove_all(dir);
 }
 
 int main(int argc, char **argv) {

@@ -8,7 +8,7 @@
 
 用户手写业务源码和头文件，助手逐函数提供中文注释、检查实现、补测试及维护记录。已有函数体也须按 Lab 独立推导；已验收的无关逻辑不整段重写。Redis 移除的独立代写授权已结束。
 
-进度：**75%（3/4 阶段验收）**。阶段①②③已验收。阶段③配置3项、初始化2项、公开刷盘1项、合并2项及清库2项累计10项通过（分轮执行）；本轮实际运行清库2/2。当前进入阶段④整体回归，引用复用优化紧接本 PLAN 完成后开展，排期与评估见 STATE/AUDIT。
+进度：**100%（4/4 阶段验收）**。本轮 Lab 7 按已确认范围完成：12个测试目标共547个不同用例通过，另外3次阈值1的复测通过，合计550次执行，零失败／禁用／跳过。两项LSM百万级用例未重跑、不计入通过数。引用复用优化按约定紧接本 PLAN 开展，记录见 STATE/AUDIT A15。
 
 ## 阶段与验收标准
 
@@ -17,7 +17,7 @@
 | ① Lab 7.1：VLog | `VLog::open` → `append` → `read_value`；复核直接相关辅助函数 | 新建为空、重开不截断；多条记录可按返回偏移读回，二进制内容不变；读取时核对长度和 CRC，损坏／截断明确报错；偏移和编码长度正确，共享文件访问正确同步 | 已验收，20/20 |
 | ② Lab 7.2：SST 支持 | 已确认保留引用长度 → WiscKey 版 `SSTBuilder` 构造 → `add` → `build` → `SST::open` → `resolve_value` | 12 字节原值强制分离、读端只识别恰好 12 字节引用；阈值／墓碑／普通模式正确；构建及重开后还原原值，版本号不变 | 已验收，本轮组件及普通回归49/49 |
 | ③ Lab 7.3：Engine 集成 | 配置保存联动 → 核查 `LSMEngine` 构造 → `flush` → `gen_sst_from_iter`；复核清库与引用传递 | 启用／禁用两种配置均可用；真实刷盘、合并、重开及清库后再次写入正确；合并读取完整值后按当前阈值重新编码，验证结果并记录 VLog 写入量；状态通知及回滚过滤不退化 | 已验收，累计10项通过（分轮执行） |
-| ④ 联调与验收 | 完整 WiscKey 测试和受影响存储／事务／恢复回归，更新结果 | 真实启用非零阈值验证 CRUD、批查、遍历、版本过滤、取消事务、合并和正常重开；默认关闭模式通过回归；报告实际测试范围和未验证边界 | 待开始 |
+| ④ 联调与验收 | 完整 WiscKey 测试和受影响存储／事务／恢复回归，更新结果 | 真实启用非零阈值验证 CRUD、批查、遍历、版本过滤、取消事务、合并和正常重开；默认关闭模式通过回归；报告实际测试范围和未验证边界 | 已验收，547项＋3次配置复测 |
 
 百分比按验收通过阶段数计算，不代表工时比例；阶段中一个函数完成，不算整阶段完成。
 
@@ -55,7 +55,7 @@
 - [x] `LSMEngine::gen_sst_from_iter`：现有首次与换表后的 builder 均正确携带阈值／VLog，真实版本和同 key 分组保留；2/2 新测试验证真实开启分离的 L0→L1 与 L1→L2、多张输出 SST、12B 原值／内联／大值、墓碑、历史快照、回滚过滤及正常重开。无需重写业务代码。当前仍解引用并重新追加：两次实际合并观察 VLog 为 880→1760→2640B；测试只记录变化，不要求以后必须重复写入。
 - [x] `LSMEngine::clear` 联动验收：现有流程无需修改，公开 LSM::clear 两项测试通过。阈值64/0分别验证旧SST缓存与未刷盘数据清空、VLog归零、空库重复清理、同key重写12B／大值、内联与墓碑、版本继续递增，以及刷盘／正常关闭重开后的点查、批查和遍历。
 
-阶段③现已验收：配置保存配套，构造、flush、gen_sst_from_iter 与 clear 的现有逻辑通过对应测试，无需为形式重写。下一阶段统一运行完整 WiscKey 测试及受影响回归，尚未宣称整章验收完成。
+阶段③现已验收：配置保存配套，构造、flush、gen_sst_from_iter 与 clear 的现有逻辑通过对应测试，无需为形式重写。阶段④已完成完整 WiscKey 测试及受影响回归，本轮约定范围验收完成。
 
 ## ②③ 仍需核对的衔接
 
@@ -67,6 +67,15 @@
 4. **测试确实启用功能。** 当前测试的部分 Persistence／Compaction 场景没有设置非零阈值；测试名不能证明经过 VLog。测试配置使用项目已有的大写 `WISCKEY_VALUE_THRESHOLD`，并检查实际 VLog／SST 状态。现有固定 /tmp 路径需要改为测试独占临时目录，单纯切换工作目录不够。
 
 已确认的取舍：保留引用长度方案不为每条非空 SST 值增加标签，但会将原本可内联的 12 字节值写入 VLog。用户选择它的依据是正确性能够保证且现有编码改动更小，不是已证明总体性能更好。整体读写成本依赖数据长度分布；不得据此假设 12 字节值很少。本规则不自动解决 compaction 对 VLog 的重复读写，后者仍按上方第 2 项处理。
+
+## ④ 当前回归安排
+
+- [x] 三项遗留 WiscKey Engine 测试迁移到独占目录，保留名称、规模和原断言；明确其默认关闭分离的覆盖范围。
+- [x] 构建并运行完整 WiscKey、Config、SkipList、MemTable、Block、BlockMeta、Utils、SST、BlockCache、Compact、WAL，以及 LSM 除两项百万级用例外的回归。
+- [x] 另在阈值1的独立配置运行 `ContextReadsFilterUncommittedSstVersions`、`RollbackStateSurvivesFlushCompactionAndRestart`、`ProcessExitRestoresTransactionsWithoutDestructors`，覆盖真实分离后的严格读取、谓词范围、回滚及已有SST与WAL恢复衔接；增加VLog非空等断言证明该路径实际启用。
+- [x] 汇总实际结果与源码稳定性，回写 STATE。`LSMTest.BigPersistence`、`LSMTest.BigPersistence2` 本轮不重跑，不计入本轮通过数；本轮也不是容量压力或断电持久性验收。
+
+各测试目标使用独立临时 cwd 和配置，二进制复制到证据目录再运行，不影响用户数据。已只读确认启动本轮前无运行中的 test_lsm/test_wal/test_compact/test_wisckey。
 
 ## 资料与范围
 
@@ -116,3 +125,9 @@
 2026-11-16 合并专项验收：`xmake build -j 2 test_wisckey` 成功，隔离运行 `WiscKeyCompactionDeathTest.*` **2/2 通过**，零失败／禁用。两项均通过公开 LSM 事务及 flush_all 触发真实合并，非零阈值64；39个初始key、历史修改／删除／RU取消和少量触发记录，检查多张WiscKey输出表、点查／批查／快照遍历及正常关闭重开。触发记录为11B内联值，本身不新增VLog原值；L0合并观察880→1760B，深层场景随后1760→2640B，中间无合并刷盘保持1760B。测试没有把重复增长写为功能断言，便于后续优化对比。业务源码哈希稳定，没有运行或干预test_lsm。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wisckey-compaction-review-x2qi3o3f`，包含构建、命令、日志、GTest JSON、源文件前后哈希和summary。下一步是clear联动验收，阶段③尚未完成。
 
 2026-11-16 clear 联动验收：`xmake build -j 2 test_wisckey` 成功，独立目录运行 `WiscKeyClearDeathTest.*` **2/2通过**，零失败／禁用。两个子进程分别首次配置阈值64和0，公开接口完成预读缓存、同时清除已刷盘及未刷盘数据、空库重复clear、同key新值写入／刷盘、正常关闭重开验证；确认VLog清空后按当前模式使用，新版本ID继续递增。业务源码哈希稳定，未运行或干预test_lsm。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-wisckey-clear-review-9ghkbjt7`。阶段③完成，整体75%；下一步阶段④。
+
+2026-11-16 阶段④最终验收：12个测试目标构建成功，各目标独立目录、独立配置、复制后的固定二进制运行。**547个不同用例通过，另外3次非零阈值复测通过，共550次执行，零失败／禁用／跳过**。组件为WiscKey50、Config3、SkipList31、MemTable51、Block37、BlockMeta6、Utils15、SST29、BlockCache7、LSM169、Compact5、WAL144。LSM显式排除BigPersistence/BigPersistence2，未复用旧结果计入本轮；Compact完整包含1000001次写入、500000次删除与重开校验的TombstoneDefaultConfig，整个Compact耗时224.405秒。
+
+阈值1的三次复测覆盖严格事务读、合并后谓词范围／回滚状态重开、已有SST与WAL恢复取消及未结束事务的衔接；VLog非空及SST模式断言确认真实分离。三个遗留WiscKey Engine用例仅迁移独占目录，保留名称、数据规模与原断言；其默认关闭模式不冒充开启分离。首次构建时助手补充的WAL断言遗漏config头文件，已补齐后重建成功，首次失败日志保留；没有业务源码失败或代改业务代码。
+
+证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-lab7-final-etei3pmh`，包含两次构建日志、完整构建命令、runner、每个目标的命令／配置／二进制哈希／GTest JSON／日志、进度和最终summary；include/src/test/config/xmake在实际运行期间哈希稳定，业务源码全程未变。已独立复核测试口径与隔离路径。所有助手启动的本轮测试均已退出。原计划完成，下一任务为A15引用复用优化；仍须先给issue与具体逐函数计划，业务代码继续由用户手写。
