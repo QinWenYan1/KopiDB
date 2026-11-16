@@ -246,10 +246,19 @@ std::string SstIterator::key() {
 }
 
 std::string SstIterator::value() {
-  if (!m_block_it) {
-    throw std::runtime_error("Iterator is invalid");
+  // 与 *、-> 保持一致：当前位置无效时，不能读取 value
+  if (!is_valid()) {
+    throw std::runtime_error(
+        "SstIterator::value: cannot read an invalid iterator");
   }
-  return m_sst->resolve_value((*m_block_it)->second);
+  // 复用同一套缓存填充逻辑：
+  // Query 返回原值，Compaction 保留 SST 的存储字节
+  // 当前记录已有缓存时，update_current 不会重复读取
+  update_current(); 
+
+  // 按现有接口返回字符串副本
+  // 不能把缓存中的字符串 move 走，否则后续 * 或 -> 会读到被移空的值
+  return cached_value->second; 
 }
 
 // Lab 3.6 实现迭代器自增
@@ -323,7 +332,7 @@ bool SstIterator::operator!=(const BaseIterator &other) const {
   return !operator==(other);
 }
 
-// Lab 3.6 实现迭代器解引用
+// Lab 3.6 按读取模式填充缓存：Query 返回原值，Compaction 保留存储字节
 SstIterator::value_type SstIterator::operator*() const {
 
   if (!is_valid())
