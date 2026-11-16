@@ -217,4 +217,14 @@ uint64_t HeapIterator::get_cur_tranc_id() const {
   return items.top().tranc_id_; 
 
 }
+
+bool HeapIterator::is_vlog_ref() const {
+  // 堆顶就是当前输出的记录，SearchItem 已经保存了它的类型。
+  // ++ 或版本过滤改变堆顶后，这里自然读取新堆顶的标志。
+  //
+  // 空堆没有当前记录，返回 false。
+  // && 会短路：items 为空时，不会访问 items.top()。
+  return !items.empty() && items.top().is_vlog_ref_;
+}
+
 } // namespace tiny_lsm
