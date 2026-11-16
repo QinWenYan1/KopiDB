@@ -380,3 +380,5 @@ WiscKey 与 CRC 对照证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T
 2026-11-16 A15 启动：用户要求先issue再计划，当前已进入 [PLAN](PLAN.md) 的6阶段方案，0/6验收。19处函数/11个业务文件范围经独立只读复核；拟采用ValueReadMode区分原值/存储值，类型标志只在内存，原值/引用双写入口共用组块逻辑。目标正阈值时保留已有引用、内联原值按当前阈值处理；目标0沿用解引用路径。issue使用已通过GitHub连接工具核实的提交 `b774ee6f4b74a0f960440eed20077e319ed617c6`，源文件与测试链接可访问；本机git网络查询失败后使用连接工具完成核实。issue仅在聊天交付，未发布。没有业务修改或本轮新测试结果。
 
 2026-11-16 A15 优化前计时基线完成：`WiscKeyCompactionBenchmarkDeathTest.MeasuresReferenceCompactionCost` 定向1/1通过，预热1轮、正式5轮。四张L0、10000个key×4096B、阈值64，Debug；同一seed每轮复制新目录，计时仅Engine::flush（含内联触发记录的固定刷盘开销），生成／复制／打开／put／逐条读取校验均在计时外。正式耗时ms依次3186.886583、3160.391500、3181.784583、3167.836667、3180.269917；中位数3180.269917ms。每轮VLog41200000→82400000B，新增41200000B（约39.3MiB），这是文件增长而非物理磁盘I/O。所有原值／版本与合并状态均正确。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-baseline-ike5lafd`，包含旧二进制和完整复测材料。未更改业务源码，优化尚未实现；下一步给出BaseIterator默认类型getter草案。
+
+2026-11-16 A15 阶段①完成：Base默认getter、SearchItem内存标志及Heap当前条目getter由用户实现。新增两项组合测试覆盖标志随key／版本／来源排序、推进、可见性及墓碑过滤保持，空/end安全；连同原迭代器测试11/11通过。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-heap-review-4b0txle4`。进度1/6，尚未接通SST原始值模式及Engine优化，不宣称已消除重复VLog读写。

@@ -117,6 +117,82 @@ void add_sst_for_point_query(const std::shared_ptr<LSMEngine> &engine,
 }
 } // namespace
 
+// 目的：引用标志随记录参与堆重排，始终对应当前输出的 value。
+// 两段 value 都是12B，但类型来自创建记录时传入的标志；Heap不重新识别。
+// 同 key 先比版本、同版本再比来源，不能因为类型不同改变原有顺序。
+TEST(IteratorMvccTest, HeapReferenceFlagFollowsOrderingAndAdvance) {
+  const std::string plain_value = "hello world!";
+  std::string reference(12, '\0');
+  reference[0] = 64;
+  reference[8] = 32;
+
+  // 默认构造后填齐原有字段，引用标志沿用成员默认值 false。
+  SearchItem plain;
+  plain.key_ = "b";
+  plain.value_ = plain_value;
+  plain.tranc_id_ = 3;
+  plain.idx_ = 0;
+  plain.level_ = 0;
+  std::vector<SearchItem> items{
+      {"z", "", 0, 0, 7}, {"a", reference, 9, 0, 5, true},
+      std::move(plain), {"a", plain_value, 1, 0, 9},
+      {"a", reference, 8, 0, 9, true}};
+  HeapIterator heap(std::move(items), 0, false, true);
+  BaseIterator &it = heap;
+  const std::vector<std::tuple<std::string, std::string, uint64_t, bool>> expected{
+      {"a", reference, 9, true}, {"a", plain_value, 9, false},
+      {"a", reference, 5, true}, {"b", plain_value, 3, false},
+      {"z", "", 7, false}};
+  for (const auto &[key, value, version, is_ref] : expected) {
+    SCOPED_TRACE(key + "@" + std::to_string(version));
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(*it, std::make_pair(key, value));
+    EXPECT_EQ(*heap.operator->(), std::make_pair(key, value));
+    EXPECT_EQ(it.get_cur_tranc_id(), version);
+    EXPECT_EQ(it.is_vlog_ref(), is_ref);
+    ++it;
+  }
+  EXPECT_TRUE(it.is_end());
+  EXPECT_FALSE(it.is_vlog_ref());
+  ++it;
+  EXPECT_FALSE(it.is_vlog_ref());
+}
+
+// 目的：不可见版本、历史版本及已删除 key 被跳过后，标志仍对应新堆顶。
+// 场景：a@10不可见，b@8墓碑删除整个b，c@9不可见；
+// 最终只输出a@6原值、c@7引用、d@5原值。
+TEST(IteratorMvccTest, HeapReferenceFlagFollowsVisibilityAndDeletion) {
+  const std::string plain_value = "hello world!";
+  std::string reference(12, '\0');
+  reference[0] = 64;
+  reference[8] = 32;
+  const std::vector<SearchItem> items{
+      {"d", plain_value, 0, 0, 5}, {"b", reference, 0, 0, 3, true},
+      {"a", reference, 0, 0, 4, true}, {"c", plain_value, 0, 0, 9},
+      {"a", reference, 0, 0, 10, true}, {"b", "", 0, 0, 8},
+      {"c", reference, 0, 0, 7, true}, {"a", plain_value, 0, 0, 6}};
+  HeapIterator heap(items, 8, true, false);
+  BaseIterator &it = heap;
+  const std::vector<std::tuple<std::string, std::string, uint64_t, bool>> expected{
+      {"a", plain_value, 6, false}, {"c", reference, 7, true},
+      {"d", plain_value, 5, false}};
+  for (const auto &[key, value, version, is_ref] : expected) {
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(*it, std::make_pair(key, value));
+    EXPECT_EQ(it.get_cur_tranc_id(), version);
+    EXPECT_EQ(it.is_vlog_ref(), is_ref);
+    ++it;
+  }
+  EXPECT_TRUE(it.is_end());
+  EXPECT_FALSE(it.is_vlog_ref());
+
+  HeapIterator empty;
+  BaseIterator &empty_base = empty;
+  EXPECT_FALSE(empty_base.is_vlog_ref());
+  ++empty_base;
+  EXPECT_FALSE(empty_base.is_vlog_ref());
+}
+
 // 目的：先判断版本可见性，再处理墓碑；普通模式去重，全版本模式保留历史。
 // 场景：读上限 8 看不到 a@12 的删除，却看得到 b@8 的删除。
 TEST(IteratorMvccTest, HeapFiltersVersionsBeforeTombstones) {

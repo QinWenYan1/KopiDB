@@ -6,7 +6,7 @@
 
 问题与证据见 [AUDIT A15](AUDIT.md#a15)。上一轮 Lab 7 已完成约定范围的验收，结果归入 [STATE](STATE.md)。本轮只优化合并的数据传递路径：目标 SST 仍启用 WiscKey 时，已有 VLog 引用直接写入新 SST，不为搬运引用读取或重新追加原值；普通查询仍返回完整 value。
 
-优化前基线已采集；BaseIterator::is_vlog_ref和SearchItem构造已由用户加入并通过检查，现有迭代器回归9/9通过；阶段①下一函数为HeapIterator::is_vlog_ref。进度：**0%（0/6 阶段验收）**。用户手写业务源码与头文件，助手逐函数提供带中文注释的实现、检查、补测试和维护记录；一次只推进一个业务函数。
+优化前基线已采集；阶段①已验收，新引用标志组合测试2项及原迭代器回归9项共11/11通过。当前进入阶段②，下一函数为SstIterator顺序构造。进度：**16.7%（1/6 阶段验收）**。用户手写业务源码与头文件，助手逐函数提供带中文注释的实现、检查、补测试和维护记录；一次只推进一个业务函数。
 
 ## 已核对的设计与边界
 
@@ -22,8 +22,8 @@
 
 | 阶段 | 具体函数（阶段内仍逐个处理） | 验收标准 | 状态 |
 | --- | --- | --- | --- |
-| ① 内存类型信息 | BaseIterator::is_vlog_ref（新增默认实现）→ SearchItem 构造函数 → HeapIterator::is_vlog_ref（新增） | 旧调用默认非引用；堆推进后类型与当前条目对应；空堆安全返回false；原排序不变 | 进行中，Base／SearchItem已检查，待Heap getter |
-| ② SST 存储值读取 | SstIterator 顺序构造 → update_current → value → is_vlog_ref（新增）→ SST::begin；共享VLOG_REF_SIZE | 默认查询返回原值；Stored返回原始字节且不读VLog；普通12B原值不误判；跨块/seek/结束状态保持规则 | 待开始 |
+| ① 内存类型信息 | BaseIterator::is_vlog_ref（新增默认实现）→ SearchItem 构造函数 → HeapIterator::is_vlog_ref（新增） | 旧调用默认非引用；堆推进后类型与当前条目对应；空堆安全返回false；原排序不变 | 已验收，11/11通过 |
+| ② SST 存储值读取 | SstIterator 顺序构造 → update_current → value → is_vlog_ref（新增）→ SST::begin；共享VLOG_REF_SIZE | 默认查询返回原值；Stored返回原始字节且不读VLog；普通12B原值不误判；跨块/seek/结束状态保持规则 | 进行中，待用户实现顺序构造 |
 | ③ 合并中传递类型 | SstIterator::merge_sst_iterator → ConcactIterator构造 → operator++ → is_vlog_ref（新增）→ TwoMergeIterator::is_vlog_ref（新增） | L0堆、跨SST拼接与双路归并均保留字节及类型；比较与推进不触发解引用；版本和来源优先级不变 | 待开始 |
 | ④ Builder 复用引用 | add_stored_entry（新增私有）→ add → add_vlog_ref（新增） | 引用直写保持字节与VLog尾位置不变；普通12B原值仍正确分离；原组块、Bloom、版本范围和墓碑规则通过回归 | 待开始 |
 | ⑤ Engine 接通 | full_l0_l1_compact → full_common_compact → gen_sst_from_iter | 启用模式的两级合并复用引用，换输出表后仍正确；普通/WiscKey混合可合并；禁用后读出原值并生成普通SST | 待开始 |
@@ -85,10 +85,14 @@
 
 - [x] BaseIterator::is_vlog_ref：用户实现为const虚函数，默认false且不读取当前元素；代码核对及 `xmake build -j 2 test_lsm` 通过，全部相关派生类无须新增override即可编译。本轮仅检查／编译，未新增镜像默认返回值的测试，也未重跑业务套件。
 - [x] SearchItem构造：用户已添加默认false成员、尾部默认false参数及对应初始化；默认构造和已有五参调用兼容。Base注释已改为当前记录类型的准确说明。构建成功，现有IteratorMvccTest.*回归9/9通过，来源比较和版本／墓碑行为保持。
-- [ ] HeapIterator::is_vlog_ref：当前函数，聊天草案为先检查堆非空再读取items.top().is_vlog_ref_；头文件当前:100的get_cur_tranc_id声明后增加override，cpp当前:219的get_cur_tranc_id结束后增加定义。待用户实现后补两项类型随排序／推进／版本过滤／墓碑过滤的组合测试，阶段①仍未验收。
+- [x] HeapIterator::is_vlog_ref：用户已实现const override，先检查堆非空再读取items.top().is_vlog_ref_。新增排序／来源优先级／推进、版本过滤／墓碑过滤两项组合测试，通过BaseIterator引用检查当前标志，并覆盖默认构造、普通12B原值、引用、空堆及耗尽后++。构建与IteratorMvccTest.*共11/11通过，阶段①完成。
 
 检查证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-base-getter-review-5g73f_b9`，包含构建日志、源码前后哈希与summary；业务源码在检查期间稳定，助手未代改。已核对现有生产与测试的五参创建方式，新增末尾默认参数兼容现有调用。issue已在聊天交付、未发布；继续用户手写、助手检查及补测试的方式。
 
 注释澄清：is_vlog_ref()报告当前输出记录的value类型，++后对应新记录；SearchItem::is_vlog_ref_保存每条记录的类型。WiscKey SST的原始存储值仍可按12B长度识别引用，约定不变。已在聊天重新给出职责明确的Base注释及SearchItem草案；此段为此前澄清记录；最新SearchItem实现现已检查，正进入Heap getter实现。本轮为注释／草案讲解，未改业务源码或重跑测试。
 
 SearchItem检查证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-searchitem-review-8ewlo027`，包含构建／运行命令、日志、GTest JSON及源码前后哈希。9项既有回归通过，源码在检查期间稳定，助手未代改业务。引用类型转发的新增组合测试留到Heap getter实现后运行，不把当前9项通过当作整条引用链路已接通。
+
+阶段①验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-heap-review-4b0txle4`，含构建／运行命令、日志、GTest JSON、源码前后哈希。用户业务实现未由助手改写；助手仅新增2项组合测试，检查期间源码稳定。本轮未重跑性能基准或其他业务套件。
+
+阶段②当前草案：在include/iterator/iterator.h的IteratorType后增加ValueReadMode{Resolved,Stored}；在include/sst/sst_iterator.h的is_aborted_之后增加默认Resolved的value_read_mode_成员；顺序构造声明末尾增加默认Resolved参数，cpp构造在初始化列表保存该参数后继续seek_first。按key构造沿用成员默认值，不改接口。已只读核对seek_first仅定位Block，不会解引用VLog；本轮仅配置保存，实际Stored读取等待update_current/value后续实现，不能提前记为读取优化通过。
