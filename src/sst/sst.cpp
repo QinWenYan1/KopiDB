@@ -64,8 +64,8 @@ std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
     uint32_t meta_off = sst->file.read_uint32(file_size - WISCKEY_FOOTER_SIZE);
 
     // 这个meta offset 必须落在 footer / extra info 前面的位置才算这个
-    // footer_size 是 WISCKEY_FOOTER_SIZE的话: [block][meta][bloom][extra info / footer] 
-    // 如果是老格式 24B 那里是 [bloom 最后2字节] -> 不是任何偏移, 是垃圾
+    // footer_size 是 WISCKEY_FOOTER_SIZE的话: [block][meta][bloom][extra info /
+    // footer] 如果是老格式 24B 那里是 [bloom 最后2字节] -> 不是任何偏移, 是垃圾
     // → 很有可能 < size-26 这也是格式嗅探的通用套路：magic byte
     // 负责立案，布局不变式负责定罪 即使绕开了还有第三道：你自己写的 hash 校验
     if (meta_off < file_size - WISCKEY_FOOTER_SIZE) {
@@ -347,7 +347,8 @@ SSTBuilder::SSTBuilder(size_t block_size, bool has_bloom,
 void SSTBuilder::add(const std::string &key, const std::string &value,
                      uint64_t tranc_id) {
   // 尝试向 block 添加 entry; 若返回 false (block满) 先调用 finish_block()再添加
-  // 注意: 相同 key 必须在同一个 block 中 (force_write = key == last_key) 更新 last_key
+  // 注意: 相同 key 必须在同一个 block 中 (force_write = key == last_key) 更新
+  // last_key
 
   // 1.  首个 block 的 first key 只在第一次调用时记录（构造时已 clear）
   //     后续每个新 block 的 first_key 在步骤 6 里更新
@@ -363,7 +364,8 @@ void SSTBuilder::add(const std::string &key, const std::string &value,
   max_tranc_id_ = std::max(max_tranc_id_, tranc_id);
   min_tranc_id_ = std::min(min_tranc_id_, tranc_id);
 
-  // 4.  WiscKey 模式下: 若 value 非空超过 wisckey_threshold_ 或等于vlog 引用长度, 将 value 写入 vlog
+  // 4.  WiscKey 模式下: 若 value 非空超过 wisckey_threshold_ 或等于vlog
+  // 引用长度, 将 value 写入 vlog
   //     并将 vlog 引用 [offset:8][size:4] 作为 actual_value
   //
   // WiscKey 是什么: 一种"值分离"设计
@@ -373,7 +375,7 @@ void SSTBuilder::add(const std::string &key, const std::string &value,
   // block，追加到一个专门的日志文件（vlog） block 里只存一张 12 字节的"提货单"
   // [offset:8][size:4]，读的时候拿单子去 vlog 取货
   // 就像搬家：钥匙串随身带，大家具走物流
-  // 
+  //
   // 默认把原始 value 写入 Block
   // vlog_ref 放在 if 外，保证后面的 block.add_entry 使用它时仍然有效
   const std::string *actual_value = &value;
@@ -384,12 +386,13 @@ void SSTBuilder::add(const std::string &key, const std::string &value,
     // 把 value 本体追加到 vlog
     // 文件末尾，返回写入位置的偏移量——相当于物流揽件后给你的单号
     uint64_t offset = vlog_->append(key, value);
-    const uint32_t value_size = static_cast<uint32_t>(value.size()); 
+    const uint32_t value_size = static_cast<uint32_t>(value.size());
 
     // vlog 引用格式: [offset:8][size:4], memcpy 本机序
     vlog_ref.resize(VLOG_REF_SIZE);
     std::memcpy(vlog_ref.data(), &offset, sizeof(uint64_t));
-    std::memcpy(vlog_ref.data() + sizeof(uint64_t), &value_size, sizeof(uint32_t));
+    std::memcpy(vlog_ref.data() + sizeof(uint64_t), &value_size,
+                sizeof(uint32_t));
 
     // 指针改道，后面的 Block 写入流程通过该指针取得引用；不再复制原始大 value
     actual_value = &vlog_ref;
@@ -495,7 +498,8 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   // 5. extra information 段: 老格式 24B; WiscKey 模式 26B (多一个storage_mode +
   // 魔数)
   //    [meta_offset:u32][bloom_offset:u32][min_tranc:u64][max_tranc:u64]
-  size_t footer_size = (storage_mode_ == 1) ? WISCKEY_FOOTER_SIZE : OLD_FOOTER_SIZE;
+  size_t footer_size =
+      (storage_mode_ == 1) ? WISCKEY_FOOTER_SIZE : OLD_FOOTER_SIZE;
   size_t footer_base = data.size();
   data.resize(footer_base + footer_size);
   uint8_t *p = data.data() + footer_base;
@@ -516,8 +520,8 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   // 6. 先刷新 VLog 中的原值，再创建保存引用的 SST 文件
   // VLog 刷新失败会抛异常，不能继续创建 SST
   // MemTable::flush_last 会保留待刷盘数据，不提前登记刷盘完成
-  if(storage_mode_ == 1)
-    vlog_->sync(); 
+  if (storage_mode_ == 1)
+    vlog_->sync();
 
   FileObj file = FileObj::create_and_write(path, data);
 

@@ -13,6 +13,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "iterator/iterator.h" // ValueReadMode 的定义
 
 namespace tiny_lsm {
 

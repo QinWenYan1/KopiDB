@@ -87,7 +87,7 @@ public:
 
   pointer operator->() const;
   uint64_t get_cur_tranc_id() const override;
-  bool is_vlog_ref() const override; 
+  bool is_vlog_ref() const override;
 
   static std::pair<HeapIterator, HeapIterator>
   merge_sst_iterator(std::vector<SstIterator> iter_vec, uint64_t tranc_id,

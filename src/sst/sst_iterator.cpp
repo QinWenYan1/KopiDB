@@ -254,11 +254,11 @@ std::string SstIterator::value() {
   // 复用同一套缓存填充逻辑：
   // Query 返回原值，Compaction 保留 SST 的存储字节
   // 当前记录已有缓存时，update_current 不会重复读取
-  update_current(); 
+  update_current();
 
   // 按现有接口返回字符串副本
   // 不能把缓存中的字符串 move 走，否则后续 * 或 -> 会读到被移空的值
-  return cached_value->second; 
+  return cached_value->second;
 }
 
 // Lab 3.6 实现迭代器自增
@@ -400,19 +400,18 @@ bool SstIterator::is_vlog_ref() const {
   // Query 模式对外返回原值，不能把它标记为引用
   // 无效位置没有当前记录；普通 SST 保存的也是原值
   // 先检查位置有效，再访问 m_sst
-  if(value_read_mode_ != ValueReadMode::Compaction || 
-    !is_valid() || 
-    !m_sst->is_wisckey())
-    return false; 
+  if (value_read_mode_ != ValueReadMode::Compaction || !is_valid() ||
+      !m_sst->is_wisckey())
+    return false;
 
   // 此时确定是 WiscKey SST 的合并读取
   // update_current 只保存存储字节，不读取 VLog 原值
-  update_current(); 
+  update_current();
 
   // 按已经约定的规则
   // WiscKey SST 中，12 字节存储值一定是引用
   // 直接检查缓存长度，避免再复制一份字符串
-  return cached_value->second.size() == VLOG_REF_SIZE; 
+  return cached_value->second.size() == VLOG_REF_SIZE;
 }
 
 std::pair<HeapIterator, HeapIterator>
