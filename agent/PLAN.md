@@ -6,7 +6,7 @@
 
 问题与证据见 [AUDIT A15](AUDIT.md#a15)。上一轮 Lab 7 已完成约定范围的验收，结果归入 [STATE](STATE.md)。本轮只优化合并的数据传递路径：目标 SST 仍启用 WiscKey 时，已有 VLog 引用直接写入新 SST，不为搬运引用读取或重新追加原值；普通查询仍返回完整 value。
 
-优化前基线已采集；阶段①②已验收。阶段②通过创建入口、读取模式、类型标志、快照与回滚等专项及普通SST回归，共52/52通过。当前进入阶段③，下一函数为SstIterator::merge_sst_iterator。进度：**33.3%（2/6 阶段验收）**。用户手写业务源码与头文件，助手逐函数提供带中文注释的实现、检查、补测试和维护记录；一次只推进一个业务函数。
+优化前基线已采集；阶段①②已验收。阶段②通过创建入口、读取模式、类型标志、快照与回滚等专项及普通SST回归，共52/52通过。阶段③merge_sst_iterator已检查，专项与相关回归23/23通过；下一函数为ConcactIterator构造。进度：**33.3%（2/6 阶段验收）**。用户手写业务源码与头文件，助手逐函数提供带中文注释的实现、检查、补测试和维护记录；一次只推进一个业务函数。
 
 ## 已核对的设计与边界
 
@@ -24,7 +24,7 @@
 | --- | --- | --- | --- |
 | ① 内存类型信息 | BaseIterator::is_vlog_ref（新增默认实现）→ SearchItem 构造函数 → HeapIterator::is_vlog_ref（新增） | 旧调用默认非引用；堆推进后类型与当前条目对应；空堆安全返回false；原排序不变 | 已验收，11/11通过 |
 | ② SST 存储值读取 | SstIterator 顺序构造 → update_current → value → is_vlog_ref（新增）→ SST::begin；共享VLOG_REF_SIZE | 默认查询返回原值；Compaction返回原始字节且不读VLog；普通12B原值不误判；跨块/seek/结束状态保持规则 | 已验收，52/52通过 |
-| ③ 合并中传递类型 | SstIterator::merge_sst_iterator → ConcactIterator构造 → operator++ → is_vlog_ref（新增）→ TwoMergeIterator::is_vlog_ref（新增） | L0堆、跨SST拼接与双路归并均保留字节及类型；比较与推进不触发解引用；版本和来源优先级不变 | 进行中，待merge_sst_iterator |
+| ③ 合并中传递类型 | SstIterator::merge_sst_iterator → ConcactIterator构造 → operator++ → is_vlog_ref（新增）→ TwoMergeIterator::is_vlog_ref（新增） | L0堆、跨SST拼接与双路归并均保留字节及类型；比较与推进不触发解引用；版本和来源优先级不变 | 进行中，merge已检查，待Concact构造 |
 | ④ Builder 复用引用 | add_stored_entry（新增私有）→ add → add_vlog_ref（新增） | 引用直写保持字节与VLog尾位置不变；普通12B原值仍正确分离；原组块、Bloom、版本范围和墓碑规则通过回归 | 待开始 |
 | ⑤ Engine 接通 | full_l0_l1_compact → full_common_compact → gen_sst_from_iter | 启用模式的两级合并复用引用，换输出表后仍正确；普通/WiscKey混合可合并；禁用后读出原值并生成普通SST | 待开始 |
 | ⑥ 最终回归与效果比较 | 组件、公开API、事务／恢复回归及原合并基线复测 | 无隐式VLog读取证据成立，已有引用不新增VLog数据；正常值/版本/墓碑/回滚/重开正确；报告VLog新增字节和同条件耗时差异，不泛化吞吐提升 | 待开始 |
@@ -115,4 +115,8 @@ SST::begin已完成（2026-11-17）：用户已直接include iterator/iterator.h
 
 阶段②验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-sst-stage2-review-tu0sghvj`。test_sst和test_wisckey构建成功；普通SST29/29＋WiscKey SST组件23/23，共52/52通过（模式专项现在3项）。业务与测试在检查期间哈希稳定，助手未代改业务；未重跑基准或Engine全链路，不把SST层完成当作整个优化完成。
 
-当前下一函数：`src/sst/sst_iterator.cpp:418` 的 `merge_sst_iterator()`。去掉循环内自行resolve的路径，改为读取*iter的输出及is_vlog_ref标志，一起写入SearchItem；移动临时key/value，保留SST来源ID、真实版本、墓碑与keep_all_versions，移动返回已构建的堆以免复制整个堆。输入迭代器构造时已决定Query/Compaction，merge本身不再接收或重设模式。现有tranc_id参数在旧函数未使用，本轮不附带改造过滤规则。草案已交付，尚未加入／验收；阶段③后续为Concact构造、++、类型getter及TwoMerge类型getter。
+merge_sst_iterator已完成（2026-11-17）：用户已改为读取*iter及当前类型，移动临时key/value并保存标志，保留来源ID、真实版本、墓碑与keep_all_versions，移动返回堆。新增SSTMergeReadModeTest两项验证Query原值、Compaction原始字节和标志、普通/WiscKey混合、同版本来源优先、全版本/去重、墓碑、空输入及没有VLog依赖时仍可合并。输入沿用既定读取模式，未增加模式参数；旧tranc_id未使用的行为保持。
+
+merge验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-merge-review-zco_zyoo`。test_lsm/test_wisckey构建成功；WiscKey合并／模式／原值读取9/9，迭代器及LSM遍历相关14/14，共23/23通过。助手新增2项测试，未代改业务；源码和测试稳定。没有重跑计时或完整Engine优化验收。
+
+当前下一函数：ConcactIterator构造。include/sst/concact_iterator.h:20的回调成员后添加默认Query的value_read_mode_，构造声明末尾追加默认模式参数；src/sst/concact_iterator.cpp:8构造保存模式，初始空迭代器使用参数（尚不能访问后初始化的成员），循环为各候选SST调用begin时转发成员模式，最终结束状态也沿用。入参ssts可移动到成员，循环访问this->ssts；cpp直接include utility供std::move使用。保留跳过不可见SST和墓碑的原有定位规则。跨SST的operator++和Concact类型getter仍按后续两轮实现，不能把构造完成当作整个拼接链路完成。

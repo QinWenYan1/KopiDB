@@ -1511,6 +1511,129 @@ TEST_F(SSTIteratorReadModeTest, BeginPreservesModeAndMvccConditions) {
   }
 }
 
+class SSTMergeReadModeTest : public SSTIteratorReadModeTest {
+protected:
+  struct Sources {
+    std::shared_ptr<SST> ordinary;
+    std::shared_ptr<SST> wisckey;
+    std::vector<Record> ordinary_records;
+    std::vector<Record> wisckey_records;
+  };
+
+  void prepare_sources(Sources &sources) {
+    sources.ordinary_records = {
+        {"a", "plain-seven", 7}, {"a", "hello world!", 3},
+        {"b", "old-b", 5}, {"d", "ordinary-six", 6}, {"f", "", 2}};
+    sources.wisckey_records = {
+        {"a", binary_value(65), 7}, {"a", binary_value(12), 5},
+        {"b", "", 8}, {"c", binary_value(13), 4},
+        {"d", binary_value(12), 6}, {"e", binary_value(65), 9}};
+    SSTBuilder ordinary_builder(64, true);
+    for (const auto &record : sources.ordinary_records) {
+      ordinary_builder.add(record.key, record.value, record.tranc_id);
+    }
+    sources.ordinary = ordinary_builder.build(
+        10, (dir_ / "ordinary.sst").string(), make_cache());
+
+    auto vlog = VLog::open((dir_ / "merge.data").string());
+    SSTBuilder wisckey_builder(64, true, vlog, 64);
+    for (const auto &record : sources.wisckey_records) {
+      wisckey_builder.add(record.key, record.value, record.tranc_id);
+    }
+    sources.wisckey = wisckey_builder.build(
+        20, (dir_ / "wisckey.sst").string(), make_cache());
+    ASSERT_FALSE(sources.ordinary->is_wisckey());
+    ASSERT_TRUE(sources.wisckey->is_wisckey());
+  }
+
+  static void check_merged(HeapIterator &heap, const std::vector<Record> &expected,
+                           const std::vector<bool> &references) {
+    ASSERT_EQ(expected.size(), references.size());
+    BaseIterator &it = heap;
+    for (size_t i = 0; i < expected.size(); ++i) {
+      SCOPED_TRACE(i);
+      ASSERT_TRUE(it.is_valid());
+      EXPECT_EQ(it.is_vlog_ref(), references[i]);
+      EXPECT_EQ(*it, std::make_pair(expected[i].key, expected[i].value));
+      EXPECT_EQ(*heap.operator->(),
+                std::make_pair(expected[i].key, expected[i].value));
+      EXPECT_EQ(it.get_cur_tranc_id(), expected[i].tranc_id);
+      ++it;
+    }
+    EXPECT_TRUE(it.is_end());
+    EXPECT_FALSE(it.is_vlog_ref());
+  }
+};
+
+// 目的：Query 输入合并后仍输出原值，且版本、来源优先级和墓碑语义不变。
+// a@7与d@6各有两个来源，id=20应排在id=10之前；e@9由输入快照8排除。
+TEST_F(SSTMergeReadModeTest, QueryKeepsOriginalValuesAndMergeOrder) {
+  Sources sources;
+  ASSERT_NO_FATAL_FAILURE(prepare_sources(sources));
+  const auto &p = sources.ordinary_records;
+  const auto &w = sources.wisckey_records;
+  for (bool keep_all : {true, false}) {
+    SCOPED_TRACE(keep_all);
+    // 每次重新创建输入，不依赖迭代器拷贝后的独立推进行为。
+    std::vector<SstIterator> input{
+        sources.ordinary->begin(8, true), sources.wisckey->begin(8, true)};
+    auto merged = SstIterator::merge_sst_iterator(std::move(input), 8, keep_all);
+    // 手工指定期望顺序，不使用被测的比较器重新计算期望。
+    const std::vector<Record> expected = keep_all
+        ? std::vector<Record>{w[0], p[0], w[1], p[1], w[2], p[2],
+                              w[3], w[4], p[3], p[4]}
+        : std::vector<Record>{w[0], w[2], w[3], w[4], p[4]};
+    ASSERT_NO_FATAL_FAILURE(check_merged(
+        merged.first, expected, std::vector<bool>(expected.size(), false)));
+    EXPECT_EQ(merged.first, merged.second);
+  }
+}
+
+// 目的：Compaction 将原始字节和类型一起放入堆，不再次访问 VLog。
+// 普通SST的12B原文仍是原值；WiscKey中的引用必须连同true标志一起保留。
+TEST_F(SSTMergeReadModeTest, CompactionKeepsReferencesWithoutReadingVLog) {
+  Sources sources;
+  ASSERT_NO_FATAL_FAILURE(prepare_sources(sources));
+  // 用没有VLog依赖的新对象替换原SST；若merge内部再次resolve，测试会抛错。
+  sources.wisckey = SST::open(
+      20, FileObj::open((dir_ / "wisckey.sst").string(), false), make_cache());
+  const auto p = collect_stored_records(sources.ordinary);
+  const auto w = collect_stored_records(sources.wisckey);
+  ASSERT_EQ(p.size(), 5u);
+  ASSERT_EQ(w.size(), 6u);
+  ASSERT_EQ(p[1].value, "hello world!");
+  ASSERT_EQ(p[1].value.size(), 12u);
+  ASSERT_EQ(w[0].value.size(), 12u);
+  for (bool keep_all : {true, false}) {
+    SCOPED_TRACE(keep_all);
+    std::vector<SstIterator> input{
+        sources.ordinary->begin(8, true, {}, ValueReadMode::Compaction),
+        sources.wisckey->begin(8, true, {}, ValueReadMode::Compaction)};
+    auto merged = SstIterator::merge_sst_iterator(std::move(input), 8, keep_all);
+    const std::vector<Record> expected = keep_all
+        ? std::vector<Record>{w[0], p[0], w[1], p[1], w[2], p[2],
+                              w[3], w[4], p[3], p[4]}
+        : std::vector<Record>{w[0], w[2], w[3], w[4], p[4]};
+    const std::vector<bool> references = keep_all
+        ? std::vector<bool>{true, false, true, false, false, false,
+                            false, true, false, false}
+        : std::vector<bool>{true, false, false, true, false};
+    ASSERT_NO_FATAL_FAILURE(check_merged(merged.first, expected, references));
+    EXPECT_EQ(merged.first, merged.second);
+  }
+
+  // 相同源的Query访问仍会报缺少VLog，证明上面的合并没有偷偷还原引用。
+  auto query = sources.wisckey->begin(8, true);
+  EXPECT_THROW((void)*query, std::runtime_error);
+  auto empty = SstIterator::merge_sst_iterator({}, 8, true);
+  EXPECT_EQ(empty.first, empty.second);
+  EXPECT_FALSE(empty.first.is_vlog_ref());
+  std::vector<SstIterator> ends{sources.ordinary->end(), sources.wisckey->end()};
+  auto exhausted = SstIterator::merge_sst_iterator(std::move(ends), 8, true);
+  EXPECT_EQ(exhausted.first, exhausted.second);
+  EXPECT_FALSE(exhausted.first.is_vlog_ref());
+}
+
 class SSTWiscKeyBuildRead : public VLogOpenTest {};
 class SSTBackwardCompat : public VLogOpenTest {};
 class SSTTombstoneInline : public VLogOpenTest {};
