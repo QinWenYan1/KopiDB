@@ -360,10 +360,23 @@ SstIterator::pointer SstIterator::operator->() const {
 }
 
 void SstIterator::update_current() const {
+  // 已有当前记录的缓存时直接复用
+  // 没有有效的块内位置时，不尝试读取记录
   if (!cached_value && m_block_it && !m_block_it->is_end()) {
     auto raw = *(*m_block_it);
-    raw.second = m_sst->resolve_value(raw.second);
-    cached_value = raw;
+
+    if(value_read_mode_ == ValueReadMode::Query){
+      // 用户查询需要真实 value
+      // resolve_value 会还原引用，普通内联值和墓碑则原样返回
+      raw.second = m_sst->resolve_value(raw.second);
+    }
+
+    // Compaction 模式保留原始存储字节
+    // 已有引用保持为引用，内联值也原样保留
+    //
+    // 整条记录准备好后再保存缓存
+    // 移动 key/value，避免再次复制字符串
+    cached_value = std::move(raw);
   }
 }
 
