@@ -1,12 +1,12 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <queue>
 #include <string>
 #include <sys/types.h>
 #include <utility>
-#include <cstddef>
 
 namespace tiny_lsm {
 
@@ -23,7 +23,7 @@ enum class IteratorType {
 // 只控制用户读取 value 的方式，不影响版本筛选和记录排序。
 enum class ValueReadMode {
   Query, // 普通查询：遇到 VLog 引用时，读取并返回原值。
-  Compaction,   // 合并使用：返回 SST 保存的字节，已有引用保持为引用。
+  Compaction, // 合并使用：返回 SST 保存的字节，已有引用保持为引用。
 };
 
 class BaseIterator {
@@ -40,7 +40,7 @@ public:
   virtual uint64_t get_tranc_id() const = 0;
   virtual bool is_end() const = 0;
   virtual bool is_valid() const = 0;
-  virtual uint64_t get_cur_tranc_id() const = 0; 
+  virtual uint64_t get_cur_tranc_id() const = 0;
   // 返回迭代器当前指向记录的 value 类型
   // true：value 是 VLog 引用，合并时可以直接保存到新 SST
   // false：value 是原值（空值表示墓碑），交给 add() 按原有规则处理
@@ -73,13 +73,10 @@ struct SearchItem {
   bool is_vlog_ref_ = false;
 
   SearchItem() = default;
-  SearchItem(std::string k, std::string v, size_t i, int l, uint64_t tranc_id, bool is_vlog_ref = false)
-      : key_(std::move(k)), 
-        value_(std::move(v)), 
-        tranc_id_(tranc_id),
-        idx_(i), 
-        level_(l), 
-        is_vlog_ref_(is_vlog_ref){}
+  SearchItem(std::string k, std::string v, size_t i, int l, uint64_t tranc_id,
+             bool is_vlog_ref = false)
+      : key_(std::move(k)), value_(std::move(v)), tranc_id_(tranc_id), idx_(i),
+        level_(l), is_vlog_ref_(is_vlog_ref) {}
 };
 
 bool operator<(const SearchItem &a, const SearchItem &b);
@@ -104,7 +101,7 @@ public:
   virtual IteratorType get_type() const override;
   virtual uint64_t get_tranc_id() const override;
   virtual uint64_t get_cur_tranc_id() const override;
-  bool is_vlog_ref() const override;  
+  bool is_vlog_ref() const override;
   virtual bool is_end() const override;
   virtual bool is_valid() const override;
 

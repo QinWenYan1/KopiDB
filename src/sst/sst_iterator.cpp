@@ -99,10 +99,10 @@ sst_iters_monotony_predicate(std::shared_ptr<SST> sst, uint64_t tranc_id,
 SstIterator::SstIterator(std::shared_ptr<SST> sst, uint64_t tranc_id,
                          bool keep_all_versions,
                          const std::function<bool(uint64_t)> &is_aborted,
-                          ValueReadMode value_read_mode)
+                         ValueReadMode value_read_mode)
     : m_sst(sst), m_block_idx(0), m_block_it(nullptr), max_tranc_id_(tranc_id),
-      keep_all_versions_(keep_all_versions), is_aborted_(is_aborted), 
-      value_read_mode_(value_read_mode){
+      keep_all_versions_(keep_all_versions), is_aborted_(is_aborted),
+      value_read_mode_(value_read_mode) {
   // 构造时保存读取模式，后续取 value 时使用
   // 记录是否可见，仍由版本上限和回滚判断决定
   if (m_sst) {
