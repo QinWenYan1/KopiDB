@@ -35,6 +35,15 @@ public:
   virtual bool is_end() const = 0;
   virtual bool is_valid() const = 0;
   virtual uint64_t get_cur_tranc_id() const = 0; 
+  // 当前输出的 value 是否已经是 VLog 引用
+  // 后续合并写出时：
+  //   true  → 直接保存引用；
+  //   false → 按普通原值交给 SSTBuilder::add()
+  //
+  // 默认按原值处理，能输出引用的派生迭代器再重写这个函数
+  // 不能仅凭长度判断：普通原值也可能恰好是 12 字节
+  // 此默认实现不访问当前元素，空迭代器也能安全返回 false
+  virtual bool is_vlog_ref() const { return false; }
 };
 
 class SstIterator;

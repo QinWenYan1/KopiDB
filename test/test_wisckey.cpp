@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -2038,6 +2039,178 @@ TEST_F(WiscKeyClearDeathTest, RecreatesVLogAndPersistsNewValues) {
 TEST_F(WiscKeyClearDeathTest, DisabledModeRemainsUsableAfterClear) {
   ::testing::FLAGS_gtest_death_test_style = "threadsafe";
   EXPECT_EXIT(run_child(dir_, 0), ::testing::ExitedWithCode(0), "");
+}
+
+class WiscKeyCompactionBenchmarkDeathTest : public VLogOpenTest {
+protected:
+  static constexpr size_t record_count = 10000;
+  static constexpr size_t value_bytes = 4096;
+  static constexpr size_t source_sst_count = 4;
+
+  static std::string key_for(size_t index) {
+    // 固定宽度保证每个分片按序号写入时，key 也是升序。
+    return "bench_" + std::to_string(100000000 + index).substr(1);
+  }
+
+  static std::string value_for(size_t index) {
+    std::string value(value_bytes, static_cast<char>('A' + index % 23));
+    const auto key = key_for(index);
+    value.replace(0, key.size(), key);
+    value[100] = '\0';
+    return value;
+  }
+
+  static void configure(const std::filesystem::path &dir) {
+    // 子进程首次访问配置前写入完整配置，不依赖其他测试改过的单例。
+    const auto path = dir / "benchmark.toml";
+    std::ofstream output(path);
+    ASSERT_TRUE(output.is_open());
+    output << R"toml([lsm.core]
+LSM_TOL_MEM_SIZE_LIMIT = 67108864
+LSM_PER_MEM_SIZE_LIMIT = 4194304
+LSM_BLOCK_SIZE = 32768
+LSM_SST_LEVEL_RATIO = 4
+[lsm.cache]
+LSM_BLOCK_CACHE_CAPACITY = 256
+LSM_BLOCK_CACHE_K = 2
+[bloom_filter]
+BLOOM_FILTER_EXPECTED_SIZE = 65536
+BLOOM_FILTER_EXPECTED_ERROR_RATE = 0.1
+[lsm.wisckey]
+WISCKEY_VALUE_THRESHOLD = 64
+)toml";
+    output.close();
+    ASSERT_TRUE(output.good());
+    const auto &config = TomlConfig::getInstance(path.string());
+    ASSERT_EQ(config.getWisckeyValueThreshold(), 64u);
+    std::cout << "A15_CONFIG {\"threshold\":" << config.getWisckeyValueThreshold()
+              << ",\"total_mem_limit\":" << config.getLsmTolMemSizeLimit()
+              << ",\"per_mem_limit\":" << config.getLsmPerMemSizeLimit()
+              << ",\"block_size\":" << config.getLsmBlockSize()
+              << ",\"level_ratio\":" << config.getLsmSstLevelRatio()
+              << ",\"cache_capacity\":" << config.getLsmBlockCacheCapacity()
+              << ",\"cache_k\":" << config.getLsmBlockCacheK()
+              << ",\"bloom_expected_size\":" << config.getBloomFilterExpectedSize()
+              << ",\"bloom_error_rate\":" << config.getBloomFilterExpectedErrorRate()
+              << "}" << std::endl;
+  }
+
+  static void prepare_seed(const std::filesystem::path &seed) {
+    ASSERT_TRUE(std::filesystem::create_directory(seed));
+    auto vlog = VLog::open((seed / "vlog.data").string());
+    auto cache = make_cache();
+    for (size_t shard = 0; shard < source_sst_count; ++shard) {
+      SSTBuilder builder(32768, true, vlog, 64);
+      for (size_t index = shard; index < record_count; index += source_sst_count) {
+        builder.add(key_for(index), value_for(index), 1);
+      }
+      const auto path = seed / ("sst_" + std::to_string(shard + 1) + ".0");
+      auto sst = builder.build(shard + 1, path.string(), cache);
+      ASSERT_TRUE(sst->is_wisckey());
+    }
+    // 函数返回时释放全部文件句柄。后续各轮只复制这份未合并的输入，
+    // 不复用上一轮已经生成的新 SST 或已增长的 VLog。
+  }
+
+  static void measure_round(const std::filesystem::path &round_dir,
+                             int round, std::uintmax_t seed_vlog_size) {
+    auto engine = std::make_shared<LSMEngine>(round_dir.string());
+    auto manager = std::make_shared<TranManager>(round_dir.string());
+    manager->set_engine(engine);
+    engine->set_tran_manager(manager);
+    // 这是 Engine 合并基准，不是事务/WAL 性能测试。源记录用版本1，
+    // 触发记录用版本2；管理器只提供查询所需的空回滚集合，不启动 WAL。
+    ASSERT_EQ(engine->level_sst_ids[0].size(), source_sst_count);
+    ASSERT_TRUE(engine->level_sst_ids[1].empty());
+    const std::string trigger_key = "zz_trigger";
+    const std::string trigger_value(11, 't');
+    ASSERT_EQ(engine->put(trigger_key, trigger_value, 2), 0u);
+    const auto before = engine->vlog_->tail_offset();
+    ASSERT_EQ(before, seed_vlog_size);
+
+    // 只计时触发合并的 flush：输入生成/复制、打开数据库、put 触发记录
+    // 和结果校验均不计入。该值仍包含这一条内联记录的固定刷盘开销，
+    // 因此不能称为纯 compact 函数耗时。
+    const auto start = std::chrono::steady_clock::now();
+    const auto flushed_id = engine->flush();
+    const auto finish = std::chrono::steady_clock::now();
+    const auto elapsed_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(finish - start)
+            .count();
+    const auto after = engine->vlog_->tail_offset();
+
+    ASSERT_EQ(flushed_id, 2u);
+    ASSERT_EQ(engine->level_sst_ids[0].size(), 1u);
+    ASSERT_FALSE(engine->level_sst_ids[1].empty());
+    ASSERT_EQ(engine->memtable.get_total_size(), 0u);
+    for (const auto &[id, sst] : engine->ssts) {
+      ASSERT_TRUE(sst->is_wisckey());
+    }
+    for (size_t index = 0; index < record_count; ++index) {
+      const auto key = key_for(index);
+      SCOPED_TRACE(key);
+      const auto record = engine->get(key, 0);
+      ASSERT_TRUE(record.has_value());
+      ASSERT_EQ(record->first, value_for(index));
+      ASSERT_EQ(record->second, 1u);
+    }
+    const auto trigger = engine->get(trigger_key, 0);
+    ASSERT_TRUE(trigger.has_value());
+    ASSERT_EQ(trigger->first, trigger_value);
+    ASSERT_EQ(trigger->second, 2u);
+
+    // 文件增长统计不等于物理磁盘 I/O。只输出观测值，不要求一定增长，
+    // 也不设置耗时门槛；优化后原测试仍应通过，再由相同负载比较数据。
+    std::cout << "A15_SAMPLE {\"round\":" << round
+              << ",\"warmup\":" << (round == 0 ? "true" : "false")
+              << ",\"flush_ns\":" << elapsed_ns
+              << ",\"vlog_before\":" << before
+              << ",\"vlog_after\":" << after
+              << ",\"records\":" << record_count
+              << ",\"value_bytes\":" << value_bytes << "}" << std::endl;
+  }
+
+  static void run_benchmark(const std::filesystem::path &dir) {
+    ASSERT_NO_FATAL_FAILURE(configure(dir));
+    const auto seed = dir / "seed";
+    ASSERT_NO_FATAL_FAILURE(prepare_seed(seed));
+    const auto seed_vlog_size = std::filesystem::file_size(seed / "vlog.data");
+    ASSERT_GT(seed_vlog_size, 0u);
+    // 第0轮预热，随后5轮正式采样；不清系统缓存，不宣称测量冷缓存性能。
+    for (int round = 0; round <= 5; ++round) {
+      SCOPED_TRACE(round);
+      const auto round_dir = dir / ("round_" + std::to_string(round));
+      ASSERT_TRUE(std::filesystem::create_directory(round_dir));
+      for (const auto &entry : std::filesystem::directory_iterator(seed)) {
+        ASSERT_TRUE(std::filesystem::copy_file(
+            entry.path(), round_dir / entry.path().filename()));
+      }
+      ASSERT_NO_FATAL_FAILURE(measure_round(round_dir, round, seed_vlog_size));
+      // measure_round 已释放引擎和管理器，再删除本轮副本，避免积累大文件。
+      ASSERT_GT(std::filesystem::remove_all(round_dir), 0u);
+    }
+  }
+};
+
+TEST_F(WiscKeyCompactionBenchmarkDeathTest, MeasuresReferenceCompactionCost) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_EXIT(
+      {
+        int exit_code = 0;
+        try {
+          run_benchmark(dir_);
+          exit_code = ::testing::Test::HasFailure() ? 1 : 0;
+        } catch (const std::exception &error) {
+          ADD_FAILURE() << error.what();
+          exit_code = 90;
+        } catch (...) {
+          exit_code = 91;
+        }
+        std::error_code error;
+        std::filesystem::remove_all(dir_, error);
+        std::_Exit(error ? 99 : exit_code);
+      },
+      ::testing::ExitedWithCode(0), "");
 }
 #endif
 
