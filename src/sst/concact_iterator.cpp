@@ -39,7 +39,7 @@ ConcactIterator::ConcactIterator(
 
 // Lab 4.3 自增运算符重载
 BaseIterator &ConcactIterator::operator++() {
-  // 已经结束时保持原状，避免继续增加 cur_idx
+  // 已经结束时保持原状，避免继续增加 SST 下标 cur_idx
   if (is_end())
     return *this;
 
@@ -57,17 +57,18 @@ BaseIterator &ConcactIterator::operator++() {
     // 必须先检查边界，再访问 ssts[cur_idx]
     // 超出边界，直接返回 end() iterator
     if (cur_idx >= ssts.size()) {
-      cur_iter = SstIterator(nullptr, max_tranc_id_, keep_all_versions_);
+      cur_iter = SstIterator(nullptr, max_tranc_id_, keep_all_versions_, is_aborted_, value_read_mode_);
       return *this;
     }
 
-    // 新 SST 从第一条可见记录开始。
-    // 这里不能再额外 ++，否则会跳过它的第一条可见记录。
+    // 换表意味着创建一个新的迭代器
+    // 将构造时保存的版本条件、回滚判断和读取模式一起传入
+    // 保证 Compaction 模式跨表后仍然保留引用
     cur_iter =
-        ssts[cur_idx]->begin(max_tranc_id_, keep_all_versions_, is_aborted_);
+        ssts[cur_idx]->begin(max_tranc_id_, keep_all_versions_, is_aborted_, value_read_mode_);
 
-    // 新 SST 仍不可见：继续循环。
-    // 新 SST 有可见记录：退出循环，停在该记录上。
+    // 新 SST 仍不可见：继续循环
+    // 新 SST 有可见记录：退出循环，停在该记录上
   }
 
   return *this;
