@@ -386,3 +386,5 @@ WiscKey 与 CRC 对照证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T
 2026-11-16 A15 阶段②命名及构造进展：用户确定读取模式使用Query/Compaction，分别对应还原原值／保留存储字节；先前方案中的Resolved/Stored由此命名替代，职责不变。顺序构造保存模式已检查，默认查询回归33/33通过（test_sst29＋SSTResolveValueTest4）。下一步update_current，尚未宣称合并路径已不读VLog。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-sst-ctor-review-nfjk4owe`。
 
 2026-11-17 A15 update_current验收：Query还原原值、Compaction保留存储字节，*/->的缓存更新已通过新增2项测试及既有回归，最终35/35通过；无VLog指针的Compaction访问引用成功，Query负对照抛错。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-sst-cache-review-54mo13rt`。value()、类型getter及完整合并输入尚待后续接通，进度仍1/6，不把组件结果当作优化完成。
+
+2026-11-17 A15 阶段②完成：SST::begin已转发读取模式及全部既有读取条件，新模式入口/MVCC组合测试与组件回归52/52通过；Query默认兼容、Compaction保留存储字节、类型标志与位置对应、无VLog依赖读取和end比较均验证。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-sst-stage2-review-tu0sghvj`。进度2/6，下一函数merge_sst_iterator；完整Engine优化尚未接通，旧性能基线保留，未重跑计时。

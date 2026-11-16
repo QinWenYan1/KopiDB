@@ -421,16 +421,32 @@ SstIterator::merge_sst_iterator(std::vector<SstIterator> iter_vec,
     return std::make_pair(HeapIterator(), HeapIterator());
   }
 
+  // 沿用原有规则：保留墓碑，是否保留全部版本由参数决定
   HeapIterator it_begin(false, keep_all_versions); // 不跳过删除元素
   for (auto &iter : iter_vec) {
     while (iter.is_valid() && !iter.is_end()) {
+      // 输入迭代器已经保存了读取模式：
+      // Query 返回原值，Compaction 返回 SST 的存储字节
+      // 直接取用它的输出，不在这里再次调用 resolve_value
+      auto entry = *iter; 
+
+      // 在推进之前取得当前记录的类型
+      // 保证这个标志与下面放入堆中的 value 对应
+      const bool is_ref = iter.is_vlog_ref();
+
+      // 移动的是本地临时 entry，不会移空迭代器的缓存
+      // 保留原来的 SST 来源 ID 和真实版本号，排序规则不变
       it_begin.items.emplace(
-          iter.key(),
-          iter.m_sst->resolve_value(iter.m_block_it->operator*().second),
-          iter.m_sst->get_sst_id(), 0, iter.get_cur_tranc_id());
+          std::move(entry.first), 
+          std::move(entry.second),
+          iter.m_sst->get_sst_id(), 
+          0, 
+          iter.get_cur_tranc_id(),
+          is_ref);
       ++iter;
     }
   }
-  return std::make_pair(it_begin, HeapIterator());
+  // 转移已经构建好的堆，避免返回时复制所有候选记录
+  return std::make_pair(std::move(it_begin), HeapIterator());
 }
 } // namespace tiny_lsm

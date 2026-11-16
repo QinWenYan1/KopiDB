@@ -1373,8 +1373,9 @@ TEST_F(SSTIteratorReadModeTest, QueryAndCompactionReturnTheirOwnRepresentation) 
                               make_cache());
     const auto stored = collect_stored_records(sst);
     ASSERT_EQ(stored.size(), records.size());
-    SstIterator query(sst, 0, true, {}, ValueReadMode::Query);
-    SstIterator compact(sst, 0, true, {}, ValueReadMode::Compaction);
+    // 从 SST 创建遍历：旧调用默认 Query，合并调用显式选择 Compaction。
+    auto query = sst->begin(0, true);
+    auto compact = sst->begin(0, true, {}, ValueReadMode::Compaction);
     for (size_t i = 0; i < records.size(); ++i) {
       SCOPED_TRACE(records[i].key);
       ASSERT_EQ(stored[i].key, records[i].key);
@@ -1393,6 +1394,8 @@ TEST_F(SSTIteratorReadModeTest, QueryAndCompactionReturnTheirOwnRepresentation) 
     }
     EXPECT_TRUE(query.is_end());
     EXPECT_TRUE(compact.is_end());
+    EXPECT_EQ(query, sst->end());
+    EXPECT_EQ(compact, sst->end());
     EXPECT_FALSE(query.is_vlog_ref());
     EXPECT_FALSE(compact.is_vlog_ref());
     EXPECT_THROW(query.value(), std::runtime_error);
@@ -1421,7 +1424,7 @@ TEST_F(SSTIteratorReadModeTest, CompactionCacheSurvivesMovementWithoutVLog) {
   ASSERT_EQ(stored.size(), records.size());
 
   const std::array<bool, 6> references{true, true, false, false, true, false};
-  SstIterator compact(sst, 0, true, {}, ValueReadMode::Compaction);
+  auto compact = sst->begin(0, true, {}, ValueReadMode::Compaction);
   for (size_t i = 0; i < stored.size(); ++i) {
     ASSERT_NO_FATAL_FAILURE(check_cached_record(compact, stored[i], references[i]));
     ++compact;
@@ -1444,7 +1447,7 @@ TEST_F(SSTIteratorReadModeTest, CompactionCacheSurvivesMovementWithoutVLog) {
   ASSERT_NO_FATAL_FAILURE(check_cached_record(compact, stored.front(), true));
 
   // 负对照：同一 SST 的 Query 读取引用仍必须依赖 VLog。
-  SstIterator query(sst, 0, true, {}, ValueReadMode::Query);
+  auto query = sst->begin(0, true);
   EXPECT_FALSE(query.is_vlog_ref());
   EXPECT_THROW(query.value(), std::runtime_error);
   EXPECT_THROW((void)*query, std::runtime_error);
@@ -1455,6 +1458,55 @@ TEST_F(SSTIteratorReadModeTest, CompactionCacheSurvivesMovementWithoutVLog) {
   // 两种模式的空迭代器都没有当前引用，不应访问空 SST。
   for (auto mode : {ValueReadMode::Query, ValueReadMode::Compaction}) {
     SstIterator empty(nullptr, 0, true, {}, mode);
+    EXPECT_FALSE(empty.is_vlog_ref());
+  }
+}
+
+// 目的：begin 同时传递读取模式、快照上限、回滚判断和版本保留选项。
+// a@8被取消，c@10超出读上限；普通遍历选a@7，完整遍历还保留a@5。
+// b@7墓碑仍交给上层处理，不能因增加读取模式就提前丢弃。
+TEST_F(SSTIteratorReadModeTest, BeginPreservesModeAndMvccConditions) {
+  auto vlog = VLog::open((dir_ / "begin.data").string());
+  const std::vector<Record> records{
+      {"a", binary_value(65), 8}, {"a", binary_value(13), 7},
+      {"a", binary_value(12), 5}, {"b", "", 7},
+      {"b", binary_value(65), 4}, {"c", binary_value(128), 10},
+      {"c", binary_value(11), 6}};
+  SSTBuilder builder(64, true, vlog, 64);
+  for (const auto &record : records) {
+    builder.add(record.key, record.value, record.tranc_id);
+  }
+  auto sst = builder.build(82, (dir_ / "begin.sst").string(), make_cache());
+  ASSERT_GT(sst->num_blocks(), 1u);
+  const auto stored = collect_stored_records(sst);
+  ASSERT_EQ(stored.size(), records.size());
+  const auto is_aborted = [](uint64_t id) { return id == 8; };
+
+  for (bool keep_all : {false, true}) {
+    const std::vector<size_t> indices = keep_all
+        ? std::vector<size_t>{1, 2, 3, 4, 6}
+        : std::vector<size_t>{1, 3, 6};
+    for (auto mode : {ValueReadMode::Query, ValueReadMode::Compaction}) {
+      SCOPED_TRACE(keep_all);
+      SCOPED_TRACE(static_cast<int>(mode));
+      auto it = sst->begin(8, keep_all, is_aborted, mode);
+      for (const auto index : indices) {
+        const bool compact = mode == ValueReadMode::Compaction;
+        const auto &record = compact ? stored[index] : records[index];
+        const bool is_reference = compact && (index == 2 || index == 4);
+        ASSERT_NO_FATAL_FAILURE(check_cached_record(it, record, is_reference));
+        ++it;
+      }
+      EXPECT_TRUE(it.is_end());
+      EXPECT_EQ(it, sst->end());
+      EXPECT_FALSE(it.is_vlog_ref());
+    }
+  }
+
+  // 所有版本都超过上限时，两个读取模式都返回正常的结束位置。
+  for (auto mode : {ValueReadMode::Query, ValueReadMode::Compaction}) {
+    auto empty = sst->begin(1, false, is_aborted, mode);
+    EXPECT_EQ(empty, sst->end());
     EXPECT_FALSE(empty.is_vlog_ref());
   }
 }
