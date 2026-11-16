@@ -190,6 +190,11 @@ bool TomlConfig::saveToFile(const std::string &filePath) {
     config["bloom_filter"]["BLOOM_FILTER_EXPECTED_ERROR_RATE"] =
         bloom_filter_expected_error_rate_;
 
+    // 保存值分离阈值，与 loadFromFile 读取的路径一致
+    // 否则重新生成的配置不含该项，下次加载会使用默认值 0（关闭）
+    config["lsm"]["wisckey"]["WISCKEY_VALUE_THRESHOLD"] =
+        wisckey_value_threshold_;
+
     // 写入到文件
     std::ofstream outFile(filePath);
     if (outFile.is_open()) {
