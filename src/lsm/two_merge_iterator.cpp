@@ -12,7 +12,7 @@ TwoMergeIterator::TwoMergeIterator() {}
 // keep_all_versions：false
 // 我们需要注意不能直接skip_it_b，这样可能会跳过最新正确的版本
 
-//构造函数
+// 构造函数
 TwoMergeIterator::TwoMergeIterator(std::shared_ptr<BaseIterator> it_a,
                                    std::shared_ptr<BaseIterator> it_b,
                                    uint64_t max_tranc_id,
@@ -24,7 +24,7 @@ TwoMergeIterator::TwoMergeIterator(std::shared_ptr<BaseIterator> it_a,
   // 两路候选都保留下来，比较后再决定输出谁
   // 例如 A=k@5、B=k@7，不能在比较前直接丢掉 B
   // 决定使用哪个迭代器
-  choose_a = choose_it_a(); 
+  choose_a = choose_it_a();
 }
 
 // Lab 4.4: 实现选择迭代器的逻辑
@@ -48,7 +48,6 @@ bool TwoMergeIterator::choose_it_a() {
   return it_a->get_cur_tranc_id() >= it_b->get_cur_tranc_id();
 }
 
-
 // Lab 4.4:根据事务可见性进行滤除的辅助函数
 void TwoMergeIterator::skip_by_tranc_id() {
   // max_tranc_id_ == 0: 无事务快照的普通读, 不过滤
@@ -60,48 +59,40 @@ void TwoMergeIterator::skip_by_tranc_id() {
   // while 连续跳, 直到撞上可见版本或到底
   // 需要提前检查是否已经走到末尾
   // 不然调用 get_cur_tranc_id() 后，如果不先判有效，空迭代器就会抛异常
-  while (
-        it_a && 
-        it_a->is_valid() &&
-        it_a->get_cur_tranc_id() > max_tranc_id_
-      ) {
+  while (it_a && it_a->is_valid() && it_a->get_cur_tranc_id() > max_tranc_id_) {
     ++(*it_a);
   }
 
-  while (
-      it_b && 
-      it_b->is_valid() &&
-      it_b->get_cur_tranc_id() > max_tranc_id_
-  ) {
+  while (it_b && it_b->is_valid() && it_b->get_cur_tranc_id() > max_tranc_id_) {
     ++(*it_b);
   }
 }
 
 // Lab 4.4:实现 ++ 重载
 BaseIterator &TwoMergeIterator::operator++() {
-  const auto &select = choose_a? it_a : it_b; 
+  const auto &select = choose_a ? it_a : it_b;
 
   // 已经没有可消费的记录
   if (!select || !select->is_valid())
-    return *this; 
+    return *this;
 
   // 1. 只推进当前选中的那一路
-  if (keep_all_versions_){
+  if (keep_all_versions_) {
     // 全版本模式：只消费刚输出的一条记录
     // 其他版本留着，下一轮继续比较和输出
-    ++(*select); 
-  }else{
+    ++(*select);
+  } else {
     // 普通模式：当前 key 的最大可见版本已经输出
     // 必须先复制 key，因为推进迭代器后当前记录会改变
-    const std::string &key = (**select).first; 
+    const std::string &key = (**select).first;
 
     // 两路中这个 key 的其余记录都不再输出
     // 例如刚输出 B 的 k@7，A 的 k@5 也要一起跳过，
     // 否则下一次又会输出同一个 key 的旧版本
-    while(it_a && it_a->is_valid() && (**it_a).first == key)
+    while (it_a && it_a->is_valid() && (**it_a).first == key)
       ++(*it_a);
-    
-    while(it_b && it_b->is_valid() && (**it_b).first == key)
+
+    while (it_b && it_b->is_valid() && (**it_b).first == key)
       ++(*it_b);
   }
   // 2. 推进后，重新过滤可见性并选择下一条记录
@@ -175,17 +166,18 @@ uint64_t TwoMergeIterator::get_cur_tranc_id() const {
 }
 
 bool TwoMergeIterator::is_vlog_ref() const {
-  // 与 operator* 使用同一路，保证类型标志和输出的 value 对应。
-  // 构造函数和 ++ 已负责更新 choose_a，这里直接使用已有选择。
+  // 与 operator* 使用同一路，保证类型标志和输出的 value 对应
+  // 构造函数和 ++ 已负责更新 choose_a，这里直接使用已有选择
   const auto &selected = choose_a ? it_a : it_b;
 
-  // 默认构造时子迭代器指针可能为空。
-  // 指针为空或当前已经耗尽，都没有可输出的引用。
+  // 默认构造时子迭代器指针可能为空
+  // 指针为空或当前已经耗尽，都没有可输出的引用
+  // 允许在合法的空／结束状态下查询
   if (!selected || !selected->is_valid()) {
     return false;
   }
 
-  // 转发当前选中记录的类型，不重新比较或改变迭代器位置。
+  // 转发当前选中记录的类型，不重新比较或改变迭代器位置
   return selected->is_vlog_ref();
 }
 
@@ -232,7 +224,8 @@ TwoMergeIterator::pointer TwoMergeIterator::operator->() const {
   return current.get();
 }
 
-void TwoMergeIterator::update_current() const {  if (choose_a) {
+void TwoMergeIterator::update_current() const {
+  if (choose_a) {
     current = std::make_shared<value_type>(**it_a);
   } else {
     current = std::make_shared<value_type>(**it_b);
