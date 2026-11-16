@@ -126,9 +126,11 @@ public:
 
   std::optional<std::pair<SstIterator, SstIterator>>
   iters_monotony_predicate(std::function<bool(const std::string &)> predicate);
-
+  
+  // 创建本次遍历使用的迭代器，默认按普通查询返回原值
+  // 合并入口可以显式选择 Compaction，保留 SST 的存储字节
   SstIterator begin(uint64_t tranc_id, bool keep_all_versions = false,
-                    const std::function<bool(uint64_t)> &is_aborted = {});
+                    const std::function<bool(uint64_t)> &is_aborted = {}, ValueReadMode value_read_mode = ValueReadMode::Query);
   SstIterator end();
 
   std::pair<uint64_t, uint64_t> get_tranc_id_range() const;
