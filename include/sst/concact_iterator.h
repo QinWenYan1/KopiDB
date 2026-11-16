@@ -19,13 +19,13 @@ private:
   // ConcactIterator 切换到下一张 SST 时，还需要提供同样的回滚规则，
   // 所以这里保存一份，供构造和后续 ++ 复用。
   std::function<bool(uint64_t)> is_aborted_;
-    // 创建各张 SST 的迭代器时，都使用本次选择的读取模式
+  // 创建各张 SST 的迭代器时，都使用本次选择的读取模式
   ValueReadMode value_read_mode_ = ValueReadMode::Query;
 
 public:
   ConcactIterator(std::vector<std::shared_ptr<SST>> ssts, uint64_t tranc_id,
                   bool keep_all_versions = false,
-                  const std::function<bool(uint64_t)> &is_aborted = {}, 
+                  const std::function<bool(uint64_t)> &is_aborted = {},
                   ValueReadMode value_read_mode = ValueReadMode::Query);
 
   std::string key();

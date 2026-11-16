@@ -9,13 +9,11 @@ namespace tiny_lsm {
 // 迭代器刚创建时，就应该指向第一条可见记录，而不一定是第一张 SST
 ConcactIterator::ConcactIterator(
     std::vector<std::shared_ptr<SST>> ssts, uint64_t tranc_id,
-    bool keep_all_versions, const std::function<bool(uint64_t)> &is_aborted, ValueReadMode value_read_mode)
-    : cur_iter(nullptr, tranc_id, keep_all_versions), 
-      cur_idx(0), 
-      ssts(std::move(ssts)),
-      max_tranc_id_(tranc_id), 
-      keep_all_versions_(keep_all_versions),
-      is_aborted_(is_aborted), 
+    bool keep_all_versions, const std::function<bool(uint64_t)> &is_aborted,
+    ValueReadMode value_read_mode)
+    : cur_iter(nullptr, tranc_id, keep_all_versions), cur_idx(0),
+      ssts(std::move(ssts)), max_tranc_id_(tranc_id),
+      keep_all_versions_(keep_all_versions), is_aborted_(is_aborted),
       value_read_mode_(value_read_mode) {
   // 从第一张 SST 开始寻找
   // 第一张 SST 可能没有可见记录，不能只尝试 ssts[0]
@@ -35,7 +33,8 @@ ConcactIterator::ConcactIterator(
 
   // 输入为空，或者全部 SST 都没有可见记录。
   // cur_idx == ssts.size()，统一使用空 SST 迭代器表示结束。
-  cur_iter = SstIterator(nullptr, max_tranc_id_, keep_all_versions_, is_aborted_, value_read_mode_);
+  cur_iter = SstIterator(nullptr, max_tranc_id_, keep_all_versions_,
+                         is_aborted_, value_read_mode_);
 }
 
 // Lab 4.3 自增运算符重载
