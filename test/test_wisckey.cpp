@@ -1314,6 +1314,126 @@ TEST_F(SSTResolveValueTest, MissingVLogThrowsOnlyWhenReferenceIsDereferenced) {
   }
 }
 
+class SSTIteratorReadModeTest : public SSTResolveValueTest {
+protected:
+  static std::vector<Record> collect_stored_records(
+      const std::shared_ptr<SST> &sst) {
+    // 直接读取 Block 中的字节，作为存储值的独立对照；不经过 SST 解引用。
+    std::vector<Record> records;
+    for (size_t block_index = 0; block_index < sst->num_blocks(); ++block_index) {
+      BlockIterator it(sst->read_block(block_index), 0, 0, true);
+      for (; !it.is_end(); ++it) {
+        const auto entry = *it;
+        records.push_back({entry.first, entry.second, it.get_cur_tranc_id()});
+      }
+    }
+    return records;
+  }
+
+  static void check_cached_record(SstIterator &it, const Record &record) {
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(it.key(), record.key);
+    EXPECT_EQ(it.get_cur_tranc_id(), record.tranc_id);
+    EXPECT_EQ(it->first, record.key);
+    EXPECT_EQ(it->second, record.value);
+    EXPECT_EQ(*it, std::make_pair(record.key, record.value));
+    // 同一位置反复读取，缓存不能因为移动临时字符串而丢失内容。
+    EXPECT_EQ(*it, std::make_pair(record.key, record.value));
+    EXPECT_EQ(it->second, record.value);
+    // value() 仍待下一函数接通，本步只检查共用 update_current 的 * 和 ->。
+  }
+};
+
+// 目的：Query 返回原值，Compaction 返回真实存储字节；两者保留同一记录版本。
+// 普通 SST 的12B原文、WiscKey的12B引用、内联值和墓碑都不能混淆。
+TEST_F(SSTIteratorReadModeTest, QueryAndCompactionReturnTheirOwnRepresentation) {
+  const uint64_t base = uint64_t{1} << 40;
+  const std::vector<Record> records{
+      {"key0", "", base + 5}, {"key1", binary_value(11), base + 4},
+      {"key2", binary_value(12), base + 3},
+      {"key3", binary_value(65), base + 2},
+      {"key4", binary_value(13), base + 1}};
+  for (bool wisckey : {false, true}) {
+    SCOPED_TRACE(wisckey);
+    const auto prefix = wisckey ? "wisckey" : "ordinary";
+    auto vlog = VLog::open((dir_ / (std::string(prefix) + ".data")).string());
+    auto builder = wisckey ? SSTBuilder(64, true, vlog, 64)
+                           : SSTBuilder(64, true);
+    for (const auto &record : records) {
+      builder.add(record.key, record.value, record.tranc_id);
+    }
+    auto sst = builder.build(80, (dir_ / (std::string(prefix) + ".sst")).string(),
+                              make_cache());
+    const auto stored = collect_stored_records(sst);
+    ASSERT_EQ(stored.size(), records.size());
+    SstIterator query(sst, 0, true, {}, ValueReadMode::Query);
+    SstIterator compact(sst, 0, true, {}, ValueReadMode::Compaction);
+    for (size_t i = 0; i < records.size(); ++i) {
+      SCOPED_TRACE(records[i].key);
+      ASSERT_EQ(stored[i].key, records[i].key);
+      ASSERT_EQ(stored[i].tranc_id, records[i].tranc_id);
+      if (wisckey && (i == 2 || i == 3)) {
+        ASSERT_EQ(stored[i].value.size(), 12u);
+        EXPECT_NE(stored[i].value, records[i].value);
+      } else {
+        EXPECT_EQ(stored[i].value, records[i].value);
+      }
+      ASSERT_NO_FATAL_FAILURE(check_cached_record(query, records[i]));
+      ASSERT_NO_FATAL_FAILURE(check_cached_record(compact, stored[i]));
+      ++query;
+      ++compact;
+    }
+    EXPECT_TRUE(query.is_end());
+    EXPECT_TRUE(compact.is_end());
+  }
+}
+
+// 目的：合并读取不依赖 VLog，且跨块／重新定位后不会沿用上一条记录的缓存。
+// 源 SST 没有 VLog 指针：若 Compaction 意外调用 resolve_value，测试立即报错。
+TEST_F(SSTIteratorReadModeTest, CompactionCacheSurvivesMovementWithoutVLog) {
+  const auto path = dir_ / "no-vlog-handle.sst";
+  auto vlog = VLog::open((dir_ / "values.data").string());
+  const std::vector<Record> records{
+      {"key0", binary_value(12), 10}, {"key1", binary_value(65), 9},
+      {"key2", binary_value(13), 8}, {"key3", "", 7},
+      {"key4", binary_value(128), 6}, {"key5", binary_value(63), 5}};
+  SSTBuilder builder(48, true, vlog, 64);
+  for (const auto &record : records) {
+    builder.add(record.key, record.value, record.tranc_id);
+  }
+  builder.build(81, path.string(), make_cache());
+  auto sst = SST::open(81, FileObj::open(path.string(), false), make_cache());
+  ASSERT_TRUE(sst->is_wisckey());
+  ASSERT_GE(sst->num_blocks(), 2u);
+  const auto stored = collect_stored_records(sst);
+  ASSERT_EQ(stored.size(), records.size());
+
+  SstIterator compact(sst, 0, true, {}, ValueReadMode::Compaction);
+  for (const auto &record : stored) {
+    ASSERT_NO_FATAL_FAILURE(check_cached_record(compact, record));
+    ++compact;
+  }
+  EXPECT_TRUE(compact.is_end());
+  compact.seek_first();
+  ASSERT_NO_FATAL_FAILURE(check_cached_record(compact, stored.front()));
+  for (size_t index : {5u, 2u, 1u, 3u, 4u}) {
+    compact.seek(stored[index].key);
+    ASSERT_NO_FATAL_FAILURE(check_cached_record(compact, stored[index]));
+  }
+  compact.seek("missing");
+  EXPECT_TRUE(compact.is_end());
+  EXPECT_THROW((void)*compact, std::runtime_error);
+  compact.seek_first();
+  ASSERT_NO_FATAL_FAILURE(check_cached_record(compact, stored.front()));
+
+  // 负对照：同一 SST 的 Query 读取引用仍必须依赖 VLog。
+  SstIterator query(sst, 0, true, {}, ValueReadMode::Query);
+  EXPECT_THROW((void)*query, std::runtime_error);
+  EXPECT_THROW((void)query.operator->(), std::runtime_error);
+  query.seek("key2");
+  ASSERT_NO_FATAL_FAILURE(check_cached_record(query, records[2]));
+}
+
 class SSTWiscKeyBuildRead : public VLogOpenTest {};
 class SSTBackwardCompat : public VLogOpenTest {};
 class SSTTombstoneInline : public VLogOpenTest {};

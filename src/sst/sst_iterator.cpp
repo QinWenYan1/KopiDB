@@ -365,7 +365,7 @@ void SstIterator::update_current() const {
   if (!cached_value && m_block_it && !m_block_it->is_end()) {
     auto raw = *(*m_block_it);
 
-    if(value_read_mode_ == ValueReadMode::Query){
+    if (value_read_mode_ == ValueReadMode::Query) {
       // 用户查询需要真实 value
       // resolve_value 会还原引用，普通内联值和墓碑则原样返回
       raw.second = m_sst->resolve_value(raw.second);
