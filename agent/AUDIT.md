@@ -388,3 +388,5 @@ WiscKey 与 CRC 对照证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T
 2026-11-17 A15 update_current验收：Query还原原值、Compaction保留存储字节，*/->的缓存更新已通过新增2项测试及既有回归，最终35/35通过；无VLog指针的Compaction访问引用成功，Query负对照抛错。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-sst-cache-review-54mo13rt`。value()、类型getter及完整合并输入尚待后续接通，进度仍1/6，不把组件结果当作优化完成。
 
 2026-11-17 A15 阶段②完成：SST::begin已转发读取模式及全部既有读取条件，新模式入口/MVCC组合测试与组件回归52/52通过；Query默认兼容、Compaction保留存储字节、类型标志与位置对应、无VLog依赖读取和end比较均验证。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-sst-stage2-review-tu0sghvj`。进度2/6，下一函数merge_sst_iterator；完整Engine优化尚未接通，旧性能基线保留，未重跑计时。
+
+2026-11-17 A15 阶段③完成：TwoMerge getter及真实SST两条合并组合路径专项14/14、迭代器与LSM回归19/19，共33/33通过。Query原值与Compaction引用标志对应正确，同key版本／来源优先和墓碑规则不变；Compaction无VLog源仍可构造、比较、推进和取值。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-stage3-review-tyi99r0x`。进度3/6，下一步Builder共用写入helper；尚未接通写引用和Engine，优化后计时待最后阶段。

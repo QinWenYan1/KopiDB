@@ -154,6 +154,12 @@ private:
   std::shared_ptr<VLog> vlog_;
   size_t wisckey_threshold_ = 0;
 
+  // 写入已经确定的 value 字节，并更新 SST 元数据
+  // stored_value 可以是内联原值，也可以是已有 VLog 引用
+  void add_stored_entry(const std::string &key,
+                        const std::string &stored_value,
+                        uint64_t tranc_id);
+
 public:
   // 创建一个sst构建器, 指定目标block的大小 (inline mode)
   SSTBuilder(size_t block_size, bool has_bloom);

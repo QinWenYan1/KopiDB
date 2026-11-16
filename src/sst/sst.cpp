@@ -345,6 +345,37 @@ SSTBuilder::SSTBuilder(size_t block_size, bool has_bloom,
   storage_mode_ = 1;
 }
 
+void SSTBuilder::add_stored_entry(const std::string &key, const std::string &stored_value, uint64_t tranc_id) {
+  // 初始空块记录首 key；换块后的首 key 在下方更新
+  if (first_key.empty())
+    first_key = key; 
+
+  // 无论 value 是原值、引用还是墓碑，都需要登记这个 key
+  if (bloom_filter)
+    bloom_filter->add(key);
+
+  // 保留当前 SST 中记录的真实版本范围
+  max_tranc_id_ = std::max(max_tranc_id_, tranc_id); 
+  min_tranc_id_ = std::min(min_tranc_id_, tranc_id); 
+
+  // 同一个 key 的版本必须留在同一块，避免快照查询漏掉旧版本。
+  // force_write 只绕过目标容量限制，编码上限仍由 Block 检查。
+  const bool force_write = (key == last_key);
+  if (block.add_entry(key, stored_value, tranc_id, force_write)) {
+    last_key = key;
+    return;
+  }
+
+  // 当前块装不下这个不同 key 的记录，先完成旧块
+  // finish_block 需要旧块的 first_key/last_key，此时不能提前覆盖
+  finish_block(); 
+
+  // 新空块会接受第一条可编码的记录；编码超限仍会抛异常
+  block.add_entry(key, stored_value, tranc_id, false); 
+  first_key = key; 
+  last_key = key; 
+}
+
 // Lab 3.5 添加键值对
 // 当前在建 block 的首尾 key (草稿)
 // 每收下一条 entry, last_key 就刷新一次

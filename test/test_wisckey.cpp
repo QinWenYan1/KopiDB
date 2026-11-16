@@ -1,5 +1,6 @@
 #include "lsm/engine.h"
 #include "lsm/level_iterator.h"
+#include "lsm/two_merge_iterator.h"
 #include "config/config.h"
 #include "sst/sst.h"
 #include "sst/sst_iterator.h"
@@ -1820,6 +1821,181 @@ TEST_F(ConcactReadModeTest, IncrementKeepsModeAcrossMixedAndInvisibleSsts) {
     EXPECT_TRUE(empty.is_end());
     EXPECT_FALSE(empty.is_vlog_ref());
   }
+}
+
+class TwoMergeReadModeTest : public SSTIteratorReadModeTest {
+protected:
+  struct Source {
+    std::shared_ptr<SST> readable;
+    std::shared_ptr<SST> raw_only;
+    std::vector<Record> original;
+    std::vector<Record> stored;
+  };
+
+  void prepare_source(Source &source, size_t id, bool wisckey,
+                       const std::vector<Record> &records,
+                       const std::shared_ptr<VLog> &vlog) {
+    source.original = records;
+    auto builder = wisckey ? SSTBuilder(64, true, vlog, 64)
+                           : SSTBuilder(64, true);
+    for (const auto &record : records) {
+      builder.add(record.key, record.value, record.tranc_id);
+    }
+    const auto path = dir_ / ("two_merge_" + std::to_string(id) + ".sst");
+    source.readable = builder.build(id, path.string(), make_cache());
+    // Compaction输入刻意不绑定VLog；若任一层偷偷还原引用，就会抛异常。
+    source.raw_only = SST::open(id, FileObj::open(path.string(), false),
+                                make_cache());
+    source.stored = collect_stored_records(source.raw_only);
+    ASSERT_EQ(source.stored.size(), records.size());
+    for (size_t i = 0; i < records.size(); ++i) {
+      ASSERT_EQ(source.stored[i].key, records[i].key);
+      ASSERT_EQ(source.stored[i].tranc_id, records[i].tranc_id);
+    }
+  }
+
+  static void check_output(TwoMergeIterator &merge,
+                            const std::vector<Record> &expected,
+                            const std::vector<bool> &references) {
+    ASSERT_EQ(expected.size(), references.size());
+    BaseIterator &it = merge;
+    for (size_t i = 0; i < expected.size(); ++i) {
+      SCOPED_TRACE(i);
+      ASSERT_TRUE(it.is_valid());
+      // 先通过基类查类型，再读内容；getter不得自行改变当前选中的子流。
+      EXPECT_EQ(it.is_vlog_ref(), references[i]);
+      EXPECT_EQ(*it, std::make_pair(expected[i].key, expected[i].value));
+      EXPECT_EQ(*merge.operator->(),
+                std::make_pair(expected[i].key, expected[i].value));
+      EXPECT_EQ(it.get_cur_tranc_id(), expected[i].tranc_id);
+      EXPECT_EQ(it.is_vlog_ref(), references[i]);
+      ++it;
+    }
+    EXPECT_TRUE(it.is_end());
+    EXPECT_FALSE(it.is_vlog_ref());
+    ++it;
+    EXPECT_FALSE(it.is_vlog_ref());
+  }
+};
+
+// 目的：验证真实SST→Heap与Concact汇合后，类型始终跟随被选中的记录。
+// a@7同版本时A的引用胜出，c@6同版本时A的墓碑胜出；b则选择B的更新版本。
+// Query返回原值，Compaction从无VLog的源表保留引用；两者都覆盖全版本/去重。
+TEST_F(TwoMergeReadModeTest, HeapAndConcactPreserveSelectedRecordType) {
+  auto vlog = VLog::open((dir_ / "heap-concat.data").string());
+  Source a_wisc, a_plain, b_plain, b_wisc;
+  ASSERT_NO_FATAL_FAILURE(prepare_source(a_wisc, 20, true,
+      {{"a", binary_value(65), 7}, {"c", "", 6},
+       {"d", binary_value(12), 8}, {"z", binary_value(13), 3}}, vlog));
+  ASSERT_NO_FATAL_FAILURE(prepare_source(a_plain, 10, false,
+      {{"a", "hello world!", 5}, {"b", "plain-seven", 7},
+       {"c", "old-c", 4}, {"d", "old-d", 6}}, vlog));
+  ASSERT_NO_FATAL_FAILURE(prepare_source(b_plain, 1, false,
+      {{"a", "hello world!", 7}, {"b", "newer-b", 9},
+       {"c", "keep-c", 6}}, vlog));
+  ASSERT_NO_FATAL_FAILURE(prepare_source(b_wisc, 2, true,
+      {{"d", binary_value(65), 8}, {"y", binary_value(12), 2}}, vlog));
+
+  for (auto mode : {ValueReadMode::Query, ValueReadMode::Compaction}) {
+    const bool compact = mode == ValueReadMode::Compaction;
+    const auto &aw = compact ? a_wisc.stored : a_wisc.original;
+    const auto &ap = compact ? a_plain.stored : a_plain.original;
+    const auto &bp = compact ? b_plain.stored : b_plain.original;
+    const auto &bw = compact ? b_wisc.stored : b_wisc.original;
+    for (bool keep_all : {true, false}) {
+      SCOPED_TRACE(static_cast<int>(mode));
+      SCOPED_TRACE(keep_all);
+      std::vector<SstIterator> l0{
+          (compact ? a_plain.raw_only : a_plain.readable)->begin(0, true, {}, mode),
+          (compact ? a_wisc.raw_only : a_wisc.readable)->begin(0, true, {}, mode)};
+      auto heap_pair = SstIterator::merge_sst_iterator(std::move(l0), 0, true);
+      auto a = std::make_shared<HeapIterator>(std::move(heap_pair.first));
+      auto b = std::make_shared<ConcactIterator>(
+          std::vector<std::shared_ptr<SST>>{
+              compact ? b_plain.raw_only : b_plain.readable,
+              compact ? b_wisc.raw_only : b_wisc.readable},
+          0, true, std::function<bool(uint64_t)>{}, mode);
+      TwoMergeIterator merge(a, b, 0, keep_all);
+      // 手工给出排序结果，不借用被测比较器生成期望。
+      const std::vector<Record> expected = keep_all
+          ? std::vector<Record>{aw[0], bp[0], ap[0], bp[1], ap[1], aw[1],
+                                bp[2], ap[2], aw[2], bw[0], ap[3], bw[1], aw[3]}
+          : std::vector<Record>{aw[0], bp[1], aw[1], aw[2], bw[1], aw[3]};
+      std::vector<bool> refs = keep_all
+          ? std::vector<bool>{true, false, false, false, false, false, false,
+                              false, true, true, false, true, false}
+          : std::vector<bool>{true, false, false, true, true, false};
+      if (!compact) {
+        refs.assign(expected.size(), false);
+      }
+      ASSERT_NO_FATAL_FAILURE(check_output(merge, expected, refs));
+    }
+  }
+
+  // 默认空对象，以及一侧是有效的空迭代器对象，都不需要nullptr带参构造。
+  TwoMergeIterator empty;
+  EXPECT_TRUE(empty.is_end());
+  EXPECT_FALSE(empty.is_vlog_ref());
+  for (bool empty_a : {true, false}) {
+    auto empty_heap = std::make_shared<HeapIterator>();
+    auto records = std::make_shared<ConcactIterator>(
+        std::vector<std::shared_ptr<SST>>{b_wisc.raw_only}, 0, true,
+        std::function<bool(uint64_t)>{}, ValueReadMode::Compaction);
+    std::shared_ptr<BaseIterator> a = empty_a ?
+        std::static_pointer_cast<BaseIterator>(empty_heap) : records;
+    std::shared_ptr<BaseIterator> b = empty_a ?
+        std::static_pointer_cast<BaseIterator>(records) : empty_heap;
+    TwoMergeIterator one_empty(a, b, 0, true);
+    ASSERT_NO_FATAL_FAILURE(check_output(one_empty, b_wisc.stored, {true, true}));
+  }
+}
+
+// 目的：两条Concact流都跨SST时，选路、取值和类型转发仍不读取VLog。
+// c@6的A是原值、B是墓碑，必须保持同版本A优先；e则由B的更新版本胜出。
+TEST_F(TwoMergeReadModeTest, TwoConcactStreamsKeepRawValuesAcrossSsts) {
+  auto vlog = VLog::open((dir_ / "concat-concat.data").string());
+  Source a_plain, a_wisc, b_wisc, b_plain;
+  ASSERT_NO_FATAL_FAILURE(prepare_source(a_plain, 31, false,
+      {{"a", "hello world!", 4}, {"c", "survivor", 6}}, vlog));
+  ASSERT_NO_FATAL_FAILURE(prepare_source(a_wisc, 32, true,
+      {{"e", binary_value(65), 7}, {"g", "", 5},
+       {"i", binary_value(12), 3}}, vlog));
+  ASSERT_NO_FATAL_FAILURE(prepare_source(b_wisc, 41, true,
+      {{"b", binary_value(12), 4}, {"c", "", 6},
+       {"d", binary_value(65), 8}}, vlog));
+  ASSERT_NO_FATAL_FAILURE(prepare_source(b_plain, 42, false,
+      {{"e", "new-e", 8}, {"g", "old-g", 3}, {"h", "hello world!", 2}}, vlog));
+  const auto &ap = a_plain.stored;
+  const auto &aw = a_wisc.stored;
+  const auto &bw = b_wisc.stored;
+  const auto &bp = b_plain.stored;
+  for (bool keep_all : {true, false}) {
+    SCOPED_TRACE(keep_all);
+    auto a = std::make_shared<ConcactIterator>(
+        std::vector<std::shared_ptr<SST>>{a_plain.raw_only, a_wisc.raw_only},
+        0, true, std::function<bool(uint64_t)>{}, ValueReadMode::Compaction);
+    auto b = std::make_shared<ConcactIterator>(
+        std::vector<std::shared_ptr<SST>>{b_wisc.raw_only, b_plain.raw_only},
+        0, true, std::function<bool(uint64_t)>{}, ValueReadMode::Compaction);
+    TwoMergeIterator merge(a, b, 0, keep_all);
+    const std::vector<Record> expected = keep_all
+        ? std::vector<Record>{ap[0], bw[0], ap[1], bw[1], bw[2], bp[0],
+                              aw[0], aw[1], bp[1], bp[2], aw[2]}
+        : std::vector<Record>{ap[0], bw[0], ap[1], bw[2], bp[0],
+                              aw[1], bp[2], aw[2]};
+    const std::vector<bool> refs = keep_all
+        ? std::vector<bool>{false, true, false, false, true, false,
+                            true, false, false, false, true}
+        : std::vector<bool>{false, true, false, true, false, false, false, true};
+    ASSERT_NO_FATAL_FAILURE(check_output(merge, expected, refs));
+  }
+  auto left = std::make_shared<ConcactIterator>(
+      std::vector<std::shared_ptr<SST>>{}, 0);
+  auto right = std::make_shared<ConcactIterator>(
+      std::vector<std::shared_ptr<SST>>{}, 0);
+  TwoMergeIterator empty_pair(left, right, 0, true);
+  EXPECT_TRUE(empty_pair.is_end());
+  EXPECT_FALSE(empty_pair.is_vlog_ref());
 }
 
 class SSTWiscKeyBuildRead : public VLogOpenTest {};
