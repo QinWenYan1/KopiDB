@@ -32,6 +32,7 @@ public:
   virtual IteratorType get_type() const override;
   virtual uint64_t get_tranc_id() const override;
   virtual uint64_t get_cur_tranc_id() const override;
+  bool is_vlog_ref() const override;
   virtual bool is_end() const override;
   virtual bool is_valid() const override;
 

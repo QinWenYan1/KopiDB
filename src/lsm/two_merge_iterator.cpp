@@ -174,6 +174,21 @@ uint64_t TwoMergeIterator::get_cur_tranc_id() const {
   return selected->get_cur_tranc_id();
 }
 
+bool TwoMergeIterator::is_vlog_ref() const {
+  // 与 operator* 使用同一路，保证类型标志和输出的 value 对应。
+  // 构造函数和 ++ 已负责更新 choose_a，这里直接使用已有选择。
+  const auto &selected = choose_a ? it_a : it_b;
+
+  // 默认构造时子迭代器指针可能为空。
+  // 指针为空或当前已经耗尽，都没有可输出的引用。
+  if (!selected || !selected->is_valid()) {
+    return false;
+  }
+
+  // 转发当前选中记录的类型，不重新比较或改变迭代器位置。
+  return selected->is_vlog_ref();
+}
+
 bool TwoMergeIterator::is_end() const {
   if (it_a == nullptr && it_b == nullptr) {
     return true;
