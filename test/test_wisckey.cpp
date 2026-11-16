@@ -3,6 +3,7 @@
 #include "config/config.h"
 #include "sst/sst.h"
 #include "sst/sst_iterator.h"
+#include "sst/concact_iterator.h"
 #include "vlog/vlog.h"
 #include "block/block_cache.h"
 #include "block/block_iterator.h"
@@ -1632,6 +1633,100 @@ TEST_F(SSTMergeReadModeTest, CompactionKeepsReferencesWithoutReadingVLog) {
   auto exhausted = SstIterator::merge_sst_iterator(std::move(ends), 8, true);
   EXPECT_EQ(exhausted.first, exhausted.second);
   EXPECT_FALSE(exhausted.first.is_vlog_ref());
+}
+
+class ConcactReadModeTest : public SSTIteratorReadModeTest {
+protected:
+  std::shared_ptr<SST> build_source(size_t id, const std::vector<Record> &records,
+                                    const std::shared_ptr<VLog> &vlog) {
+    SSTBuilder builder(64, true, vlog, 64);
+    for (const auto &record : records) {
+      builder.add(record.key, record.value, record.tranc_id);
+    }
+    return builder.build(id, (dir_ / (std::to_string(id) + ".sst")).string(),
+                         make_cache());
+  }
+
+  static void check_start(ConcactIterator &it, const Record &expected) {
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_FALSE(it.is_end());
+    EXPECT_EQ(it.key(), expected.key);
+    EXPECT_EQ(it.get_cur_tranc_id(), expected.tranc_id);
+    EXPECT_EQ(it.value(), expected.value);
+    EXPECT_EQ(*it, std::make_pair(expected.key, expected.value));
+    EXPECT_EQ(it->first, expected.key);
+    EXPECT_EQ(it->second, expected.value);
+    EXPECT_EQ(it.value(), expected.value);
+    // 本步只验构造后的首位置，不提前检查跨 SST 的 ++ 或类型 getter。
+  }
+};
+
+// 目的：构造时连续跳过不可见的前两张 SST，并把读取模式传给首张可见表。
+// a@20 超过快照8，b@8已取消，第三张中的c@9也不可见，最终定位c@7。
+TEST_F(ConcactReadModeTest, ConstructorKeepsModeAtFirstVisibleSst) {
+  auto vlog = VLog::open((dir_ / "concat.data").string());
+  std::vector<std::shared_ptr<SST>> sources{
+      build_source(91, {{"a", binary_value(65), 20}}, vlog),
+      build_source(92, {{"b", binary_value(65), 8}}, vlog),
+      build_source(93, {{"c", binary_value(65), 9},
+                        {"c", binary_value(12), 7},
+                        {"c", binary_value(13), 5}}, vlog)};
+  const auto is_aborted = [](uint64_t id) { return id == 8; };
+  const auto stored = collect_stored_records(sources[2]);
+  ASSERT_EQ(stored.size(), 3u);
+  ASSERT_EQ(stored[1].value.size(), 12u);
+  EXPECT_NE(stored[1].value, binary_value(12));
+
+  auto raw_sources = sources;
+  raw_sources[2] = SST::open(
+      93, FileObj::open((dir_ / "93.sst").string(), false), make_cache());
+  for (bool keep_all : {false, true}) {
+    SCOPED_TRACE(keep_all);
+    // 不传模式的旧调用仍返回原值。
+    ConcactIterator query(sources, 8, keep_all, is_aborted);
+    ASSERT_NO_FATAL_FAILURE(check_start(query, {"c", binary_value(12), 7}));
+
+    // 第三张表没有VLog依赖；若构造漏传Compaction，首次取值就会报错。
+    ConcactIterator compact(raw_sources, 8, keep_all, is_aborted,
+                            ValueReadMode::Compaction);
+    ASSERT_NO_FATAL_FAILURE(check_start(compact, stored[1]));
+  }
+
+  // 同一无VLog源在Query模式下应报错，作为合并模式不解引用的负对照。
+  ConcactIterator missing_vlog(raw_sources, 8, false, is_aborted);
+  ASSERT_TRUE(missing_vlog.is_valid());
+  EXPECT_THROW(missing_vlog.value(), std::runtime_error);
+}
+
+// 目的：两种模式都能处理空输入、全部不可见和首条有效记录为墓碑。
+// SST范围依次为a/b/c，没有重叠；检查只停留在构造后的当前位置。
+TEST_F(ConcactReadModeTest, ConstructorHandlesEmptyInvisibleAndTombstone) {
+  auto vlog = VLog::open((dir_ / "empty-or-tombstone.data").string());
+  std::vector<std::shared_ptr<SST>> sources{
+      build_source(94, {{"a", binary_value(65), 20}}, vlog),
+      build_source(95, {{"b", "", 8}}, vlog),
+      build_source(96, {{"c", "", 7}, {"c", binary_value(65), 5}}, vlog)};
+  const auto skip_b = [](uint64_t id) { return id == 8; };
+  const auto skip_visible = [](uint64_t id) {
+    return id == 8 || id == 7 || id == 5;
+  };
+  for (auto mode : {ValueReadMode::Query, ValueReadMode::Compaction}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    ConcactIterator empty({}, 8, false, {}, mode);
+    EXPECT_TRUE(empty.is_end());
+    EXPECT_FALSE(empty.is_valid());
+    EXPECT_THROW(empty.value(), std::runtime_error);
+
+    ConcactIterator invisible(sources, 8, false, skip_visible, mode);
+    EXPECT_TRUE(invisible.is_end());
+    EXPECT_FALSE(invisible.is_valid());
+    EXPECT_THROW(invisible.value(), std::runtime_error);
+
+    for (bool keep_all : {false, true}) {
+      ConcactIterator tombstone(sources, 8, keep_all, skip_b, mode);
+      ASSERT_NO_FATAL_FAILURE(check_start(tombstone, {"c", "", 7}));
+    }
+  }
 }
 
 class SSTWiscKeyBuildRead : public VLogOpenTest {};
