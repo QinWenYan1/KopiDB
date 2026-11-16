@@ -131,4 +131,6 @@ ConcactIterator::is_vlog_ref已完成（2026-11-17）：用户已添加const ove
 
 Concact类型转发证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-concat-ref-review-xwgepekj`。test_lsm/test_wisckey构建成功，旧Concact回归5/5＋扩展类型断言的专项3/3，共8/8通过。运行期间源码／测试哈希稳定，助手未代改业务；未重复性能或全库回归。
 
-当前下一函数为TwoMergeIterator::is_vlog_ref，阶段③尚未完成。本轮用户要求“完成并检查”，仅验收当前函数，不提前交付下一函数实现；按用户下一步指令继续。
+当前函数为TwoMergeIterator::is_vlog_ref（2026-11-17用户要求下一步）：include/lsm/two_merge_iterator.h:34的版本getter声明后新增const override；src/lsm/two_merge_iterator.cpp:175的get_cur_tranc_id结束后新增定义。沿用choose_a选中子流，先判selected指针和有效位置，无当前记录返回false，否则转发selected->is_vlog_ref()；不重新选路、不增加读取模式或重复缓存类型。草案在聊天交付，待用户手写，阶段③尚未完成。本轮只读核查，未构建／运行测试、未改业务源码。
+
+阶段③收尾测试准备：用户加入TwoMerge getter后，组合验证真实SST生成的Heap＋Concact及Concact＋Concact，两路交替、同key版本/同版本A优先、墓碑、普通12B原值、跨SST和空/end。WiscKey源不绑定VLog，验证从构造选路到推进取值不隐式解引用。空状态使用默认TwoMerge或指向空迭代器的有效shared_ptr，不擅自增加带参构造接受nullptr子流的要求。

@@ -57,15 +57,16 @@ BaseIterator &ConcactIterator::operator++() {
     // 必须先检查边界，再访问 ssts[cur_idx]
     // 超出边界，直接返回 end() iterator
     if (cur_idx >= ssts.size()) {
-      cur_iter = SstIterator(nullptr, max_tranc_id_, keep_all_versions_, is_aborted_, value_read_mode_);
+      cur_iter = SstIterator(nullptr, max_tranc_id_, keep_all_versions_,
+                             is_aborted_, value_read_mode_);
       return *this;
     }
 
     // 换表意味着创建一个新的迭代器
     // 将构造时保存的版本条件、回滚判断和读取模式一起传入
     // 保证 Compaction 模式跨表后仍然保留引用
-    cur_iter =
-        ssts[cur_idx]->begin(max_tranc_id_, keep_all_versions_, is_aborted_, value_read_mode_);
+    cur_iter = ssts[cur_idx]->begin(max_tranc_id_, keep_all_versions_,
+                                    is_aborted_, value_read_mode_);
 
     // 新 SST 仍不可见：继续循环
     // 新 SST 有可见记录：退出循环，停在该记录上
