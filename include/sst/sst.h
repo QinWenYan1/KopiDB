@@ -16,6 +16,10 @@
 
 namespace tiny_lsm {
 
+// VLog 引用布局：[offset:uint64][value_size:uint32]
+// SST 读写和迭代器类型判断共用这个长度
+inline constexpr size_t VLOG_REF_SIZE = sizeof(uint64_t) + sizeof(uint32_t); 
+
 class SstIterator;
 
 /**

@@ -22,9 +22,6 @@ static constexpr size_t OLD_FOOTER_SIZE =
 // New WiscKey footer size (26 bytes)
 static constexpr size_t WISCKEY_FOOTER_SIZE = OLD_FOOTER_SIZE + 2;
 
-// 引用布局：[offset:uint64][value_size:uint32]，读写使用同一长度
-static constexpr size_t VLOG_REF_SIZE = sizeof(uint64_t) + sizeof(uint32_t); 
-
 // **************************************************
 // SST
 // **************************************************

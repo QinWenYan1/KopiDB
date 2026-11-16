@@ -396,6 +396,25 @@ uint64_t SstIterator::get_cur_tranc_id() const {
   return m_block_it->get_cur_tranc_id();
 }
 
+bool SstIterator::is_vlog_ref() const {
+  // Query 模式对外返回原值，不能把它标记为引用
+  // 无效位置没有当前记录；普通 SST 保存的也是原值
+  // 先检查位置有效，再访问 m_sst
+  if(value_read_mode_ != ValueReadMode::Compaction || 
+    !is_valid() || 
+    !m_sst->is_wisckey())
+    return false; 
+
+  // 此时确定是 WiscKey SST 的合并读取
+  // update_current 只保存存储字节，不读取 VLog 原值
+  update_current(); 
+
+  // 按已经约定的规则
+  // WiscKey SST 中，12 字节存储值一定是引用
+  // 直接检查缓存长度，避免再复制一份字符串
+  return cached_value->second.size() == VLOG_REF_SIZE; 
+}
+
 std::pair<HeapIterator, HeapIterator>
 SstIterator::merge_sst_iterator(std::vector<SstIterator> iter_vec,
                                 uint64_t tranc_id, bool keep_all_versions) {
