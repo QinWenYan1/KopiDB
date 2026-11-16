@@ -20,6 +20,12 @@ enum class IteratorType {
   LevelIterator,
 };
 
+// 只控制用户读取 value 的方式，不影响版本筛选和记录排序。
+enum class ValueReadMode {
+  Query, // 普通查询：遇到 VLog 引用时，读取并返回原值。
+  Compaction,   // 合并使用：返回 SST 保存的字节，已有引用保持为引用。
+};
+
 class BaseIterator {
 public:
   using value_type = std::pair<std::string, std::string>;

@@ -39,6 +39,10 @@ private:
   // 以便进入其他块时，将同一判断继续传给新的 BlockIterator
   // 按值保存函数对象，默认空回调表示没有提供回滚筛选
   std::function<bool(uint64_t)> is_aborted_;
+  
+  // 创建时确定读取方式，后续定位和推进继续沿用
+  // 默认返回原值，让现有查询调用保持原来的行为
+  ValueReadMode value_read_mode_ = ValueReadMode::Query;
 
   void update_current() const;
   void set_block_idx(size_t idx);
@@ -49,7 +53,8 @@ public:
   // 默认空回调保持原有调用方式兼容
   SstIterator(std::shared_ptr<SST> sst, uint64_t tranc_id,
               bool keep_all_versions = false,
-              const std::function<bool(uint64_t)> &is_aborted = {});
+              const std::function<bool(uint64_t)> &is_aborted = {}, 
+              ValueReadMode value_read_mode = ValueReadMode::Query);
 
   // 创建迭代器，并定位 key 的最大有效版本
   // SST 为空或没有有效版本时进入 end 状态
