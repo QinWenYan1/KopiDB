@@ -1647,9 +1647,13 @@ protected:
                          make_cache());
   }
 
-  static void check_start(ConcactIterator &it, const Record &expected) {
+  static void check_start(ConcactIterator &it, const Record &expected,
+                          bool expected_reference = false) {
     ASSERT_TRUE(it.is_valid());
     EXPECT_FALSE(it.is_end());
+    BaseIterator &base = it;
+    // 在读取 value 前后都检查类型，确认转发的是当前 SST 的实际输出类型。
+    EXPECT_EQ(base.is_vlog_ref(), expected_reference);
     EXPECT_EQ(it.key(), expected.key);
     EXPECT_EQ(it.get_cur_tranc_id(), expected.tranc_id);
     EXPECT_EQ(it.value(), expected.value);
@@ -1657,7 +1661,7 @@ protected:
     EXPECT_EQ(it->first, expected.key);
     EXPECT_EQ(it->second, expected.value);
     EXPECT_EQ(it.value(), expected.value);
-    // 核对当前记录的三个取值入口；类型 getter 在后续步骤单独接通。
+    EXPECT_EQ(base.is_vlog_ref(), expected_reference);
   }
 };
 
@@ -1689,12 +1693,13 @@ TEST_F(ConcactReadModeTest, ConstructorKeepsModeAtFirstVisibleSst) {
     // 第三张表没有VLog依赖；若构造漏传Compaction，首次取值就会报错。
     ConcactIterator compact(raw_sources, 8, keep_all, is_aborted,
                             ValueReadMode::Compaction);
-    ASSERT_NO_FATAL_FAILURE(check_start(compact, stored[1]));
+    ASSERT_NO_FATAL_FAILURE(check_start(compact, stored[1], true));
   }
 
   // 同一无VLog源在Query模式下应报错，作为合并模式不解引用的负对照。
   ConcactIterator missing_vlog(raw_sources, 8, false, is_aborted);
   ASSERT_TRUE(missing_vlog.is_valid());
+  EXPECT_FALSE(missing_vlog.is_vlog_ref());
   EXPECT_THROW(missing_vlog.value(), std::runtime_error);
 }
 
@@ -1715,11 +1720,13 @@ TEST_F(ConcactReadModeTest, ConstructorHandlesEmptyInvisibleAndTombstone) {
     ConcactIterator empty({}, 8, false, {}, mode);
     EXPECT_TRUE(empty.is_end());
     EXPECT_FALSE(empty.is_valid());
+    EXPECT_FALSE(empty.is_vlog_ref());
     EXPECT_THROW(empty.value(), std::runtime_error);
 
     ConcactIterator invisible(sources, 8, false, skip_visible, mode);
     EXPECT_TRUE(invisible.is_end());
     EXPECT_FALSE(invisible.is_valid());
+    EXPECT_FALSE(invisible.is_vlog_ref());
     EXPECT_THROW(invisible.value(), std::runtime_error);
 
     for (bool keep_all : {false, true}) {
@@ -1789,19 +1796,29 @@ TEST_F(ConcactReadModeTest, IncrementKeepsModeAcrossMixedAndInvisibleSsts) {
                                 values[5][0], values[5][1]};
       ConcactIterator it(compact ? raw_sources : sources, 8, keep_all,
                         is_aborted, mode);
-      for (const auto &record : expected) {
-        ASSERT_NO_FATAL_FAILURE(check_start(it, record));
+      // a@7、d@4、dd@6、f@7来自WiscKey引用；普通SST的e@6仍是12B原文。
+      const std::vector<bool> references = keep_all
+          ? std::vector<bool>{true, false, false, false, true, true,
+                              false, false, true, false}
+          : std::vector<bool>{true, false, false, true, false, false, true, false};
+      ASSERT_EQ(expected.size(), references.size());
+      for (size_t i = 0; i < expected.size(); ++i) {
+        ASSERT_NO_FATAL_FAILURE(check_start(
+            it, expected[i], compact && references[i]));
         ++it;
       }
       EXPECT_TRUE(it.is_end());
       EXPECT_FALSE(it.is_valid());
+      EXPECT_FALSE(it.is_vlog_ref());
       EXPECT_THROW(it.value(), std::runtime_error);
       ++it;
       EXPECT_TRUE(it.is_end());
+      EXPECT_FALSE(it.is_vlog_ref());
     }
     ConcactIterator empty({}, 8, false, {}, mode);
     ++empty;
     EXPECT_TRUE(empty.is_end());
+    EXPECT_FALSE(empty.is_vlog_ref());
   }
 }
 
