@@ -1330,8 +1330,12 @@ protected:
     return records;
   }
 
-  static void check_cached_record(SstIterator &it, const Record &record) {
+  static void check_cached_record(SstIterator &it, const Record &record,
+                                  bool expected_reference = false) {
     ASSERT_TRUE(it.is_valid());
+    // 从基类接口先查类型，尚未读取 value；合并模式也不能因此访问 VLog。
+    BaseIterator &base = it;
+    EXPECT_EQ(base.is_vlog_ref(), expected_reference);
     EXPECT_EQ(it.key(), record.key);
     EXPECT_EQ(it.get_cur_tranc_id(), record.tranc_id);
     // 先调用 value() 填充缓存，再检查 * 和 ->，确保三个入口使用同一模式。
@@ -1343,6 +1347,7 @@ protected:
     EXPECT_EQ(*it, std::make_pair(record.key, record.value));
     EXPECT_EQ(it->second, record.value);
     EXPECT_EQ(it.value(), record.value);
+    EXPECT_EQ(base.is_vlog_ref(), expected_reference);
   }
 };
 
@@ -1381,12 +1386,15 @@ TEST_F(SSTIteratorReadModeTest, QueryAndCompactionReturnTheirOwnRepresentation) 
         EXPECT_EQ(stored[i].value, records[i].value);
       }
       ASSERT_NO_FATAL_FAILURE(check_cached_record(query, records[i]));
-      ASSERT_NO_FATAL_FAILURE(check_cached_record(compact, stored[i]));
+      ASSERT_NO_FATAL_FAILURE(check_cached_record(
+          compact, stored[i], wisckey && (i == 2 || i == 3)));
       ++query;
       ++compact;
     }
     EXPECT_TRUE(query.is_end());
     EXPECT_TRUE(compact.is_end());
+    EXPECT_FALSE(query.is_vlog_ref());
+    EXPECT_FALSE(compact.is_vlog_ref());
     EXPECT_THROW(query.value(), std::runtime_error);
     EXPECT_THROW(compact.value(), std::runtime_error);
   }
@@ -1412,32 +1420,43 @@ TEST_F(SSTIteratorReadModeTest, CompactionCacheSurvivesMovementWithoutVLog) {
   const auto stored = collect_stored_records(sst);
   ASSERT_EQ(stored.size(), records.size());
 
+  const std::array<bool, 6> references{true, true, false, false, true, false};
   SstIterator compact(sst, 0, true, {}, ValueReadMode::Compaction);
-  for (const auto &record : stored) {
-    ASSERT_NO_FATAL_FAILURE(check_cached_record(compact, record));
+  for (size_t i = 0; i < stored.size(); ++i) {
+    ASSERT_NO_FATAL_FAILURE(check_cached_record(compact, stored[i], references[i]));
     ++compact;
   }
   EXPECT_TRUE(compact.is_end());
+  EXPECT_FALSE(compact.is_vlog_ref());
   compact.seek_first();
-  ASSERT_NO_FATAL_FAILURE(check_cached_record(compact, stored.front()));
+  ASSERT_NO_FATAL_FAILURE(check_cached_record(compact, stored.front(), true));
   for (size_t index : {5u, 2u, 1u, 3u, 4u}) {
     compact.seek(stored[index].key);
-    ASSERT_NO_FATAL_FAILURE(check_cached_record(compact, stored[index]));
+    ASSERT_NO_FATAL_FAILURE(check_cached_record(
+        compact, stored[index], references[index]));
   }
   compact.seek("missing");
   EXPECT_TRUE(compact.is_end());
+  EXPECT_FALSE(compact.is_vlog_ref());
   EXPECT_THROW(compact.value(), std::runtime_error);
   EXPECT_THROW((void)*compact, std::runtime_error);
   compact.seek_first();
-  ASSERT_NO_FATAL_FAILURE(check_cached_record(compact, stored.front()));
+  ASSERT_NO_FATAL_FAILURE(check_cached_record(compact, stored.front(), true));
 
   // 负对照：同一 SST 的 Query 读取引用仍必须依赖 VLog。
   SstIterator query(sst, 0, true, {}, ValueReadMode::Query);
+  EXPECT_FALSE(query.is_vlog_ref());
   EXPECT_THROW(query.value(), std::runtime_error);
   EXPECT_THROW((void)*query, std::runtime_error);
   EXPECT_THROW((void)query.operator->(), std::runtime_error);
   query.seek("key2");
   ASSERT_NO_FATAL_FAILURE(check_cached_record(query, records[2]));
+
+  // 两种模式的空迭代器都没有当前引用，不应访问空 SST。
+  for (auto mode : {ValueReadMode::Query, ValueReadMode::Compaction}) {
+    SstIterator empty(nullptr, 0, true, {}, mode);
+    EXPECT_FALSE(empty.is_vlog_ref());
+  }
 }
 
 class SSTWiscKeyBuildRead : public VLogOpenTest {};
