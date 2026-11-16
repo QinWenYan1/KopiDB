@@ -1657,7 +1657,7 @@ protected:
     EXPECT_EQ(it->first, expected.key);
     EXPECT_EQ(it->second, expected.value);
     EXPECT_EQ(it.value(), expected.value);
-    // 本步只验构造后的首位置，不提前检查跨 SST 的 ++ 或类型 getter。
+    // 核对当前记录的三个取值入口；类型 getter 在后续步骤单独接通。
   }
 };
 
@@ -1726,6 +1726,82 @@ TEST_F(ConcactReadModeTest, ConstructorHandlesEmptyInvisibleAndTombstone) {
       ConcactIterator tombstone(sources, 8, keep_all, skip_b, mode);
       ASSERT_NO_FATAL_FAILURE(check_start(tombstone, {"c", "", 7}));
     }
+  }
+}
+
+// 目的：跨 Block、跨 SST 和连续跳过不可见表时，读取模式与 MVCC 条件都不丢失。
+// 七张 SST 的 key 范围互不重叠；中间夹一张普通 SST，最后还有一张不可见表。
+// Compaction 使用未绑定 VLog 的源表，遗漏模式转发就会在读取引用时报错。
+TEST_F(ConcactReadModeTest, IncrementKeepsModeAcrossMixedAndInvisibleSsts) {
+  auto vlog = VLog::open((dir_ / "increment.data").string());
+  const std::vector<std::vector<Record>> groups{
+      {{"a", binary_value(65), 7}, {"a", binary_value(13), 5},
+       {"aa", binary_value(11), 6}},
+      {{"b", binary_value(65), 20}},
+      {{"c", binary_value(65), 8}},
+      {{"d", binary_value(65), 8}, {"d", "", 7},
+       {"d", binary_value(65), 4}, {"dd", binary_value(12), 6}},
+      {{"e", "hello world!", 6}, {"ee", binary_value(13), 5}},
+      {{"f", binary_value(65), 7}, {"ff", binary_value(11), 6}},
+      {{"g", binary_value(65), 20}}};
+  std::vector<std::shared_ptr<SST>> sources;
+  std::vector<std::shared_ptr<SST>> raw_sources;
+  std::vector<std::vector<Record>> stored;
+  for (size_t i = 0; i < groups.size(); ++i) {
+    const size_t id = 100 + i;
+    const auto path = dir_ / (std::to_string(id) + ".sst");
+    if (i == 4) {
+      SSTBuilder ordinary(64, true);
+      for (const auto &record : groups[i]) {
+        ordinary.add(record.key, record.value, record.tranc_id);
+      }
+      sources.push_back(ordinary.build(id, path.string(), make_cache()));
+    } else {
+      sources.push_back(build_source(id, groups[i], vlog));
+    }
+    stored.push_back(collect_stored_records(sources.back()));
+    ASSERT_EQ(stored.back().size(), groups[i].size());
+    for (size_t j = 0; j < groups[i].size(); ++j) {
+      ASSERT_EQ(stored.back()[j].key, groups[i][j].key);
+      ASSERT_EQ(stored.back()[j].tranc_id, groups[i][j].tranc_id);
+    }
+    raw_sources.push_back(
+        SST::open(id, FileObj::open(path.string(), false), make_cache()));
+  }
+  ASSERT_GT(sources.front()->num_blocks(), 1u);
+  ASSERT_FALSE(raw_sources[4]->is_wisckey());
+  const auto is_aborted = [](uint64_t id) { return id == 8; };
+
+  for (auto mode : {ValueReadMode::Query, ValueReadMode::Compaction}) {
+    const bool compact = mode == ValueReadMode::Compaction;
+    const auto &values = compact ? stored : groups;
+    for (bool keep_all : {false, true}) {
+      SCOPED_TRACE(static_cast<int>(mode));
+      SCOPED_TRACE(keep_all);
+      // 手工列出过滤后的顺序；a@5与d@4仅在保留全版本时出现。
+      const std::vector<Record> expected = keep_all
+          ? std::vector<Record>{values[0][0], values[0][1], values[0][2],
+                                values[3][1], values[3][2], values[3][3],
+                                values[4][0], values[4][1],
+                                values[5][0], values[5][1]}
+          : std::vector<Record>{values[0][0], values[0][2], values[3][1],
+                                values[3][3], values[4][0], values[4][1],
+                                values[5][0], values[5][1]};
+      ConcactIterator it(compact ? raw_sources : sources, 8, keep_all,
+                        is_aborted, mode);
+      for (const auto &record : expected) {
+        ASSERT_NO_FATAL_FAILURE(check_start(it, record));
+        ++it;
+      }
+      EXPECT_TRUE(it.is_end());
+      EXPECT_FALSE(it.is_valid());
+      EXPECT_THROW(it.value(), std::runtime_error);
+      ++it;
+      EXPECT_TRUE(it.is_end());
+    }
+    ConcactIterator empty({}, 8, false, {}, mode);
+    ++empty;
+    EXPECT_TRUE(empty.is_end());
   }
 }
 

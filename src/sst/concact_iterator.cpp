@@ -127,6 +127,14 @@ uint64_t ConcactIterator::get_cur_tranc_id() const {
   return cur_iter.get_cur_tranc_id();
 }
 
+bool ConcactIterator::is_vlog_ref() const {
+  // 当前记录由 cur_iter 提供，直接转发它的类型判断。
+  // 换到下一张 SST 后，cur_iter 已更新，这里自然返回新记录的类型。
+  //
+  // SstIterator 已处理空位置和结束状态，这些情况下会返回 false。
+  return cur_iter.is_vlog_ref();
+}
+
 bool ConcactIterator::is_end() const {
   return cur_iter.is_end() || !cur_iter.is_valid();
 }
