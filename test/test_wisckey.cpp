@@ -1334,13 +1334,15 @@ protected:
     ASSERT_TRUE(it.is_valid());
     EXPECT_EQ(it.key(), record.key);
     EXPECT_EQ(it.get_cur_tranc_id(), record.tranc_id);
+    // 先调用 value() 填充缓存，再检查 * 和 ->，确保三个入口使用同一模式。
+    EXPECT_EQ(it.value(), record.value);
     EXPECT_EQ(it->first, record.key);
     EXPECT_EQ(it->second, record.value);
     EXPECT_EQ(*it, std::make_pair(record.key, record.value));
     // 同一位置反复读取，缓存不能因为移动临时字符串而丢失内容。
     EXPECT_EQ(*it, std::make_pair(record.key, record.value));
     EXPECT_EQ(it->second, record.value);
-    // value() 仍待下一函数接通，本步只检查共用 update_current 的 * 和 ->。
+    EXPECT_EQ(it.value(), record.value);
   }
 };
 
@@ -1385,6 +1387,8 @@ TEST_F(SSTIteratorReadModeTest, QueryAndCompactionReturnTheirOwnRepresentation) 
     }
     EXPECT_TRUE(query.is_end());
     EXPECT_TRUE(compact.is_end());
+    EXPECT_THROW(query.value(), std::runtime_error);
+    EXPECT_THROW(compact.value(), std::runtime_error);
   }
 }
 
@@ -1422,12 +1426,14 @@ TEST_F(SSTIteratorReadModeTest, CompactionCacheSurvivesMovementWithoutVLog) {
   }
   compact.seek("missing");
   EXPECT_TRUE(compact.is_end());
+  EXPECT_THROW(compact.value(), std::runtime_error);
   EXPECT_THROW((void)*compact, std::runtime_error);
   compact.seek_first();
   ASSERT_NO_FATAL_FAILURE(check_cached_record(compact, stored.front()));
 
   // 负对照：同一 SST 的 Query 读取引用仍必须依赖 VLog。
   SstIterator query(sst, 0, true, {}, ValueReadMode::Query);
+  EXPECT_THROW(query.value(), std::runtime_error);
   EXPECT_THROW((void)*query, std::runtime_error);
   EXPECT_THROW((void)query.operator->(), std::runtime_error);
   query.seek("key2");
