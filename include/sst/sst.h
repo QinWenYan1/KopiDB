@@ -156,8 +156,7 @@ private:
 
   // 写入已经确定的 value 字节，并更新 SST 元数据
   // stored_value 可以是内联原值，也可以是已有 VLog 引用
-  void add_stored_entry(const std::string &key,
-                        const std::string &stored_value,
+  void add_stored_entry(const std::string &key, const std::string &stored_value,
                         uint64_t tranc_id);
 
 public:
