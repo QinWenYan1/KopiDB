@@ -2,34 +2,37 @@
 
 最后更新：2026-11-17。
 
-## A7：保存事务状态失败时保住上一份完整文件
+## A6：结束尝试失败后拒绝继续追加写操作
 
-目标：`TranManager::write_tranc_id_file()` 写入／刷新临时文件或替换失败时，上一次成功保存的正式 `tranc_id` 文件保持完整；排除故障后可以重试保存或重新启动。沿用既有状态编码、互斥锁、错误报告及当前 macOS/Linux 文件替换语义。问题证据见 [AUDIT A7](AUDIT.md#a7)。
+目标：真实 commit/abort 尝试已经在 operations 末尾留下 COMMIT/ROLLBACK、但尚未完成时，`TranContext::put/remove` 必须在修改上下文或发送WAL之前以logic_error拒绝新写入。正常事务行为保持，逐函数由用户手写。问题事实见 [AUDIT A6](AUDIT.md#a6)。
 
-**进度：0%（0/2 阶段验收）。** 业务源码及头文件由用户手写；助手提供中文注释草案、补充测试、运行验收。本轮只有一个业务函数需要修改。
+**进度：0%（0/3阶段验收）。** A7已完成，当前函数是 `TranContext::put()`。
 
 ## 全部阶段
 
-| 阶段 | 具体工作 | 验收标准 | 状态 |
+| 阶段 | 具体函数／工作 | 验收标准 | 状态 |
 | --- | --- | --- | --- |
-| ① 保存函数修复 | 修改 `src/lsm/transation.cpp` 的 `TranManager::write_tranc_id_file()` 第6步；按需显式包含 `<system_error>` | 先完整写入同目录临时文件并检查 write/sync，再 rename 替换；失败不删除正式文件；成功后成员句柄重新打开正式路径。已有字段编码、较短文件替换和重复保存行为保持 | 进行中：草案与故障测试准备，等待用户实现 |
-| ② 故障与重启验收 | `test/test_wal.cpp` A7定向测试、`test/test_lsm.cpp` 既有事务状态测试；相关启动／clear回归 | 部分写入失败后正式文件字节不变、旧WAL保留且没有新WAL；解除故障后重启成功并恢复值和ID。替换失败明确上报，同一管理器可重试保存并读到新文件 | 待开始 |
+| ① put 前置检查 | `src/lsm/transation.cpp:115` 的 `TranContext::put` | 已开始但未完成结束的事务拒绝put，operations/temp_map_不变；正常put及参数检查保持 | 进行中：测试已复现，提供草案待用户修改 |
+| ② remove 前置检查 | 同文件 `:170` 的 `TranContext::remove` | 同样在追加DELETE之前拒绝，原记录和暂存表保持；正常删除保持 | 待开始 |
+| ③ 整体验收 | 结束失败的两个定向用例，正常事务写入/提交/取消及相关WAL回归 | 定向失败消失，不影响正常事务结束、读未提交写入及既有日志顺序保护 | 待开始 |
 
-百分比按验收阶段数计算，不代表工时比例。
+百分比按通过验收阶段数计算，不代表工时比例。
 
-## 实现范围与调用关系
+## 方案与边界
 
-- **必改函数**：`TranManager::write_tranc_id_file()`（当前 `transation.cpp:800`，文件保存部分 `:868–880`）。保留第1～5步的内存编码，仅调整文件发布顺序。
-- **仅复核**：管理器构造／`read_tranc_id_file()`／析构；LSM构造、析构、clear 的状态保存调用；FileObj 的 open/write/sync/close 接口。当前无需重写它们。
-- 固定临时名 `tranc_id.tmp` 受当前管理器互斥锁保护；沿用单实例管理一个数据目录的约定。
-- macOS/Linux 上 rename 可以替换仍被旧句柄打开的目标；替换前保留旧句柄，替换成功后关闭并重新打开，避免读取旧文件内容。
-- 临时文件打开成功后才将其纳入失败清理；清理使用 error_code，不覆盖原始异常。临时写入／替换失败保住旧文件；替换后重开句柄若失败，仍报告异常，此时磁盘已经是完整的新文件，不宣称任何异常都回到旧版本。
-- 本轮不改变文件格式、不新增 fsync 或断电保障、不扩展 A8 SST 发布修复。全局延期与其他首发候选见 STATE。
+- 在已提交/取消标志检查之后、参数处理和追加记录之前，检查非空operations的末条类型是否COMMIT/ROLLBACK；命中则抛logic_error。
+- 复用现有结束记录，无新成员、无磁盘格式变化。合法生产路径只在末尾追加结束记录，两个写入口拦住后续追加；无需每次写遍历整个历史记录数组。
+- commit/abort已有拒绝再次结束的逻辑，本轮只联动复核，不重写。
+- 已复现的是结束失败后上下文仍被修改；WAL已故障的RU场景中，新增记录没有成功进入磁盘。健康WAL前的分配失败路径仍为推演，不混入实测结论。
+- 同一TranContext仍按既定约定串行使用，不新增上下文互斥锁，不加入A8或其他首发任务。
 
-## 本轮测试准备与结果
+## 修复前证据
 
-- 历史部分写入失败证据沿用 AUDIT：完整40B状态文件被截断为16B。
-- 本轮已构建 test_wal/test_lsm；修复前仅运行3个A7定向用例，1通过、2失败，符合当前缺陷。目录占用后的重试通过；部分写入破坏旧字节，故障解除后的LSM重启实际抛出 invalid file length。
-- 已强化 `LSMStartupWALTest.StateSaveFailurePreservesWalAndStopsInitialization`，新增 `TranManagerRecoveryTest.StateSaveFailurePreservesBytesAndAllowsRetry` 和 `StateReplaceFailureAllowsSameManagerRetry`。用户修改后运行这些用例及既有事务状态/启动/clear回归，尚无修复后结果。
-- 修复前证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a7-baseline-t187tia_`，含旧PLAN快照、命令、日志及results.json；测试在独立工作目录运行。
-- 前一轮 A15 已完成，验收和性能结果保留于 AUDIT A15 与 STATE；不再作为本轮执行计划。
+- 扩充test/test_wal.cpp现有两项：`TranCommitWALTest.WalFailurePreservesDataAndRejectsRepeatedCommit`、`TranAbortWALTest.WalFailurePreservesActiveContextAndRejectsRepeatedEnd`。
+- 使用实际WAL轮换失败保留结束记录；不通过手工篡改operations制造状态。
+- test_wal构建成功；定向2/2失败。暂存型事务后续put/remove均未抛异常，修改operations/temp_map_；RU后续写操作先修改operations，再抛WAL失败runtime_error，原WAL仍保持。
+- 证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a6-baseline-pbymsj9i`，含命令、日志、JSON、源码哈希及A7完成计划快照。尚无修复后结果。
+
+## 上一项收尾
+
+A7已在约定范围完成，52/52相关回归通过；结果与证据归入AUDIT A7和STATE。其非阻塞旧注释 `transation.cpp:869–872` 已提示用户删除，并将原874行改为第6步临时文件写入说明；业务注释由用户整理。

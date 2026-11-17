@@ -2095,6 +2095,7 @@ TEST_F(TranCommitWALTest, MissingWalDoesNotApplyOrFinishTransaction) {
 
 // 目的：真实轮换失败发生在暂存数据应用之前，旧值、旧日志及活跃状态都保留。
 // 结束尝试已经留下 COMMIT 后，不自动再次提交；避免重复或相互矛盾的终态记录。
+// 同一上下文的后续 put/remove 也必须先拒绝，不能再修改操作日志或暂存数据。
 TEST_F(TranCommitWALTest, WalFailurePreservesDataAndRejectsRepeatedCommit) {
   const auto base_id = manager->getNextTransactionId();
   engine->put("key", "old", base_id);
@@ -2126,6 +2127,22 @@ TEST_F(TranCommitWALTest, WalFailurePreservesDataAndRejectsRepeatedCommit) {
   EXPECT_FALSE(transaction->isAborted);
   EXPECT_FALSE(manager->is_aborted(transaction->tranc_id_));
   EXPECT_EQ(transaction->operations.size(), count);
+
+  const auto after_commit_operations = transaction->operations;
+  const auto after_commit_pending = transaction->temp_map_;
+  EXPECT_THROW(transaction->put("new", "changed-after-failure"), std::logic_error);
+  EXPECT_EQ(transaction->operations, after_commit_operations);
+  EXPECT_EQ(transaction->temp_map_, after_commit_pending);
+
+  // 单独保存 remove 前的现场，即使 put 存在缺陷，也能判断 remove 自身有没有追加记录。
+  const auto before_remove_operations = transaction->operations;
+  const auto before_remove_pending = transaction->temp_map_;
+  EXPECT_THROW(transaction->remove("new"), std::logic_error);
+  EXPECT_EQ(transaction->operations, before_remove_operations);
+  EXPECT_EQ(transaction->temp_map_, before_remove_pending);
+  EXPECT_EQ(transaction->operations, after_commit_operations);
+  EXPECT_EQ(transaction->temp_map_, after_commit_pending);
+  EXPECT_FALSE(engine->get("new", 0));
   EXPECT_EQ(read_wal_records(dir / "wal.0"), successful);
   EXPECT_EQ(read_wal_records(dir / "wal.1"), occupied);
 }
@@ -2253,6 +2270,7 @@ TEST_F(TranAbortWALTest, LocalOnlyAbortWorksWithoutInitializedWal) {
 
 // 目的：回滚日志真正写入失败时，不能登记取消、清空现场或隐藏仍然活跃的 RU 记录。
 // 占用下一日志文件制造轮换错误；再次结束必须被拒绝，不能重复追加 ROLLBACK/COMMIT。
+// 后续 put/remove 应以 logic_error 拒绝且保持上下文；不能依赖已故障的 WAL 阻止实际落盘。
 TEST_F(TranAbortWALTest, WalFailurePreservesActiveContextAndRejectsRepeatedEnd) {
   auto transaction = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
   const auto id = transaction->tranc_id_;
@@ -2279,6 +2297,24 @@ TEST_F(TranAbortWALTest, WalFailurePreservesActiveContextAndRejectsRepeatedEnd) 
   EXPECT_THROW(transaction->abort(), std::logic_error);
   EXPECT_THROW(transaction->commit(), std::logic_error);
   EXPECT_EQ(transaction->operations.size(), before_count + 1);
+
+  const auto after_abort_operations = transaction->operations;
+  const auto after_abort_pending = transaction->temp_map_;
+  EXPECT_THROW(transaction->put("late", "blocked"), std::logic_error);
+  EXPECT_EQ(transaction->operations, after_abort_operations);
+  EXPECT_EQ(transaction->temp_map_, after_abort_pending);
+
+  const auto before_remove_operations = transaction->operations;
+  const auto before_remove_pending = transaction->temp_map_;
+  EXPECT_THROW(transaction->remove("key"), std::logic_error);
+  EXPECT_EQ(transaction->operations, before_remove_operations);
+  EXPECT_EQ(transaction->temp_map_, before_remove_pending);
+  EXPECT_EQ(transaction->operations, after_abort_operations);
+  EXPECT_EQ(transaction->temp_map_, after_abort_pending);
+  // 内存操作记录是否变化与 WAL 是否变化分开检查：WAL 已进入故障状态，不能据此说新记录写进了日志。
+  EXPECT_FALSE(engine->get("late", 0));
+  EXPECT_EQ(engine->get("key", 0),
+            std::make_optional(std::make_pair(std::string("dirty"), id)));
   EXPECT_EQ(read_wal_records(dir / "wal.0"), successful);
   EXPECT_EQ(read_wal_records(dir / "wal.1"), occupied);
 }
