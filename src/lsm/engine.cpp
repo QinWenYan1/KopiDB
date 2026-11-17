@@ -901,8 +901,6 @@ LSMEngine::full_common_compact(std::vector<size_t> &lx_ids,
 std::vector<std::shared_ptr<SST>>
 LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
                              size_t target_level) {
-  // 参数的 SSTBuilder 构造函数
-
   std::vector<std::shared_ptr<SST>> new_ssts;
 
   // 0. WiscKey 分支照抄 flush(): 阈值 > 0 且 vlog_ 存在才走 vlog 模式
@@ -921,12 +919,26 @@ LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
 
   // 1. 循环从迭代器取 key-value 写入 SSTBuilder
   while (iter.is_valid() && !iter.is_end()) {
-    std::string cur_key = (*iter).first;
+    // 一次取出当前记录，避免分别取 key、value 时重复复制
+    // entry 是独立的值对象，后面 ++iter 不会改变它
+    const auto entry = *iter; 
+    const std::string &cur_key = entry.first;
+    // 版本和类型必须在推进之前读取，保证它们属于当前这条记录
+    const uint64_t tranc_id = iter.get_cur_tranc_id();
 
     // 三件套: key / value / 真实版本号
     // 使用 get_cur_tranc_id() 保留当前记录的真实写入版本
     // Compaction 使用保留全部版本的迭代器
-    new_sst_builder.add(cur_key, (*iter).second, iter.get_cur_tranc_id());
+    if (iter.is_vlog_ref()) {
+      // 已有引用直接搬入新 SST，不读取原值，也不追加 VLog。
+      // 不能调用 add()：它会把这 12 字节当成原值再次分离。
+      new_sst_builder.add_vlog_ref(cur_key, entry.second, tranc_id);
+    } else {
+      // 内联原值和墓碑沿用普通入口。
+      // 普通 SST 的 12 字节原值也走这里，由目标模式决定如何存储。
+      new_sst_builder.add(cur_key, entry.second, tranc_id);
+    }
+
     has_pending_entries = true;
     ++iter;
 
@@ -942,8 +954,8 @@ LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
     //    的不同版本之间切分)
     if (!next_is_same_key &&
         new_sst_builder.estimated_size() >= target_sst_size) {
-      size_t sst_id = next_sst_id++;
-      std::string sst_path = get_sst_path(sst_id, target_level);
+      const size_t sst_id = next_sst_id++;
+      const std::string sst_path = get_sst_path(sst_id, target_level);
       auto new_sst = new_sst_builder.build(sst_id, sst_path, block_cache);
       new_ssts.push_back(new_sst);
 
@@ -966,9 +978,9 @@ LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
   }
 
   // 3. 收尾: builder 里还有没落盘的数据 -> 再 build 一个
-  // 1. 最后一批不足阈值：标志为 true，需要生成 SST。
-  // 2. 最后一批已在循环内输出：标志为 false，不再生成。
-  // 3. 输入原本为空：标志始终为 false，也不生成 SST。
+  // 最后一批不足阈值：标志为 true，需要生成 SST。
+  // 最后一批已在循环内输出：标志为 false，不再生成。
+  // 输入原本为空：标志始终为 false，也不生成 SST。
   if (has_pending_entries) {
     size_t sst_id = next_sst_id++;
     std::string sst_path = get_sst_path(sst_id, target_level);
