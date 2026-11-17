@@ -825,10 +825,17 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
                               std::vector<size_t> &l1_ids) {
   std::vector<SstIterator> l0_iters;
   std::vector<std::shared_ptr<SST>> l1_ssts;
+  
+  // 0. 按目标 SST 的模式决定输入如何读取 value。
+  // 条件与 gen_sst_from_iter 创建 builder 时一致：
+  // - 输出 WiscKey：保留已有引用，避免读取、重新追加原值
+  // - 输出普通 SST：必须还原原值，不能把引用字节当成用户值保存
+  const size_t wk = TomlConfig::getInstance().getWisckeyValueThreshold(); 
+  const ValueReadMode read_mode = (wk > 0 && vlog_) ? ValueReadMode::Compaction : ValueReadMode::Query; 
 
   // 1. L0 每张表各开一个全版本迭代器
   for (auto id : l0_ids) {
-    auto sst_it = ssts[id]->begin(0, true);
+    auto sst_it = ssts[id]->begin(0, true, {}, read_mode);
     l0_iters.push_back(sst_it);
   }
 
@@ -852,7 +859,7 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
   // 4. L1 有序不重叠 -> ConcactIterator 直接串联
   //    再用 TwoMergeIterator 与 L1 的 ConcactIterator 合并
   std::shared_ptr<ConcactIterator> old_l1_begin_ptr =
-      std::make_shared<ConcactIterator>(l1_ssts, 0, true);
+      std::make_shared<ConcactIterator>(l1_ssts, 0, true, std::function<bool(uint64_t)>{}, read_mode);
 
   // 5. a 路 = L0 堆 (较新), b 路 = L1
   TwoMergeIterator l0_l1_begin(l0_begin_ptr, old_l1_begin_ptr, 0, true);

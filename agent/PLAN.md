@@ -6,7 +6,7 @@
 
 问题与证据见 [AUDIT A15](AUDIT.md#a15)。上一轮 Lab 7 已完成约定范围的验收，结果归入 [STATE](STATE.md)。本轮只优化合并的数据传递路径：目标 SST 仍启用 WiscKey 时，已有 VLog 引用直接写入新 SST，不为搬运引用读取或重新追加原值；普通查询仍返回完整 value。
 
-优化前基线已采集；阶段①②③④已验收。阶段④组件回归57/57通过；阶段⑤gen_sst_from_iter已按当前类型分流，现有Query合并回归9/9通过。当前下一函数为LSMEngine::full_l0_l1_compact，接通L0与L1输入的读取模式。进度：**66.7%（4/6 阶段验收）**。用户手写业务源码与头文件，助手逐函数提供带中文注释的实现、检查、补测试和维护记录；一次只推进一个业务函数。
+优化前基线已采集；阶段①②③④已验收。阶段⑤gen_sst_from_iter与full_l0_l1_compact已接通，相关回归10/10通过；L0→L1已有引用不再追加VLog，源SST未绑定VLog时仍可合并。当前下一函数为LSMEngine::full_common_compact，接通更深层两路输入的读取模式。进度：**66.7%（4/6 阶段验收）**。用户手写业务源码与头文件，助手逐函数提供带中文注释的实现、检查、补测试和维护记录；一次只推进一个业务函数。
 
 ## 已核对的设计与边界
 
@@ -26,7 +26,7 @@
 | ② SST 存储值读取 | SstIterator 顺序构造 → update_current → value → is_vlog_ref（新增）→ SST::begin；共享VLOG_REF_SIZE | 默认查询返回原值；Compaction返回原始字节且不读VLog；普通12B原值不误判；跨块/seek/结束状态保持规则 | 已验收，52/52通过 |
 | ③ 合并中传递类型 | SstIterator::merge_sst_iterator → ConcactIterator构造 → operator++ → is_vlog_ref（新增）→ TwoMergeIterator::is_vlog_ref（新增） | L0堆、跨SST拼接与双路归并均保留字节及类型；比较与推进不触发解引用；版本和来源优先级不变 | 已验收，33/33通过 |
 | ④ Builder 复用引用 | add_stored_entry（新增私有）→ add → add_vlog_ref（新增） | 引用直写保持字节与VLog尾位置不变；普通12B原值仍正确分离；原组块、Bloom、版本范围和墓碑规则通过回归 | 已验收，57/57通过 |
-| ⑤ Engine 接通 | gen_sst_from_iter → full_l0_l1_compact → full_common_compact | 启用模式的两级合并复用引用，换输出表后仍正确；普通/WiscKey混合可合并；禁用后读出原值并生成普通SST | 进行中，writer分流已实现，待两个输入入口 |
+| ⑤ Engine 接通 | gen_sst_from_iter → full_l0_l1_compact → full_common_compact | 启用模式的两级合并复用引用，换输出表后仍正确；普通/WiscKey混合可合并；禁用后读出原值并生成普通SST | 进行中，writer与L0→L1已接通，待深层入口 |
 | ⑥ 最终回归与效果比较 | 组件、公开API、事务／恢复回归及原合并基线复测 | 无隐式VLog读取证据成立，已有引用不新增VLog数据；正常值/版本/墓碑/回滚/重开正确；报告VLog新增字节和同条件耗时差异，不泛化吞吐提升 | 待开始 |
 
 百分比按通过验收阶段数计算，不代表工时比例。阶段①～④可以分别编译和组件验证；阶段⑤才启用真实 Engine 优化路径，不能提前把局部组件通过写成整条链路完成。
@@ -153,4 +153,8 @@ add/helper验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopid
 
 gen_sst_from_iter已完成实现检查（2026-11-17）：当前记录按值保存，cur_key引用在推进后仍有效；真实版本与类型均在推进前读取，按类型调用add_vlog_ref/add。保留两处builder模式选择、同key不拆表、非空收尾及日志。现有普通/WiscKey Query合并回归9/9通过（test_lsm6项、test_wisckey3项），包括多输出表、版本/墓碑/回滚、尾部和重开；源码及测试哈希稳定。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-gen-review-ds5gi974`。未新增重复用例或开放私有接口；两个输入入口仍为Query，因此本次不宣称Engine已实测复用引用，引用分支随下一入口接通后验收。
 
-当前下一函数：src/lsm/engine.cpp:824的LSMEngine::full_l0_l1_compact。依据目标wk>0且vlog_存在选择Compaction，否则Query；给L0各SST的begin和L1的Concact构造传同一模式。make_shared中的空回调使用显式std::function<bool(uint64_t)>{}，避免裸{}无法模板推导。保留全部版本/墓碑及原有归并、输出逻辑；更新旧“value已解引用”注释。此函数待用户手写，full_common_compact留待下一轮。
+full_l0_l1_compact已接通并定向验证（2026-11-17）：L0各SST的begin和L1的Concact构造均沿用目标读取模式，显式空回调保持原有合并规则。既有L0首轮合并新增尾位置不变断言，880→880B；新增两张L0（普通/WiscKey）＋一张WiscKey L1的真实Engine合并，源句柄不绑定VLog，已有引用逐字节保留，输出重开原值/版本/墓碑正确。普通SST两个12B原值首次分离，精确只新增61B，未把“零增长”错误套到新增分离值。
+
+L0接线证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-l0-review-0k8w6061`。test_lsm/test_wisckey构建成功，LSM合并6/6＋WiscKey合并4/4，共10/10通过，源码/测试哈希稳定。更深层功能读取仍通过，但尚未接通优化，现有样本第三次flush仍使VLog880→1760B；未重跑性能基准。用户仍需将engine.cpp当前:851“value已解引用”旧注释改为“由read_mode决定，Compaction保留引用”，这是说明更新，不阻塞已验证行为。助手未代改业务。
+
+当前下一函数：src/lsm/engine.cpp:878的LSMEngine::full_common_compact。与L0入口相同，按目标wk/vlog选择读取模式，给lx和ly两路Concact构造传相同read_mode与显式空回调；全版本/墓碑、版本排序及输出接口保持。此函数待用户手写。
