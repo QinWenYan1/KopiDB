@@ -910,6 +910,7 @@ void TranManager::write_tranc_id_file() {
   } catch (...){
     if (temp_opened){
       // 清理失败不能覆盖原来的保存异常
+      // 如果删除又抛出一个异常，调用者最终可能只看到“删除失败”，最初的“保存失败”就被盖住了
       // 即使留下临时文件，启动时读取的仍是正式 tranc_id
       std::error_code ignored; 
       std::filesystem::remove(temp_path, ignored); 
