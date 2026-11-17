@@ -1,128 +1,125 @@
 # KopiDB
 
 <p align="center">
-  <img src="assets/kopidb-logo.png" alt="KopiDB 像素咖啡标志" width="720">
+  <img src="assets/kopidb-logo.png" alt="KopiDB pixel-art coffee logo" width="720">
 </p>
+
+**English** | [简体中文](README.zh-CN.md)
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://isocpp.org/wiki/faq/cpp20) [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/QinWenYan1/KopiDB) [![Build](https://img.shields.io/badge/build-Xmake-green.svg)](https://xmake.io) [![RocksDB DeepWiki](https://img.shields.io/badge/RocksDB-DeepWiki-purple.svg)](https://deepwiki.com/facebook/rocksdb)
 
-KopiDB 是一个用于学习数据库实现的 C++20 嵌入式 LSM-tree KV 引擎，包含有序读写、SST 存储、多版本读取和事务接口。应用程序通过库接口直接使用数据库，无需启动独立服务。
+KopiDB is an embedded LSM-tree key-value engine written in C++20 for learning how databases are implemented. It supports ordered reads and writes, SST storage, multi-version reads, and transaction APIs. Applications access the database directly through its library interface, without running a separate server.
 
 ---
 
-## 🧭 目录
+## 🧭 Contents
 
-- [📖 什么是 LSM-tree？](#what-is-lsm)
-- [💡 为什么需要 LSM-tree？](#why-lsm)
-- [🎯 应用场景](#use-cases)
-- [📚 学习文档](#learning-docs)
-- [🛠️ 构建与测试](#build-and-test)
-- [🧵 并发与事务](#concurrency-and-transactions)
-- [💻 C++ 使用示例](#cpp-example)
-- [🧭 如何选择读写方式](#choosing-read-write-mode)
+- [📖 What Is an LSM-tree?](#what-is-lsm)
+- [💡 Why Use an LSM-tree?](#why-lsm)
+- [🎯 Use Cases](#use-cases)
+- [📚 Learning Notes (Chinese)](#learning-docs)
+- [🛠️ Build and Test](#build-and-test)
+- [🧵 Concurrency and Transactions](#concurrency-and-transactions)
+- [💻 C++ Usage Example](#cpp-example)
+- [🧭 Choosing a Read/Write Mode](#choosing-read-write-mode)
 
-
-
---- 
+---
 
 <a id="what-is-lsm"></a>
 
-## 📖 什么是 LSM-tree？
+## 📖 What Is an LSM-tree?
 
-LSM-tree（Log-Structured Merge-Tree，O'Neil et al. 1996）的核心思想是**把随机写转化为顺序写**：写入先进内存有序结构（MemTable）并追加 WAL 保证持久化，内存写满后批量刷盘为不可变 SST 文件，后台 Compaction 逐层合并清理。RocksDB（Meta）是这一结构的工业级代表实现，也是本项目对标的对象。
+The core idea of an LSM-tree (Log-Structured Merge-Tree, O'Neil et al., 1996) is to **turn random writes into sequential writes**: writes first enter an ordered in-memory structure (MemTable) and are appended to a write-ahead log (WAL) for durability. Once the MemTable is full, its contents are flushed in batches to immutable SST files. Background compaction merges and cleans up data across levels. RocksDB (Meta) is a production-grade implementation of this structure and serves as a reference for this project.
 
-延伸阅读：
+Further reading:
 
-- [The Log-Structured Merge-Tree (LSM-tree), Acta Informatica 1996](https://doi.org/10.1007/s002360050048)——LSM-tree 原始论文
-- [The RocksDB Experience, FAST 2021](https://www.usenix.org/conference/fast21/presentation/dong)——RocksDB 官方经验论文
-- [WiscKey, FAST 2016](https://www.usenix.org/conference/fast16/technical-sessions/presentation/lu)——本项目 vlog 模块（键值分离）的思想来源
-
+- [The Log-Structured Merge-Tree (LSM-tree), Acta Informatica 1996](https://doi.org/10.1007/s002360050048) — The original LSM-tree paper.
+- [The RocksDB Experience, FAST 2021](https://www.usenix.org/conference/fast21/presentation/dong) — A paper on the RocksDB team's production experience.
+- [WiscKey, FAST 2016](https://www.usenix.org/conference/fast16/technical-sessions/presentation/lu) — The inspiration for this project's vlog module (key-value separation).
 
 ---
 
 <a id="why-lsm"></a>
 
-## 💡 为什么需要 LSM-tree？
+## 💡 Why Use an LSM-tree?
 
-相比 B+ 树（读优化的原地更新结构）：
+Compared with B+ trees, which are read-optimized structures that update data in place:
 
-1. **写吞吐显著更高**：B+ 树写入伴随大量随机 IO 与页分裂；LSM 先写内存 + 顺序刷盘，写路径几乎全是顺序 IO
-2. **对 SSD 友好**：批量顺序写减少擦写放大，延长 SSD 寿命
-3. **写入延迟稳定**：无原地更新，前台写路径短
+1. **Significantly higher write throughput**: B+ tree writes involve substantial random I/O and page splits. LSM-trees write to memory first and then flush sequentially, making the write path almost entirely sequential I/O.
+2. **SSD-friendly writes**: Batched sequential writes reduce flash write/erase amplification and extend SSD lifespan.
+3. **Stable write latency**: With no in-place updates, the foreground write path stays short.
 
-代价是读放大（查询要查多层）与写放大（数据被 Compaction 反复重写）——工业界用 Bloom Filter、块缓存、分层 Compaction 策略来缓解。
+The trade-offs are read amplification (queries may need to search multiple levels) and write amplification (compaction rewrites data repeatedly). Production systems use Bloom filters, block caches, and level-based compaction strategies to mitigate these costs.
 
 ---
 
 <a id="use-cases"></a>
 
-## 🎯 应用场景
+## 🎯 Use Cases
 
-LSM 架构常见于写密集负载的典型选择：
+LSM-based architectures are a common choice for write-intensive workloads:
 
-- 日志 / 消息系统、时序数据
-- 元数据存储、区块链客户端存储
-- 流计算状态后端（Flink / Kafka Streams 内嵌 RocksDB）
-- 作为底层引擎支撑上层数据库（TiKV、MyRocks、Cassandra、HBase 等均基于或受 LSM 影响）
+- Logging and messaging systems, and time-series data.
+- Metadata storage and blockchain client storage.
+- State backends for stream processing (Flink and Kafka Streams embed RocksDB).
+- Storage engines for higher-level databases: TiKV, MyRocks, Cassandra, and HBase are based on or influenced by LSM designs.
 
 ---
 
 <a id="learning-docs"></a>
 
-## 📚 学习文档
+## 📚 Learning Notes (Chinese)
 
-`doc/` 下是与实现同步推进的 **RocksDB 源码精读笔记**（workflow / 调用链 / 关键机制，面试导向）：
+The `doc/` directory contains **RocksDB source code study notes**, developed alongside this implementation. They cover workflows, call chains, and key mechanisms, with an emphasis on interview preparation. These notes are currently available in Chinese.
 
-- [doc/README](doc/README.md)——笔记索引与使用方法（一篇笔记对应一个子 lab）
-- [01-skiplist-basic](doc/01-skiplist-basic.md)——Lab 1.1：跳表 put/get/remove 的 RocksDB 对应实现
-- [02-skiplist-iter](doc/02-skiplist-iter.md)——Lab 1.2：跳表迭代器
-- [03-skiplist-scan](doc/03-skiplist-scan.md)——Lab 1.3：前缀与边界扫描
-- [04-data-path](doc/04-data-path.md)——数据通路：Put/Get 工作流 + SuperVersion 世界观（Lab 2 前置）
-- [05-memtable-rw](doc/05-memtable-rw.md)——Lab 2.1：MemTable 读写、冻结与墓碑
-- [06-memtable-iter](doc/06-memtable-iter.md)——Lab 2.2：MemTable 迭代器与归并
-- [07-memtable-scan](doc/07-memtable-scan.md)——Lab 2.3：MemTable 前缀扫描
+- [doc/README](doc/README.md) — Notes index and reading guide (one note per sub-lab).
+- [01-skiplist-basic](doc/01-skiplist-basic.md) — Lab 1.1: RocksDB implementations corresponding to skiplist put/get/remove.
+- [02-skiplist-iter](doc/02-skiplist-iter.md) — Lab 1.2: Skiplist iterators.
+- [03-skiplist-scan](doc/03-skiplist-scan.md) — Lab 1.3: Prefix and bounded scans.
+- [04-data-path](doc/04-data-path.md) — Data paths: Put/Get workflows and the SuperVersion model (prerequisite for Lab 2).
+- [05-memtable-rw](doc/05-memtable-rw.md) — Lab 2.1: MemTable reads and writes, freezing, and tombstones.
+- [06-memtable-iter](doc/06-memtable-iter.md) — Lab 2.2: MemTable iterators and merging.
+- [07-memtable-scan](doc/07-memtable-scan.md) — Lab 2.3: MemTable prefix scans.
 
 ---
 
-
-
 <a id="build-and-test"></a>
 
-## 🛠️ 构建与测试
+## 🛠️ Build and Test
 
-需要 C++20 编译器和 [Xmake](https://xmake.io)，配置见 [config.toml](config.toml)。
+A C++20 compiler and [Xmake](https://xmake.io) are required. See [config.toml](config.toml) for configuration.
 
 ```bash
-xmake build lsm             # 构建引擎
+xmake build lsm             # Build the engine
 xmake build test_skiplist
-xmake run test_skiplist     # 运行一个模块的测试
+xmake run test_skiplist     # Run one module's tests
 ```
 
-环境安装步骤见教程的 [Lab 0](https://vanilla-beauty.github.io/tiny-lsm/book/lab0-env.html)。
+For environment setup instructions, see [Lab 0](https://vanilla-beauty.github.io/tiny-lsm/book/lab0-env.html) in the tutorial (Chinese).
 
 ---
 
 <a id="concurrency-and-transactions"></a>
 
-## 🧵 并发与事务
+## 🧵 Concurrency and Transactions
 
-KopiDB 的并发设计目标是：**同一进程内，多个线程共享同一个数据库实例**，完整并发支持仍在完善中。
+KopiDB's concurrency design aims to let **multiple threads in the same process share one database instance**. Full concurrency support is still being developed.
 
-每次 `begin_tran()` 创建独立的 `TranContext`，对应一笔事务。推荐每个线程使用自己的事务上下文；一个线程也可以创建和操作多个上下文，线程与上下文不要求一一对应。
+Each call to `begin_tran()` creates an independent `TranContext` representing one transaction. Each thread should use its own transaction context. A thread may also create and operate on multiple contexts; threads and contexts do not need a one-to-one relationship.
 
-**同一个 `TranContext` 必须串行使用，同一时刻只能由一个线程操作。** 上下文不会自动绑定到某个线程；多个线程共同使用或移交同一个上下文时，须由调用方通过锁等同步机制协调。同一个迭代器也应串行使用。
+**A single `TranContext` must be used serially: only one thread may operate on it at a time.** Contexts are not automatically bound to a thread. If multiple threads share a context or hand it off, the caller must coordinate access using locks or other synchronization mechanisms. A single iterator must also be used serially.
 
-普通 `put/get/remove` 无需显式开启事务；需要将多次操作组成一笔事务时，再使用 `begin_tran()` 和 `commit/abort`。
+Ordinary `put/get/remove` calls do not require an explicit transaction. Use `begin_tran()` and `commit/abort` when multiple operations need to form one transaction.
 
-`clear()` 会清空数据库数据，是独占维护操作：调用前先结束事务、销毁迭代器，并暂停其他线程对该实例的操作；成功返回后可以继续读写。清空失败可能已经删除部分数据，应处理错误后重试或销毁实例。
+`clear()` removes all database data and is an exclusive maintenance operation. Before calling it, finish transactions, destroy iterators, and pause other threads' operations on the instance. Reads and writes can resume after it returns successfully. A failed clear may already have deleted some data; handle the error before retrying or destroying the instance.
 
 ---
 
 <a id="cpp-example"></a>
 
-## 💻 C++ 使用示例
+## 💻 C++ Usage Example
 
-下面在同一个数据库实例中演示五类用法，用注释区分；为突出调用流程，省略提交结果处理。
+The following example demonstrates five usage patterns on a single database instance, separated by comments. Commit-result handling is omitted to keep the API flow clear.
 
 ```cpp
 #include "lsm/engine.h"
@@ -134,45 +131,45 @@ using namespace tiny_lsm;
 int main() {
   LSM db("api-demo");
 
-  // ---------- 1. 普通 CRUD：无需显式开启事务 ----------
-  db.put("name", "Alice");  // 新增
+  // ---------- 1. Basic CRUD: no explicit transaction required ----------
+  db.put("name", "Alice");  // Insert
   if (auto value = db.get("name")) {
-    std::cout << *value << '\n';  // 查询：Alice
+    std::cout << *value << '\n';  // Read: Alice
   }
-  db.put("name", "Bob");  // 更新同一个 key
-  db.remove("name");      // 删除
+  db.put("name", "Bob");  // Update the same key
+  db.remove("name");      // Delete
   if (!db.get("name")) {
-    std::cout << "name 不存在\n";
+    std::cout << "name does not exist\n";
   }
 
-  // ---------- 2. 显式事务：开启、读写、提交 ----------
+  // ---------- 2. Explicit transaction: begin, read/write, commit ----------
   auto tx = db.begin_tran(IsolationLevel::REPEATABLE_READ);
   tx->put("user:1", "Alice");
   tx->put("user:2", "Bob");
   if (auto value = tx->get("user:1")) {
-    std::cout << *value << '\n';  // 能读到本事务尚未提交的修改
+    std::cout << *value << '\n';  // Read this transaction's own uncommitted changes
   }
-  tx->commit();  // 默认 test_fail=false：正常提交；结束后不再用 tx 读写
+  tx->commit();  // Default test_fail=false: normal commit; do not use tx for further reads/writes
 
-  // ---------- 3. 事务回滚：放弃本事务的修改 ----------
+  // ---------- 3. Transaction rollback: discard this transaction's changes ----------
   auto cancelled = db.begin_tran(IsolationLevel::REPEATABLE_READ);
   cancelled->put("user:1", "Temporary");
-  cancelled->abort();  // 放弃修改；结束后不再用 cancelled 读写
+  cancelled->abort();  // Discard changes; do not use cancelled for further reads/writes
   if (auto value = db.get("user:1")) {
-    std::cout << *value << '\n';  // 前一笔事务提交成功时，仍为 Alice
+    std::cout << *value << '\n';  // Still Alice if the previous transaction committed successfully
   }
 
-  // ---------- 4. 批量操作：一次传入多个 key ----------
+  // ---------- 4. Batch operations: pass multiple keys at once ----------
   db.put_batch({{"batch:a", "A"}, {"batch:b", "B"}, {"batch:c", "C"}});
   for (const auto &[key, value] :
        db.get_batch({"batch:a", "batch:b", "missing"})) {
-    // 每个结果保留对应 key；不存在的 key 返回 std::nullopt。
-    std::cout << key << " = " << value.value_or("<不存在>") << '\n';
+    // Each result retains its key; missing keys return std::nullopt.
+    std::cout << key << " = " << value.value_or("<not found>") << '\n';
   }
   db.remove_batch({"batch:a", "batch:b"});
 
-  // ---------- 5. 有序遍历：按 key 升序读取 ----------
-  // begin(0) 的 0 表示不限制读取版本号。
+  // ---------- 5. Ordered iteration: read keys in ascending order ----------
+  // The 0 in begin(0) means there is no upper bound on the read version.
   for (auto it = db.begin(0); it != db.end(); ++it) {
     std::cout << it->first << " = " << it->second << '\n';
   }
@@ -181,29 +178,29 @@ int main() {
 }
 ```
 
-**`commit()` 的测试参数**：正常业务使用 `tx->commit()`，`test_fail` 默认为 `false`。`commit(true)` 仅供恢复测试：暂存型事务确认提交日志写出后，故意跳过修改的应用，仍登记提交并返回 `true`，由测试关闭重启来验证日志重放。这个 `true` 不表示当前实例的数据已经更新；开关不会主动终止进程，读未提交事务会忽略它并正常提交。
+**The test parameter of `commit()`**: For normal use, call `tx->commit()`; `test_fail` defaults to `false`. `commit(true)` is only for recovery testing. For transactions that buffer their changes, it confirms that the commit log has been written, then deliberately skips applying the changes while still registering the transaction as committed and returning `true`. The test then closes and reopens the database to verify log replay. This `true` result does not mean the current instance's data has been updated. The flag does not terminate the process, and read-uncommitted transactions ignore it and commit normally.
 
-公开写入接口拒绝空 key，`put`／`put_batch` 也拒绝空 value，空参数会抛出 `std::invalid_argument`；删除请使用 `remove`／`remove_batch`。批量参数有一项不合法时，整批在写入前被拒绝。项目目前用于学习，已实现基于 WAL 的日志重放与恢复；断电及持久化中途失败时的完整恢复保障尚未完善。
+Public write APIs reject empty keys, and `put`/`put_batch` also reject empty values, throwing `std::invalid_argument` for these invalid inputs. Use `remove`/`remove_batch` for deletion. If any entry in a batch is invalid, the entire batch is rejected before writing. This is a learning project with WAL-based log replay and recovery implemented; complete recovery guarantees for power loss and failures partway through persistence are still being developed.
 
 ---
 
 <a id="choosing-read-write-mode"></a>
 
-## 🧭 如何选择读写方式
+## 🧭 Choosing a Read/Write Mode
 
-独立读写可以直接调用 `db.put/get/remove`。需要把多次操作组成一笔事务，统一提交或回滚时，使用 `begin_tran()` 并选择隔离级别。下表描述 KopiDB 当前实现的行为。
+For independent reads and writes, call `db.put/get/remove` directly. To group multiple operations into one transaction and commit or roll them back together, use `begin_tran()` and select an isolation level. The table below describes the behavior of KopiDB's current implementation.
 
-| 方式 | 读取表现 | 写入与结束方式 | 事务版本号如何分配 | 查询版本上限 | 允许读取其他事务未提交的修改吗 | 已回滚记录 |
+| Mode | Read behavior | Writes and transaction completion | Transaction version assignment | Read version upper bound | Can read other transactions' uncommitted changes? | Rolled-back records |
 | --- | --- | --- | --- | --- | --- | --- |
-| **直接操作** | 每次独立查询，结果可能变化 | 每次操作独立执行，无需手动提交，没有跨调用的统一回滚 | 每次 `put()` 分配新的版本号；查询不分配事务 ID | `0`，不限制版本号大小 | 当前允许 | 排除 |
-| **读未提交** `READ_UNOP_COMMITTED` | 每次重新查询，结果可能变化；读到的修改之后可能被回滚 | 写入立即进入数据库；通过 `commit()` 结束事务，或通过 `abort()` 取消修改 | 同一事务的写入共用一个版本号 | `0`，不限制版本号大小 | 允许 | 排除 |
-| **读已提交** `READ_OP_COMMITTED` | 自身修改优先；其余只读已提交数据，可以看到后来提交的更新 | 修改先暂存，提交成功后应用；支持回滚 | 同一事务的写入共用一个版本号 | `0`，不限制版本号大小 | 不允许 | 排除 |
-| **可重复读** `REPEATABLE_READ` | 同一个 key 保持首次合法结果，包括“不存在”；自身修改优先 | 修改先暂存，提交时检查写入冲突；支持回滚 | 同一事务的写入共用一个版本号 | 首次查询使用本事务的版本号，之后复用缓存 | 不允许 | 排除 |
-| **可串行化** `SERIALIZABLE` **（实验性，未完整实现）** | 当前沿用可重复读的单键读取行为 | 修改先暂存；提交时额外验证此前读过的数据是否变化；支持回滚 | 同一事务的写入共用一个版本号 | 首次查询使用本事务的版本号，之后复用缓存 | 不允许 | 排除 |
+| **Direct operations** | Each query is independent; results may change | Each operation executes independently; no manual commit or shared rollback across calls | Each `put()` gets a new version; queries do not allocate a transaction ID | `0`: no version upper bound | Currently yes | Excluded |
+| **Read uncommitted** `READ_UNOP_COMMITTED` | Each query reads again; results may change, and observed changes may later be rolled back | Writes enter the database immediately; `commit()` ends the transaction, or `abort()` discards its changes | All writes in a transaction share one version | `0`: no version upper bound | Yes | Excluded |
+| **Read committed** `READ_OP_COMMITTED` | Own changes take priority; otherwise reads only committed data and can see later commits | Changes are buffered and applied on successful commit; rollback is supported | All writes in a transaction share one version | `0`: no version upper bound | No | Excluded |
+| **Repeatable read** `REPEATABLE_READ` | Preserves the first valid result for each key, including "not found"; own changes take priority | Changes are buffered; write conflicts are checked at commit; rollback is supported | All writes in a transaction share one version | The first query uses the transaction's version; subsequent reads reuse the cache | No | Excluded |
+| **Serializable** `SERIALIZABLE` **(experimental, incomplete)** | Currently uses the same per-key read behavior as repeatable read | Changes are buffered; commit additionally checks whether previously read data has changed; rollback is supported | All writes in a transaction share one version | The first query uses the transaction's version; subsequent reads reuse the cache | No | Excluded |
 
-补充说明：
+Additional notes:
 
-- **版本号与读取上限不同**：显式事务的版本号在创建时分配，不代表提交顺序。查询传 `0` 只是取消版本上限，仍需比较记录的真实版本并检查回滚状态。表中的版本上限用于查询存储层；自身暂存修改和已有读缓存优先处理。
-- **回滚检查始终生效**：内部的 `is_aborted(id)` 判断记录所属事务是否已经回滚。`require_committed = true` 会进一步排除活跃事务的记录；`false` 不表示关闭回滚检查。这里的“未提交”指其他事务，暂存型事务仍可以读取自己的修改。
-- **批量接口**：普通 `put_batch()` 整批共用一个新版本号；普通 `get_batch()` 不分配事务 ID，保留输入顺序、重复 key 和缺失项，排除已回滚版本，但不承诺整批一致快照。
-- **保证范围**：当前可重复读不承诺跨所有 key 的一致快照。完整可串行化要求成功提交事务的读写效果等价于某种逐笔执行的顺序，不要求线程实际排队；KopiDB 当前尚不提供这一完整保证，完整实现留作后续扩展。
+- **Version numbers and read bounds are different**: An explicit transaction receives its version when it is created, so the version does not indicate commit order. Passing `0` for a query only removes the version upper bound; actual record versions must still be compared, and rollback status must still be checked. The bounds in the table apply to queries against the storage layer; a transaction's own buffered changes and existing read cache take priority.
+- **Rollback checks always apply**: Internally, `is_aborted(id)` checks whether the transaction that owns a record has been rolled back. `require_committed = true` additionally excludes records from active transactions; `false` does not disable rollback checks. "Uncommitted" here refers to other transactions; transactions that buffer changes can still read their own modifications.
+- **Batch APIs**: An ordinary `put_batch()` assigns one new version to the entire batch. An ordinary `get_batch()` does not allocate a transaction ID; it preserves input order, duplicate keys, and missing entries, and excludes rolled-back versions, but does not guarantee a consistent snapshot across the whole batch.
+- **Scope of guarantees**: The current repeatable-read implementation does not guarantee a consistent snapshot across all keys. Full serializability requires the read/write effects of successfully committed transactions to be equivalent to some serial execution order; it does not require threads to run one at a time. KopiDB does not yet provide this complete guarantee; a full implementation is left for future work.
