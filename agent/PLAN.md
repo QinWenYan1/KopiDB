@@ -6,14 +6,14 @@
 
 目标：真实 commit/abort 尝试已经在 operations 末尾留下 COMMIT/ROLLBACK、但尚未完成时，`TranContext::put/remove` 必须在修改上下文或发送WAL之前以logic_error拒绝新写入。正常事务行为保持，逐函数由用户手写。问题事实见 [AUDIT A6](AUDIT.md#a6)。
 
-**进度：0%（0/3阶段验收）。** A7已完成，当前函数是 `TranContext::put()`。
+**进度：33%（1/3阶段验收）。** A7已完成，put阶段已验收，当前函数是 `TranContext::remove()`。
 
 ## 全部阶段
 
 | 阶段 | 具体函数／工作 | 验收标准 | 状态 |
 | --- | --- | --- | --- |
-| ① put 前置检查 | `src/lsm/transation.cpp:115` 的 `TranContext::put` | 已开始但未完成结束的事务拒绝put，operations/temp_map_不变；正常put及参数检查保持 | 进行中：新判断正确，但误删原结束标志检查，须先补回 |
-| ② remove 前置检查 | 同文件 `:170` 的 `TranContext::remove` | 同样在追加DELETE之前拒绝，原记录和暂存表保持；正常删除保持 | 待开始 |
+| ① put 前置检查 | `src/lsm/transation.cpp:115` 的 `TranContext::put` | 已开始但未完成结束的事务拒绝put，operations/temp_map_不变；正常put及参数检查保持 | 已通过：两层检查保留，正常及异常结束后的put验证通过 |
+| ② remove 前置检查 | 同文件 `:184` 的 `TranContext::remove` | 同样在追加DELETE之前拒绝，原记录和暂存表保持；正常删除保持 | 当前阶段：提供草案待用户修改 |
 | ③ 整体验收 | 结束失败的两个定向用例，正常事务写入/提交/取消及相关WAL回归 | 定向失败消失，不影响正常事务结束、读未提交写入及既有日志顺序保护 | 待开始 |
 
 百分比按通过验收阶段数计算，不代表工时比例。
@@ -43,3 +43,10 @@ A7已在约定范围完成，52/52相关回归通过；结果与证据归入AUDI
 - 但用户将原isCommited/isAborted检查删除；正常abort会清空operations，回滚后的put因此越过新检查。必须先恢复原检查，再推进remove。
 - 构建两个目标通过；定向8项为3通过、5失败：LSM的6项中3通过/3失败（结束状态保护回归），WAL的2项均因remove尚未接入失败。未代改业务，进度保持0/3。
 - 证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a6-put-review-2x8o76md`，含命令、日志、JSON及执行前后源码/测试哈希（稳定）。
+
+## put阶段验收（2026-11-17）
+
+- 用户已补回isCommited/isAborted检查，同时保留末条结束记录检查；代码检查通过。
+- 两个目标构建成功；原8项定向复测，test_lsm 6/6通过；test_wal 2项仍失败，但所有失败断言都来自尚未修改的remove，put拒绝及无副作用断言均通过。整体A6尚未完成，不把两个组合用例记为通过。
+- 阶段①完成，进度1/3；下一步在remove原结束标志检查后（当前transation.cpp:194、空key注释前）追加末条记录判断，保留原检查。
+- 证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a6-put-fixed-tpscs_xe`。测试执行前后源码/测试哈希稳定，未修改业务代码。

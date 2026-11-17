@@ -159,6 +159,8 @@ A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 
 
 ### A6：结束尝试失败后仍可能追加 PUT/DELETE
 
+2026-11-17 put阶段已验收：原结束标志判断已恢复，与新结束记录判断共同生效；test_lsm 6/6通过，test_wal两个组合用例的put断言通过，剩余失败均为remove尚未接入。当前进入remove，A6整体仍处理中，进度见PLAN。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a6-put-fixed-tpscs_xe`。
+
 2026-11-17 put阶段检查：新增末条结束记录判断已拦截故障后put，但原isCommited/isAborted检查被误删，正常abort清空operations后仍能put。定向8项3通过/5失败，其中3项为原结束状态保护回归，另2项为remove尚未接入；已要求先恢复put的原检查，未进入下一函数。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a6-put-review-2x8o76md`。
 
 2026-11-17 A7验收后，按用户“检查并下一个”进入本项，当前执行见 [PLAN](PLAN.md)。核对当前put/remove仍只检查结束标志，commit/abort已有结束记录保护。扩充两个现有WAL故障用例并实际运行，2/2失败：暂存型事务commit失败后put/remove仍成功修改operations和temp_map_；RU abort失败后put/remove先追加operations，之后因WAL已故障抛runtime_error。日志文件和引擎数据保持原状，不能把内存追加说成新记录已写入WAL。修复范围仅两个写入口前置检查，先put后remove，业务由用户手写。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a6-baseline-pbymsj9i`。
