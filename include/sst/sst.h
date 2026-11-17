@@ -169,6 +169,10 @@ public:
 
   // 添加一个key-value对
   void add(const std::string &key, const std::string &value, uint64_t tranc_id);
+  // 保存已有 VLog 引用，调用方须保证它来自当前数据库使用的 VLog。
+  // 普通原值和墓碑使用 add()。
+  void add_vlog_ref(const std::string &key, const std::string &vlog_ref,
+                    uint64_t tranc_id);
   // 估计sst的大小
   size_t estimated_size() const;
   // 实际的大小（也就是 已经放进的大小和未放进去的data大小）

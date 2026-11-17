@@ -444,6 +444,25 @@ void SSTBuilder::add(const std::string &key, const std::string &value,
   add_stored_entry(key, *actual_value, tranc_id);
 }
 
+// 接收已有引用作为 value, 并直接添加 entries
+void SSTBuilder::add_vlog_ref(const std::string &key, 
+                              const std::string &vlog_ref,
+                              uint64_t tranc_id) {
+  // 只有 WiscKey 模式才能把保存的引用正确还原成原值
+  // 若写进普通 SST，读端会把引用字节当作用户原值返回
+  if (storage_mode_ != 1 || !vlog_)
+    throw std::logic_error("SSTBuilder::add_vlog_ref: requires a WiscKey builder"); 
+
+  // 已有引用必须保持既定布局：8 字节偏移 + 4 字节原值长度
+  // 在修改 Block 和元数据之前，先拒绝长度不正确的输入
+  if (vlog_ref.size() != VLOG_REF_SIZE)
+    throw std::invalid_argument("SSTBuilder::add_vlog_ref: invalid reference size");
+
+  // 直接保存原引用，不读取原值，也不再次追加 VLog
+  // 元数据、版本分组和换块仍由共用 helper 维护
+  add_stored_entry(key, vlog_ref, tranc_id);        
+}
+
 size_t SSTBuilder::real_size() const { return data.size() + block.cur_size(); }
 
 size_t SSTBuilder::estimated_size() const { return data.size(); }
