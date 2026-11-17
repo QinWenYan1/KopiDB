@@ -6,7 +6,7 @@
 
 问题与证据见 [AUDIT A15](AUDIT.md#a15)。上一轮 Lab 7 已完成约定范围的验收，结果归入 [STATE](STATE.md)。本轮只优化合并的数据传递路径：目标 SST 仍启用 WiscKey 时，已有 VLog 引用直接写入新 SST，不为搬运引用读取或重新追加原值；普通查询仍返回完整 value。
 
-优化前基线已采集；阶段①②③已验收。阶段③TwoMerge类型转发与两条真实SST合并组合路径已验证，最终相关回归33/33通过。当前进入阶段④，下一函数为SSTBuilder::add_stored_entry。进度：**50%（3/6 阶段验收）**。用户手写业务源码与头文件，助手逐函数提供带中文注释的实现、检查、补测试和维护记录；一次只推进一个业务函数。
+优化前基线已采集；阶段①②③已验收。阶段③TwoMerge类型转发与两条真实SST合并组合路径已验证，最终相关回归33/33通过。阶段④私有add_stored_entry已通过结构与编译检查，当前下一函数为SSTBuilder::add。进度：**50%（3/6 阶段验收）**。用户手写业务源码与头文件，助手逐函数提供带中文注释的实现、检查、补测试和维护记录；一次只推进一个业务函数。
 
 ## 已核对的设计与边界
 
@@ -25,7 +25,7 @@
 | ① 内存类型信息 | BaseIterator::is_vlog_ref（新增默认实现）→ SearchItem 构造函数 → HeapIterator::is_vlog_ref（新增） | 旧调用默认非引用；堆推进后类型与当前条目对应；空堆安全返回false；原排序不变 | 已验收，11/11通过 |
 | ② SST 存储值读取 | SstIterator 顺序构造 → update_current → value → is_vlog_ref（新增）→ SST::begin；共享VLOG_REF_SIZE | 默认查询返回原值；Compaction返回原始字节且不读VLog；普通12B原值不误判；跨块/seek/结束状态保持规则 | 已验收，52/52通过 |
 | ③ 合并中传递类型 | SstIterator::merge_sst_iterator → ConcactIterator构造 → operator++ → is_vlog_ref（新增）→ TwoMergeIterator::is_vlog_ref（新增） | L0堆、跨SST拼接与双路归并均保留字节及类型；比较与推进不触发解引用；版本和来源优先级不变 | 已验收，33/33通过 |
-| ④ Builder 复用引用 | add_stored_entry（新增私有）→ add → add_vlog_ref（新增） | 引用直写保持字节与VLog尾位置不变；普通12B原值仍正确分离；原组块、Bloom、版本范围和墓碑规则通过回归 | 进行中，待add_stored_entry |
+| ④ Builder 复用引用 | add_stored_entry（新增私有）→ add → add_vlog_ref（新增） | 引用直写保持字节与VLog尾位置不变；普通12B原值仍正确分离；原组块、Bloom、版本范围和墓碑规则通过回归 | 进行中，helper已检查，待add接入 |
 | ⑤ Engine 接通 | full_l0_l1_compact → full_common_compact → gen_sst_from_iter | 启用模式的两级合并复用引用，换输出表后仍正确；普通/WiscKey混合可合并；禁用后读出原值并生成普通SST | 待开始 |
 | ⑥ 最终回归与效果比较 | 组件、公开API、事务／恢复回归及原合并基线复测 | 无隐式VLog读取证据成立，已有引用不新增VLog数据；正常值/版本/墓碑/回滚/重开正确；报告VLog新增字节和同条件耗时差异，不泛化吞吐提升 | 待开始 |
 
@@ -137,4 +137,8 @@ TwoMergeIterator::is_vlog_ref已完成（2026-11-17）：用户按choose_a选中
 
 阶段③验收证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-stage3-review-tyi99r0x`。新增Heap＋Concact和Concact＋Concact两项组合测试，覆盖Query/Compaction、全版本/去重、两路切换、跨SST、同版本A优先（引用/墓碑/原值）、普通12B原文、类型/版本与当前value一致、默认空/有效空子流。Compaction源不绑定VLog，从构造选路到推进和取值均成功。最终构建及SST/拼接/合并专项14/14、迭代器与LSM读取回归19/19，共33/33通过。检查中用户提交TwoMerge源码格式调整，初次结果留在*-initial目录；最终按当前版本确认，源码和测试哈希稳定，重复复测不重复计数。助手补2项测试，未代改业务。尚未接通Builder/Engine，未重跑性能基准或宣称整个优化完成。
 
-当前下一函数：新增私有SSTBuilder::add_stored_entry。声明放include/sst/sst.h:155的wisckey_threshold_之后、public之前；定义放src/sst/sst.cpp当前:351的add函数之前。直接提取原add的首key、Bloom、min/max版本及Block写入/换块逻辑，参数stored_value表示已确定要写入SST的字节（原值或引用），不做VLog读写/分离决策。同key保留force_write规则；finish_block必须仍看到旧首尾key，写入新空块后才更新first_key/last_key。Block空块接收可编码首条记录，编码超限继续抛异常，不新增冗余失败分支。本轮先新增helper，原add留待下一轮接入，再实现add_vlog_ref；helper未接入口前只检查结构／编译，不能宣称共用写入路径已验收。
+add_stored_entry已由用户新增（2026-11-17），私有声明与定义匹配。已核对首key/Bloom/minmax/同key强制写/换块逻辑与原add一致，finish_block使用旧首尾key，成功写入新块后更新首尾；helper不读写VLog。test_wisckey构建成功，源码稳定。当前尚无调用方，本轮仅结构／编译检查，不用旧add测试冒充helper功能已验收，也不开放私有方法专门测试。
+
+helper检查证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-stored-entry-review-f2dm4gte`，含构建日志、命令和源码前后哈希；未运行功能测试或性能基准，助手未代改业务源码。
+
+当前下一函数：`src/sst/sst.cpp:382` 的SSTBuilder::add。整体替换为原值分离与引用编码，再统一调用一次add_stored_entry；删除原有重复首key/Bloom/minmax/写块代码。保留原条件（WiscKey模式、有VLog、非空、正阈值、超过阈值或等于引用长度），普通模式／墓碑按原值进入helper；用const string*指向原值或if外的vlog_ref，避免多复制原值并保证生命周期。VLog::append先验证长度，成功返回后uint32转换安全；引用布局保持8B偏移＋4B原值长度。新helper在VLog追加成功后才更新元数据，正常结果不变，不扩展为异常原子性重构。已有引用后续单独走add_vlog_ref，不交给add当原值重复分离。草案待用户手写，接通后才运行功能验收。
