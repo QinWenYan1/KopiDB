@@ -3479,6 +3479,86 @@ TEST_F(LSMStartupWALTest, ProcessExitRestoresTransactionsWithoutDestructors) {
   }
 }
 
+// 目的：公开 flush 写 SST 中途失败后，不能把残缺文件留作正式 SST，阻碍下次恢复。
+// 先通过 put_batch 成功写 WAL，再只在子进程限制文件大小；故障后的 _Exit 跳过析构重试。
+// 使用多个不同 key 和单字节 value，SST 大于限制，且 WiscKey 阈值 1 时仍不需要写 VLog。
+TEST_F(LSMStartupWALTest, FailedSstFlushPreservesWalAndAllowsRestart) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  const auto dir = std::filesystem::path(test_dir);
+  std::vector<std::pair<std::string, std::string>> values;
+  std::vector<Record> expected_wal{Record::createRecord(1)};
+  for (int i = 0; i < 100; ++i) {
+    const auto key = "survivor-" + std::to_string(i);
+    values.emplace_back(key, "v");
+    expected_wal.push_back(Record::putRecord(1, key, "v"));
+  }
+  expected_wal.push_back(Record::commitRecord(1));
+
+  ASSERT_EXIT(
+      {
+        try {
+          LSM db(test_dir);
+          db.put_batch(values);
+          if (read_wal_records(dir / "wal.0") != expected_wal)
+            std::_Exit(141);
+          // 确认本例确实由下面的显式 flush 首次写 SST，不能提前自动刷盘。
+          for (const auto &entry : std::filesystem::directory_iterator(dir)) {
+            if (entry.path().filename().string().starts_with("sst_"))
+              std::_Exit(142);
+          }
+
+          struct rlimit limits;
+          if (getrlimit(RLIMIT_FSIZE, &limits) != 0)
+            std::_Exit(143);
+          limits.rlim_cur = 512;
+          if (std::signal(SIGXFSZ, SIG_IGN) == SIG_ERR ||
+              setrlimit(RLIMIT_FSIZE, &limits) != 0)
+            std::_Exit(144);
+          try {
+            db.flush();
+          } catch (const std::runtime_error &e) {
+            const std::string message = e.what();
+            if (message.find("Failed to create or write file:") ==
+                    std::string::npos &&
+                message.find("Failed to flush file:") == std::string::npos)
+              std::_Exit(145);
+            // 保存失败不能消耗此前已确认的 WAL；这里只读检查，不再尝试保存状态。
+            if (read_wal_records(dir / "wal.0") != expected_wal)
+              std::_Exit(146);
+            std::_Exit(0);
+          }
+          std::_Exit(147);
+        } catch (...) {
+          std::_Exit(148);
+        }
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  EXPECT_EQ(read_wal_records(dir / "wal.0"), expected_wal);
+  for (const auto &entry : std::filesystem::directory_iterator(dir)) {
+    if (entry.path().filename().string().starts_with("sst_")) {
+      if (entry.is_regular_file())
+        RecordProperty("failed_sst_bytes",
+                       std::to_string(std::filesystem::file_size(entry.path())));
+      ADD_FAILURE() << "failed flush left a formal SST: " << entry.path();
+    }
+  }
+
+  // 父进程没有文件大小限制：重放 WAL 后能读回整批数据，并能正常刷盘。
+  ASSERT_NO_THROW({
+    LSM reopened(test_dir);
+    for (const auto &[key, value] : values)
+      EXPECT_EQ(reopened.get(key), std::make_optional(value)) << key;
+    reopened.flush_all();
+  });
+  // 再次打开验证修复不能仅让第一次 WAL 重放暂时可读。
+  ASSERT_NO_THROW({
+    LSM reopened(test_dir);
+    for (const auto &[key, value] : values)
+      EXPECT_EQ(reopened.get(key), std::make_optional(value)) << key;
+  });
+}
+
 // 目的：恢复后的状态保存失败时，旧状态和旧 WAL 都必须保留，不能启动新 WAL。
 // 子进程限制文件长度，制造真实的部分写入；父进程不受限制，再次打开必须能恢复数据。
 // 比较状态文件的完整字节，避免只检查长度却遗漏内容已经被覆盖的情况。

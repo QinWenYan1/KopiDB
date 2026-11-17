@@ -1,6 +1,6 @@
 # KopiDB 全局问题账本
 
-最后更新：2026-11-17。A1～A5、A9 已解决，A10 已在当前版本数据范围解决，A11 已完成优化及回归验证。当前 Lab 5.5 适用的 497 项测试均已完成；A6 已复现上下文追加问题并进入修复，A8 保持待验证，A7 已完成保存失败保护及重试／重启验收，不能据此宣称全库无缺陷。新增 A12 为既有 Python SDK 的 macOS 动态库定位问题，留到用户计划中的打包阶段；未作为 Redis 移除的附带修复。验收与性能数据见相应条目，项目状态见 [STATE.md](STATE.md)。
+最后更新：2026-11-17。A1～A5、A9 已解决，A10 已在当前版本数据范围解决，A11 已完成优化及回归验证。当前 Lab 5.5 适用的 497 项测试均已完成；A6 已完成写入口保护及回归，A8 已复现并进入局部修复，A7 已完成保存失败保护及重试／重启验收，不能据此宣称全库无缺陷。新增 A12 为既有 Python SDK 的 macOS 动态库定位问题，留到用户计划中的打包阶段；未作为 Redis 移除的附带修复。验收与性能数据见相应条目，项目状态见 [STATE.md](STATE.md)。
 
 本文件持续记录全局发现，规则见 [audit-to-plan](skills/audit-to-plan/SKILL.md)。选择问题开始处理时，在 [PLAN.md](PLAN.md) 按编号展开执行步骤，并在这里更新状态和计划链接；验收后保留原条目，补充解决日期与证据。项目现状和全局约定见 [STATE.md](STATE.md)。
 
@@ -23,9 +23,9 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 | [A3](#a3) | 已解决 | P1 | compaction 最后一批刚好落盘后，又构建空 SST 并抛异常 | LSMEngine::gen_sst_from_iter 的收尾判空 | 20～40 分钟 |
 | [A4](#a4) | 已解决 | P2 | 大记录之后不同 key 无法正常换块，被提前的偏移检查拒绝 | Block::add_entry 的检查顺序，验证 SSTBuilder::add 衔接 | 20～40 分钟 |
 | [A5](#a5) | 已解决（接口约束） | 待定 | 公开写入接口校验空 key／空 value，避免误用保留标记 | LSM／TranContext 写入口及批量参数预检查 | 未估时 |
-| [A6](#a6) | 已复现上下文追加问题，处理中 | 待定 | 结束尝试失败后 put/remove 仍可能追加记录，使结束记录不再位于事务日志末尾 | TranContext::put/remove 的结束尝试检查及异常路径测试 | 未估时 |
+| [A6](#a6) | 已解决（约定写入口保护） | 待定 | 结束尝试失败后 put/remove 仍可能追加记录，使结束记录不再位于事务日志末尾 | TranContext::put/remove 的结束尝试检查及异常路径测试 | 未估时 |
 | [A7](#a7) | 已解决（约定保存失败范围） | P1 | 状态文件直接覆盖写失败会破坏旧状态，阻碍后续启动 | write_tranc_id_file 的完整写入后替换；保存失败后的重试验证 | 未估时 |
-| [A8](#a8) | 待验证（代码路径疑点） | 待定 | 恢复刷盘失败可能留下正式名称的残缺 SST，阻碍下次加载 | SSTBuilder／FileObj 的文件发布与失败处理 | 未估时 |
+| [A8](#a8) | 已复现，处理中 | P1 | 恢复刷盘失败可能留下正式名称的残缺 SST，阻碍下次加载 | SSTBuilder／FileObj 的文件发布与失败处理 | 未估时 |
 | [A9](#a9) | 已解决（约定维护范围） | P1 | clear 删除仍打开的 WAL，后续成功写入在异常退出后丢失 | LSM::clear 与 WAL 停止／重建、事务状态重置的必要联动 | 未估时 |
 | [A10](#a10) | 已解决（当前版本数据） | P1 | 普通写入的完成标记集中进同一 SST 块，6000 个独立 key 无法刷盘 | MemTable 刷盘与 Engine 完成通知；旧 SST 兼容另行处理 | 未估时 |
 | [A11](#a11) | 已解决（本批倒序扫描） | P2 | 单批完成 ID 倒序通知导致待处理表重复扫描 | Engine::flush 反向访问完成 ID | 代码与定向验证约 5～10 分钟，大规模回归另计 |
@@ -159,11 +159,13 @@ A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 
 
 ### A6：结束尝试失败后仍可能追加 PUT/DELETE
 
-2026-11-17 put阶段已验收：原结束标志判断已恢复，与新结束记录判断共同生效；test_lsm 6/6通过，test_wal两个组合用例的put断言通过，剩余失败均为remove尚未接入。当前进入remove，A6整体仍处理中，进度见PLAN。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a6-put-fixed-tpscs_xe`。
+**解决日期：2026-11-17。** 用户在put/remove保留原结束标志检查，并在追加记录前检查末条COMMIT/ROLLBACK，拒绝结束尝试失败后的新写入；复用现有状态，未改变日志格式。两个目标构建通过，事务及WAL相关73/73通过（test_lsm49、test_wal24），含已复现的两项故障回归；正常读未提交写入、暂存、提交/取消及已结束保护保持。源码/测试在运行期间稳定，未重跑全库。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a6-final-eja7hlp5`。
+
+2026-11-17 put阶段已验收：原结束标志判断已恢复，与新结束记录判断共同生效；test_lsm 6/6通过，test_wal两个组合用例的put断言通过，剩余失败均为remove尚未接入。当时进入remove，整体尚未完成。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a6-put-fixed-tpscs_xe`。
 
 2026-11-17 put阶段检查：新增末条结束记录判断已拦截故障后put，但原isCommited/isAborted检查被误删，正常abort清空operations后仍能put。定向8项3通过/5失败，其中3项为原结束状态保护回归，另2项为remove尚未接入；已要求先恢复put的原检查，未进入下一函数。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a6-put-review-2x8o76md`。
 
-2026-11-17 A7验收后，按用户“检查并下一个”进入本项，当前执行见 [PLAN](PLAN.md)。核对当前put/remove仍只检查结束标志，commit/abort已有结束记录保护。扩充两个现有WAL故障用例并实际运行，2/2失败：暂存型事务commit失败后put/remove仍成功修改operations和temp_map_；RU abort失败后put/remove先追加operations，之后因WAL已故障抛runtime_error。日志文件和引擎数据保持原状，不能把内存追加说成新记录已写入WAL。修复范围仅两个写入口前置检查，先put后remove，业务由用户手写。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a6-baseline-pbymsj9i`。
+2026-11-17 A7验收后，按用户“检查并下一个”进入本项，实施记录：核对当时put/remove仍只检查结束标志，commit/abort已有结束记录保护。扩充两个现有WAL故障用例并实际运行，2/2失败：暂存型事务commit失败后put/remove仍成功修改operations和temp_map_；RU abort失败后put/remove先追加operations，之后因WAL已故障抛runtime_error。日志文件和引擎数据保持原状，不能把内存追加说成新记录已写入WAL。修复范围仅两个写入口前置检查，先put后remove，业务由用户手写。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a6-baseline-pbymsj9i`。
 
 历史发现（2026-11-10）：代码核查与异常路径推演，当时尚未做故障注入复现；未自动加入当前 PLAN 或开始修改业务代码。正常串行调用、正常提交完成后的保护已经存在，本项不把“崩溃前没有 COMMIT”误判为缺陷。
 
@@ -199,11 +201,13 @@ write_tranc_id_file（transation.cpp:777）先以 create=true 清空正式 tranc
 
 ### A8：SST 写失败可能留下正式名称的残缺文件
 
-记录日期：2026-11-10。来源为对构造函数直接依赖的只读核查；仅代码推演，尚未实际注入故障，未纳入当前实施。
+2026-11-17 A6验收后，按用户“检查并下一个”进入本项，当前执行见 [PLAN](PLAN.md)。已通过真实公开API故障复现：put_batch成功写100个不同key/1B值及完整WAL；子进程限512B后flush失败，留下512B正式SST；解除故障后重启实际报 `Read beyond file size`，旧WAL完整。新增 `LSMStartupWALTest.FailedSstFlushPreservesWalAndAllowsRestart`，修复前1/1失败，已从代码疑点升级为实测缺陷。只修改SSTBuilder::build的文件发布步骤，业务由用户手写。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a8-baseline-o4pso34f`。
+
+历史发现（2026-11-10）：来源为对构造函数直接依赖的只读核查；当时仅代码推演，尚未实际注入故障，未纳入实施。
 
 SSTBuilder::build（sst.cpp:503）调用 FileObj::create_and_write 直接写正式 sst_N.level 路径；文件写入／刷新失败时会报告异常，但可能已留下部分内容（files.cpp:40–50）。下一次 LSMEngine 构造先扫描并打开所有此类正式文件（engine.cpp:54–75），可能在读取 WAL 前被坏 SST 挡住。已有“目录占用目标路径”的打开失败测试不会产生部分 SST，不能覆盖此情况。
 
-待验证：低内存阈值触发恢复期间刷盘，在子进程限制文件大小制造部分 SST；解除故障后检查再次启动。若成立，评估完整写入后再发布正式文件名的方案；与 A7 同属文件失败后的完整性边界，但调用点和验证不同，不宣称现有 WAL 保留机制已解决它。
+历史待验证方案：低内存阈值触发恢复期间刷盘，在子进程限制文件大小制造部分 SST；解除故障后检查再次启动。若成立，评估完整写入后再发布正式文件名的方案；与 A7 同属文件失败后的完整性边界，但调用点和验证不同，不宣称现有 WAL 保留机制已解决它。
 
 <a id="a9"></a>
 
