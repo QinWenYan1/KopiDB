@@ -117,16 +117,15 @@ void TranContext::put(const std::string &key, const std::string &value) {
 
   // 1. 已经提交或回滚的事务不能继续写入
   // 必须先检查，避免给已结束的事务追加记录
-  //
+  if (isCommited || isAborted) 
+    throw std::logic_error(
+        "TranContext::put: transaction has already finished");
+  
   // 之前 commit/abort 可能已经追加了结束记录
   // 但随后写 WAL 失败，导致两个结束标志 (isAborted/isCommited) 仍然是 false
   //
   // 此时不能继续接受写入，否则会把 PUT 追加到
   // COMMIT/ROLLBACK 后面，改变已经开始收尾的事务
-  if (isCommited || isAborted) 
-    throw std::logic_error(
-        "TranContext::put: transaction has already finished");
-
   if (!operations.empty()) {
     const auto last_type = operations.back().getOperationType();
     if (last_type == OperationType::OP_COMMIT ||
@@ -187,9 +186,21 @@ void TranContext::remove(const std::string &key) {
   // 1. 已结束的事务不能继续删除
   // 必须在追加日志记录、修改暂存表或引擎之前检查
   // 避免 abort 后又产生新的操作
-  if (isCommited || isAborted) {
+  if (isCommited || isAborted) 
     throw std::logic_error(
         "TranContext::remove: transaction has already finished");
+  
+  // commit/abort 可能已追加结束记录，但随后写 WAL 失败
+  // 因而 isCommited/isAborted 仍然是 false
+  //
+  // 此时必须在追加 DELETE、修改暂存表或发送 WAL 之前拒绝
+  // 避免把删除操作追加到 COMMIT/ROLLBACK 后面
+  if (!operations.empty()) {
+    const auto last_type = operations.back().getOperationType();
+    if (last_type == OperationType::OP_COMMIT ||
+        last_type == OperationType::OP_ROLLBACK) 
+      throw std::logic_error(
+          "TranContext::remove: previous ending attempt did not finish");
   }
 
   // 空 key 保留给内部事务标记，用户不能删除它。
