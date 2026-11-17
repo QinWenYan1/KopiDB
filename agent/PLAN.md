@@ -2,53 +2,34 @@
 
 最后更新：2026-11-17。
 
-## 已完成：A15 合并时复用已有 VLog 引用
+## A7：保存事务状态失败时保住上一份完整文件
 
-目标已在本轮约定范围验收：目标 SST 启用 WiscKey 时，合并直接保存已有引用，不读取或重新追加对应原值；普通查询继续返回完整 value。问题历史与验收证据归入 [AUDIT A15](AUDIT.md#a15)，项目能力及后续排期归入 [STATE](STATE.md)。
+目标：`TranManager::write_tranc_id_file()` 写入／刷新临时文件或替换失败时，上一次成功保存的正式 `tranc_id` 文件保持完整；排除故障后可以重试保存或重新启动。沿用既有状态编码、互斥锁、错误报告及当前 macOS/Linux 文件替换语义。问题证据见 [AUDIT A7](AUDIT.md#a7)。
 
-**进度：100%（6/6 阶段验收）。** 业务源码及头文件由用户手写；助手补充测试、运行验证和维护记录。本轮没有剩余业务函数待实现，未自动启动下一项优化。
+**进度：0%（0/2 阶段验收）。** 业务源码及头文件由用户手写；助手提供中文注释草案、补充测试、运行验收。本轮只有一个业务函数需要修改。
 
-## 全部阶段验收
+## 全部阶段
 
-| 阶段 | 实现范围 | 验收结论 |
-| --- | --- | --- |
-| ① 内存类型信息 | BaseIterator 默认 getter、SearchItem 标志、Heap getter | 类型随当前记录推进，旧调用默认非引用，排序规则保持 |
-| ② SST 存储值读取 | ValueReadMode、SstIterator 构造/缓存/value/getter、SST::begin | Query 返回原值，Compaction 返回存储字节；普通12B原值不误判 |
-| ③ 合并中传递类型 | merge_sst_iterator、Concact 构造/推进/getter、TwoMerge getter | 构造、比较、跨块/跨表和取值均保留模式与当前类型；无VLog源可搬运 |
-| ④ Builder 复用引用 | add_stored_entry、add、add_vlog_ref | 引用直写保持字节，原值按阈值分离，版本组/墓碑/Bloom/元数据规则保持 |
-| ⑤ Engine 接通 | gen_sst_from_iter → full_l0_l1_compact → full_common_compact | L0及深层两路均复用引用；普通/WiscKey混合、多个输出表、阈值升降与关闭模式通过 |
-| ⑥ 最终回归与效果比较 | 存储/事务/恢复回归、冻结旧版与新版同条件基准 | 当前版本417个不同用例、420次执行全部通过；新增VLog字节归零，耗时对比已完成 |
-
-百分比按验收阶段数计算，不代表工时比例。原逐函数实施记录已收尾，完整实施末版快照保存在本轮证据目录的 `PLAN-before-completion.md`。
-
-## 本轮验证结果
-
-- 五个目标：test_sst 29、test_lsm 171、test_wal 144、test_compact 5、test_wisckey 68（含新版基准1项），共417个不同用例。
-- 另以WiscKey阈值1复测两项读取/回滚及一项异常退出恢复，共420次当前版本执行，零失败、禁用、跳过。
-- 两个LSM百万级用例BigPersistence/BigPersistence2本轮未运行，不计通过；test_compact全部5项包含自身百万级墓碑场景，已通过。
-- 新增3项验收：深层源无VLog仍复用引用、阈值0在两条合并路径还原为普通SST、正阈值1/4096下两条路径保持既有引用并正确分离新的内联值。
-- 小样本经过L0及深层多次合并，VLog一直保持880B。混合来源中的新增分离值单独计量，未错误要求所有场景零增长。
-- 本轮运行期间业务与测试源码稳定。助手未代改业务，未改变回滚过滤或持久化格式。
-
-## 性能对照
-
-相同Debug/macOS arm64构建方式，10000个key×4096B、四张L0、阈值64；每版预热1轮、正式5轮。计时仅触发合并的Engine::flush，包含固定内联记录刷盘；数据准备、复制、打开和逐条读回不计时。功能测试结束后，两版串行运行，未清空系统缓存，不声称冷缓存性能。
-
-| 指标 | 保存的历史基线 | 本次冻结旧版复测 | 优化后 |
+| 阶段 | 具体工作 | 验收标准 | 状态 |
 | --- | --- | --- | --- |
-| flush中位数 | 3180.269917 ms | 3242.424916 ms | 121.305542 ms |
-| 最小～最大 | 3160.391500～3186.886583 ms | 3240.818500～3249.670291 ms | 120.448292～121.913375 ms |
-| 每轮VLog新增字节 | 41,200,000 B | 41,200,000 B | 0 B |
+| ① 保存函数修复 | 修改 `src/lsm/transation.cpp` 的 `TranManager::write_tranc_id_file()` 第6步；按需显式包含 `<system_error>` | 先完整写入同目录临时文件并检查 write/sync，再 rename 替换；失败不删除正式文件；成功后成员句柄重新打开正式路径。已有字段编码、较短文件替换和重复保存行为保持 | 进行中：草案与故障测试准备，等待用户实现 |
+| ② 故障与重启验收 | `test/test_wal.cpp` A7定向测试、`test/test_lsm.cpp` 既有事务状态测试；相关启动／clear回归 | 部分写入失败后正式文件字节不变、旧WAL保留且没有新WAL；解除故障后重启成功并恢复值和ID。替换失败明确上报，同一管理器可重试保存并读到新文件 | 待开始 |
 
-本次同条件旧/新耗时比约26.73，耗时减少96.26%；相对历史基线约26.22。该结果仅代表本组引用密集的合并负载，不代表整个DB吞吐量或物理磁盘I/O降幅。冻结旧版基准另有1次测试执行通过，不计入当前版本420次结果。
+百分比按验收阶段数计算，不代表工时比例。
 
-证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-final-otfjap_g`，包含final_summary.json、各目标日志/JSON、源码哈希、新旧二进制及命令、原始采样和benchmark_comparison.json。历史基线目录保留不覆盖。
+## 实现范围与调用关系
 
-## 非阻塞说明整理
+- **必改函数**：`TranManager::write_tranc_id_file()`（当前 `transation.cpp:800`，文件保存部分 `:868–880`）。保留第1～5步的内存编码，仅调整文件发布顺序。
+- **仅复核**：管理器构造／`read_tranc_id_file()`／析构；LSM构造、析构、clear 的状态保存调用；FileObj 的 open/write/sync/close 接口。当前无需重写它们。
+- 固定临时名 `tranc_id.tmp` 受当前管理器互斥锁保护；沿用单实例管理一个数据目录的约定。
+- macOS/Linux 上 rename 可以替换仍被旧句柄打开的目标；替换前保留旧句柄，替换成功后关闭并重新打开，避免读取旧文件内容。
+- 临时文件打开成功后才将其纳入失败清理；清理使用 error_code，不覆盖原始异常。临时写入／替换失败保住旧文件；替换后重开句柄若失败，仍报告异常，此时磁盘已经是完整的新文件，不宣称任何异常都回到旧版本。
+- 本轮不改变文件格式、不新增 fsync 或断电保障、不扩展 A8 SST 发布修复。全局延期与其他首发候选见 STATE。
 
-`src/sst/sst_iterator.cpp:342–343` 的旧注释仍把解引用写成无条件执行；已给用户以下替换文字，业务文件注释继续由用户手动整理，不影响已经验收的行为：
+## 本轮测试准备与结果
 
-```cpp
-// update_current 按读取模式填充缓存：
-// Query 还原 VLog 原值，Compaction 保留存储字节。
-```
+- 历史部分写入失败证据沿用 AUDIT：完整40B状态文件被截断为16B。
+- 本轮已构建 test_wal/test_lsm；修复前仅运行3个A7定向用例，1通过、2失败，符合当前缺陷。目录占用后的重试通过；部分写入破坏旧字节，故障解除后的LSM重启实际抛出 invalid file length。
+- 已强化 `LSMStartupWALTest.StateSaveFailurePreservesWalAndStopsInitialization`，新增 `TranManagerRecoveryTest.StateSaveFailurePreservesBytesAndAllowsRetry` 和 `StateReplaceFailureAllowsSameManagerRetry`。用户修改后运行这些用例及既有事务状态/启动/clear回归，尚无修复后结果。
+- 修复前证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a7-baseline-t187tia_`，含旧PLAN快照、命令、日志及results.json；测试在独立工作目录运行。
+- 前一轮 A15 已完成，验收和性能结果保留于 AUDIT A15 与 STATE；不再作为本轮执行计划。

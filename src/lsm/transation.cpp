@@ -15,6 +15,7 @@
 #include <sys/types.h>
 #include <utility>
 #include <vector>
+#include <system_error>
 
 namespace tiny_lsm {
 
@@ -869,14 +870,51 @@ void TranManager::write_tranc_id_file() {
   // true 表示以截断模式打开：先清空旧内容，再写入新内容
   // 例如上次保存 96 字节、本次只有 48 字节
   // 必须删除多出来的旧尾部，不能只覆盖前 48 字节
-  tranc_id_file_.close();
-  tranc_id_file_ = FileObj::open(get_tranc_id_file_path(), true);
+  //
+  // 先把完整的新状态写入同目录临时文件
+  //
+  // 不能先清空正式文件：新内容写到一半失败时
+  // 必须保留上一份完整状态，供下次启动读取
+  const auto state_path = get_tranc_id_file_path(); 
+  const auto temp_path = state_path + ".tmp"; 
 
-  // 检查写入和流缓冲刷新是否成功
-  // write() 成功时内容仍可能在流缓冲区，最终刷新也必须单独检查
-  if (!tranc_id_file_.write(0, buf) || !tranc_id_file_.sync()) {
-    throw std::runtime_error(
-        "TranManager::write_tranc_id_file: failed to save transaction state");
+  // 只有成功打开过临时文件，失败时才清理它
+  // 例如临时路径被目录占用，打开失败后不能顺手把那个目录删掉
+  bool temp_opened = false; 
+  try {
+    {
+      auto temp_file = FileObj::open(temp_path, true); 
+      temp_opened = true; 
+
+      // write 成功可能只是写进流缓冲区，因此还要检查 sync
+      // 两步都成功，才允许用这个文件替换正式状态
+      if (!temp_file.write(0, buf) || !temp_file.sync())
+        throw std::runtime_error("TranManager::write_tranc_id_file: failed to save transaction state");
+    } // 临时文件离开作用域，关闭文件句柄
+
+    // 7. 新文件写好后，再替换正式文件
+    //
+    // 当前 macOS/Linux 允许替换仍被打开的目标文件
+    // 替换失败会抛异常，原正式文件和旧成员句柄仍然保留
+    // 不要先 remove(state_path)，否则又会提前丢掉旧文件
+    std::filesystem::rename(temp_path, state_path); 
+    temp_opened = false; // 临时路径已变为正式路径，无需再清理
+
+    // 8. 重新打开正式文件，更新成员句柄
+    //
+    // rename 改变的是路径对应的文件
+    // 已打开的旧句柄不会自动转而读取新文件
+    // false 表示只打开，不能再次清空刚刚保存的新状态
+    tranc_id_file_.close(); 
+    tranc_id_file_ = FileObj::open(state_path, false); 
+  } catch (...){
+    if (temp_opened){
+      // 清理失败不能覆盖原来的保存异常
+      // 即使留下临时文件，启动时读取的仍是正式 tranc_id
+      std::error_code ignored; 
+      std::filesystem::remove(temp_path, ignored); 
+    }
+    throw; 
   }
 }
 

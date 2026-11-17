@@ -3443,9 +3443,9 @@ TEST_F(LSMStartupWALTest, ProcessExitRestoresTransactionsWithoutDestructors) {
   }
 }
 
-// 目的：恢复后的事务状态保存失败时，不能启动新 WAL 或删除仍需要的旧日志。
-// 用子进程的文件长度限制制造实际写入／刷新失败，不改变父进程的资源限制。
-// 状态文件覆盖失败后的可重试性另行记录，不把“WAL 保留”当作完整故障恢复保证。
+// 目的：恢复后的状态保存失败时，旧状态和旧 WAL 都必须保留，不能启动新 WAL。
+// 子进程限制文件长度，制造真实的部分写入；父进程不受限制，再次打开必须能恢复数据。
+// 比较状态文件的完整字节，避免只检查长度却遗漏内容已经被覆盖的情况。
 TEST_F(LSMStartupWALTest, StateSaveFailurePreservesWalAndStopsInitialization) {
   ::testing::FLAGS_gtest_death_test_style = "threadsafe";
   const auto dir = std::filesystem::path(test_dir);
@@ -3459,7 +3459,11 @@ TEST_F(LSMStartupWALTest, StateSaveFailurePreservesWalAndStopsInitialization) {
       Record::createRecord(7), Record::putRecord(7, "survivor", "value"),
       Record::commitRecord(7)};
   write_wal_records(dir / "wal.0", records);
-  const auto original_state_size = std::filesystem::file_size(dir / "tranc_id");
+  const auto read_state = [&] {
+    auto file = FileObj::open((dir / "tranc_id").string());
+    return file.read_to_slice(0, file.size());
+  };
+  const auto original_state = read_state();
 
   ASSERT_EXIT(
       {
@@ -3485,10 +3489,123 @@ TEST_F(LSMStartupWALTest, StateSaveFailurePreservesWalAndStopsInitialization) {
 
   EXPECT_EQ(read_wal_records(dir / "wal.0"), records);
   EXPECT_FALSE(std::filesystem::exists(dir / "wal.1"));
-  // 记录本次故障后的文件大小供审计，不把当前的损坏行为写成期望结果。
-  RecordProperty("state_bytes_before", std::to_string(original_state_size));
+  const auto after_failure = read_state();
+  RecordProperty("state_bytes_before", std::to_string(original_state.size()));
   RecordProperty("state_bytes_after",
-                 std::to_string(std::filesystem::file_size(dir / "tranc_id")));
+                 std::to_string(after_failure.size()));
+  EXPECT_EQ(after_failure, original_state);
+
+  // 故障只在子进程中生效；这里验证解除故障后确实能重新启动，而非仅保留日志。
+  ASSERT_NO_THROW({
+    LSM reopened(test_dir);
+    EXPECT_EQ(reopened.get("survivor"),
+              std::make_optional(std::string("value")));
+    auto next = reopened.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+    EXPECT_GT(next->tranc_id_, 7u);
+    EXPECT_TRUE(next->abort());
+  });
+}
+
+// 目的：同一管理器保存遇到部分写入失败后，可以解除故障并重新保存。
+// 新状态包含新的待刷盘事务；保存后再读取，必须读取替换后的文件，而非旧文件句柄。
+// 全部检查发生在析构前，避免析构的兜底保存掩盖显式保存的问题。
+TEST_F(TranManagerRecoveryTest, StateSaveFailurePreservesBytesAndAllowsRetry) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  ASSERT_EXIT(
+      {
+        try {
+          TranManager manager(test_dir);
+          const auto state_path = manager.get_tranc_id_file_path();
+          const auto read_state = [&] {
+            auto file = FileObj::open(state_path);
+            return file.read_to_slice(0, file.size());
+          };
+          if (manager.getNextTransactionId() != 1 ||
+              manager.getNextTransactionId() != 2)
+            std::_Exit(121);
+          manager.add_ready_to_flush_tranc_id(1, TransactionState::OP_COMMITTED);
+          manager.add_flushed_tranc_id(1);
+          manager.add_ready_to_flush_tranc_id(2, TransactionState::ABORTED);
+          manager.write_tranc_id_file();
+          const auto original_state = read_state();
+
+          if (manager.getNextTransactionId() != 3)
+            std::_Exit(122);
+          manager.add_ready_to_flush_tranc_id(3, TransactionState::OP_COMMITTED);
+
+          struct rlimit original_limit;
+          if (getrlimit(RLIMIT_FSIZE, &original_limit) != 0)
+            std::_Exit(123);
+          auto limited = original_limit;
+          limited.rlim_cur = 16;
+          if (std::signal(SIGXFSZ, SIG_IGN) == SIG_ERR ||
+              setrlimit(RLIMIT_FSIZE, &limited) != 0)
+            std::_Exit(124);
+
+          bool failed = false;
+          try {
+            manager.write_tranc_id_file();
+          } catch (const std::runtime_error &) {
+            failed = true;
+          }
+          if (setrlimit(RLIMIT_FSIZE, &original_limit) != 0)
+            std::_Exit(125);
+          if (!failed || read_state() != original_state)
+            std::_Exit(126);
+
+          manager.write_tranc_id_file();
+          if (manager.getNextTransactionId() != 4)
+            std::_Exit(127);
+          // 刚才临时领取了 ID 4；重新加载应恢复保存时的 next=4，而不是旧文件的 next=3。
+          manager.read_tranc_id_file();
+          if (manager.getNextTransactionId() != 4 || !manager.is_aborted(2) ||
+              manager.get_checkpoint_tranc_id() != 1)
+            std::_Exit(128);
+          // 事务 3 的待刷盘登记也应被保存；通知后可以跨过已回滚的 2，推进到 3。
+          manager.add_flushed_tranc_id(3);
+          if (manager.get_checkpoint_tranc_id() != 3)
+            std::_Exit(129);
+          manager.write_tranc_id_file();
+          std::_Exit(0);
+        } catch (...) {
+          std::_Exit(130);
+        }
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  // 子进程没有执行管理器析构；这里读取到的必须是显式保存的结果。
+  TranManager reopened(test_dir);
+  EXPECT_EQ(reopened.get_checkpoint_tranc_id(), 3u);
+  EXPECT_TRUE(reopened.is_aborted(2));
+  EXPECT_EQ(reopened.getNextTransactionId(), 5u);
+}
+
+// 目的：正式路径被目录占用时，发布新状态必须报错，不能删除这个目录来强行替换。
+// 排除障碍后，同一个管理器仍能保存并读取新状态；这补充了只检查析构不抛错的旧用例。
+TEST_F(TranManagerRecoveryTest, StateReplaceFailureAllowsSameManagerRetry) {
+  TranManager manager(test_dir);
+  ASSERT_EQ(manager.getNextTransactionId(), 1u);
+  manager.add_ready_to_flush_tranc_id(1, TransactionState::ABORTED);
+  manager.write_tranc_id_file();
+  const auto state_path = std::filesystem::path(manager.get_tranc_id_file_path());
+  const auto saved_path = std::filesystem::path(test_dir) / "saved_state";
+  std::filesystem::rename(state_path, saved_path);
+  ASSERT_TRUE(std::filesystem::create_directory(state_path));
+
+  ASSERT_EQ(manager.getNextTransactionId(), 2u);
+  manager.add_ready_to_flush_tranc_id(2, TransactionState::OP_COMMITTED);
+  EXPECT_THROW(manager.write_tranc_id_file(), std::runtime_error);
+  ASSERT_TRUE(std::filesystem::is_directory(state_path));
+
+  ASSERT_TRUE(std::filesystem::remove(state_path));
+  std::filesystem::rename(saved_path, state_path);
+  ASSERT_NO_THROW(manager.write_tranc_id_file());
+  ASSERT_EQ(manager.getNextTransactionId(), 3u);
+  ASSERT_NO_THROW(manager.read_tranc_id_file());
+  EXPECT_EQ(manager.getNextTransactionId(), 3u);
+  EXPECT_TRUE(manager.is_aborted(1));
+  manager.add_flushed_tranc_id(2);
+  EXPECT_EQ(manager.get_checkpoint_tranc_id(), 2u);
 }
 #endif
 
