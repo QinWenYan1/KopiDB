@@ -825,13 +825,14 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
                               std::vector<size_t> &l1_ids) {
   std::vector<SstIterator> l0_iters;
   std::vector<std::shared_ptr<SST>> l1_ssts;
-  
+
   // 0. 按目标 SST 的模式决定输入如何读取 value。
   // 条件与 gen_sst_from_iter 创建 builder 时一致：
   // - 输出 WiscKey：保留已有引用，避免读取、重新追加原值
   // - 输出普通 SST：必须还原原值，不能把引用字节当成用户值保存
-  const size_t wk = TomlConfig::getInstance().getWisckeyValueThreshold(); 
-  const ValueReadMode read_mode = (wk > 0 && vlog_) ? ValueReadMode::Compaction : ValueReadMode::Query; 
+  const size_t wk = TomlConfig::getInstance().getWisckeyValueThreshold();
+  const ValueReadMode read_mode =
+      (wk > 0 && vlog_) ? ValueReadMode::Compaction : ValueReadMode::Query;
 
   // 1. L0 每张表各开一个全版本迭代器
   for (auto id : l0_ids) {
@@ -848,7 +849,7 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
   //    ConcactIterator 的前提是本层 SST 有序不重叠（首尾相接直接拼）, L0 不满足
   //    堆内 SearchItem 的排序规则是 key 升序 → tranc_id 降序 → 还分不出
   //    skip_delete=false 保墓碑;
-  //    value 已 resolve_value 解过 WiscKey 引用
+  // value 是否解引用由 read_mode 决定；Compaction 模式保留已有引用
   auto [l0_begin, l0_end] = SstIterator::merge_sst_iterator(l0_iters, 0, true);
 
   // 3. TwoMergeIterator 只收 shared_ptr<BaseIterator>,
@@ -859,7 +860,8 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
   // 4. L1 有序不重叠 -> ConcactIterator 直接串联
   //    再用 TwoMergeIterator 与 L1 的 ConcactIterator 合并
   std::shared_ptr<ConcactIterator> old_l1_begin_ptr =
-      std::make_shared<ConcactIterator>(l1_ssts, 0, true, std::function<bool(uint64_t)>{}, read_mode);
+      std::make_shared<ConcactIterator>(
+          l1_ssts, 0, true, std::function<bool(uint64_t)>{}, read_mode);
 
   // 5. a 路 = L0 堆 (较新), b 路 = L1
   TwoMergeIterator l0_l1_begin(l0_begin_ptr, old_l1_begin_ptr, 0, true);
@@ -928,7 +930,7 @@ LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
   while (iter.is_valid() && !iter.is_end()) {
     // 一次取出当前记录，避免分别取 key、value 时重复复制
     // entry 是独立的值对象，后面 ++iter 不会改变它
-    const auto entry = *iter; 
+    const auto entry = *iter;
     const std::string &cur_key = entry.first;
     // 版本和类型必须在推进之前读取，保证它们属于当前这条记录
     const uint64_t tranc_id = iter.get_cur_tranc_id();
