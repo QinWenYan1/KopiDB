@@ -242,7 +242,7 @@ void TranContext::remove(const std::string &key) {
   // 不能用 temp_map_.erase(key)：
   // 那会丢失删除意图，随后 get 可能重新读到数据库中的旧值。
   // 保留墓碑后，本事务 get 返回不存在，commit 再应用这次删除。
-  // !
+  //
   // SERIALIZABLE（未完整实现）：这里仅暂存删除，不阻塞其他事务对读取范围的修改。
   temp_map_.insert_or_assign(key, std::string{});
   spdlog::trace("TranContext--{}: remove({}) stored in temp map",

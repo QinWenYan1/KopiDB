@@ -12,6 +12,8 @@
 #include <memory>
 #include <stdexcept>
 #include <utility>
+#include <filesystem>
+#include <system_error>
 
 namespace tiny_lsm {
 
@@ -565,7 +567,41 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   if (storage_mode_ == 1)
     vlog_->sync();
 
-  FileObj file = FileObj::create_and_write(path, data);
+  const std::filesystem::path sst_path(path); 
+  // 临时文件放在正式文件的同一目录
+  // 名字以点号开头，避免启动扫描把未完成的文件当作正式 SST
+  // 加 "." 是为了让临时文件名不以 sst_ 开头，避免启动时被当成正式 SST
+  // 例如：sst_1.0 → .sst_1.0.tmp
+  const auto temp_path = sst_path.parent_path() / ("." + sst_path.filename().string() + ".tmp"); 
+
+  bool temp_opened = false; 
+  try {
+    {
+      auto temp_file = FileObj::open(temp_path.string(), true); 
+      temp_opened = true; 
+
+      // 先把完整内容写入临时文件
+      // 写入或刷新失败时，正式 SST 还没有被创建
+      if (!temp_file.write(0, data))
+        throw std::runtime_error("Failed to create or write file: " + temp_path.string());
+
+      if(!temp_file.sync())
+        throw std::runtime_error("Failed to flush file: " + temp_path.string());
+    } // 写入完成后关闭临时文件
+
+    // 只有完整写好，才让这个文件获得正式 SST 名称
+    std::filesystem::rename(temp_path, sst_path); 
+    temp_opened = false; 
+  } catch (...) {
+    if (temp_opened) {
+      // 尽量删除临时文件，清理失败不能盖住原始异常。
+      std::error_code ignored;
+      std::filesystem::remove(temp_path, ignored);
+    }
+    throw; 
+  }
+
+  FileObj file = FileObj::open(path, false);
 
   // 7. 组装 SST 描述对象（SSTBuilder 是 SST 的 friend, 可直接填私有成员）
   //    SST 对象是文件的"遥控器"
