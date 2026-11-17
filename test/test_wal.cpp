@@ -3559,6 +3559,46 @@ TEST_F(LSMStartupWALTest, FailedSstFlushPreservesWalAndAllowsRestart) {
   });
 }
 
+// 目的：中断写入遗留的隐藏临时 SST 不能被当作正式表加载，从而挡住 WAL 恢复。
+// 子进程先通过公开 put 写出真实 WAL 后直接退出；父进程留下不完整的临时文件再启动。
+// 不预先删除临时文件，也不要求启动代码必须清理它，只验证恢复和普通读写不受影响。
+TEST_F(LSMStartupWALTest, IncompleteHiddenSstDoesNotBlockWalRecovery) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  const auto dir = std::filesystem::path(test_dir);
+  ASSERT_EXIT(
+      {
+        try {
+          LSM db(test_dir);
+          db.put("recovered", "from-wal");
+          std::_Exit(0);
+        } catch (...) {
+          std::_Exit(151);
+        }
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  const std::vector<Record> expected_wal = {
+      Record::createRecord(1), Record::putRecord(1, "recovered", "from-wal"),
+      Record::commitRecord(1)};
+  ASSERT_EQ(read_wal_records(dir / "wal.0"), expected_wal);
+  const auto temporary_path = dir / ".sst_999.2.tmp";
+  FileObj::create_and_write(temporary_path.string(), {0x01, 0x02, 0x03});
+  ASSERT_EQ(std::filesystem::file_size(temporary_path), 3u);
+
+  ASSERT_NO_THROW({
+    LSM reopened(test_dir);
+    EXPECT_EQ(reopened.get("recovered"),
+              std::make_optional(std::string("from-wal")));
+    reopened.put("normal", "value");
+    EXPECT_EQ(reopened.get("normal"),
+              std::make_optional(std::string("value")));
+    reopened.remove("normal");
+    EXPECT_FALSE(reopened.get("normal"));
+    EXPECT_EQ(reopened.get("recovered"),
+              std::make_optional(std::string("from-wal")));
+  });
+}
+
 // 目的：恢复后的状态保存失败时，旧状态和旧 WAL 都必须保留，不能启动新 WAL。
 // 子进程限制文件长度，制造真实的部分写入；父进程不受限制，再次打开必须能恢复数据。
 // 比较状态文件的完整字节，避免只检查长度却遗漏内容已经被覆盖的情况。

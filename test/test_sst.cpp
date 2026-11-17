@@ -163,6 +163,38 @@ TEST_F(SSTTest, ReopenSST) {
   }
 }
 
+// A8：临时文件发布成功后，build 返回的句柄必须记录正式路径。
+// 如果只把临时句柄移给 SST，读取可能正常，但 del_sst 会删错路径。
+TEST_F(SSTTest, PublishedSstReadsReopensAndDeletesFinalPath) {
+  const std::string path = "test_data/sst_17.0";
+  auto cache = std::make_shared<BlockCache>(4, 2);
+  SSTBuilder builder(1024, true);
+  builder.add("a", "value-a", 3);
+  builder.add("b", "value-b", 7);
+
+  auto sst = builder.build(17, path, cache);
+  ASSERT_TRUE(std::filesystem::is_regular_file(path));
+  {
+    auto it = sst->get("a", 0);
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(it->second, "value-a");
+  }
+
+  // 使用正式路径和独立缓存重新打开，验证文件本身能正常读取。
+  // 退出作用域后释放这个额外句柄，下面专门检查 build 返回的对象。
+  {
+    auto reopened = SST::open(17, FileObj::open(path, false),
+                             std::make_shared<BlockCache>(4, 2));
+    auto it = reopened->get("b", 0);
+    ASSERT_TRUE(it.is_valid());
+    EXPECT_EQ(it->second, "value-b");
+  }
+
+  sst->del_sst();
+  EXPECT_FALSE(std::filesystem::exists(path))
+      << "build 返回的 SST 必须删除正式文件，不能仍然指向临时路径";
+}
+
 TEST_F(SSTTest, EndDoesNotReadBlocks) {
   SSTBuilder builder(1024, true);
   builder.add("a", "value-a", 0);

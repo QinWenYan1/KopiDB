@@ -1,6 +1,6 @@
 # KopiDB 全局问题账本
 
-最后更新：2026-11-17。A1～A5、A9 已解决，A10 已在当前版本数据范围解决，A11 已完成优化及回归验证。当前 Lab 5.5 适用的 497 项测试均已完成；A6 已完成写入口保护及回归，A8 已复现并进入局部修复，A7 已完成保存失败保护及重试／重启验收，不能据此宣称全库无缺陷。新增 A12 为既有 Python SDK 的 macOS 动态库定位问题，留到用户计划中的打包阶段；未作为 Redis 移除的附带修复。验收与性能数据见相应条目，项目状态见 [STATE.md](STATE.md)。
+最后更新：2026-11-17。A1～A5、A9 已解决，A10 已在当前版本数据范围解决，A11 已完成优化及回归验证。当前 Lab 5.5 适用的 497 项测试均已完成；A6 已完成写入口保护及回归，A8 已完成临时SST发布及重启验收；C++交付发现A17安装目录问题，A7 已完成保存失败保护及重试／重启验收，不能据此宣称全库无缺陷。新增 A12 为既有 Python SDK 的 macOS 动态库定位问题，留到用户计划中的打包阶段；未作为 Redis 移除的附带修复。验收与性能数据见相应条目，项目状态见 [STATE.md](STATE.md)。
 
 本文件持续记录全局发现，规则见 [audit-to-plan](skills/audit-to-plan/SKILL.md)。选择问题开始处理时，在 [PLAN.md](PLAN.md) 按编号展开执行步骤，并在这里更新状态和计划链接；验收后保留原条目，补充解决日期与证据。项目现状和全局约定见 [STATE.md](STATE.md)。
 
@@ -25,7 +25,7 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 | [A5](#a5) | 已解决（接口约束） | 待定 | 公开写入接口校验空 key／空 value，避免误用保留标记 | LSM／TranContext 写入口及批量参数预检查 | 未估时 |
 | [A6](#a6) | 已解决（约定写入口保护） | 待定 | 结束尝试失败后 put/remove 仍可能追加记录，使结束记录不再位于事务日志末尾 | TranContext::put/remove 的结束尝试检查及异常路径测试 | 未估时 |
 | [A7](#a7) | 已解决（约定保存失败范围） | P1 | 状态文件直接覆盖写失败会破坏旧状态，阻碍后续启动 | write_tranc_id_file 的完整写入后替换；保存失败后的重试验证 | 未估时 |
-| [A8](#a8) | 已复现，处理中 | P1 | 恢复刷盘失败可能留下正式名称的残缺 SST，阻碍下次加载 | SSTBuilder／FileObj 的文件发布与失败处理 | 未估时 |
+| [A8](#a8) | 已解决（约定SST发布范围） | P1 | 恢复刷盘失败可能留下正式名称的残缺 SST，阻碍下次加载 | SSTBuilder／FileObj 的文件发布与失败处理 | 未估时 |
 | [A9](#a9) | 已解决（约定维护范围） | P1 | clear 删除仍打开的 WAL，后续成功写入在异常退出后丢失 | LSM::clear 与 WAL 停止／重建、事务状态重置的必要联动 | 未估时 |
 | [A10](#a10) | 已解决（当前版本数据） | P1 | 普通写入的完成标记集中进同一 SST 块，6000 个独立 key 无法刷盘 | MemTable 刷盘与 Engine 完成通知；旧 SST 兼容另行处理 | 未估时 |
 | [A11](#a11) | 已解决（本批倒序扫描） | P2 | 单批完成 ID 倒序通知导致待处理表重复扫描 | Engine::flush 反向访问完成 ID | 代码与定向验证约 5～10 分钟，大规模回归另计 |
@@ -34,6 +34,7 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 | [A14](#a14) | 已复现，首版后处理 | P1（损坏输入） | Bloom 单 bit 损坏导致点查／批查漏读，遍历仍能看到数据 | Bloom 完整性保护或 SST 元信息校验覆盖；需先确定编码方案 | 未估时 |
 | [A15](#a15) | 已解决（约定引用复用范围），最终回归及对比通过 | P2（性能／空间） | 合并会解引用并再次追加已有 VLog 值 | 迭代器存储值读取、内存类型传递、Builder 引用入口与 Engine 接线 | 原始估算11个业务文件、19处函数；已完成 |
 | [A16](#a16) | 已确认优化机会，用户决定后续处理 | P2（性能／空间） | 合并保留已回滚版本，持续搬运无效 SST 条目 | 两个 Engine 合并入口复用回滚过滤，配套安全性和性能验证 | 未估时 |
+| [A17](#a17) | 已复现，处理中 | P1（C++交付） | 首次安装把lib路径当文件名，未形成预期库目录 | lsm_shared的on_install显式创建目录并指定完整目标文件名 | 未估时 |
 
 A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 → A2 → A3 → A4 → 整体验收推进。A5 是接口约束改进建议，已确认随目录 5.2.3 的公开入口初始化整合处理，不计为第五项已确认缺陷，已于 2026-11-08 纳入 [PLAN](PLAN.md) 的阶段⑤，当前实现进度见 A5 条目。每进入一个新修复问题，先在聊天中写 issue 草稿供用户手动发布，再逐函数推进；没有自动创建远程 issue。具体执行与验收标准维护在 PLAN。
 
@@ -201,7 +202,9 @@ write_tranc_id_file（transation.cpp:777）先以 create=true 清空正式 tranc
 
 ### A8：SST 写失败可能留下正式名称的残缺文件
 
-2026-11-17 A6验收后，按用户“检查并下一个”进入本项，当前执行见 [PLAN](PLAN.md)。已通过真实公开API故障复现：put_batch成功写100个不同key/1B值及完整WAL；子进程限512B后flush失败，留下512B正式SST；解除故障后重启实际报 `Read beyond file size`，旧WAL完整。新增 `LSMStartupWALTest.FailedSstFlushPreservesWalAndAllowsRestart`，修复前1/1失败，已从代码疑点升级为实测缺陷。只修改SSTBuilder::build的文件发布步骤，业务由用户手写。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a8-baseline-o4pso34f`。
+**解决日期：2026-11-17。** 用户在SSTBuilder::build先写同目录点号前缀临时文件，write/sync成功后rename，并重新open正式路径；失败不发布残缺SST。SST30、WAL启动/相关状态19、WiscKey67、LSM刷盘失败1项，共117个不同用例通过；另阈值1复测两项A8用例，共119次执行全部通过。覆盖原512B故障后重启、遗留临时文件、成功SST读/重开/删除，以及既有WiscKey值分离/合并。源码/测试哈希稳定；未加入断电保障或重跑全库。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a8-final-g4814j66`。
+
+2026-11-17 实施准备：A6验收后，按用户“检查并下一个”进入本项。已通过真实公开API故障复现：put_batch成功写100个不同key/1B值及完整WAL；子进程限512B后flush失败，留下512B正式SST；解除故障后重启实际报 `Read beyond file size`，旧WAL完整。新增 `LSMStartupWALTest.FailedSstFlushPreservesWalAndAllowsRestart`，修复前1/1失败，已从代码疑点升级为实测缺陷。只修改SSTBuilder::build的文件发布步骤，业务由用户手写。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a8-baseline-o4pso34f`。
 
 历史发现（2026-11-10）：来源为对构造函数直接依赖的只读核查；当时仅代码推演，尚未实际注入故障，未纳入实施。
 
@@ -449,3 +452,15 @@ WiscKey 与 CRC 对照证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T
 拟评估方案：两个合并入口共享并传入真实 is_aborted 回调，复用现有底层过滤；仅清理已确认回滚，不用 require_committed 把活跃事务当垃圾。保留用户查询过滤和回滚名单，因为内存、其他 SST 或合并后才回滚的事务仍需要它们。本项减少无效 SST 条目及后续搬运/扫描，不会自动回收 VLog 中的原值；VLog GC 单独设计。现有 is_aborted 每次检查会加锁，净耗时收益须测试，不能仅凭条目减少承诺提速。
 
 后续验收要点：已回滚值/墓碑不进入新 SST，有效旧版本和活跃事务版本保持；两级合并、全部回滚零输出、查询/快照/重开正确；名单不提前删除；对照 SST 输出条目/字节与合并耗时。当前没有确定实施日期或修复耗时。
+
+<a id="a17"></a>
+
+### A17：首次安装将 lib 路径当作库文件名
+
+2026-11-17 C++独立接入验收发现，当前执行见 [PLAN](PLAN.md)。`xmake.lua:117–129` 的on_install直接 `os.cp(libfile, path.join(target:installdir(), "lib"))`；当目标lib路径不存在时，它被当成目标文件名，导致安装成功却没有预期的lib目录和liblsm_shared.so。
+
+已实测：在独立临时源码副本中Release构建成功，使用全新安装前缀，install返回0；file检查prefix/lib为Mach-O arm64动态库普通文件，列举该目录实际抛NotADirectoryError。头文件首轮安装路径正确。远程源码已核对提交f7df634ff78fbba72adc37b96869ff4a3faec058。
+
+候选修复只涉及on_install：mkdir目标目录，再按完整文件名复制库；复制include/*内容以保持重复安装布局。草案仅在临时副本应用，新前缀和重复安装均通过，安装后的独立consumer编译及普通/WiscKey模式跨进程读写全部通过；原仓库尚未修改，不标已解决。无Windows验收或全平台承诺。
+
+证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-cpp-release-11xze0w6`，含install-layout.json、install-lib-type.txt、候选回调、consumer编译及动态依赖信息、四次运行结果。修复后仍需确认用户原仓库版本。
