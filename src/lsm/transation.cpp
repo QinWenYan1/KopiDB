@@ -117,9 +117,17 @@ void TranContext::put(const std::string &key, const std::string &value) {
 
   // 1. 已经提交或回滚的事务不能继续写入
   // 必须先检查，避免给已结束的事务追加记录
-  if (isCommited || isAborted)
-    throw std::logic_error(
-        "TranContext::put: transaction has already finished");
+  //
+  // 之前 commit/abort 可能已经追加了结束记录
+  // 但随后写 WAL 失败，导致两个结束标志 (isAborted/isCommited) 仍然是 false
+  //
+  // 此时不能继续接受写入，否则会把 PUT 追加到
+  // COMMIT/ROLLBACK 后面，改变已经开始收尾的事务
+  if (!operations.empty()){
+    const auto last_type = operations.back().getOperationType(); 
+    if (last_type == OperationType::OP_COMMIT || last_type == OperationType::OP_ROLLBACK)
+      throw std::logic_error("TranContext::put: previous ending attempt did not finish");
+  }
 
   // 检查用户输入，必须放在追加 Record 和修改数据之前。
   //
