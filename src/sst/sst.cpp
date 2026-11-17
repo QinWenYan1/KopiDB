@@ -345,48 +345,12 @@ SSTBuilder::SSTBuilder(size_t block_size, bool has_bloom,
   storage_mode_ = 1;
 }
 
+// 尝试向 block 添加 entry; 若 add_entry 返回 false (block满) 先调用 finish_block()再添加
+// 注意: 相同 key 必须在同一个 block 中 (force_write = key == last_key) 更新
+// last_key
 void SSTBuilder::add_stored_entry(const std::string &key,
                                   const std::string &stored_value,
                                   uint64_t tranc_id) {
-  // 初始空块记录首 key；换块后的首 key 在下方更新
-  if (first_key.empty())
-    first_key = key;
-
-  // 无论 value 是原值、引用还是墓碑，都需要登记这个 key
-  if (bloom_filter)
-    bloom_filter->add(key);
-
-  // 保留当前 SST 中记录的真实版本范围
-  max_tranc_id_ = std::max(max_tranc_id_, tranc_id);
-  min_tranc_id_ = std::min(min_tranc_id_, tranc_id);
-
-  // 同一个 key 的版本必须留在同一块，避免快照查询漏掉旧版本。
-  // force_write 只绕过目标容量限制，编码上限仍由 Block 检查。
-  const bool force_write = (key == last_key);
-  if (block.add_entry(key, stored_value, tranc_id, force_write)) {
-    last_key = key;
-    return;
-  }
-
-  // 当前块装不下这个不同 key 的记录，先完成旧块
-  // finish_block 需要旧块的 first_key/last_key，此时不能提前覆盖
-  finish_block();
-
-  // 新空块会接受第一条可编码的记录；编码超限仍会抛异常
-  block.add_entry(key, stored_value, tranc_id, false);
-  first_key = key;
-  last_key = key;
-}
-
-// Lab 3.5 添加键值对
-// 当前在建 block 的首尾 key (草稿)
-// 每收下一条 entry, last_key 就刷新一次
-void SSTBuilder::add(const std::string &key, const std::string &value,
-                     uint64_t tranc_id) {
-  // 尝试向 block 添加 entry; 若返回 false (block满) 先调用 finish_block()再添加
-  // 注意: 相同 key 必须在同一个 block 中 (force_write = key == last_key) 更新
-  // last_key
-
   // 1.  首个 block 的 first key 只在第一次调用时记录（构造时已 clear）
   //     后续每个新 block 的 first_key 在步骤 6 里更新
   if (first_key.empty())
@@ -400,6 +364,47 @@ void SSTBuilder::add(const std::string &key, const std::string &value,
   //     更新 max_tranc_id_ / min_tranc_id_
   max_tranc_id_ = std::max(max_tranc_id_, tranc_id);
   min_tranc_id_ = std::min(min_tranc_id_, tranc_id);
+
+  // 同一个 key 的版本必须留在同一块，避免快照查询漏掉旧版本
+  // force_write 只绕过目标容量限制，编码上限仍由 Block 检查
+  // 5. 核心不变式：连续相同 key 的所有版本必须挤在同一个 block
+  //   (Block 的二分/迭代器都假设)
+  //   同 key → force_write=true → 即使 block 已经满了也硬塞。为什么？
+  //   你写的 adjust_idx_by_tranc_id 假设"同 key 的所有版本连续存放在同一个
+  //   block 内" 先退到组首、再往后找可见版本。 要是两个版本被切到不同
+  //   block，SST 层的 find_block_idx
+  //   二分只会命中其中一个块，另一个块里的版本就永远找不到了。
+  //   版本团聚是正确性问题，不是优化。
+  //   不同 key → force_write=false → 遵守容量纪律，满了就被拒（返回 false)
+  const bool force_write = (key == last_key);
+  if (block.add_entry(key, stored_value, tranc_id, force_write)) {
+    last_key = key;
+    return;
+  }
+
+  // 6. block满了: 封盘开新块
+  // 空 block 有 “必收第一条” key-value 对，这次必成功
+  finish_block();
+
+  // 新空块会接受第一条可编码的记录；编码超限仍会抛异常
+  block.add_entry(key, stored_value, tranc_id, false);
+
+  // finish_block 把旧的 first_key 快照进 meta, 这里开新章
+  first_key = key;
+  last_key = key;
+}
+
+// Lab 3.5 添加键值对
+// 当前在建 block 的首尾 key (草稿)
+// 每收下一条 entry, last_key 就刷新一次
+void SSTBuilder::add(const std::string &key, const std::string &value,
+                     uint64_t tranc_id) {
+  // add() 接收的是原值，包括恰好 12 字节的原值
+  // 默认直接保存它，用指针避免先复制一份字符串
+  const std::string *actual_value = &value; 
+
+  // 放在 if 外，保证下面调用 helper 时，引用字节仍然有效
+  std::string vlog_ref;
 
   // 4.  WiscKey 模式下: 若 value 非空超过 wisckey_threshold_ 或等于vlog
   // 引用长度, 将 value 写入 vlog
@@ -415,17 +420,16 @@ void SSTBuilder::add(const std::string &key, const std::string &value,
   //
   // 默认把原始 value 写入 Block
   // vlog_ref 放在 if 外，保证后面的 block.add_entry 使用它时仍然有效
-  const std::string *actual_value = &value;
-  std::string vlog_ref;
   if (storage_mode_ == 1 && vlog_ && !value.empty() && wisckey_threshold_ > 0 &&
       (value.size() > wisckey_threshold_ || value.size() == VLOG_REF_SIZE)) {
-    // 空value (tombstone 删除标记) 永不分离: 没体积还可省白送一次 IO
-    // 把 value 本体追加到 vlog
-    // 文件末尾，返回写入位置的偏移量——相当于物流揽件后给你的单号
+    // 超过阈值或恰好为 12 字节的原值，需要分离
+    // 空值是墓碑，不进入这个分支
     uint64_t offset = vlog_->append(key, value);
+
+    // append 已检查长度；成功返回后，可以安全转换为 uint32_t
     const uint32_t value_size = static_cast<uint32_t>(value.size());
 
-    // vlog 引用格式: [offset:8][size:4], memcpy 本机序
+    // 保持 vlog 引用格式: [offset:8][size:4], memcpy 本机序
     vlog_ref.resize(VLOG_REF_SIZE);
     std::memcpy(vlog_ref.data(), &offset, sizeof(uint64_t));
     std::memcpy(vlog_ref.data() + sizeof(uint64_t), &value_size,
@@ -435,27 +439,9 @@ void SSTBuilder::add(const std::string &key, const std::string &value,
     actual_value = &vlog_ref;
   }
 
-  // 5. 核心不变式：连续相同 key 的所有版本必须挤在同一个 block
-  //   (Block 的二分/迭代器都假设)
-  //   同 key → force_write=true → 即使 block 已经满了也硬塞。为什么？
-  //   你写的 adjust_idx_by_tranc_id 假设"同 key 的所有版本连续存放在同一个
-  //   block 内" 先退到组首、再往后找可见版本。 要是两个版本被切到不同
-  //   block，SST 层的 find_block_idx
-  //   二分只会命中其中一个块，另一个块里的版本就永远找不到了。
-  //   版本团聚是正确性问题，不是优化。
-  //   不同 key → force_write=false → 遵守容量纪律，满了就被拒（返回 false)
-  bool force_write = (key == last_key);
-  if (block.add_entry(key, *actual_value, tranc_id, force_write)) {
-    last_key = key;
-    return;
-  }
-
-  // 6. block满了: 封盘开新块。空 block 有 “必收第一条” key-value 对，这次必成功
-  finish_block();
-  block.add_entry(key, *actual_value, tranc_id, false);
-  // finish_block 把旧的 first_key 快照进 meta, 这里开新章
-  first_key = key;
-  last_key = key;
+  // 原值或新生成的引用都交给同一个 helper。
+  // Bloom、版本范围、首尾 key 和换块逻辑只维护一份。
+  add_stored_entry(key, *actual_value, tranc_id);
 }
 
 size_t SSTBuilder::real_size() const { return data.size() + block.cur_size(); }
