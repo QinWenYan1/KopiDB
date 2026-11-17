@@ -880,7 +880,14 @@ std::vector<std::shared_ptr<SST>>
 LSMEngine::full_common_compact(std::vector<size_t> &lx_ids,
                                std::vector<size_t> &ly_ids, size_t level_y) {
 
-  // 1. id -> SST handle
+  // 0. 读取模式与目标 builder 保持一致
+  // 输出 WiscKey SST 时直接搬引用
+  // 输出普通 SST 时先还原原值，避免把引用字节当成用户值写入
+  const size_t wk = TomlConfig::getInstance().getWisckeyValueThreshold();
+  const ValueReadMode read_mode = (wk > 0 && vlog_) ? ValueReadMode::Compaction : ValueReadMode::Query;
+
+  // 2. 根据 ID 取得两个相邻层的 SST
+  // L1 及更深层的每一层内部，SST 按 key 有序且范围不重叠
   std::vector<std::shared_ptr<SST>> lx_ssts;
   std::vector<std::shared_ptr<SST>> ly_ssts;
 
@@ -892,9 +899,9 @@ LSMEngine::full_common_compact(std::vector<size_t> &lx_ids,
   // 2. 两层内部都有序不重叠 -> 各用一个 ConcactIterator 串联整层
   //    tranc_id=0: compact 不做可见性过滤; keep_all_versions=true: 全版本保留
   std::shared_ptr<ConcactIterator> old_lx_begin_ptr =
-      std::make_shared<ConcactIterator>(lx_ssts, 0, true);
+      std::make_shared<ConcactIterator>(lx_ssts, 0, true, std::function<bool(uint64_t)>{}, read_mode);
   std::shared_ptr<ConcactIterator> old_ly_begin_ptr =
-      std::make_shared<ConcactIterator>(ly_ssts, 0, true);
+      std::make_shared<ConcactIterator>(ly_ssts, 0, true, std::function<bool(uint64_t)>{}, read_mode);
 
   // 3. a 路 = lx (较新层, 同 key 时赢), b 路 = ly
   //    通过 TwoMergeIterator 合并后调用 gen_sst_from_iter
