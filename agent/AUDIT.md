@@ -392,3 +392,5 @@ WiscKey 与 CRC 对照证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T
 2026-11-17 A15 阶段③完成：TwoMerge getter及真实SST两条合并组合路径专项14/14、迭代器与LSM回归19/19，共33/33通过。Query原值与Compaction引用标志对应正确，同key版本／来源优先和墓碑规则不变；Compaction无VLog源仍可构造、比较、推进和取值。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-stage3-review-tyi99r0x`。进度3/6，下一步Builder共用写入helper；尚未接通写引用和Engine，优化后计时待最后阶段。
 
 2026-11-17 A15 阶段④完成：用户实现add_stored_entry、add及add_vlog_ref；新增3项引用入口测试，原SST29项和WiscKey SST组件28项共57/57通过。已有引用在正阈值升降时保持存储字节及VLog尾位置，重开返回原值；混合原值/引用/墓碑、同key版本组、Bloom和元数据通过验证；非法模式/长度在修改前拒绝。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-ref-write-review-hi_0buyu`，构建成功、源码/测试哈希稳定，助手未代改业务。进度4/6；下一阶段先接通gen_sst_from_iter分流，再开启两个合并入口的Compaction模式，避免中间版本把已有引用再次当原值追加。仍是原定三个Engine函数，尚未验收Engine优化或复测性能。
+
+2026-11-17 A15 阶段⑤进展：gen_sst_from_iter已按当前类型选择引用/原值入口，真实版本、同key不拆表、builder重建和非空收尾保持。原有Query输入相关合并9/9通过（LSM6、WiscKey3），源码/测试稳定；证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-gen-review-ds5gi974`。未新增测试或代改业务；两个合并入口尚未启用Compaction，Engine引用分支留待接线后实测，进度仍4/6。下一函数full_l0_l1_compact。
