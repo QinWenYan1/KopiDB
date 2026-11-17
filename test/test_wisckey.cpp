@@ -1353,6 +1353,163 @@ protected:
   }
 };
 
+class SSTBuilderReferenceTest : public SSTIteratorReadModeTest {};
+
+TEST_F(SSTBuilderReferenceTest, ReusesExistingReferencesAcrossPositiveThresholds) {
+  // 目的：已经分离的值在阈值升高/降低后仍复用原引用；写入和重开均不追加 VLog。
+  auto vlog = VLog::open((dir_ / "vlog.data").string());
+  const std::vector<Record> originals{{"aaa", binary_value(65), 9},
+                                      {"bbb", binary_value(12), 7},
+                                      {"ccc", binary_value(13), 5}};
+  SSTBuilder source_builder(64, true, vlog, 8);
+  for (const auto &record : originals) {
+    source_builder.add(record.key, record.value, record.tranc_id);
+  }
+  auto source = source_builder.build(100, (dir_ / "source.sst").string(),
+                                     make_cache());
+  const auto stored = collect_stored_records(source);
+  ASSERT_EQ(stored.size(), originals.size());
+  const auto original_tail = vlog->tail_offset();
+
+  for (size_t threshold : {size_t{1}, size_t{4096}}) {
+    SCOPED_TRACE(threshold);
+    SSTBuilder target_builder(64, true, vlog, threshold);
+    for (const auto &record : stored) {
+      ASSERT_EQ(record.value.size(), VLOG_REF_SIZE);
+      target_builder.add_vlog_ref(record.key, record.value, record.tranc_id);
+      EXPECT_EQ(vlog->tail_offset(), original_tail);
+    }
+    const auto path = dir_ / ("target-" + std::to_string(threshold) + ".sst");
+    auto target = target_builder.build(threshold, path.string(), make_cache());
+    ASSERT_TRUE(target->is_wisckey());
+    target.reset();
+    auto reopened = SST::open(threshold, FileObj::open(path.string(), false),
+                              make_cache(), vlog);
+    const auto copied = collect_stored_records(reopened);
+    ASSERT_EQ(copied.size(), stored.size());
+    for (size_t i = 0; i < stored.size(); ++i) {
+      EXPECT_EQ(copied[i].key, stored[i].key);
+      EXPECT_EQ(copied[i].value, stored[i].value);
+      EXPECT_EQ(copied[i].tranc_id, stored[i].tranc_id);
+    }
+    check_view(reopened, 0, originals);
+    EXPECT_EQ(vlog->tail_offset(), original_tail);
+    EXPECT_EQ(std::filesystem::file_size(dir_ / "vlog.data"), original_tail);
+  }
+}
+
+TEST_F(SSTBuilderReferenceTest, MixedWritesPreserveVersionGroupsAndMetadata) {
+  // 目的：引用入口与普通入口交替使用时，共用的组块规则、版本范围和墓碑不变。
+  // mmm 的版本组超过目标块大小，仍须在同一块；首尾 key 则促成真正的换块。
+  const uint64_t base = uint64_t{1} << 40;
+  const std::vector<Record> originals{
+      {"aaa", binary_value(11), base + 6}, {"mmm", "", base + 9},
+      {"mmm", binary_value(12), base + 7}, {"mmm", binary_value(13), base + 5},
+      {"mmm", binary_value(65), base + 3}, {"zzz", binary_value(11), base + 1}};
+  auto vlog = VLog::open((dir_ / "vlog.data").string());
+  SSTBuilder source_builder(64, true, vlog, 64);
+  for (const auto &record : originals) {
+    source_builder.add(record.key, record.value, record.tranc_id);
+  }
+  const auto source_path = dir_ / "source.sst";
+  auto source = source_builder.build(100, source_path.string(), make_cache());
+  const auto stored = collect_stored_records(source);
+  const auto original_tail = vlog->tail_offset();
+  // 源 SST 不绑定 VLog，保证传递存储值时不依赖读取原值。
+  auto raw_source = SST::open(101, FileObj::open(source_path.string(), false),
+                              make_cache());
+  SSTBuilder target_builder(64, true, vlog, 64);
+  size_t reference_count = 0;
+  for (auto it = raw_source->begin(0, true, {}, ValueReadMode::Compaction);
+       it.is_valid(); ++it) {
+    const auto entry = *it;
+    if (it.is_vlog_ref()) {
+      target_builder.add_vlog_ref(entry.first, entry.second,
+                                  it.get_cur_tranc_id());
+      ++reference_count;
+    } else {
+      target_builder.add(entry.first, entry.second, it.get_cur_tranc_id());
+    }
+    EXPECT_EQ(vlog->tail_offset(), original_tail);
+  }
+  ASSERT_EQ(reference_count, 2u);
+  auto target = target_builder.build(102, (dir_ / "target.sst").string(),
+                                     make_cache());
+  ASSERT_GE(target->num_blocks(), 2u);
+  EXPECT_EQ(target->get_first_key(), "aaa");
+  EXPECT_EQ(target->get_last_key(), "zzz");
+  EXPECT_EQ(target->get_tranc_id_range(), std::make_pair(base + 1, base + 9));
+  const auto copied = collect_stored_records(target);
+  ASSERT_EQ(copied.size(), stored.size());
+  for (size_t i = 0; i < stored.size(); ++i) {
+    EXPECT_EQ(copied[i].key, stored[i].key);
+    EXPECT_EQ(copied[i].value, stored[i].value);
+    EXPECT_EQ(copied[i].tranc_id, stored[i].tranc_id);
+    // 点查经过 Bloom 与块定位，并分别命中墓碑、内联值和两个已有引用版本。
+    auto found = target->get(originals[i].key, originals[i].tranc_id);
+    check_iterator(found, originals[i]);
+  }
+  size_t group_block = target->num_blocks();
+  size_t group_count = 0;
+  for (size_t index = 0; index < target->num_blocks(); ++index) {
+    for (BlockIterator it(target->read_block(index), 0, 0, true);
+         !it.is_end(); ++it) {
+      if (it->first == "mmm") {
+        if (group_count == 0) group_block = index;
+        EXPECT_EQ(index, group_block);
+        ++group_count;
+      }
+    }
+  }
+  EXPECT_EQ(group_count, 4u);
+  EXPECT_EQ(vlog->tail_offset(), original_tail);
+}
+
+TEST_F(SSTBuilderReferenceTest, RejectsWrongModeAndLengthBeforeChangingBuilder) {
+  // 目的：错误模式或引用长度要在写块、更新首尾 key/版本范围之前拒绝。
+  // 使用真实引用；本入口不负责验证跨数据库来源或任意 12 字节内容。
+  auto vlog = VLog::open((dir_ / "vlog.data").string());
+  SSTBuilder source_builder(4096, true, vlog, 64);
+  source_builder.add("mmm", binary_value(65), 7);
+  auto source = source_builder.build(100, (dir_ / "source.sst").string(),
+                                     make_cache());
+  const auto stored = collect_stored_records(source);
+  ASSERT_EQ(stored.size(), 1u);
+  const auto &reference = stored.front().value;
+  ASSERT_EQ(reference.size(), VLOG_REF_SIZE);
+  const auto original_tail = vlog->tail_offset();
+
+  SSTBuilder ordinary(4096, true);
+  SSTBuilder zero_threshold(4096, true, vlog, 0);
+  SSTBuilder enabled(4096, true, vlog, 64);
+  EXPECT_THROW(ordinary.add_vlog_ref("aaa", reference, 1), std::logic_error);
+  EXPECT_THROW(zero_threshold.add_vlog_ref("zzz", reference, 99),
+               std::logic_error);
+  for (size_t length : {size_t{0}, size_t{11}, size_t{13}}) {
+    EXPECT_THROW(enabled.add_vlog_ref("aaa", std::string(length, 'x'), 1),
+                 std::invalid_argument);
+    EXPECT_THROW(enabled.add_vlog_ref("zzz", std::string(length, 'x'), 99),
+                 std::invalid_argument);
+  }
+
+  ordinary.add("mmm", "inline", 7);
+  zero_threshold.add("mmm", "inline", 7);
+  enabled.add_vlog_ref("mmm", reference, 7);
+  const std::array<SSTBuilder *, 3> builders{&ordinary, &zero_threshold, &enabled};
+  for (size_t i = 0; i < builders.size(); ++i) {
+    auto sst = builders[i]->build(i, (dir_ / (std::to_string(i) + ".sst")).string(),
+                                 make_cache());
+    EXPECT_EQ(sst->is_wisckey(), i == 2);
+    EXPECT_EQ(sst->get_first_key(), "mmm");
+    EXPECT_EQ(sst->get_last_key(), "mmm");
+    EXPECT_EQ(sst->get_tranc_id_range(), std::make_pair(uint64_t{7}, uint64_t{7}));
+    const auto records = collect_stored_records(sst);
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records.front().value, i == 2 ? reference : "inline");
+    EXPECT_EQ(vlog->tail_offset(), original_tail);
+  }
+}
+
 // 目的：Query 返回原值，Compaction 返回真实存储字节；两者保留同一记录版本。
 // 普通 SST 的12B原文、WiscKey的12B引用、内联值和墓碑都不能混淆。
 TEST_F(SSTIteratorReadModeTest, QueryAndCompactionReturnTheirOwnRepresentation) {

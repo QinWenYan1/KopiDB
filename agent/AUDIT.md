@@ -390,3 +390,5 @@ WiscKey 与 CRC 对照证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T
 2026-11-17 A15 阶段②完成：SST::begin已转发读取模式及全部既有读取条件，新模式入口/MVCC组合测试与组件回归52/52通过；Query默认兼容、Compaction保留存储字节、类型标志与位置对应、无VLog依赖读取和end比较均验证。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-sst-stage2-review-tu0sghvj`。进度2/6，下一函数merge_sst_iterator；完整Engine优化尚未接通，旧性能基线保留，未重跑计时。
 
 2026-11-17 A15 阶段③完成：TwoMerge getter及真实SST两条合并组合路径专项14/14、迭代器与LSM回归19/19，共33/33通过。Query原值与Compaction引用标志对应正确，同key版本／来源优先和墓碑规则不变；Compaction无VLog源仍可构造、比较、推进和取值。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-stage3-review-tyi99r0x`。进度3/6，下一步Builder共用写入helper；尚未接通写引用和Engine，优化后计时待最后阶段。
+
+2026-11-17 A15 阶段④完成：用户实现add_stored_entry、add及add_vlog_ref；新增3项引用入口测试，原SST29项和WiscKey SST组件28项共57/57通过。已有引用在正阈值升降时保持存储字节及VLog尾位置，重开返回原值；混合原值/引用/墓碑、同key版本组、Bloom和元数据通过验证；非法模式/长度在修改前拒绝。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a15-ref-write-review-hi_0buyu`，构建成功、源码/测试哈希稳定，助手未代改业务。进度4/6；下一阶段先接通gen_sst_from_iter分流，再开启两个合并入口的Compaction模式，避免中间版本把已有引用再次当原值追加。仍是原定三个Engine函数，尚未验收Engine优化或复测性能。
