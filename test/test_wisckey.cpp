@@ -2494,9 +2494,10 @@ protected:
     return value;
   }
 
-  static void configure(const std::filesystem::path &dir) {
+  static void configure(const std::filesystem::path &dir,
+                        size_t target_threshold = 64) {
     // 先用较大的单表上限控制源 SST 数量；合并前再缩小目标 SST 大小。
-    // threadsafe 子进程首次访问配置，保证真实启用值分离且不污染其他测试。
+    // threadsafe 子进程首次访问配置，独立设置目标阈值，不污染其他测试。
     const auto path = dir / "wisckey.toml";
     std::ofstream output(path);
     ASSERT_TRUE(output.is_open());
@@ -2512,12 +2513,11 @@ LSM_BLOCK_CACHE_K = 2
 BLOOM_FILTER_EXPECTED_SIZE = 4096
 BLOOM_FILTER_EXPECTED_ERROR_RATE = 0.1
 [lsm.wisckey]
-WISCKEY_VALUE_THRESHOLD = 64
-)toml";
+WISCKEY_VALUE_THRESHOLD = )toml" << target_threshold << '\n';
     output.close();
     ASSERT_TRUE(output.good());
     const auto &config = TomlConfig::getInstance(path.string());
-    ASSERT_EQ(config.getWisckeyValueThreshold(), 64u);
+    ASSERT_EQ(config.getWisckeyValueThreshold(), target_threshold);
     ASSERT_EQ(config.getLsmSstLevelRatio(), 2);
   }
 
@@ -2667,12 +2667,12 @@ WISCKEY_VALUE_THRESHOLD = 64
         db.flush_all();
         const auto after = std::filesystem::file_size(vlog_path);
         // 触发记录为 11B 内联值，本次刷盘没有新分离值。
-        // 首轮只做 L0→L1，引用复用后 VLog 不应增长；深层路径另行验收。
+        // L0→L1、深层合并和重复合并都只搬已有引用，VLog 不应增长。
         std::cout << "WiscKey compaction flush " << i
                   << ": VLog before=" << before << ", after=" << after
                   << "; trigger value is inline (11B)" << std::endl;
+        EXPECT_EQ(after, before);
         if (i == 0) {
-          EXPECT_EQ(after, before);
           ASSERT_GT(count_level(data_dir, 1), 1u);
           ASSERT_EQ(count_level(data_dir, 2), 0u);
         }
@@ -2700,33 +2700,42 @@ WISCKEY_VALUE_THRESHOLD = 64
     }
   }
 
-  static void run_reference_merge(const std::filesystem::path &dir) {
-    // 目的：真实 L0→L1 合并同时处理两路引用和普通 SST 的 12B 原值。
-    // 源句柄故意不绑定 VLog；如果选路或取值偷偷解引用，合并就会抛错。
-    ASSERT_NO_FATAL_FAILURE(configure(dir));
+  static void run_reference_merge(const std::filesystem::path &dir,
+                                  bool deeper, size_t target_threshold) {
+    // 目的：真实合并同时处理两路引用和普通 SST 的 12B 原值。
+    // 正阈值时源句柄不绑定 VLog，选路/取值若解引用就会抛错；
+    // 阈值为 0 时必须绑定 VLog，让合并还原原值并输出普通 SST。
+    ASSERT_NO_FATAL_FAILURE(configure(dir, target_threshold));
     const auto data_dir = dir / "database";
     auto engine = std::make_shared<LSMEngine>(data_dir.string());
     auto manager = std::make_shared<TranManager>(data_dir.string());
     manager->set_engine(engine);
     engine->set_tran_manager(manager);
+    const size_t source_level = deeper ? 1 : 0;
+    const size_t target_level = source_level + 1;
 
     struct Row { std::string key; std::string value; uint64_t version; };
     struct Source {
       size_t id; size_t level; bool wisckey; std::vector<Row> rows;
     };
+    std::vector<Row> newer_rows{{"e_new_ref", binary_value(65, 7), 7},
+                                {"f_inline13", binary_value(13, 8), 7}};
+    // L0 可以重叠；深层同一层的两张 SST 必须保持不重叠。
+    if (!deeper) newer_rows.insert(newer_rows.begin(),
+                                   {"a_shared", binary_value(128, 6), 7});
     const std::vector<Source> sources{
-        {1, 1, true, {{"a_shared", binary_value(65, 1), 3},
-                       {"b_deleted", binary_value(65, 2), 3},
-                       {"c_old_ref", binary_value(65, 3), 3}}},
-        {2, 0, false, {{"a_shared", binary_value(12, 4), 5},
-                        {"b_deleted", "", 5},
-                        {"d_plain12", binary_value(12, 5), 5}}},
-        {3, 0, true, {{"a_shared", binary_value(128, 6), 7},
-                       {"e_new_ref", binary_value(65, 7), 7}}}};
+        {1, target_level, true, {{"a_shared", binary_value(65, 1), 3},
+                                  {"b_deleted", binary_value(65, 2), 3},
+                                  {"c_old_ref", binary_value(65, 3), 3}}},
+        {2, source_level, false, {{"a_shared", binary_value(12, 4), 5},
+                                   {"b_deleted", "", 5},
+                                   {"d_plain12", binary_value(12, 5), 5}}},
+        {3, source_level, true, std::move(newer_rows)}};
     using VersionKey = std::pair<std::string, uint64_t>;
     std::map<VersionKey, std::string> originals;
     std::map<VersionKey, std::string> original_refs;
     for (const auto &source : sources) {
+      // 源格式始终按阈值64生成；本次目标配置可以是0、1、64或4096。
       auto builder = source.wisckey
           ? SSTBuilder(128, true, engine->vlog_, 64)
           : SSTBuilder(128, true);
@@ -2741,44 +2750,73 @@ WISCKEY_VALUE_THRESHOLD = 64
         for (size_t block = 0; block < sst->num_blocks(); ++block) {
           for (BlockIterator it(sst->read_block(block), 0, 0, true);
                !it.is_end(); ++it) {
-            ASSERT_EQ(it->second.size(), VLOG_REF_SIZE);
-            original_refs.emplace(
-                VersionKey{it->first, it.get_cur_tranc_id()}, it->second);
+            if (it->second.size() == VLOG_REF_SIZE) {
+              original_refs.emplace(
+                  VersionKey{it->first, it.get_cur_tranc_id()}, it->second);
+            }
           }
         }
       }
       engine->ssts[source.id] = SST::open(
-          source.id, FileObj::open(path, false), engine->block_cache);
-      engine->level_sst_ids[source.level].push_front(source.id);
+          source.id, FileObj::open(path, false), engine->block_cache,
+          target_threshold == 0 ? engine->vlog_ : nullptr);
+      if (source.level == 0)
+        engine->level_sst_ids[source.level].push_front(source.id);
+      else
+        engine->level_sst_ids[source.level].push_back(source.id);
     }
     engine->next_sst_id = 4;
-    engine->cur_max_level = 1;
-    // L1 只有一张表，小于 ratio=2，不会提前触发深层合并。
-    ASSERT_EQ(engine->level_sst_ids[1].size(), 1u);
-    EXPECT_THROW(engine->ssts.at(1)->begin(0, true).value(), std::runtime_error);
+    engine->cur_max_level = target_level;
+    ASSERT_EQ(engine->level_sst_ids[target_level].size(), 1u);
+    if (target_threshold > 0) {
+      EXPECT_THROW(engine->ssts.at(1)->begin(0, true).value(), std::runtime_error);
+    }
+
+    if (deeper) {
+      // 两张只含墓碑的 L0 达到 ratio=2，public flush 才会递归合并 L1→L2。
+      // 它们不属于目标 L2 的测试记录，不分离 value，也不引入额外 VLog 数据。
+      ASSERT_EQ(engine->level_sst_ids[1].size(), 2u);
+      for (size_t id : {size_t{4}, size_t{5}}) {
+        SSTBuilder trigger_builder(128, true);
+        trigger_builder.add("zz_guard_" + std::to_string(id), "", 1);
+        engine->ssts[id] = trigger_builder.build(
+            id, engine->get_sst_path(id, 0), engine->block_cache);
+        engine->level_sst_ids[0].push_front(id);
+      }
+      engine->next_sst_id = 6;
+    }
 
     const auto before = engine->vlog_->tail_offset();
     auto &config = const_cast<TomlConfig &>(TomlConfig::getInstance());
     config.modify_lsm_per_mem_size_limit(1);
-    engine->put("zz_trigger", binary_value(11, 8), 9);
+    // 一字节触发值在所有正阈值下都内联，不影响本次新增 VLog 字节数。
+    engine->put("zz_trigger", "t", 9);
     ASSERT_NO_THROW(engine->flush());
-    ASSERT_FALSE(engine->level_sst_ids[1].empty());
-    EXPECT_TRUE(engine->level_sst_ids[2].empty());
+    ASSERT_GT(engine->level_sst_ids[target_level].size(), 1u);
+    EXPECT_TRUE(engine->level_sst_ids[target_level + 1].empty());
 
-    // 只有普通 SST 中的两个 12B 原值需要首次分离。
-    // VLog 每条为长度字段/CRC共10B + key + value；已有引用不得重复追加。
-    const uint64_t expected_added =
-        10 + std::string("a_shared").size() + 12 +
-        10 + std::string("d_plain12").size() + 12;
+    // 只计算原本内联、且按目标阈值需要首次分离的原值。
+    // 已有引用即使在更高阈值下也保持引用；关闭模式时不追加任何 VLog 记录。
+    uint64_t expected_added = 0;
+    for (const auto &[key, value] : originals) {
+      if (target_threshold > 0 && !original_refs.contains(key) &&
+          !value.empty() &&
+          (value.size() > target_threshold || value.size() == VLOG_REF_SIZE)) {
+        // VLog 每条为长度字段/CRC共10B + key + value。
+        expected_added += 10 + key.first.size() + value.size();
+      }
+    }
     EXPECT_EQ(engine->vlog_->tail_offset(), before + expected_added);
 
     std::map<VersionKey, std::string> actual_values;
+    std::map<VersionKey, std::string> actual_stored;
     std::map<VersionKey, std::string> copied_refs;
-    for (size_t id : engine->level_sst_ids[1]) {
-      // 重开新 SST，并绑定同一个 VLog，验证输出不依赖旧源句柄或缓存。
-      auto sst = SST::open(id, FileObj::open(engine->get_sst_path(id, 1), false),
-                           make_cache(), engine->vlog_);
-      ASSERT_TRUE(sst->is_wisckey());
+    for (size_t id : engine->level_sst_ids[target_level]) {
+      // 重开新 SST；普通输出不绑定 VLog，证明全部 value 已还原为原值。
+      auto sst = SST::open(
+          id, FileObj::open(engine->get_sst_path(id, target_level), false),
+          make_cache(), target_threshold > 0 ? engine->vlog_ : nullptr);
+      ASSERT_EQ(sst->is_wisckey(), target_threshold > 0);
       for (auto it = sst->begin(0, true); it.is_valid(); ++it) {
         const auto entry = *it;
         EXPECT_TRUE(actual_values.emplace(
@@ -2788,12 +2826,17 @@ WISCKEY_VALUE_THRESHOLD = 64
         for (BlockIterator it(sst->read_block(block), 0, 0, true);
              !it.is_end(); ++it) {
           const VersionKey key{it->first, it.get_cur_tranc_id()};
+          EXPECT_TRUE(actual_stored.emplace(key, it->second).second);
           if (original_refs.contains(key)) copied_refs.emplace(key, it->second);
         }
       }
     }
     EXPECT_EQ(actual_values, originals);
-    EXPECT_EQ(copied_refs, original_refs);
+    if (target_threshold > 0) {
+      EXPECT_EQ(copied_refs, original_refs);
+    } else {
+      EXPECT_EQ(actual_stored, originals);
+    }
     EXPECT_FALSE(engine->get("b_deleted", 0).has_value());
     const auto old_value = engine->get("a_shared", 3);
     ASSERT_TRUE(old_value.has_value());
@@ -2802,10 +2845,10 @@ WISCKEY_VALUE_THRESHOLD = 64
   }
 
   static void run_child(const std::filesystem::path &dir, bool deeper,
-                        bool raw_sources = false) {
+                        bool raw_sources = false, size_t target_threshold = 64) {
     int exit_code = 0;
     try {
-      if (raw_sources) run_reference_merge(dir);
+      if (raw_sources) run_reference_merge(dir, deeper, target_threshold);
       else run_compaction(dir, deeper);
       exit_code = ::testing::Test::HasFailure() ? 1 : 0;
     } catch (const std::exception &error) {
@@ -2833,6 +2876,34 @@ TEST_F(WiscKeyCompactionDeathTest, DeeperMergePreservesValuesVersionsAndReopens)
 TEST_F(WiscKeyCompactionDeathTest, L0MergeReusesBothLevelsWithoutReadingVLog) {
   ::testing::FLAGS_gtest_death_test_style = "threadsafe";
   EXPECT_EXIT(run_child(dir_, false, true), ::testing::ExitedWithCode(0), "");
+}
+
+// 目的：两层均有数据时，深层合并也只搬引用；源句柄无 VLog 作为负对照。
+TEST_F(WiscKeyCompactionDeathTest, DeepMergeReusesBothLevelsWithoutReadingVLog) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_EXIT(run_child(dir_, true, true), ::testing::ExitedWithCode(0), "");
+}
+
+// 目的：关闭分离后，L0 和深层路径都读取旧引用原值，生成可独立读取的普通 SST。
+TEST_F(WiscKeyCompactionDeathTest, DisabledModeRestoresOriginalsInBothMergePaths) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  for (bool deeper : {false, true}) {
+    SCOPED_TRACE(deeper);
+    EXPECT_EXIT(run_child(dir_, deeper, true, 0), ::testing::ExitedWithCode(0), "");
+  }
+}
+
+// 目的：正阈值升降只影响新的内联值分离，已有引用保持；两条 Engine 路径均覆盖。
+TEST_F(WiscKeyCompactionDeathTest, PositiveThresholdChangesKeepExistingReferences) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  for (size_t threshold : {size_t{1}, size_t{4096}}) {
+    for (bool deeper : {false, true}) {
+      SCOPED_TRACE(threshold);
+      SCOPED_TRACE(deeper);
+      EXPECT_EXIT(run_child(dir_, deeper, true, threshold),
+                  ::testing::ExitedWithCode(0), "");
+    }
+  }
 }
 
 class WiscKeyClearDeathTest : public VLogOpenTest {
