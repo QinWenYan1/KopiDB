@@ -123,10 +123,12 @@ void TranContext::put(const std::string &key, const std::string &value) {
   //
   // 此时不能继续接受写入，否则会把 PUT 追加到
   // COMMIT/ROLLBACK 后面，改变已经开始收尾的事务
-  if (!operations.empty()){
-    const auto last_type = operations.back().getOperationType(); 
-    if (last_type == OperationType::OP_COMMIT || last_type == OperationType::OP_ROLLBACK)
-      throw std::logic_error("TranContext::put: previous ending attempt did not finish");
+  if (!operations.empty()) {
+    const auto last_type = operations.back().getOperationType();
+    if (last_type == OperationType::OP_COMMIT ||
+        last_type == OperationType::OP_ROLLBACK)
+      throw std::logic_error(
+          "TranContext::put: previous ending attempt did not finish");
   }
 
   // 检查用户输入，必须放在追加 Record 和修改数据之前。
