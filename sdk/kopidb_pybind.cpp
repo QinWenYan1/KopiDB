@@ -56,7 +56,7 @@ void bind_IsolationLevel(py::module &m) {
       .export_values();
 }
 
-PYBIND11_MODULE(lsm_pybind, m) {
+PYBIND11_MODULE(kopidb_pybind, m) {
   // 绑定辅助类
   bind_TwoMergeIterator(m);
   bind_Level_Iterator(m);

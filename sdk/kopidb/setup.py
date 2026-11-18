@@ -11,7 +11,7 @@ class CustomBuild(build_py):
     def run(self):
         # 使用绝对路径确保准确性
         build_lib_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../build/lib"))
-        package_lib_dir = os.path.join(self.build_lib, "tinylsm/core/lib")
+        package_lib_dir = os.path.join(self.build_lib, "kopidb/core/lib")
         
         # 创建目标目录
         self.mkpath(package_lib_dir)
@@ -19,7 +19,7 @@ class CustomBuild(build_py):
         # 动态库文件列表
         lib_files = [
             ("libkopidb.so", "libkopidb.so"),
-            ("lsm_pybind.so", "lsm_pybind.so")
+            ("kopidb_pybind.so", "kopidb_pybind.so")
         ]
         
         # 复制文件
@@ -34,12 +34,12 @@ class CustomBuild(build_py):
         super().run()
 
 setup(
-    name="tinylsm",
+    name="kopidb",
     version=VERSION,
     description=DESCRIPTION,
     packages=find_packages(),
 package_data={
-    "tinylsm.core": [
+    "kopidb.core": [
         "lib/*.so",
         "lib/*.dylib",
         "lib/*.dll",

@@ -6,16 +6,16 @@
 
 目标：对外使用 `kopidb::LSM`、Python `import kopidb`，构建/库/包名称与项目一致；交付 macOS arm64 预编译 C++ SDK。用户下载解压，在自己的 Xmake 或 CMake 项目中添加一次依赖，再包含 `<lsm/engine.h>` 使用数据库，无需重新编译引擎。
 
-用户已批准按剩余六步实施，每完成一步先汇报，由用户检查后再继续。本轮执行第①步 C++ 命名空间，Python包及后续接入/打包尚不改动。
+用户已批准按剩余六步实施，每完成一步先汇报，由用户检查后再继续。第①步已由用户检查并授权继续；本轮执行第②步Python包与扩展名称，后续接入/打包尚不改动。
 
 已确认包结构：`include/kopidb/`、`lib/libkopidb.so`，以及同放包根目录的 `KopiDBConfig.cmake`、`xmake.lua`、README 和许可说明。接入配置根据自身位置定位文件；引擎继续使用 Xmake 构建。
 
-**进度：17%（1/6 步验收，四舍五入）。** 按用户最新要求，仅统计剩余六步；上一轮构建命名作为已完成前置成果保留。每步通过后等待用户检查，不自动执行下一步。百分比按验收步骤数计算，不代表工时。
+**进度：33%（2/6 步验收，四舍五入）。** 按用户最新要求，仅统计剩余六步；上一轮构建命名作为已完成前置成果保留。每步通过后等待用户检查，不自动执行下一步。百分比按验收步骤数计算，不代表工时。
 
 | 阶段 | 具体工作 | 验收标准 | 状态 |
 | --- | --- | --- | --- |
-| ① C++ 命名空间 | 65个C++文件的 namespace、using、限定引用，双语README示例 | 全部声明与定义一致，目标重建与定向回归通过，外部程序使用 kopidb::LSM 成功 | 已通过：全目标构建、279项回归及6次外部运行；等待用户检查 |
-| ② Python 包与扩展名称 | 两层包目录、扩展源码/输出/初始化入口、安装及导入引用 | 新包和扩展名称一致，语法/构建/受控导入及CRUD验证通过；不把已有wheel问题算成改名缺陷 | 待开始 |
+| ① C++ 命名空间 | 65个C++文件的 namespace、using、限定引用，双语README示例 | 全部声明与定义一致，目标重建与定向回归通过，外部程序使用 kopidb::LSM 成功 | 已通过：全目标构建、279项回归及6次外部运行；用户已确认继续 |
+| ② Python 包与扩展名称 | 两层包目录、扩展源码/输出/初始化入口、安装及导入引用 | 新包和扩展名称一致，语法/构建/受控导入及CRUD验证通过；不把已有wheel问题算成改名缺陷 | 已通过：扩展构建、名称/语法检查及5/5受控运行；等待用户检查 |
 | ③ SDK 接入配置 | packaging/cpp/KopiDBConfig.cmake、packaging/cpp/xmake.lua | CMake/Xmake用户声明依赖即可获得头文件、库、C++20及运行路径；不重建数据库 | 待开始 |
 | ④ 打包脚本 | scripts/package_cpp.sh | 生成带版本、平台、匹配头文件/库、接入配置和许可说明的压缩包；不修改原工作区构建模式 | 待开始 |
 | ⑤ 解压包验收 | 独立临时目录中的 CMake/Xmake 消费项目 | 异目录解压后可编译并直接运行；无仓库路径或 DYLD 补丁依赖；CRUD、事务、遍历、普通/WiscKey重开通过 | 待开始 |
@@ -27,7 +27,7 @@
 - 共享库：`libkopidb.so`；安装头文件：`include/kopidb/`。
 - 内部静态核心仍依赖其他模块，不将它当作已可独立分发的完整静态SDK。
 
-## ① 统一 C++ 命名空间（当前步骤）
+## ① 统一 C++ 命名空间（已完成）
 
 必须成组修改头文件、实现、测试、示例与Python绑定；不能仅改公开入口头文件。
 
@@ -76,7 +76,7 @@
 | [include/vlog/vlog.h](../include/vlog/vlog.h) | 9, 50 |
 | [include/wal/record.h](../include/wal/record.h) | 9, 52 |
 | [include/wal/wal.h](../include/wal/wal.h) | 16, 61 |
-| [sdk/lsm_pybind.cpp](../sdk/lsm_pybind.cpp) | 11, 12, 13, 23, 24, 25, 37, 42, 44, 45, 46, 47, 51, 52, 53, 54, 55, 67, 70, 72, 74, 76, 78, 81, 83, 85, 88, 89, 90 |
+| [sdk/kopidb_pybind.cpp](../sdk/kopidb_pybind.cpp) | 11, 12, 13, 23, 24, 25, 37, 42, 44, 45, 46, 47, 51, 52, 53, 54, 55, 67, 70, 72, 74, 76, 78, 81, 83, 85, 88, 89, 90 |
 | [src/block/block.cpp](../src/block/block.cpp) | 12, 628 |
 | [src/block/block_cache.cpp](../src/block/block_cache.cpp) | 10, 141 |
 | [src/block/block_iterator.cpp](../src/block/block_iterator.cpp) | 11, 199 |
@@ -114,11 +114,11 @@
 | [test/test_wal.cpp](../test/test_wal.cpp) | 28 |
 | [test/test_wisckey.cpp](../test/test_wisckey.cpp) | 42 |
 
-## ② 统一 Python 包与内部扩展
+## ② 统一 Python 包与内部扩展（当前步骤）
 
 对外包名为 `kopidb`，内部扩展统一为 `kopidb_pybind`，与现有构建目标同名。Python用户使用 `import kopidb`，不要求直接导入内部扩展。
 
-| 文件/位置（当前路径） | 修改 |
+| 文件/位置（改名前路径，现已完成迁移） | 修改 |
 | --- | --- |
 | sdk/tinylsm/ | 外层构建目录改为sdk/kopidb/；内层tinylsm/包目录改为kopidb/，保留core及类型提示文件布局 |
 | sdk/lsm_pybind.cpp:59 | 文件更名sdk/kopidb_pybind.cpp；`PYBIND11_MODULE(lsm_pybind, m)` → `PYBIND11_MODULE(kopidb_pybind, m)` |
@@ -185,3 +185,14 @@
 - README中构建目标/安装目录/库名已在前置工作更新，此步同步C++示例并实际验证；下载接入主流程等真实压缩包通过后由第⑥步更新。
 - 检查结束时源码与构建快照一致。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-namespace-0b6_a3_j`，含before、changes.json、构建日志、测试过滤器/JSON/日志、安装树、consumer及summary.json。
 - 当前停在第①步，等待用户检查后进入第②步Python命名。
+
+## 第②步完成：Python 包与内部扩展（2026-11-18）
+
+- 用户确认第①步并授权进入本步。外层构建目录及包目录迁移到`sdk/kopidb/kopidb/`；绑定源码改为`sdk/kopidb_pybind.cpp`。
+- Python公开包为`kopidb`，内部扩展的源码入口、输出文件名、打包清单和导入统一为`kopidb_pybind`。同步setup发行名/package_data、SDK脚本、测试导入及.gitignore。共9项文件记录，包含5个文件迁移；类型提示文件仅移动、内容不变。
+- 独立复核确认改动仅名称替换及一条过时构建注释更新，SDK和有效构建配置无旧名称残留。生成的旧compile_commands.json未手改；需要使用时由Xmake重新生成。
+- 隔离Release副本的`kopidb_pybind`及其共享库依赖构建通过；Python AST、bash -n、包名称/文件清单检查通过；nm确认`PyInit_kopidb_pybind`存在且旧入口不存在。
+- macOS arm64 / Python3.13.1：用新源码及新库在临时目录组装包，以python -I并显式指定临时包目录验证，不借用全局旧安装。外部清除DYLD、LD_LIBRARY_PATH及PYTHONPATH。1次独立导入，加普通/WiscKey各写入与重开读取，共5/5进程通过；覆盖CRUD、批量、事务提交/回滚、遍历、大值及12字节值。
+- 此为受控组装包验证，没有构建或安装wheel，没有修改系统Python环境；已有PythonSDK发布事项仍按STATE/AUDIT处理。本轮未重跑C++单元测试，src/include未改。
+- 证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-python-naming-_05t1nfo`，含before、changes.json、构建日志、符号/库依赖、组装包、导入脚本及运行日志、summary.json。
+- 当前停在第②步，等待用户检查后进入第③步SDK接入配置。

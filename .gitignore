@@ -2,10 +2,10 @@
 .vscode
 .xmake
 build
-sdk/tinylsm/dist
-sdk/tinylsm/build
-sdk/tinylsm/tinylsm/core/lib
-sdk/tinylsm/tinylsm.egg-info
+sdk/kopidb/dist
+sdk/kopidb/build
+sdk/kopidb/kopidb/core/lib
+sdk/kopidb/kopidb.egg-info
 *__pycache__*
 book
 coverage*

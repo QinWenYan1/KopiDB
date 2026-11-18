@@ -288,27 +288,27 @@ target("debug")
 
 -- ============ Python 绑定 ============
 
--- 构建目标统一使用 kopidb；扩展文件名仍匹配现有 Python 导入名。
+-- 内部扩展的构建目标、输出文件与 PYBIND11_MODULE 名称保持一致。
 if is_plat("windows") then
     target("kopidb_pybind")
         set_kind("shared")
-        add_files("sdk/lsm_pybind.cpp")
+        add_files("sdk/kopidb_pybind.cpp")
         add_packages("pybind11")
         add_deps("kopidb")  -- Windows下使用原来的依赖
         add_includedirs("include", {public = true})
         set_targetdir("$(buildir)/lib")
-        set_filename("lsm_pybind.pyd")
+        set_filename("kopidb_pybind.pyd")
         add_cxxflags("/LD")
 else
     -- Unix/Linux/macOS平台
     target("kopidb_pybind")
         set_kind("shared")
-        add_files("sdk/lsm_pybind.cpp")
+        add_files("sdk/kopidb_pybind.cpp")
         add_packages("pybind11")
         add_deps("kopidb_shared")  -- Unix下使用共享库依赖
         add_includedirs("include", {public = true})
         set_targetdir("$(buildir)/lib")
-        set_filename("lsm_pybind.so")
+        set_filename("kopidb_pybind.so")
         add_ldflags("-Wl,-rpath,$ORIGIN")
         add_defines("KOPIDB_EXPORT=__attribute__((visibility(\"default\")))")
         add_cxxflags("-fvisibility=hidden")

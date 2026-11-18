@@ -22,7 +22,7 @@ def _load_core_libs():
     # 显式导入绑定模块（优化路径处理）
     sys.path.insert(0, str(lib_dir))
     try:
-        from lsm_pybind import LSM, IsolationLevel  # 注意这里需要导入 IsolationLevel
+        from kopidb_pybind import LSM, IsolationLevel  # 注意这里需要导入 IsolationLevel
         globals()["LSM"] = LSM
         globals()["IsolationLevel"] = IsolationLevel
     except ImportError as e:

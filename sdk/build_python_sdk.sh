@@ -1,10 +1,10 @@
 #!/bin/bash
 cd .. && xmake f -m release && xmake build kopidb_pybind
 cd -
-cp -r ../build/lib ./tinylsm/tinylsm/core
+cp -r ../build/lib ./kopidb/kopidb/core
 
-cd tinylsm
-rm -rf build dist tinylsm.egg-info
+cd kopidb
+rm -rf build dist kopidb.egg-info
 
 python3 setup.py sdist bdist_wheel
 
