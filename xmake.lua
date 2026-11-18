@@ -115,16 +115,37 @@ target("lsm_shared")
     end
 
     on_install(function (target)
-        os.cp("include", path.join(target:installdir(), "include/tiny-lsm"))
+        -- installdir() 查询安装根目录，不会创建目录。
+        -- 本例得到：/tmp/kopidb-sdk
+        local install_dir = target:installdir()
+        -- 本例得到：/tmp/kopidb-sdk/include/tiny-lsm
+        local include_dir = path.join(install_dir, "include", "tiny-lsm")
+        -- 本例得到：/tmp/kopidb-sdk/lib
+        local lib_dir = path.join(install_dir, "lib")
+
+        -- 先创建目录，再复制 include 下的内容。
+        -- 重复安装时仍保持 tiny-lsm/lsm/...，不额外嵌套 include
+        os.mkdir(include_dir)
+        os.cp("include/*", include_dir)
+
+        -- 首次安装时 lib 目录可能不存在，必须先创建。
+        -- 复制时指定完整文件名，避免把 lib 当作库文件名。
+        os.mkdir(lib_dir)
         local libfile = target:targetfile()
+
         if is_plat("windows") then
-            os.cp(libfile, path.join(target:installdir(), "bin"))
-            local implib = path.join(path.directory(libfile), target:name() .. ".lib")
+            local bin_dir = path.join(install_dir, "bin")
+            os.mkdir(bin_dir)
+            os.cp(libfile, path.join(bin_dir, path.filename(libfile)))
+
+            -- 沿用已有的 Windows 导入库查找逻辑。
+            local implib =
+                path.join(path.directory(libfile), target:name() .. ".lib")
             if os.isfile(implib) then
-                os.cp(implib, path.join(target:installdir(), "lib"))
+                os.cp(implib, path.join(lib_dir, path.filename(implib)))
             end
         else
-            os.cp(libfile, path.join(target:installdir(), "lib"))
+            os.cp(libfile, path.join(lib_dir, path.filename(libfile)))
         end
     end)
 
