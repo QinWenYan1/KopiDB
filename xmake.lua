@@ -168,6 +168,13 @@ target("kopidb_shared")
             -- 将编译好的库复制到这个位置
             os.cp(libfile, path.join(lib_dir, path.filename(libfile)))
         end
+
+        -- 安装供用户项目读取的接入配置；它们只引用已经编译好的库。
+        -- 这里复制的是 packaging/cpp 下的文件，不是编译引擎的根 xmake.lua。
+        -- 两份配置放在 SDK 根目录，用户解压后无需修改里面的路径。
+        os.cp("packaging/cpp/xmake.lua", path.join(install_dir, "xmake.lua"))
+        os.cp("packaging/cpp/KopiDBConfig.cmake",
+              path.join(install_dir, "KopiDBConfig.cmake"))
     end)
 
 -- ============ 测试目标 ============
