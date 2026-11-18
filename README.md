@@ -87,12 +87,61 @@ The `doc/` directory contains **RocksDB source code study notes**, developed alo
 
 ## 🛠️ Build and Test
 
-A C++20 compiler and [Xmake](https://xmake.io) are required. See [config.toml](config.toml) for configuration.
+A C++20 compiler and [Xmake](https://xmake.io) are required. The following installation and integration steps have been verified on **macOS arm64**.
+
+**📦 Build and Install**
+
+Run these commands from the KopiDB repository root:
 
 ```bash
-xmake build lsm             # Build the engine
+# Change this to your preferred installation directory
+KOPIDB_PREFIX="$HOME/.local/kopidb"
+
+xmake f -m release
+xmake build lsm_shared
+xmake install -o "$KOPIDB_PREFIX" lsm_shared
+```
+
+The main installed files are located at:
+
+```text
+installation-directory/
+├── include/tiny-lsm/       # Header files
+└── lib/liblsm_shared.so    # Shared library
+```
+
+**🔗 Use KopiDB in Your C++ Project**
+
+Save the [C++ usage example below](#cpp-example) as `main.cpp`, then run these commands from its directory:
+
+```bash
+# Use the same path as in the installation step
+KOPIDB_PREFIX="$HOME/.local/kopidb"
+
+clang++ -std=c++20 -pthread main.cpp \
+  -I"$KOPIDB_PREFIX/include/tiny-lsm" \
+  "$KOPIDB_PREFIX/lib/liblsm_shared.so" \
+  "-Wl,-rpath,$KOPIDB_PREFIX/lib" \
+  -o demo
+
+./demo
+```
+
+`-I` specifies the header search directory, and `-rpath` specifies where the program looks for the shared library at runtime. The example stores its database in `api-demo/` under the current working directory.
+
+**⚙️ Configuration**
+
+To customize settings, place the repository's [config.toml](config.toml) in the program's working directory and edit the relevant options.
+
+If the configuration file is absent, KopiDB prints a message and uses the defaults. WiscKey is disabled by default.
+
+**🧪 Run Tests**
+
+Run a specific module's tests from the KopiDB repository root:
+
+```bash
 xmake build test_skiplist
-xmake run test_skiplist     # Run one module's tests
+xmake run test_skiplist
 ```
 
 For environment setup instructions, see [Lab 0](https://vanilla-beauty.github.io/tiny-lsm/book/lab0-env.html) in the tutorial (Chinese).

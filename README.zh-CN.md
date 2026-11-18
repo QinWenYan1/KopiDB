@@ -90,12 +90,61 @@ LSM 架构常见于写密集负载的典型选择：
 
 ## 🛠️ 构建与测试
 
-需要 C++20 编译器和 [Xmake](https://xmake.io)，配置见 [config.toml](config.toml)。
+需要 C++20 编译器和 [Xmake](https://xmake.io)。以下安装与接入方式已在 **macOS arm64** 上验证。
+
+**📦 构建并安装**
+
+在 KopiDB 仓库根目录执行：
 
 ```bash
-xmake build lsm             # 构建引擎
+# 可修改为你希望安装的位置
+KOPIDB_PREFIX="$HOME/.local/kopidb"
+
+xmake f -m release
+xmake build lsm_shared
+xmake install -o "$KOPIDB_PREFIX" lsm_shared
+```
+
+安装后，主要文件位于：
+
+```text
+安装目录/
+├── include/tiny-lsm/       # 头文件
+└── lib/liblsm_shared.so    # 共享库
+```
+
+**🔗 接入自己的 C++ 项目**
+
+将[下方的 C++ 使用示例](#cpp-example)保存为 `main.cpp`，在它所在的目录执行：
+
+```bash
+# 与安装时使用的路径一致
+KOPIDB_PREFIX="$HOME/.local/kopidb"
+
+clang++ -std=c++20 -pthread main.cpp \
+  -I"$KOPIDB_PREFIX/include/tiny-lsm" \
+  "$KOPIDB_PREFIX/lib/liblsm_shared.so" \
+  "-Wl,-rpath,$KOPIDB_PREFIX/lib" \
+  -o demo
+
+./demo
+```
+
+其中 `-I` 指定头文件位置，`-rpath` 指定程序运行时的共享库查找目录。示例数据保存在当前目录的 `api-demo/` 中。
+
+**⚙️ 配置**
+
+如需自定义参数，将仓库中的 [config.toml](config.toml) 放到程序运行时的工作目录，再修改对应配置。
+
+没有配置文件时，会提示并使用默认配置；WiscKey 默认关闭。
+
+**🧪 运行测试**
+
+在 KopiDB 仓库根目录运行指定模块的测试：
+
+```bash
 xmake build test_skiplist
-xmake run test_skiplist     # 运行一个模块的测试
+xmake run test_skiplist
 ```
 
 环境安装步骤见教程的 [Lab 0](https://vanilla-beauty.github.io/tiny-lsm/book/lab0-env.html)。

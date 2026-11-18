@@ -457,7 +457,7 @@ WiscKey 与 CRC 对照证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T
 
 ### A17：首次安装将 lib 路径当作库文件名
 
-**解决日期：2026-11-18。** 用户已修改原仓库on_install，先创建目录、按完整文件名复制库，并复制include/*内容。用户当前版本在新的隔离Release构建中通过首次/重复安装，全部安装文件路径及字节一致。独立consumer只用安装头文件/库编译，普通/WiscKey模式各写入及跨进程重开，4/4进程验证通过；源码/头文件/配置哈希稳定。验收范围macOS arm64，未代改业务或构建脚本，不宣称Windows/Linux已通过。C++接入文档仍属PLAN阶段③。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a17-verified-yogc1c_h`。
+**解决日期：2026-11-18。** 用户已修改原仓库on_install，先创建目录、按完整文件名复制库，并复制include/*内容。用户当前版本在新的隔离Release构建中通过首次/重复安装，全部安装文件路径及字节一致。独立consumer只用安装头文件/库编译，普通/WiscKey模式各写入及跨进程重开，4/4进程验证通过；源码/头文件/配置哈希稳定。验收范围macOS arm64，未代改业务或构建脚本，不宣称Windows/Linux已通过。C++接入文档于2026-11-18经用户审批后同步写入两版README，阶段③也已完成；文档命令/锚点核查通过，原示例编译运行通过。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-a17-verified-yogc1c_h`。
 
 2026-11-17 发现记录：C++独立接入验收发现。`xmake.lua:117–129` 的on_install直接 `os.cp(libfile, path.join(target:installdir(), "lib"))`；当目标lib路径不存在时，它被当成目标文件名，导致安装成功却没有预期的lib目录和liblsm_shared.so。
 
