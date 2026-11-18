@@ -15,6 +15,9 @@ sst_html
 .cache
 compile_commands.json
 
+# C++ SDK 发布产物
+/dist/
+
 # 测试运行时产生的数据目录
 logs/
 test_data/
