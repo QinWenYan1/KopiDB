@@ -16,6 +16,8 @@
 
 ## 当前进度
 
+2026-11-18 用户进一步确认本轮同时统一 C++ 命名空间和 Python 包名，并要求先审阅逐步计划。目标为 `kopidb::LSM`、`import kopidb`，内部扩展 `kopidb_pybind`，后续继续已确认的SDK打包；`LSM`算法名、类名及源码路径保留。PLAN新增两阶段并列出65个C++文件与Python联动位置，现进度14%（1/7；此前构建命名已完成），不是已完成成果回退。本次仅更新计划/状态，命名空间与Python目录尚未修改；此前“暂保留命名空间/包名”的范围决定由此次明确指示取代。
+
 2026-11-18 已确认下一轮 C++ SDK 交付：用户下载预编译包，接入自己的 C++ 项目，包含一个入口头文件即可使用。包内 `KopiDBConfig.cmake` 与 `xmake.lua` 同放根目录，分别供消费方构建工具读取；引擎继续由 Xmake 构建。先覆盖 macOS arm64，阶段及验收见 PLAN。
 
 2026-11-18 用户要求统一构建命名，已完成当前构建/交付范围：project `kopidb`、核心目标 `kopidb`、共享目标 `kopidb_shared`、Python构建目标 `kopidb_pybind`，共享库 `libkopidb.so`，安装头文件 `include/kopidb/`。对应依赖、Python库引用及双语README同步。C++命名空间 `tiny_lsm` 与 Python包/扩展导入名暂保留；源码中的LSM算法命名和教程链接不作品牌替换。隔离Release共享库/示例/Python扩展构建及安装通过，外部consumer普通/WiscKey四次运行通过；业务源码未改、未重跑全库、未验收Python wheel或Windows。SDK新计划进度20%（1/5），压缩包与接入配置尚未实现。

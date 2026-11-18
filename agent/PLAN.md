@@ -2,43 +2,170 @@
 
 最后更新：2026-11-18。
 
-## C++ SDK：下载后接入用户自己的项目
+## 统一完整命名，并交付可独立接入的 C++ SDK
 
-目标：交付 macOS arm64 的预编译 C++ SDK。用户下载解压，在自己的 Xmake 或 CMake 项目中添加一次依赖，再通过 `<lsm/engine.h>` 使用数据库，无需重新编译数据库或使用我们的示例工程。
+目标：对外使用 `kopidb::LSM`、Python `import kopidb`，构建/库/包名称与项目一致；交付 macOS arm64 预编译 C++ SDK。用户下载解压，在自己的 Xmake 或 CMake 项目中添加一次依赖，再包含 `<lsm/engine.h>` 使用数据库，无需重新编译引擎。
 
-已确认包结构：头文件与库分开；`KopiDBConfig.cmake` 与包内的 `xmake.lua` 同放包根目录。配置根据自身位置定位文件，不写死开发机器路径。我们继续使用 Xmake 构建引擎。
+用户已同意本轮一起统一 C++ 命名空间和 Python 包名，先审阅逐步计划。本轮仅更新计划与状态，未执行新的命名空间/包目录改动。
 
-用户新增要求：统一 xmake 构建与交付名称为 kopidb。当前先处理这一项；C++ 命名空间及 Python 导入名属于接口变更，暂保留现有名称。`lsm` 在源码路径、类名、测试名中表示数据结构，不作全文替换。
+已确认包结构：`include/kopidb/`、`lib/libkopidb.so`，以及同放包根目录的 `KopiDBConfig.cmake`、`xmake.lua`、README 和许可说明。接入配置根据自身位置定位文件；引擎继续使用 Xmake 构建。
 
-**进度：20%（1/5 阶段验收）。** 之前单头文件入口已完成，本表记录新一轮 SDK 交付。百分比按已验收阶段数计算，不代表工时比例。
+**进度：14%（1/7 阶段验收，四舍五入）。** 新增 C++、Python 两个完整命名阶段，原来的构建命名成果保留；百分比按验收阶段数计算，不代表工时。
 
 | 阶段 | 具体工作 | 验收标准 | 状态 |
 | --- | --- | --- | --- |
-| ① 统一构建与交付名称 | xmake 项目名、核心/共享库/Python 构建目标、库 basename、头文件安装目录；同步 SDK 库引用与两版 README | 新名称构建/安装成功；独立程序使用新路径编译、链接、运行；内部目标依赖完整 | 已通过：Release 构建/安装、独立 consumer 4/4 运行通过 |
-| ② SDK 接入配置 | 新增 `packaging/cpp/KopiDBConfig.cmake` 和 `packaging/cpp/xmake.lua`，打包时放根目录 | CMake 与 Xmake 用户只指定 SDK 位置并声明依赖，就获得头文件、库、C++20 和必要运行路径；不重新构建引擎 | 待开始 |
-| ③ 可重复执行的打包脚本 | 新增 `scripts/package_cpp.sh`，整理 Release 库、匹配头文件、接入配置、版本/平台说明与许可文件 | 产出带版本和平台名的压缩包；不依赖旧构建产物，不改变用户原工作区构建模式 | 待开始 |
-| ④ 解压包验收 | 将真实压缩包解压到新的目录，以用户自己的 C++ 项目接入 | CMake/Xmake 构建及直接运行通过；无仓库/包缓存头文件依赖或 DYLD 环境变量补丁；CRUD、事务、遍历、普通/WiscKey 重开通过 | 待开始 |
-| ⑤ 双语文档与交付说明 | 更新 README.md/README.zh-CN.md 的下载与依赖接入步骤，保留源码构建说明 | 文档与实际压缩包一致，下载附件和支持平台清楚；发布附件准备好，GitHub 发布由用户执行 | 待开始 |
+| ① 构建与交付名称 | Xmake 项目/目标、库 basename、安装目录、SDK 库引用 | 新名称构建安装成功，外部 consumer 运行通过 | 已通过：Release 构建/安装及4/4运行 |
+| ② C++ 命名空间 | 65个C++文件的 namespace、using、限定引用，双语README示例 | 全部声明与定义一致，目标重建与定向回归通过，外部程序使用 kopidb::LSM 成功 | 待开始，当前下一步 |
+| ③ Python 包与扩展名称 | 两层包目录、扩展源码/输出/初始化入口、安装及导入引用 | 新包和扩展名称一致，语法/构建/受控导入及CRUD验证通过；不把已有wheel问题算成改名缺陷 | 待开始 |
+| ④ SDK 接入配置 | packaging/cpp/KopiDBConfig.cmake、packaging/cpp/xmake.lua | CMake/Xmake用户声明依赖即可获得头文件、库、C++20及运行路径；不重建数据库 | 待开始 |
+| ⑤ 打包脚本 | scripts/package_cpp.sh | 生成带版本、平台、匹配头文件/库、接入配置和许可说明的压缩包；不修改原工作区构建模式 | 待开始 |
+| ⑥ 解压包验收 | 独立临时目录中的 CMake/Xmake 消费项目 | 异目录解压后可编译并直接运行；无仓库路径或 DYLD 补丁依赖；CRUD、事务、遍历、普通/WiscKey重开通过 | 待开始 |
+| ⑦ 双语说明与交付 | README.md、README.zh-CN.md、包内说明 | 下载、添加依赖、include步骤与实际产物一致；发布附件准备好，GitHub发布由用户执行 | 待开始 |
 
-## 阶段①命名映射
+## ① 已完成的名称
 
-| 原名称 | 新名称 |
+- project：`kopidb`；静态核心目标：`kopidb`；共享目标：`kopidb_shared`；Python构建目标：`kopidb_pybind`。
+- 共享库：`libkopidb.so`；安装头文件：`include/kopidb/`。
+- 内部静态核心仍依赖其他模块，不将它当作已可独立分发的完整静态SDK。
+
+## ② 第一个待执行步骤：统一 C++ 命名空间
+
+必须成组修改头文件、实现、测试、示例与Python绑定；不能仅改公开入口头文件。
+
+| 文件组 | 修改位置 | 数量 |
+| --- | --- | --- |
+| include/ 下命中清单的头文件 | `namespace tiny_lsm`及闭合注释 → `namespace kopidb` | 26 |
+| src/ 下命中清单的实现 | 同步命名空间定义；同一文件可能有多个namespace块 | 24 |
+| test/test_*.cpp | `using namespace ::tiny_lsm`及显式限定引用 → `kopidb` | 12 |
+| example/main.cpp、example/debug.cpp | `using namespace ::tiny_lsm` → `::kopidb` | 2 |
+| sdk/lsm_pybind.cpp | 全部`tiny_lsm::类型` → `kopidb::类型`；此步尚不更名扩展模块 | 1 |
+| README.md、README.zh-CN.md | C++示例的`using namespace tiny_lsm` → `kopidb` | 2份文档 |
+
+示例定位：include/lsm/engine.h:19、src/lsm/engine.cpp:26、test/test_lsm.cpp:31、sdk/lsm_pybind.cpp:11、README.md:177、README.zh-CN.md:180。以下清单为计划时行号，执行前核对最新文件。
+
+验收：差异审查确认仅命名变化；全量重新构建当前目标（包括测试和绑定），在隔离目录进行相关存储/事务定向回归及已安装库的单头文件接入验证。命名空间改变C++链接符号，库及消费程序一起重建，不混用旧二进制。
+
+### C++ 逐文件清单
+
+| 文件 | 当前命中行 |
 | --- | --- |
-| Xmake project `tiny-lsm` | `kopidb` |
-| 内部静态核心目标 `lsm` | `kopidb` |
-| 共享库目标 `lsm_shared` | `kopidb_shared` |
-| Python 构建目标 `lsm_pybind` | `kopidb_pybind` |
-| 对外共享库 `liblsm_shared.so` | `libkopidb.so` |
-| 安装头文件 `include/tiny-lsm/` | `include/kopidb/` |
+| [example/debug.cpp](../example/debug.cpp) | 5 |
+| [example/main.cpp](../example/main.cpp) | 6 |
+| [include/block/block.h](../include/block/block.h) | 29, 110 |
+| [include/block/block_cache.h](../include/block/block_cache.h) | 13, 78 |
+| [include/block/block_iterator.h](../include/block/block_iterator.h) | 11, 63 |
+| [include/block/blockmeta.h](../include/block/blockmeta.h) | 32, 48 |
+| [include/config/config.h](../include/config/config.h) | 9, 71 |
+| [include/consts.h](../include/consts.h) | 5, 24 |
+| [include/iterator/iterator.h](../include/iterator/iterator.h) | 11, 125 |
+| [include/logger/logger.h](../include/logger/logger.h) | 5, 10 |
+| [include/lsm/compact.h](../include/lsm/compact.h) | 3 |
+| [include/lsm/engine.h](../include/lsm/engine.h) | 19, 143 |
+| [include/lsm/level_iterator.h](../include/lsm/level_iterator.h) | 8, 42 |
+| [include/lsm/transaction.h](../include/lsm/transaction.h) | 16, 190 |
+| [include/lsm/two_merge_iterator.h](../include/lsm/two_merge_iterator.h) | 6, 41 |
+| [include/memtable/memtable.h](../include/memtable/memtable.h) | 14, 121 |
+| [include/skiplist/skiplist.h](../include/skiplist/skiplist.h) | 16, 171 |
+| [include/sst/concact_iterator.h](../include/sst/concact_iterator.h) | 10, 47 |
+| [include/sst/sst.h](../include/sst/sst.h) | 18, 186 |
+| [include/sst/sst_iterator.h](../include/sst/sst_iterator.h) | 12, 96 |
+| [include/utils/bloom_filter.h](../include/utils/bloom_filter.h) | 11, 57 |
+| [include/utils/cursor.h](../include/utils/cursor.h) | 7, 35 |
+| [include/utils/files.h](../include/utils/files.h) | 11, 73 |
+| [include/utils/mmap_file.h](../include/utils/mmap_file.h) | 12, 59 |
+| [include/utils/std_file.h](../include/utils/std_file.h) | 9, 50 |
+| [include/vlog/vlog.h](../include/vlog/vlog.h) | 9, 50 |
+| [include/wal/record.h](../include/wal/record.h) | 9, 52 |
+| [include/wal/wal.h](../include/wal/wal.h) | 16, 61 |
+| [sdk/lsm_pybind.cpp](../sdk/lsm_pybind.cpp) | 11, 12, 13, 23, 24, 25, 37, 42, 44, 45, 46, 47, 51, 52, 53, 54, 55, 67, 70, 72, 74, 76, 78, 81, 83, 85, 88, 89, 90 |
+| [src/block/block.cpp](../src/block/block.cpp) | 12, 628 |
+| [src/block/block_cache.cpp](../src/block/block_cache.cpp) | 10, 141 |
+| [src/block/block_iterator.cpp](../src/block/block_iterator.cpp) | 11, 199 |
+| [src/block/blockmeta.cpp](../src/block/blockmeta.cpp) | 8, 136 |
+| [src/config/config.cpp](../src/config/config.cpp) | 6, 219 |
+| [src/iterator/iterator.cpp](../src/iterator/iterator.cpp) | 7, 230 |
+| [src/logger/logger.cpp](../src/logger/logger.cpp) | 4, 14, 28 |
+| [src/lsm/engine.cpp](../src/lsm/engine.cpp) | 26, 1495 |
+| [src/lsm/level_iterator.cpp](../src/lsm/level_iterator.cpp) | 13, 299 |
+| [src/lsm/transation.cpp](../src/lsm/transation.cpp) | 20, 873, 877, 1412 |
+| [src/lsm/two_merge_iterator.cpp](../src/lsm/two_merge_iterator.cpp) | 5, 234 |
+| [src/memtable/memtable.cpp](../src/memtable/memtable.cpp) | 17, 758 |
+| [src/skiplist/skipList.cpp](../src/skiplist/skipList.cpp) | 12, 413 |
+| [src/sst/concact_iterator.cpp](../src/sst/concact_iterator.cpp) | 7, 150 |
+| [src/sst/sst.cpp](../src/sst/sst.cpp) | 18, 627 |
+| [src/sst/sst_iterator.cpp](../src/sst/sst_iterator.cpp) | 12, 448 |
+| [src/utils/bloom_filter.cpp](../src/utils/bloom_filter.cpp) | 10, 253 |
+| [src/utils/cursor.cpp](../src/utils/cursor.cpp) | 5, 80 |
+| [src/utils/files.cpp](../src/utils/files.cpp) | 6, 211 |
+| [src/utils/mmap_file.cpp](../src/utils/mmap_file.cpp) | 8, 173 |
+| [src/utils/std_file.cpp](../src/utils/std_file.cpp) | 14, 123 |
+| [src/vlog/vlog.cpp](../src/vlog/vlog.cpp) | 14, 196 |
+| [src/wal/record.cpp](../src/wal/record.cpp) | 10, 333 |
+| [src/wal/wal.cpp](../src/wal/wal.cpp) | 18, 541 |
+| [test/test_block.cpp](../test/test_block.cpp) | 14 |
+| [test/test_block_cache.cpp](../test/test_block_cache.cpp) | 8 |
+| [test/test_blockmeta.cpp](../test/test_blockmeta.cpp) | 5, 7, 40 |
+| [test/test_compact.cpp](../test/test_compact.cpp) | 14 |
+| [test/test_config.cpp](../test/test_config.cpp) | 11 |
+| [test/test_lsm.cpp](../test/test_lsm.cpp) | 31 |
+| [test/test_memtable.cpp](../test/test_memtable.cpp) | 19 |
+| [test/test_skiplist.cpp](../test/test_skiplist.cpp) | 22 |
+| [test/test_sst.cpp](../test/test_sst.cpp) | 12 |
+| [test/test_utils.cpp](../test/test_utils.cpp) | 16 |
+| [test/test_wal.cpp](../test/test_wal.cpp) | 28 |
+| [test/test_wisckey.cpp](../test/test_wisckey.cpp) | 42 |
 
-- 静态核心目标沿用模块依赖关系，不把它误称为已可独立分发的完整静态 SDK。
-- Python 扩展文件及导入名仍为 `lsm_pybind`，包名仍为 `tinylsm`；构建目标名不必等于扩展入口符号名。
-- C++ 命名空间 `tiny_lsm`、`LSM` 类型及 `src/lsm`、`include/lsm` 路径保持。教程链接保留真实 tiny-lsm 地址。
-- macOS 下共享库沿用当前 `.so` 后缀，SDK loader 与实际新文件名同步。Windows 安装导入库改用 Xmake 返回的产物路径；此轮不宣称 Windows 已运行验收。
+## ③ 第二个待执行步骤：统一 Python 包与内部扩展
 
-## 前一轮完成
+对外包名为 `kopidb`，内部扩展统一为 `kopidb_pybind`，与现有构建目标同名。Python用户使用 `import kopidb`，不要求直接导入内部扩展。
 
-单头文件入口及 C++ 独立接入验收保留于 STATE/AUDIT。前一轮 PLAN 快照：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-naming-rh8v_v6a/previous-PLAN.md`。
+| 文件/位置（当前路径） | 修改 |
+| --- | --- |
+| sdk/tinylsm/ | 外层构建目录改为sdk/kopidb/；内层tinylsm/包目录改为kopidb/，保留core及类型提示文件布局 |
+| sdk/lsm_pybind.cpp:59 | 文件更名sdk/kopidb_pybind.cpp；`PYBIND11_MODULE(lsm_pybind, m)` → `PYBIND11_MODULE(kopidb_pybind, m)` |
+| xmake.lua:295、306 | 两个平台分支的add_files同步新绑定源码路径 |
+| xmake.lua:300、311 | 扩展文件改为kopidb_pybind.pyd、kopidb_pybind.so；构建目标已正确，无需再改 |
+| sdk/tinylsm/setup.py:14、22、37、42 | 包内库目录、扩展文件清单、发行名、package_data键同步kopidb/kopidb_pybind |
+| sdk/tinylsm/tinylsm/core/__init__.py:25 | `from kopidb_pybind import LSM, IsolationLevel` |
+| sdk/tinylsm/tinylsm/__init__.py:1 | 包名注释更新；`.core`相对导出不必重写 |
+| sdk/tinylsm/tinylsm/core/__init__.pyi | 随包移动，保持现有类型声明；不混入已知API类型修正 |
+| sdk/build_python_sdk.sh:4、6、7 | 复制目标、进入目录和egg-info名称同步；已有kopidb_pybind构建目标保持 |
+| sdk/test_sdk.py:1、3、10 | import及公开调用前缀改为kopidb |
+| .gitignore:5–8 | SDK构建、dist、库产物及egg-info忽略路径同步 |
+
+以上文件必须同一阶段完成。扩展文件名、PYBIND11_MODULE和导入名称一致，才能生成/找到正确初始化入口。只迁移有效源码与包文件，不把旧build/dist二进制搬入新包作为验收产物。
+
+验收：Python AST、脚本语法、包文件清单检查通过；新扩展重新构建，确认初始化符号及新包导入、CRUD。使用同一受控环境区分已有A12加载/打包限制与改名新引入的问题；不得仅凭语法检查宣布新包可用，也不要求在纯命名阶段完成整个wheel发布。
+
+## ④–⑦ 随后继续原 SDK 交付步骤
+
+### ④ 接入配置
+
+- 新增packaging/cpp/KopiDBConfig.cmake：注册`KopiDB::KopiDB`，从配置文件位置确定包根目录，传递include/kopidb、libkopidb.so及C++20要求。
+- 新增packaging/cpp/xmake.lua：供使用者导入已经编译好的库，声明头文件、库和运行路径，不添加数据库cpp源码。
+- 两文件打包时同放根目录。分别用独立CMake和Xmake工程验证。
+
+### ⑤ 打包
+
+- 新增scripts/package_cpp.sh：隔离Release构建和安装，整理同一版本头文件/库、两份接入配置、说明和所需许可证，再压缩。
+- 产物名草案：kopidb-<版本>-macos-arm64.tar.gz。记录实际工具链/系统要求；版本由项目配置读取，不假造发布版本。
+
+### ⑥ 解压验收
+
+- 真正从压缩包解压到新目录，以独立用户项目消费。验证新`kopidb::LSM`入口、CRUD/事务/遍历、普通与WiscKey的跨进程重开。
+- 用户程序自行编译；KopiDB只链接现成库。检查动态库确实来自解压包，不能借用仓库build或开发机缓存。
+
+### ⑦ 文档及交付
+
+- 同步两份README的命名、接入配置及下载步骤，保留用户已有知识部分、目录、图标及完整示例；源码构建方法保留为可选说明。
+- 完成包内说明与发布附件准备；不在尚未发布时写假下载链接。GitHub发布由用户执行。
+
+## 范围与既有记录
+
+- `LSM`类名、src/lsm和include/lsm目录、test_lsm及配置中的LSM算法用语保留；公开入口仍是`<lsm/engine.h>`。
+- SST/WAL/事务状态编码、业务算法不变，不重写事务和迭代器。历史验收记录与tiny-lsm教程链接保留真实名称。
+- Python完整wheel发布与A12已有问题、其他首发排期按STATE处理；纯命名不扩大成PythonSDK全面修复。
+- 本轮平台仍限macOS arm64；不自动增加其他平台发布矩阵。
 
 ## 阶段①验收（2026-11-18）
 
