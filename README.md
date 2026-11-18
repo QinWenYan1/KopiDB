@@ -171,8 +171,7 @@ Ordinary `put/get/remove` calls do not require an explicit transaction. Use `beg
 The following example demonstrates five usage patterns on a single database instance, separated by comments. Commit-result handling is omitted to keep the API flow clear.
 
 ```cpp
-#include "lsm/engine.h"
-#include "lsm/level_iterator.h"
+#include <lsm/engine.h>
 #include <iostream>
 
 using namespace tiny_lsm;

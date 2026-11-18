@@ -1,5 +1,7 @@
 #pragma once
 
+// 公开遍历接口按值返回迭代器，入口头文件需提供其完整定义。
+#include "level_iterator.h"
 #include "memtable/memtable.h"
 #include "sst/sst.h"
 #include "transaction.h"

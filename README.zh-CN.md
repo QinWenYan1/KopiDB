@@ -174,8 +174,7 @@ KopiDB 的并发设计目标是：**同一进程内，多个线程共享同一�
 下面在同一个数据库实例中演示五类用法，用注释区分；为突出调用流程，省略提交结果处理。
 
 ```cpp
-#include "lsm/engine.h"
-#include "lsm/level_iterator.h"
+#include <lsm/engine.h>
 #include <iostream>
 
 using namespace tiny_lsm;
