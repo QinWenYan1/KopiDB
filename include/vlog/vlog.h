@@ -6,7 +6,7 @@
 #include <mutex>
 #include <string>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 /**
  * Value Log (VLog) for WiscKey-style value separation.
@@ -47,4 +47,4 @@ private:
     mutable std::mutex append_mtx_;
 };
 
-} // namespace tiny_lsm
+} // namespace kopidb

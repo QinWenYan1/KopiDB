@@ -4,7 +4,7 @@
 #include <vector>
 #include <stdexcept>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 // *************************** SearchItem ***************************
 // key 小的优先
@@ -227,4 +227,4 @@ bool HeapIterator::is_vlog_ref() const {
   return !items.empty() && items.top().is_vlog_ref_;
 }
 
-} // namespace tiny_lsm
+} // namespace kopidb

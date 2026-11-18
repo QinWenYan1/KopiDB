@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace tiny_lsm {
+namespace kopidb {
 Block::Block(size_t capacity) : capacity(capacity) {}
 
 // CRC32 校验实现 (polynomial 0xEDB88320), 抄自 vlog.cpp
@@ -625,4 +625,4 @@ BlockIterator Block::end() {
   // ? 返回指向末尾 (offsets.size()) 的迭代器
   return BlockIterator(shared_from_this(), offsets.size(), 0);
 }
-} // namespace tiny_lsm
+} // namespace kopidb

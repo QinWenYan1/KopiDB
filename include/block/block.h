@@ -26,7 +26,7 @@ Refer to https://skyzh.github.io/mini-lsm/week1-03-block.html for memory layout
 
 */
 
-namespace tiny_lsm {
+namespace kopidb {
 class BlockIterator;
 
 class Block : public std::enable_shared_from_this<Block> {
@@ -107,4 +107,4 @@ public:
 
   BlockIterator end();
 };
-} // namespace tiny_lsm
+} // namespace kopidb

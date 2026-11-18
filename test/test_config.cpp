@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <toml.hpp>
 
-using namespace ::tiny_lsm;
+using namespace ::kopidb;
 
 namespace {
 

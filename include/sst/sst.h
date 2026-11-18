@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 // VLog 引用布局：[offset:uint64][value_size:uint32]
 // SST 读写和迭代器类型判断共用这个长度
@@ -183,4 +183,4 @@ public:
   std::shared_ptr<SST> build(size_t sst_id, const std::string &path,
                              std::shared_ptr<BlockCache> block_cache);
 };
-} // namespace tiny_lsm
+} // namespace kopidb

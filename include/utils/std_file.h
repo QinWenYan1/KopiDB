@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace tiny_lsm {
+namespace kopidb {
 class StdFile {
 
 private:
@@ -47,4 +47,4 @@ public:
 
   bool truncate(size_t size);
 };
-} // namespace tiny_lsm
+} // namespace kopidb

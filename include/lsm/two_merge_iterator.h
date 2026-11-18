@@ -3,7 +3,7 @@
 #include "iterator/iterator.h"
 #include <memory>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 class TwoMergeIterator : public BaseIterator {
 private:
@@ -38,4 +38,4 @@ public:
 
   pointer operator->() const;
 };
-} // namespace tiny_lsm
+} // namespace kopidb

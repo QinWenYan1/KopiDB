@@ -19,7 +19,7 @@
 #include <utility>
 #include <vector>
 
-using namespace ::tiny_lsm;
+using namespace ::kopidb;
 
 // 阅读约定：K@9 表示 key 为 K、tranc_id 为 9 的记录；读取上限 0 表示不限制版本。
 // SkipList 的 remove 是物理摘除节点；MVCC 的逻辑删除通过写入空 value（墓碑）表示。

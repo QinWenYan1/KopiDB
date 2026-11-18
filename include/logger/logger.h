@@ -2,9 +2,9 @@
 
 #include <string>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 void init_spdlog_file();
 void reset_log_level(const std::string &level);
 
-} // namespace tiny_lsm
+} // namespace kopidb

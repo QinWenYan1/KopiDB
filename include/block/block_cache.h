@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 // 定义缓存项
 struct CacheItem {
@@ -75,4 +75,4 @@ private:
   mutable size_t total_requests_ = 0;
   mutable size_t hit_requests_ = 0;
 };
-} // namespace tiny_lsm
+} // namespace kopidb

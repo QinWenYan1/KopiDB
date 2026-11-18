@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 class Cursor;
 
@@ -70,4 +70,4 @@ public:
   Cursor get_cursor(FileObj &file_obj);
 };
 
-} // namespace tiny_lsm
+} // namespace kopidb

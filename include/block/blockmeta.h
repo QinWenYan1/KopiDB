@@ -29,7 +29,7 @@
  数组的哈希值(只包括数组部分, 不包括 num_entries ), 用于校验 metadata 的完整性
  */
 
-namespace tiny_lsm {
+namespace kopidb {
 class BlockMeta {
   friend class BlockMetaTest;
 
@@ -45,4 +45,4 @@ public:
   BlockMeta(size_t offset, const std::string &first_key,
             const std::string &last_key);
 };
-} // namespace tiny_lsm
+} // namespace kopidb

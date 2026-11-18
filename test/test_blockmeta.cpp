@@ -2,9 +2,9 @@
 #include "logger/logger.h"
 #include <gtest/gtest.h>
 
-using namespace ::tiny_lsm;
+using namespace ::kopidb;
 
-namespace tiny_lsm {
+namespace kopidb {
 class BlockMetaTest : public ::testing::Test {
   friend class BlockMeta;
 
@@ -37,7 +37,7 @@ protected:
     return metas;
   }
 };
-} // namespace tiny_lsm
+} // namespace kopidb
 
 // 测试基本的编码和解码功能
 TEST_F(BlockMetaTest, BasicEncodeDecodeTest) {

@@ -3,7 +3,7 @@
 #include <iostream>
 #include <toml.hpp>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 // Private helper to set all default values
 void TomlConfig::setDefaultValues() {
@@ -216,4 +216,4 @@ bool TomlConfig::saveToFile(const std::string &filePath) {
     return false;
   }
 }
-} // namespace tiny_lsm
+} // namespace kopidb

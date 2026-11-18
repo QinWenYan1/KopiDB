@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 class SstIterator;
 class SST;
@@ -93,4 +93,4 @@ public:
   merge_sst_iterator(std::vector<SstIterator> iter_vec, uint64_t tranc_id,
                      bool keep_all_versions = false);
 };
-} // namespace tiny_lsm
+} // namespace kopidb

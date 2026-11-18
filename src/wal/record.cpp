@@ -7,7 +7,7 @@
 #include <limits>
 #include <stdexcept>
 #include <utility>
-namespace tiny_lsm {
+namespace kopidb {
 
 // Lab 5.3 实现创建事务的Record
 // OP_CREATE 表示“事务开始”这类记录，可以理解为 BEGIN
@@ -330,4 +330,4 @@ bool Record::operator==(const Record &other) const {
 }
 
 bool Record::operator!=(const Record &other) const { return !(*this == other); }
-} // namespace tiny_lsm
+} // namespace kopidb

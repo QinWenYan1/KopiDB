@@ -11,7 +11,7 @@
 #include <memory>
 #include <sstream>
 
-using namespace ::tiny_lsm;
+using namespace ::kopidb;
 
 class CompactTest : public ::testing::Test {
 protected:

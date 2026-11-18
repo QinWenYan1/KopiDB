@@ -13,7 +13,7 @@
 #include <unistd.h>
 #endif
 
-using namespace ::tiny_lsm;
+using namespace ::kopidb;
 
 class FileTest : public ::testing::Test {
 protected:

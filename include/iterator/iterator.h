@@ -8,7 +8,7 @@
 #include <sys/types.h>
 #include <utility>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 enum class IteratorType {
   SkipListIterator,
@@ -122,4 +122,4 @@ private:
   bool skip_delete_;
   bool keep_all_versions_ = false;
 };
-} // namespace tiny_lsm
+} // namespace kopidb

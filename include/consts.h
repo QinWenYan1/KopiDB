@@ -2,7 +2,7 @@
 
 // 下述配置参数已经迁移至 config.toml, 本头文件已被标记为 deprecated
 
-namespace tiny_lsm {
+namespace kopidb {
 
 #define LSM_TOL_MEM_SIZE_LIMIT (64 * 1024 * 1024) // 内存表的大小限制, 64MB
 #define LSM_PER_MEM_SIZE_LIMIT (4 * 1024 * 1024)  // 内存表的大小限制, 4MB
@@ -21,4 +21,4 @@ namespace tiny_lsm {
 // Bloom Filter
 #define BLOOM_FILTER_EXPECTED_SIZE 65536
 #define BLOOM_FILTER_EXPECTED_ERROR_RATE 0.1
-} // namespace tiny_lsm
+} // namespace kopidb

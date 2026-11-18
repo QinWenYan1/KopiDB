@@ -6,29 +6,28 @@
 
 目标：对外使用 `kopidb::LSM`、Python `import kopidb`，构建/库/包名称与项目一致；交付 macOS arm64 预编译 C++ SDK。用户下载解压，在自己的 Xmake 或 CMake 项目中添加一次依赖，再包含 `<lsm/engine.h>` 使用数据库，无需重新编译引擎。
 
-用户已同意本轮一起统一 C++ 命名空间和 Python 包名，先审阅逐步计划。本轮仅更新计划与状态，未执行新的命名空间/包目录改动。
+用户已批准按剩余六步实施，每完成一步先汇报，由用户检查后再继续。本轮执行第①步 C++ 命名空间，Python包及后续接入/打包尚不改动。
 
 已确认包结构：`include/kopidb/`、`lib/libkopidb.so`，以及同放包根目录的 `KopiDBConfig.cmake`、`xmake.lua`、README 和许可说明。接入配置根据自身位置定位文件；引擎继续使用 Xmake 构建。
 
-**进度：14%（1/7 阶段验收，四舍五入）。** 新增 C++、Python 两个完整命名阶段，原来的构建命名成果保留；百分比按验收阶段数计算，不代表工时。
+**进度：17%（1/6 步验收，四舍五入）。** 按用户最新要求，仅统计剩余六步；上一轮构建命名作为已完成前置成果保留。每步通过后等待用户检查，不自动执行下一步。百分比按验收步骤数计算，不代表工时。
 
 | 阶段 | 具体工作 | 验收标准 | 状态 |
 | --- | --- | --- | --- |
-| ① 构建与交付名称 | Xmake 项目/目标、库 basename、安装目录、SDK 库引用 | 新名称构建安装成功，外部 consumer 运行通过 | 已通过：Release 构建/安装及4/4运行 |
-| ② C++ 命名空间 | 65个C++文件的 namespace、using、限定引用，双语README示例 | 全部声明与定义一致，目标重建与定向回归通过，外部程序使用 kopidb::LSM 成功 | 待开始，当前下一步 |
-| ③ Python 包与扩展名称 | 两层包目录、扩展源码/输出/初始化入口、安装及导入引用 | 新包和扩展名称一致，语法/构建/受控导入及CRUD验证通过；不把已有wheel问题算成改名缺陷 | 待开始 |
-| ④ SDK 接入配置 | packaging/cpp/KopiDBConfig.cmake、packaging/cpp/xmake.lua | CMake/Xmake用户声明依赖即可获得头文件、库、C++20及运行路径；不重建数据库 | 待开始 |
-| ⑤ 打包脚本 | scripts/package_cpp.sh | 生成带版本、平台、匹配头文件/库、接入配置和许可说明的压缩包；不修改原工作区构建模式 | 待开始 |
-| ⑥ 解压包验收 | 独立临时目录中的 CMake/Xmake 消费项目 | 异目录解压后可编译并直接运行；无仓库路径或 DYLD 补丁依赖；CRUD、事务、遍历、普通/WiscKey重开通过 | 待开始 |
-| ⑦ 双语说明与交付 | README.md、README.zh-CN.md、包内说明 | 下载、添加依赖、include步骤与实际产物一致；发布附件准备好，GitHub发布由用户执行 | 待开始 |
+| ① C++ 命名空间 | 65个C++文件的 namespace、using、限定引用，双语README示例 | 全部声明与定义一致，目标重建与定向回归通过，外部程序使用 kopidb::LSM 成功 | 已通过：全目标构建、279项回归及6次外部运行；等待用户检查 |
+| ② Python 包与扩展名称 | 两层包目录、扩展源码/输出/初始化入口、安装及导入引用 | 新包和扩展名称一致，语法/构建/受控导入及CRUD验证通过；不把已有wheel问题算成改名缺陷 | 待开始 |
+| ③ SDK 接入配置 | packaging/cpp/KopiDBConfig.cmake、packaging/cpp/xmake.lua | CMake/Xmake用户声明依赖即可获得头文件、库、C++20及运行路径；不重建数据库 | 待开始 |
+| ④ 打包脚本 | scripts/package_cpp.sh | 生成带版本、平台、匹配头文件/库、接入配置和许可说明的压缩包；不修改原工作区构建模式 | 待开始 |
+| ⑤ 解压包验收 | 独立临时目录中的 CMake/Xmake 消费项目 | 异目录解压后可编译并直接运行；无仓库路径或 DYLD 补丁依赖；CRUD、事务、遍历、普通/WiscKey重开通过 | 待开始 |
+| ⑥ 双语说明与交付 | README.md、README.zh-CN.md、包内说明 | 下载、添加依赖、include步骤与实际产物一致；发布附件准备好，GitHub发布由用户执行 | 待开始 |
 
-## ① 已完成的名称
+## 前置工作：构建名称已完成
 
 - project：`kopidb`；静态核心目标：`kopidb`；共享目标：`kopidb_shared`；Python构建目标：`kopidb_pybind`。
 - 共享库：`libkopidb.so`；安装头文件：`include/kopidb/`。
 - 内部静态核心仍依赖其他模块，不将它当作已可独立分发的完整静态SDK。
 
-## ② 第一个待执行步骤：统一 C++ 命名空间
+## ① 统一 C++ 命名空间（当前步骤）
 
 必须成组修改头文件、实现、测试、示例与Python绑定；不能仅改公开入口头文件。
 
@@ -115,7 +114,7 @@
 | [test/test_wal.cpp](../test/test_wal.cpp) | 28 |
 | [test/test_wisckey.cpp](../test/test_wisckey.cpp) | 42 |
 
-## ③ 第二个待执行步骤：统一 Python 包与内部扩展
+## ② 统一 Python 包与内部扩展
 
 对外包名为 `kopidb`，内部扩展统一为 `kopidb_pybind`，与现有构建目标同名。Python用户使用 `import kopidb`，不要求直接导入内部扩展。
 
@@ -137,27 +136,27 @@
 
 验收：Python AST、脚本语法、包文件清单检查通过；新扩展重新构建，确认初始化符号及新包导入、CRUD。使用同一受控环境区分已有A12加载/打包限制与改名新引入的问题；不得仅凭语法检查宣布新包可用，也不要求在纯命名阶段完成整个wheel发布。
 
-## ④–⑦ 随后继续原 SDK 交付步骤
+## ③–⑥ 随后继续原 SDK 交付步骤
 
-### ④ 接入配置
+### ③ 接入配置
 
 - 新增packaging/cpp/KopiDBConfig.cmake：注册`KopiDB::KopiDB`，从配置文件位置确定包根目录，传递include/kopidb、libkopidb.so及C++20要求。
 - 新增packaging/cpp/xmake.lua：供使用者导入已经编译好的库，声明头文件、库和运行路径，不添加数据库cpp源码。
 - 两文件打包时同放根目录。分别用独立CMake和Xmake工程验证。
 
-### ⑤ 打包
+### ④ 打包
 
 - 新增scripts/package_cpp.sh：隔离Release构建和安装，整理同一版本头文件/库、两份接入配置、说明和所需许可证，再压缩。
 - 产物名草案：kopidb-<版本>-macos-arm64.tar.gz。记录实际工具链/系统要求；版本由项目配置读取，不假造发布版本。
 
-### ⑥ 解压验收
+### ⑤ 解压验收
 
 - 真正从压缩包解压到新目录，以独立用户项目消费。验证新`kopidb::LSM`入口、CRUD/事务/遍历、普通与WiscKey的跨进程重开。
 - 用户程序自行编译；KopiDB只链接现成库。检查动态库确实来自解压包，不能借用仓库build或开发机缓存。
 
-### ⑦ 文档及交付
+### ⑥ 文档及交付
 
-- 同步两份README的命名、接入配置及下载步骤，保留用户已有知识部分、目录、图标及完整示例；源码构建方法保留为可选说明。
+- 同步两份README的命名、接入配置及下载步骤，保留用户已有知识部分、目录、图标及完整示例；源码构建方法保留为可选说明。第①步即时同步C++命名空间示例，现有构建命令已对应kopidb_shared；只有接入配置及真实压缩包验收后，才写入新的下载接入主流程，不将草案命令描述为已可用。
 - 完成包内说明与发布附件准备；不在尚未发布时写假下载链接。GitHub发布由用户执行。
 
 ## 范围与既有记录
@@ -167,7 +166,7 @@
 - Python完整wheel发布与A12已有问题、其他首发排期按STATE处理；纯命名不扩大成PythonSDK全面修复。
 - 本轮平台仍限macOS arm64；不自动增加其他平台发布矩阵。
 
-## 阶段①验收（2026-11-18）
+## 前置构建命名验收（2026-11-18）
 
 - 在独立临时源码副本配置 Release；`kopidb_shared`、`example`（包含静态核心 `kopidb`）、`kopidb_pybind` 构建通过。没有切换原仓库的构建模式。
 - 安装生成 `include/kopidb/` 与 `lib/libkopidb.so`；库的 install name 和独立 consumer 的依赖均为 `@rpath/libkopidb.so`，没有引用旧库。
@@ -175,3 +174,14 @@
 - 构建目标引用检查通过；SDK脚本及Python语法检查通过，Python wheel完整验收未开展。Windows未实跑。
 - 业务源码/头文件与构建快照一致；本次不重跑全库单元测试。初次验证脚本使用了错误大小写的配置字段，在执行前被断言拒绝；改用实际字段后完成4次运行，不属于数据库失败。
 - 证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-naming-rh8v_v6a`，含安装树、consumer、配置、运行日志、依赖检查与summary.json。
+
+## 第①步完成：C++ 命名空间（2026-11-18）
+
+- 用户明确授权按六步逐项执行，每完成一步汇报并等待检查。本步已完成，不提前修改Python包/扩展名。
+- 65个C++文件及两版README共149处严格词边界替换：`tiny_lsm` → `kopidb`。独立审查与字节对比确认无其他源码/示例逻辑变化；同一文件多个命名空间、绑定类型、测试显式引用均已同步。
+- 独立源码副本Release全目标构建成功（包括测试、共享库及Python扩展），安装成功；原仓库配置及用户数据未动。
+- 定向回归279/279通过：Config3、SkipList31、MemTable51、Block37、BlockMeta6、Utils15、SST30、BlockCache7、LSM37、WAL46、WiscKey16。没有运行百万条用例或性能benchmark，不宣称全库测试重跑。
+- 新安装库的单头文件consumer及两版README示例共3次编译/链接通过；普通/WiscKey各write/read两进程，加两版README运行，共6/6通过。运行清除DYLD及LD_LIBRARY_PATH，使用隔离数据目录。
+- README中构建目标/安装目录/库名已在前置工作更新，此步同步C++示例并实际验证；下载接入主流程等真实压缩包通过后由第⑥步更新。
+- 检查结束时源码与构建快照一致。证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-namespace-0b6_a3_j`，含before、changes.json、构建日志、测试过滤器/JSON/日志、安装树、consumer及summary.json。
+- 当前停在第①步，等待用户检查后进入第②步Python命名。

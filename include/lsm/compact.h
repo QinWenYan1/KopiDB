@@ -1,6 +1,6 @@
 #pragma once
 
-namespace tiny_lsm {
+namespace kopidb {
 enum class CompactType {
   FullCompact,
 };

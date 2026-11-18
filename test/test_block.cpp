@@ -11,7 +11,7 @@
 #include <tuple>
 #include <vector>
 
-using namespace ::tiny_lsm;
+using namespace ::kopidb;
 
 class BlockTest : public ::testing::Test {
 protected:

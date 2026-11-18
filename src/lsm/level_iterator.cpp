@@ -10,7 +10,7 @@
 #include <utility>
 
 // Lab 4.6 Level_Iterator 初始化
-namespace tiny_lsm {
+namespace kopidb {
 Level_Iterator::Level_Iterator(std::shared_ptr<LSMEngine> engine,
                                uint64_t max_tranc_id,
                                const std::function<bool(uint64_t)> &is_aborted)
@@ -296,4 +296,4 @@ bool Level_Iterator::is_end() const {
 
 bool Level_Iterator::is_valid() const { return !is_end(); }
 
-} // namespace tiny_lsm
+} // namespace kopidb

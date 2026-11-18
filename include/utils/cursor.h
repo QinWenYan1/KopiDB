@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 class FileObj;
 class Cursor {
@@ -32,5 +32,5 @@ private:
   size_t m_offset;
 };
 
-} // namespace tiny_lsm
+} // namespace kopidb
   // ...existing code...

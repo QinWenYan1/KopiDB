@@ -14,7 +14,7 @@
 #include <utility>
 #include <vector>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 class BlockCache;
 
@@ -755,4 +755,4 @@ MemTable::iters_monotony_predicate(
   return std::make_pair(std::move(begin_iter), HeapIterator{});
 }
 
-} // namespace tiny_lsm
+} // namespace kopidb

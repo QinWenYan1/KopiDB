@@ -16,7 +16,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 class Level_Iterator;
 
@@ -140,4 +140,4 @@ public:
   // 重设日志级别
   void set_log_level(const std::string &level);
 };
-} // namespace tiny_lsm
+} // namespace kopidb

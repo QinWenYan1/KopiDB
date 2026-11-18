@@ -4,7 +4,7 @@
 #include <stdexcept>
 #include <utility> // std::move
 
-namespace tiny_lsm {
+namespace kopidb {
 
 // 迭代器刚创建时，就应该指向第一条可见记录，而不一定是第一张 SST
 ConcactIterator::ConcactIterator(
@@ -147,4 +147,4 @@ bool ConcactIterator::is_valid() const {
 std::string ConcactIterator::key() { return cur_iter.key(); }
 
 std::string ConcactIterator::value() { return cur_iter.value(); }
-} // namespace tiny_lsm
+} // namespace kopidb

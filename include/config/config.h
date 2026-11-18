@@ -6,7 +6,7 @@
 // Include the necessary toml11 header
 // Assuming a common setup where you include the main header:
 
-namespace tiny_lsm {
+namespace kopidb {
 
 class TomlConfig {
 private:
@@ -68,4 +68,4 @@ public:
   void modify_lsm_per_mem_size_limit(long long one);
   void modify_lsm_block_size(int one);
 };
-} // namespace tiny_lsm
+} // namespace kopidb

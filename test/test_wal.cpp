@@ -25,7 +25,7 @@
 #endif
 
 using namespace testing;
-using namespace ::tiny_lsm;
+using namespace ::kopidb;
 
 // ! SERIALIZABLE（未完整实现）：本文件涉及该级别的用例只验证现有单键行为及 WAL。
 // 日志和提交测试通过，不代表已验证范围幻读保护或完整可串行化。

@@ -11,7 +11,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 // Simple CRC32 implementation (polynomial 0xEDB88320)
 static uint32_t crc32_compute(const uint8_t *data, size_t len) {
@@ -193,4 +193,4 @@ void VLog::sync() {
 
 void VLog::del_vlog() { file_.del_file(); }
 
-} // namespace tiny_lsm
+} // namespace kopidb

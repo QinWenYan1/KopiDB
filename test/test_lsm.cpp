@@ -28,7 +28,7 @@
 #include <unistd.h>
 #endif
 
-using namespace ::tiny_lsm;
+using namespace ::kopidb;
 
 // ! SERIALIZABLE（未完整实现）：本文件涉及该级别的用例只验证现有的局部行为。
 // 测试通过不代表已验证范围幻读保护或完整可串行化。

@@ -11,7 +11,7 @@
 #include <unistd.h>
 #endif
 
-namespace tiny_lsm {
+namespace kopidb {
 
 bool StdFile::open(const std::string &filename, bool create) {
   filename_ = filename;
@@ -120,4 +120,4 @@ bool StdFile::truncate(size_t size) {
   return ret == 0 && file_.is_open();
 }
 #endif
-} // namespace tiny_lsm
+} // namespace kopidb

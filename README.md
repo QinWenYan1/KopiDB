@@ -174,7 +174,7 @@ The following example demonstrates five usage patterns on a single database inst
 #include <lsm/engine.h>
 #include <iostream>
 
-using namespace tiny_lsm;
+using namespace kopidb;
 
 int main() {
   LSM db("api-demo");

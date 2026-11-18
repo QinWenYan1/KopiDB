@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 // Lab 5.4 实现WAL的初始化流程
 // 从零开始的初始化流程
@@ -538,4 +538,4 @@ void WAL::reset_file() {
   // 交换后，active_log_path_ 保存新路径，next_path 保存旧路径
   active_log_path_.swap(next_path);
 }
-} // namespace tiny_lsm
+} // namespace kopidb

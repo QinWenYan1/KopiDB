@@ -5,7 +5,7 @@
 #include <optional>
 #include <shared_mutex>
 
-namespace tiny_lsm {
+namespace kopidb {
 class LSMEngine;
 
 class Level_Iterator : public BaseIterator {
@@ -39,4 +39,4 @@ private:
   std::pair<size_t, std::string> get_min_key_idx() const;
   void skip_key(const std::string &key);
 };
-} // namespace tiny_lsm
+} // namespace kopidb

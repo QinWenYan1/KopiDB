@@ -7,7 +7,7 @@
 #include <memory>
 #include <vector>
 
-namespace tiny_lsm {
+namespace kopidb {
 class ConcactIterator : public BaseIterator {
 private:
   SstIterator cur_iter;
@@ -44,4 +44,4 @@ public:
 
   pointer operator->() const;
 };
-} // namespace tiny_lsm
+} // namespace kopidb

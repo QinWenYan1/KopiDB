@@ -3,7 +3,7 @@
 #include <iostream>
 #include <string>
 
-using namespace ::tiny_lsm;
+using namespace ::kopidb;
 
 int main() {
   // create lsm instance, data_dir is the directory to store data

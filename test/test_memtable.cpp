@@ -16,7 +16,7 @@
 #include <vector>
 #include <chrono>
 
-using namespace ::tiny_lsm;
+using namespace ::kopidb;
 
 // 阅读约定：K@9 表示 key 为 K、tranc_id 为 9 的记录；读取上限 0 表示不限制版本。
 // MemTable 的点查询保留墓碑供上层识别；默认范围遍历会隐藏被最新可见墓碑删除的 key。

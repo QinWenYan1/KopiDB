@@ -13,7 +13,7 @@
 #include <thread>
 #include <vector>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 class WAL {
 public:
@@ -58,4 +58,4 @@ protected:
   std::atomic<bool> stop_cleaner_;
   uint64_t clean_interval_;
 };
-} // namespace tiny_lsm
+} // namespace kopidb

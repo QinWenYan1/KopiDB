@@ -9,7 +9,7 @@
 #include <tuple>
 #include <utility>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 // ************************ SkipListIterator ************************
 BaseIterator &SkipListIterator::operator++() {
@@ -410,4 +410,4 @@ void SkipList::print_skiplist() {
   }
   std::cout << std::endl;
 }
-} // namespace tiny_lsm
+} // namespace kopidb

@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <string_view>
 
-namespace tiny_lsm {
+namespace kopidb {
 BlockMeta::BlockMeta() : offset(0), first_key(""), last_key("") {}
 
 BlockMeta::BlockMeta(size_t offset, const std::string &first_key,
@@ -133,4 +133,4 @@ BlockMeta::decode_meta_from_slice(const std::vector<uint8_t> &metadata) {
   return metas;
 }
 
-} // namespace tiny_lsm
+} // namespace kopidb

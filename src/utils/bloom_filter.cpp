@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 BloomFilter::BloomFilter(){};
 
@@ -250,4 +250,4 @@ BloomFilter BloomFilter::decode(const std::vector<uint8_t> &data) {
   return bf; 
 }
 
-} // namespace tiny_lsm
+} // namespace kopidb

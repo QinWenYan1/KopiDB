@@ -2,7 +2,7 @@
 #include <iostream>
 #include <string>
 
-using namespace ::tiny_lsm;
+using namespace ::kopidb;
 
 int main() {
   LSM lsm("test");

@@ -5,7 +5,7 @@
 #include <sys/stat.h>
 #include <vector>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 bool MmapFile::open(const std::string &filename, bool create) {
   filename_ = filename;
@@ -170,5 +170,5 @@ bool MmapFile::truncate(size_t size) {
   return true;
 }
 
-} // namespace tiny_lsm
+} // namespace kopidb
 #endif

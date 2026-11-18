@@ -11,7 +11,7 @@
 #include <string>
 #include <utility>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 class BlockCache;
 class SST;
@@ -118,4 +118,4 @@ private:
   std::shared_mutex frozen_mtx; // 冻结表的锁
   std::shared_mutex cur_mtx;    // 活跃表的锁
 };
-} // namespace tiny_lsm
+} // namespace kopidb

@@ -177,7 +177,7 @@ KopiDB 的并发设计目标是：**同一进程内，多个线程共享同一�
 #include <lsm/engine.h>
 #include <iostream>
 
-using namespace tiny_lsm;
+using namespace kopidb;
 
 int main() {
   LSM db("api-demo");

@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <tuple>
 
-using namespace ::tiny_lsm;
+using namespace ::kopidb;
 
 class SSTTest : public ::testing::Test {
 protected:

@@ -13,7 +13,7 @@
 #include <utility>
 #include <vector>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 // ************************ SkipListNode ************************
 struct SkipListNode {
@@ -168,4 +168,4 @@ public:
 
   void print_skiplist();
 };
-} // namespace tiny_lsm
+} // namespace kopidb

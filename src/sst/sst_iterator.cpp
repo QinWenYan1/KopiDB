@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 // Lab 3.7 实现谓词查询功能
 // predicate返回值:
@@ -445,4 +445,4 @@ SstIterator::merge_sst_iterator(std::vector<SstIterator> iter_vec,
   // 转移已经构建好的堆，避免返回时复制所有候选记录
   return std::make_pair(std::move(it_begin), HeapIterator());
 }
-} // namespace tiny_lsm
+} // namespace kopidb

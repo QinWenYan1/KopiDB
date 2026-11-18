@@ -13,7 +13,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 enum class IsolationLevel {
   READ_UNOP_COMMITTED,
@@ -187,4 +187,4 @@ private:
   FileObj tranc_id_file_;
 };
 
-} // namespace tiny_lsm
+} // namespace kopidb

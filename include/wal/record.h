@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 enum class OperationType {
   OP_CREATE,
@@ -49,4 +49,4 @@ private:
   std::string value_;
   uint16_t record_len_;
 };
-} // namespace tiny_lsm
+} // namespace kopidb

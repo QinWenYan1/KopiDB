@@ -2,7 +2,7 @@
 #include "utils/cursor.h"
 #include "utils/files.h"
 
-namespace tiny_lsm {
+namespace kopidb {
 
 Cursor::Cursor(FileObj *file_obj, size_t offset)
     : m_file_obj(file_obj), m_offset(offset) {}
@@ -77,4 +77,4 @@ size_t Cursor::offset() const { return m_offset; }
 
 void Cursor::set_offset(size_t offset) { m_offset = offset; }
 
-} // namespace tiny_lsm
+} // namespace kopidb

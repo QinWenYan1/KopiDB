@@ -3,7 +3,7 @@
 #include <cstring>
 #include <stdexcept>
 
-namespace tiny_lsm {
+namespace kopidb {
 FileObj::FileObj() : m_file(std::make_unique<StdFile>()) {}
 
 FileObj::~FileObj() = default;
@@ -208,4 +208,4 @@ void FileObj::close() {
   m_file->close();
 }
 
-} // namespace tiny_lsm
+} // namespace kopidb

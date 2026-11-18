@@ -2,7 +2,7 @@
 #include "iterator/iterator.h"
 #include <stdexcept>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 TwoMergeIterator::TwoMergeIterator() {}
 
@@ -231,4 +231,4 @@ void TwoMergeIterator::update_current() const {
     current = std::make_shared<value_type>(**it_b);
   }
 }
-} // namespace tiny_lsm
+} // namespace kopidb

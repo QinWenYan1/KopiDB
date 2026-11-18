@@ -8,7 +8,7 @@
 
 class Block;
 
-namespace tiny_lsm {
+namespace kopidb {
 BlockIterator::BlockIterator(std::shared_ptr<Block> b, size_t index,
                              uint64_t tranc_id, bool keep_all_versions,
                              const std::function<bool(uint64_t)> &is_aborted)
@@ -196,4 +196,4 @@ void BlockIterator::skip_by_tranc_id() {
   // 不检查 value：有效墓碑必须继续交给上层归并
   // 这里只移动迭代位置，不删除块中的任何记录
 }
-} // namespace tiny_lsm
+} // namespace kopidb

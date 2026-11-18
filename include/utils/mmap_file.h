@@ -9,7 +9,7 @@
 #include <unistd.h>
 #include <vector>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 class MmapFile {
 private:
@@ -56,5 +56,5 @@ private:
   MmapFile(const MmapFile &) = delete;
   MmapFile &operator=(const MmapFile &) = delete;
 };
-} // namespace tiny_lsm
+} // namespace kopidb
 #endif

@@ -15,7 +15,7 @@
 #include <filesystem>
 #include <system_error>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 // Magic byte identifying a WiscKey SST footer
 static constexpr uint8_t WISCKEY_MAGIC = 0x4B;
@@ -624,4 +624,4 @@ SSTBuilder::build(size_t sst_id, const std::string &path,
   return res;
 }
 
-} // namespace tiny_lsm
+} // namespace kopidb

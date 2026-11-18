@@ -17,7 +17,7 @@
 #include <utility>
 #include <vector>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 inline std::string isolation_level_to_string(const IsolationLevel &level) {
   switch (level) {
@@ -870,11 +870,11 @@ void TranManager::write_tranc_id_file() {
     append_u64(id);
 
     switch (state) {
-    case tiny_lsm::TransactionState::ABORTED:
+    case kopidb::TransactionState::ABORTED:
       append_u64(1);
       break;
 
-    case tiny_lsm::TransactionState::OP_COMMITTED:
+    case kopidb::TransactionState::OP_COMMITTED:
       append_u64(0);
       break;
 
@@ -1409,4 +1409,4 @@ bool TranManager::write_to_wal(const std::vector<Record> &records) {
 //     write_tranc_id_file();
 //   }
 // }
-} // namespace tiny_lsm
+} // namespace kopidb

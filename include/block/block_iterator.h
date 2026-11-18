@@ -8,7 +8,7 @@
 #include <string>
 #include <utility>
 
-namespace tiny_lsm {
+namespace kopidb {
 class Block;
 
 class BlockIterator {
@@ -60,4 +60,4 @@ private:
   // 保存函数对象本身，避免引用构造函数中已经结束生命周期的参数对象。
   std::function<bool(uint64_t)> is_aborted_;
 };
-} // namespace tiny_lsm
+} // namespace kopidb

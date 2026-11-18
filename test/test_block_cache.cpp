@@ -5,7 +5,7 @@
 #include <memory>
 #include <vector>
 
-using namespace ::tiny_lsm;
+using namespace ::kopidb;
 
 class BlockCacheTest : public ::testing::Test {
 protected:

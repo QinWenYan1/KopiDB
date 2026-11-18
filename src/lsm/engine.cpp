@@ -23,7 +23,7 @@
 #include <utility>
 #include <vector>
 
-namespace tiny_lsm {
+namespace kopidb {
 
 // *********************** LSMEngine ***********************
 
@@ -1492,4 +1492,4 @@ LSM::begin_tran(const IsolationLevel &isolation_level) {
 }
 
 void LSM::set_log_level(const std::string &level) { reset_log_level(level); }
-} // namespace tiny_lsm
+} // namespace kopidb

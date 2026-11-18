@@ -39,7 +39,7 @@
 #include <unistd.h>
 #endif
 
-using namespace tiny_lsm;
+using namespace kopidb;
 
 // ---- helpers -------------------------------------------------------
 
