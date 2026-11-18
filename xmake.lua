@@ -123,16 +123,24 @@ target("lsm_shared")
         -- 本例得到：/tmp/kopidb-sdk/lib
         local lib_dir = path.join(install_dir, "lib")
 
-        -- 先创建目录，再复制 include 下的内容。
+        -- 先创建目录，再复制 include 下的内容
         -- 重复安装时仍保持 tiny-lsm/lsm/...，不额外嵌套 include
         os.mkdir(include_dir)
         os.cp("include/*", include_dir)
 
-        -- 首次安装时 lib 目录可能不存在，必须先创建。
-        -- 复制时指定完整文件名，避免把 lib 当作库文件名。
+        -- 首次安装时 lib 目录可能不存在，必须先创建
+        -- 复制时指定完整文件名，避免把 lib 当作库文件名
         os.mkdir(lib_dir)
+
+        -- 查询当前目标编译出来的文件在哪里
+        -- 我们项目在 macOS 下，例如：
+        -- build/lib/liblsm_shared.so
+        --
+        -- 这行只是取得路径，不会重新编译库
         local libfile = target:targetfile()
 
+        -- 判断当前构建平台是否为 Windows
+        -- 是 Windows，执行 then 到 else 之间的代码
         if is_plat("windows") then
             local bin_dir = path.join(install_dir, "bin")
             os.mkdir(bin_dir)
@@ -145,6 +153,18 @@ target("lsm_shared")
                 os.cp(implib, path.join(lib_dir, path.filename(implib)))
             end
         else
+            -- 非 Windows 平台执行这里，我们当前的 macOS 就走这一支
+            --
+            -- libfile：
+            --   build/lib/liblsm_shared.so
+            --
+            -- path.filename(libfile)：
+            --   liblsm_shared.so
+            --
+            -- 拼出的完整目标路径：
+            --   /tmp/kopidb-sdk/lib/liblsm_shared.so
+            --
+            -- 将编译好的库复制到这个位置
             os.cp(libfile, path.join(lib_dir, path.filename(libfile)))
         end
     end)
