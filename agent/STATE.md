@@ -16,6 +16,10 @@
 
 ## 当前进度
 
+2026-11-18 已确认下一轮 C++ SDK 交付：用户下载预编译包，接入自己的 C++ 项目，包含一个入口头文件即可使用。包内 `KopiDBConfig.cmake` 与 `xmake.lua` 同放根目录，分别供消费方构建工具读取；引擎继续由 Xmake 构建。先覆盖 macOS arm64，阶段及验收见 PLAN。
+
+2026-11-18 用户要求统一构建命名，已完成当前构建/交付范围：project `kopidb`、核心目标 `kopidb`、共享目标 `kopidb_shared`、Python构建目标 `kopidb_pybind`，共享库 `libkopidb.so`，安装头文件 `include/kopidb/`。对应依赖、Python库引用及双语README同步。C++命名空间 `tiny_lsm` 与 Python包/扩展导入名暂保留；源码中的LSM算法命名和教程链接不作品牌替换。隔离Release共享库/示例/Python扩展构建及安装通过，外部consumer普通/WiscKey四次运行通过；业务源码未改、未重跑全库、未验收Python wheel或Windows。SDK新计划进度20%（1/5），压缩包与接入配置尚未实现。
+
 2026-11-18 单头文件入口收尾已完成，100%（2/2阶段）。按用户本轮行动请求，engine.h增加level_iterator.h定义，两版README统一为<lsm/engine.h>。实际源码隔离Release构建/安装成功，单入口公开接口探针、consumer、两版README共4个编译/链接检查通过；普通/WiscKey跨进程读写及两版示例共6/6运行通过，含谓词范围。未改业务函数、类型布局或命名空间；安装包仍包含依赖头文件，未声称隐藏内部类型。源码/配置/README哈希稳定，当前仅验收macOS arm64，证据见PLAN。
 
 2026-11-18 C++独立接入已完成，100%（3/3阶段）。用户修正on_install后，当前源码隔离Release构建、首次/重复安装通过；独立consumer在普通/WiscKey模式下4次写入及跨进程重开验证通过，A17已解决。用户审批后，中英文README同步补齐构建/安装、外部C++链接、配置及测试说明；命令一致、锚点/语法检查通过，原C++示例及其他正文保持。示例已使用安装产物编译运行成功。本轮只验收macOS arm64，未重跑全库；等待用户选定下一任务。

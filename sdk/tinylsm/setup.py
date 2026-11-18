@@ -5,7 +5,7 @@ from setuptools.command.build_py import build_py
 
 # 版本和基本描述
 VERSION = "0.1.0"
-DESCRIPTION = "A Python binding for Tiny LSM Tree Storage Engine"
+DESCRIPTION = "A Python binding for KopiDB Storage Engine"
 
 class CustomBuild(build_py):
     def run(self):
@@ -18,7 +18,7 @@ class CustomBuild(build_py):
         
         # 动态库文件列表
         lib_files = [
-            ("liblsm_shared.so", "liblsm_shared.so"),
+            ("libkopidb.so", "libkopidb.so"),
             ("lsm_pybind.so", "lsm_pybind.so")
         ]
         

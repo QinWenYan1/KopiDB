@@ -1,5 +1,5 @@
 #!/bin/bash
-cd .. && xmake f -m release && xmake build lsm_pybind
+cd .. && xmake f -m release && xmake build kopidb_pybind
 cd -
 cp -r ../build/lib ./tinylsm/tinylsm/core
 

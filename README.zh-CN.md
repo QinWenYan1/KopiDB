@@ -101,16 +101,16 @@ LSM 架构常见于写密集负载的典型选择：
 KOPIDB_PREFIX="$HOME/.local/kopidb"
 
 xmake f -m release
-xmake build lsm_shared
-xmake install -o "$KOPIDB_PREFIX" lsm_shared
+xmake build kopidb_shared
+xmake install -o "$KOPIDB_PREFIX" kopidb_shared
 ```
 
 安装后，主要文件位于：
 
 ```text
 安装目录/
-├── include/tiny-lsm/       # 头文件
-└── lib/liblsm_shared.so    # 共享库
+├── include/kopidb/     # 头文件
+└── lib/libkopidb.so    # 共享库
 ```
 
 **🔗 接入自己的 C++ 项目**
@@ -122,8 +122,8 @@ xmake install -o "$KOPIDB_PREFIX" lsm_shared
 KOPIDB_PREFIX="$HOME/.local/kopidb"
 
 clang++ -std=c++20 -pthread main.cpp \
-  -I"$KOPIDB_PREFIX/include/tiny-lsm" \
-  "$KOPIDB_PREFIX/lib/liblsm_shared.so" \
+  -I"$KOPIDB_PREFIX/include/kopidb" \
+  "$KOPIDB_PREFIX/lib/libkopidb.so" \
   "-Wl,-rpath,$KOPIDB_PREFIX/lib" \
   -o demo
 

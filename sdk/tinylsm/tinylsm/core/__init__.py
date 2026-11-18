@@ -12,11 +12,11 @@ def _load_core_libs():
         # 修正拼写错误：llib_dir → lib_dir
         os.environ[
             'LD_LIBRARY_PATH'] = f"{str(lib_dir)}:{os.environ.get('LD_LIBRARY_PATH', '')}"
-        ctypes.CDLL(str(lib_dir / "liblsm_shared.so"), mode=ctypes.RTLD_GLOBAL)
+        ctypes.CDLL(str(lib_dir / "libkopidb.so"), mode=ctypes.RTLD_GLOBAL)
     elif sys.platform == "darwin":
         os.environ[
             'DYLD_LIBRARY_PATH'] = f"{str(lib_dir)}:{os.environ.get('DYLD_LIBRARY_PATH', '')}"
-        ctypes.CDLL(str(lib_dir / "liblsm_shared.dylib"),
+        ctypes.CDLL(str(lib_dir / "libkopidb.so"),
                     mode=ctypes.RTLD_GLOBAL)
 
     # 显式导入绑定模块（优化路径处理）

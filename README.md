@@ -98,16 +98,16 @@ Run these commands from the KopiDB repository root:
 KOPIDB_PREFIX="$HOME/.local/kopidb"
 
 xmake f -m release
-xmake build lsm_shared
-xmake install -o "$KOPIDB_PREFIX" lsm_shared
+xmake build kopidb_shared
+xmake install -o "$KOPIDB_PREFIX" kopidb_shared
 ```
 
 The main installed files are located at:
 
 ```text
 installation-directory/
-├── include/tiny-lsm/       # Header files
-└── lib/liblsm_shared.so    # Shared library
+├── include/kopidb/     # Header files
+└── lib/libkopidb.so    # Shared library
 ```
 
 **🔗 Use KopiDB in Your C++ Project**
@@ -119,8 +119,8 @@ Save the [C++ usage example below](#cpp-example) as `main.cpp`, then run these c
 KOPIDB_PREFIX="$HOME/.local/kopidb"
 
 clang++ -std=c++20 -pthread main.cpp \
-  -I"$KOPIDB_PREFIX/include/tiny-lsm" \
-  "$KOPIDB_PREFIX/lib/liblsm_shared.so" \
+  -I"$KOPIDB_PREFIX/include/kopidb" \
+  "$KOPIDB_PREFIX/lib/libkopidb.so" \
   "-Wl,-rpath,$KOPIDB_PREFIX/lib" \
   -o demo
 

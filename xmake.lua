@@ -1,5 +1,5 @@
 -- 定义项目
-set_project("tiny-lsm")
+set_project("kopidb")
 set_version("0.0.1")
 set_languages("c++20")
 
@@ -87,7 +87,7 @@ target("wal")
     add_packages("toml11", "spdlog")
     add_includedirs("include", {public = true})
 
-target("lsm")
+target("kopidb")
     set_kind("static")
     add_deps("sst", "memtable", "wal", "logger")
     add_files("src/lsm/*.cpp")
@@ -96,8 +96,10 @@ target("lsm")
 
 -- ============ 共享库目标（供外部使用） ============
 
-target("lsm_shared")
+target("kopidb_shared")
     set_kind("shared")
+    -- 构建目标区分静态模块与共享库；对外库文件统一使用 kopidb 名称。
+    set_basename("kopidb")
     add_files("src/logger/*.cpp", "src/config/*.cpp", "src/utils/*.cpp",
               "src/vlog/*.cpp",
               "src/iterator/*.cpp", "src/skiplist/*.cpp", "src/memtable/*.cpp",
@@ -108,7 +110,7 @@ target("lsm_shared")
 
     if is_plat("windows") then
         set_extension(".dll")
-        add_defines("TINYLSM_EXPORTS")
+        add_defines("KOPIDB_EXPORTS")
         add_cxxflags("/LD")
     else
         set_extension(".so")
@@ -118,13 +120,13 @@ target("lsm_shared")
         -- installdir() 查询安装根目录，不会创建目录。
         -- 本例得到：/tmp/kopidb-sdk
         local install_dir = target:installdir()
-        -- 本例得到：/tmp/kopidb-sdk/include/tiny-lsm
-        local include_dir = path.join(install_dir, "include", "tiny-lsm")
+        -- 本例得到：/tmp/kopidb-sdk/include/kopidb
+        local include_dir = path.join(install_dir, "include", "kopidb")
         -- 本例得到：/tmp/kopidb-sdk/lib
         local lib_dir = path.join(install_dir, "lib")
 
         -- 先创建目录，再复制 include 下的内容
-        -- 重复安装时仍保持 tiny-lsm/lsm/...，不额外嵌套 include
+        -- 重复安装时仍保持 kopidb/lsm/...，不额外嵌套 include
         os.mkdir(include_dir)
         os.cp("include/*", include_dir)
 
@@ -134,7 +136,7 @@ target("lsm_shared")
 
         -- 查询当前目标编译出来的文件在哪里
         -- 我们项目在 macOS 下，例如：
-        -- build/lib/liblsm_shared.so
+        -- build/lib/libkopidb.so
         --
         -- 这行只是取得路径，不会重新编译库
         local libfile = target:targetfile()
@@ -146,23 +148,22 @@ target("lsm_shared")
             os.mkdir(bin_dir)
             os.cp(libfile, path.join(bin_dir, path.filename(libfile)))
 
-            -- 沿用已有的 Windows 导入库查找逻辑。
-            local implib =
-                path.join(path.directory(libfile), target:name() .. ".lib")
-            if os.isfile(implib) then
+            -- 从构建产物取得导入库路径，避免与目标名或库文件名改动脱节。
+            local implib = target:artifactfile("implib")
+            if implib and os.isfile(implib) then
                 os.cp(implib, path.join(lib_dir, path.filename(implib)))
             end
         else
             -- 非 Windows 平台执行这里，我们当前的 macOS 就走这一支
             --
             -- libfile：
-            --   build/lib/liblsm_shared.so
+            --   build/lib/libkopidb.so
             --
             -- path.filename(libfile)：
-            --   liblsm_shared.so
+            --   libkopidb.so
             --
             -- 拼出的完整目标路径：
-            --   /tmp/kopidb-sdk/lib/liblsm_shared.so
+            --   /tmp/kopidb-sdk/lib/libkopidb.so
             --
             -- 将编译好的库复制到这个位置
             os.cp(libfile, path.join(lib_dir, path.filename(libfile)))
@@ -231,7 +232,7 @@ target("test_lsm")
     set_kind("binary")
     set_group("tests")
     add_files("test/test_lsm.cpp")
-    add_deps("logger", "lsm", "memtable", "iterator")
+    add_deps("logger", "kopidb", "memtable", "iterator")
     add_packages("gtest", "toml11", "spdlog")
     add_includedirs("include", {public = true})
 
@@ -247,7 +248,7 @@ target("test_compact")
     set_kind("binary")
     set_group("tests")
     add_files("test/test_compact.cpp")
-    add_deps("logger", "lsm", "memtable", "iterator")
+    add_deps("logger", "kopidb", "memtable", "iterator")
     add_packages("gtest", "toml11", "spdlog")
     add_includedirs("include", {public = true})
 
@@ -255,7 +256,7 @@ target("test_wal")
     set_kind("binary")
     set_group("tests")
     add_files("test/test_wal.cpp")
-    add_deps("logger", "wal", "lsm")
+    add_deps("logger", "wal", "kopidb")
     add_includedirs("include", {public = true})
     add_packages("gtest", "toml11", "spdlog")
 
@@ -263,7 +264,7 @@ target("test_wisckey")
     set_kind("binary")
     set_group("tests")
     add_files("test/test_wisckey.cpp")
-    add_deps("logger", "lsm", "memtable", "iterator")
+    add_deps("logger", "kopidb", "memtable", "iterator")
     add_packages("gtest", "toml11", "spdlog")
     add_includedirs("include", {public = true})
 
@@ -273,7 +274,7 @@ target("example")
     set_kind("binary")
     add_files("example/main.cpp")
     add_deps("logger", "config", "utils", "iterator", "skiplist", 
-             "memtable", "block", "sst", "wal", "lsm")
+             "memtable", "block", "sst", "wal", "kopidb")
     add_includedirs("include")  -- 显式添加包含路径
     set_targetdir("$(buildir)/bin")
 
@@ -281,35 +282,35 @@ target("debug")
     set_kind("binary")
     add_files("example/debug.cpp")
     add_deps("logger", "config", "utils", "iterator", "skiplist", 
-             "memtable", "block", "sst", "wal", "lsm")
+             "memtable", "block", "sst", "wal", "kopidb")
     add_includedirs("include")  -- 显式添加包含路径
     set_targetdir("$(buildir)/bin")
 
 -- ============ Python 绑定 ============
 
--- 根据平台选择合适的lsm_pybind目标
+-- 构建目标统一使用 kopidb；扩展文件名仍匹配现有 Python 导入名。
 if is_plat("windows") then
-    target("lsm_pybind")
+    target("kopidb_pybind")
         set_kind("shared")
         add_files("sdk/lsm_pybind.cpp")
         add_packages("pybind11")
-        add_deps("lsm")  -- Windows下使用原来的依赖
+        add_deps("kopidb")  -- Windows下使用原来的依赖
         add_includedirs("include", {public = true})
         set_targetdir("$(buildir)/lib")
         set_filename("lsm_pybind.pyd")
         add_cxxflags("/LD")
 else
     -- Unix/Linux/macOS平台
-    target("lsm_pybind")
+    target("kopidb_pybind")
         set_kind("shared")
         add_files("sdk/lsm_pybind.cpp")
         add_packages("pybind11")
-        add_deps("lsm_shared")  -- Unix下使用共享库依赖
+        add_deps("kopidb_shared")  -- Unix下使用共享库依赖
         add_includedirs("include", {public = true})
         set_targetdir("$(buildir)/lib")
         set_filename("lsm_pybind.so")
         add_ldflags("-Wl,-rpath,$ORIGIN")
-        add_defines("TINYLSM_EXPORT=__attribute__((visibility(\"default\")))")
+        add_defines("KOPIDB_EXPORT=__attribute__((visibility(\"default\")))")
         add_cxxflags("-fvisibility=hidden")
 end
 
