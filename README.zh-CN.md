@@ -20,6 +20,7 @@ KopiDB 是一个用于学习数据库实现的 C++20 嵌入式 LSM-tree KV 引�
 - [🧵 并发与事务](#concurrency-and-transactions)
 - [💻 C++ 使用示例](#cpp-example)
 - [🧭 如何选择读写方式](#choosing-read-write-mode)
+- [🛠️ 工具与使用文档](#tools-and-docs)
 
 
 
@@ -310,3 +311,15 @@ int main() {
 - **回滚检查始终生效**：内部的 `is_aborted(id)` 判断记录所属事务是否已经回滚。`require_committed = true` 会进一步排除活跃事务的记录；`false` 不表示关闭回滚检查。这里的“未提交”指其他事务，暂存型事务仍可以读取自己的修改。
 - **批量接口**：普通 `put_batch()` 整批共用一个新版本号；普通 `get_batch()` 不分配事务 ID，保留输入顺序、重复 key 和缺失项，排除已回滚版本，但不承诺整批一致快照。
 - **保证范围**：当前可重复读不承诺跨所有 key 的一致快照。完整可串行化要求成功提交事务的读写效果等价于某种逐笔执行的顺序，不要求线程实际排队；KopiDB 当前尚不提供这一完整保证，完整实现留作后续扩展。
+
+---
+
+<a id="tools-and-docs"></a>
+
+## 🛠️ 工具与使用文档
+
+源码开发、测试与排查时，可以查阅以下说明：
+
+- [测试覆盖率](docs/coverage.md)：手动选择测试，查看哪些源码行被执行过。
+- [SST 可视化](docs/Sst_visualize_tool.md)：将普通 SST 的分块、记录和元数据展示为 HTML 网页。
+- [构建与打包](docs/packaging.md)：了解 C++ SDK 的构建方式、包结构与发布附件准备流程。

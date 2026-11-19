@@ -9,6 +9,8 @@ sdk/kopidb/kopidb.egg-info
 *__pycache__*
 book
 coverage*
+# 覆盖率报告仍忽略，开发使用说明需要随仓库提交。
+!/docs/coverage.md
 .clangd
 *.log*
 sst_html

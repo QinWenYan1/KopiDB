@@ -22,6 +22,7 @@ KopiDB is an embedded LSM-tree key-value engine written in C++20 for learning ho
 - [🧵 Concurrency and Transactions](#concurrency-and-transactions)
 - [💻 C++ Usage Example](#cpp-example)
 - [🧭 Choosing a Read/Write Mode](#choosing-read-write-mode)
+- [🛠️ Tools and Documentation](#tools-and-docs)
 
 ---
 
@@ -307,3 +308,15 @@ Additional notes:
 - **Rollback checks always apply**: Internally, `is_aborted(id)` checks whether the transaction that owns a record has been rolled back. `require_committed = true` additionally excludes records from active transactions; `false` does not disable rollback checks. "Uncommitted" here refers to other transactions; transactions that buffer changes can still read their own modifications.
 - **Batch APIs**: An ordinary `put_batch()` assigns one new version to the entire batch. An ordinary `get_batch()` does not allocate a transaction ID; it preserves input order, duplicate keys, and missing entries, and excludes rolled-back versions, but does not guarantee a consistent snapshot across the whole batch.
 - **Scope of guarantees**: The current repeatable-read implementation does not guarantee a consistent snapshot across all keys. Full serializability requires the read/write effects of successfully committed transactions to be equivalent to some serial execution order; it does not require threads to run one at a time. KopiDB does not yet provide this complete guarantee; a full implementation is left for future work.
+
+---
+
+<a id="tools-and-docs"></a>
+
+## 🛠️ Tools and Documentation
+
+Guides for source development, testing, and inspection (currently in Chinese):
+
+- [Test coverage](docs/coverage.md) — Run selected tests manually and inspect which source lines they execute.
+- [SST visualization](docs/Sst_visualize_tool.md) — Turn an ordinary SST file into an HTML view of its blocks, records, and metadata.
+- [Build and packaging](docs/packaging.md) — Build the C++ SDK, understand the package layout, and prepare release assets.
