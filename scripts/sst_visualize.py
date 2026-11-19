@@ -84,19 +84,20 @@ def parse_sst(filename):
     min_tranc_id = read_uint64(data, extra_offset + 8)
     max_tranc_id = read_uint64(data, extra_offset + 16)
 
-    section_points = [('blocks', 0), ('extra', extra_offset), ('file_end', file_size)]
-    if meta_section_offset > 0:
-        section_points.append(('meta', meta_section_offset))
-    if bloom_offset > 0 and bloom_offset != meta_section_offset:
-        section_points.append(('bloom', bloom_offset))
-
-    unique_points = sorted(list(set(section_points)), key=lambda item: item[1])
-
+    # 普通 SST 的区域顺序固定，直接用相邻边界计算长度。
+    # 没有 Bloom 时，bloom_offset == extra_offset，Bloom 的长度应为 0。
+    # 例如二者都为 467、文件长 491：Bloom 是 [467, 467)，文件尾是
+    # [467, 491)。不能先放进 set 再按偏移排序，否则同址的两项顺序
+    # 不确定，可能把文件尾的 24 字节分给 Bloom，并隐藏文件尾导航。
+    section_ranges = [
+        ('blocks', 0, meta_section_offset),
+        ('meta', meta_section_offset, bloom_offset),
+        ('bloom', bloom_offset, extra_offset),
+        ('extra', extra_offset, file_size),
+    ]
     boundaries = {}
-    for i in range(len(unique_points) - 1):
-        current_name, current_start = unique_points[i]
-        _, next_start = unique_points[i+1]
-        boundaries[current_name] = {'start': current_start, 'end': next_start, 'size': next_start - current_start}
+    for name, start, end in section_ranges:
+        boundaries[name] = {'start': start, 'end': end, 'size': end - start}
 
     def get_boundary(name, key, default=0):
         return boundaries.get(name, {}).get(key, default)

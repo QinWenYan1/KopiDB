@@ -50,3 +50,13 @@ sst_html/<输入文件名>_visualization.html
 ```
 
 脚本只读取输入 SST，另外生成 HTML；相同文件名的报告会覆盖，即使两个输入来自不同目录。没有输入参数时会打印用法；脚本没有单独的 `--help` 选项。
+
+## 🧪 工具回归检查
+
+在仓库根目录运行 Python 回归测试，无需重新构建数据库：
+
+```bash
+python3 -m unittest discover -s test -p 'test_sst_visualize.py' -v
+```
+
+测试使用由实际 SSTBuilder 生成的小型普通 SST 样本，检查关闭 Bloom 时的区域划分、多版本与墓碑展示，以及缺少参数或文件时的提示。这组 Python 测试独立运行，不属于 `test_coverage.sh` 收集的 C++ 测试目标。

@@ -36,6 +36,7 @@ Lab 明确要求读已提交避免读到未提交数据，并允许本节跳过 
 | [A16](#a16) | 已确认优化机会，用户决定后续处理 | P2（性能／空间） | 合并保留已回滚版本，持续搬运无效 SST 条目 | 两个 Engine 合并入口复用回滚过滤，配套安全性和性能验证 | 未估时 |
 | [A17](#a17) | 已解决（macOS安装验收） | P1（C++交付） | 首次安装把lib路径当文件名，未形成预期库目录 | lsm_shared的on_install显式创建目录并指定完整目标文件名 | 未估时 |
 | [A18](#a18) | 已解决（macOS工具验收） | P2（开发工具） | 覆盖率脚本不适配本机 macOS，直接清空原构建，缺少失败停止与选择测试入口 | test_coverage.sh、xmake.lua 的 coverage 配置 | 未估时 |
+| [A19](#a19) | 已解决（普通SST工具验收） | P2（开发工具） | 普通无 Bloom SST 的同址分段被无序排序，网页误算 Bloom/隐藏 Footer | scripts/sst_visualize.py 的区域边界计算 | 未估时 |
 
 A1～A4 为已确认缺陷，确认日期为 2026-10-30。用户已确认按 A1 → A2 → A3 → A4 → 整体验收推进。A5 是接口约束改进建议，已确认随目录 5.2.3 的公开入口初始化整合处理，不计为第五项已确认缺陷，已于 2026-11-08 纳入 [PLAN](PLAN.md) 的阶段⑤，当前实现进度见 A5 条目。每进入一个新修复问题，先在聊天中写 issue 草稿供用户手动发布，再逐函数推进；没有自动创建远程 issue。具体执行与验收标准维护在 PLAN。
 
@@ -484,3 +485,19 @@ WiscKey 与 CRC 对照证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T
 A18 验收结果（2026-11-19）：原生 LLVM 报告已生成，SkipList 31＋MemTable 51 共 82/82；单目标过滤额外 1/1。未知目标/选项、零匹配和临时副本人为失败正确退出，旧报告保持。24 个 HTML 页面链接完整，源快照删除后仍可查源码；1815 个原业务/测试/构建/配置/归档文件哈希不变。报告明确是已链接插桩代码的测试子集，不代表全库覆盖；未运行 --all 或百万条用例。原始沙箱缓存权限失败及通用 clang SDK 路径失败已留存，最终使用 Xcode 工具链通过。证据见上述目录 summary.json。
 
 A18 后续范围改进（2026-11-19，用户已采纳）：无参数由两个模块扩大到全部12个test_*，精确排除4项已说明的大规模/基准用例；显式target与--all不套用默认排除。真实常规集合570/570通过，覆盖11项TwoMerge测试，行覆盖率90.53%为当前已链接插桩源码范围。四项排除未运行，不计通过。临时6用例夹具验证default/--all/显式target/已有负过滤/空过滤五种契约，原1815业务/测试/构建/配置/包文件哈希保持。完整证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-coverage-expanded-ryzeg2qq`；帮助与docs/coverage.md已同步。A18保持已解决，不将扩大范围误记为此前适配缺陷复发。
+
+
+<a id="a19"></a>
+
+### A19：普通无 Bloom SST 的可视化区域归属随哈希种子变化
+
+- 类型：已复现的工具展示缺陷；状态：已解决（2026-11-19），验收见 [PLAN 阶段②](PLAN.md)。不影响数据库 SST 本身或引擎读取。
+- 基线：已通过 GitHub 只读核对 `57381fd1141c3d4ff797b6deb0147f6ca61161f2` 的 scripts/sst_visualize.py:87–99。
+- 正常输入：临时源码副本中用实际 SSTBuilder 生成普通无 Bloom SST，5 Blocks、9记录（含多版本/墓碑），引擎重新打开逐条读取与输入完全一致。文件长491B，meta=361，bloom=467，footer=467。
+- 原因：`('bloom', 467)` 与 `('extra', 467)` 在set中是不同元素，按偏移排序仍同值，先后随哈希随机化变化；若extra在前，extra长度被算0，bloom反而占用24B。
+- 实测：同一文件 PYTHONHASHSEED=0/1/3 正常，seed=2 出现不存在的Bloom导航并隐藏Footer；CLI仍退出0并生成网页。完整记录见 baseline-repro.json。
+- 修复范围：仅普通SST固定顺序的四个区域显式取起止边界；不增加WiscKey、CRC或任意损坏输入处理。
+- 验收：真实Bloom开/关、多/单Block文件逐记录/分块/事务范围对照；多哈希种子结果一致；缺参/缺文件提示及输入文件保持。
+- 证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-visualize-8crqx6go`。首次临时C++夹具误调用BlockIterator::is_valid导致编译失败，已改用is_end并显式保留所有版本；此为验收夹具错误，不属于业务问题。
+
+A19 验收结果（2026-11-19）：改为固定四段边界，3份真实SST×4seed共12/12次完整HTML核对通过，同文件跨seed页面一致，输入文件不变。新增Python回归3/3；对旧脚本运行相同测试，seed2明确失败。原1817文件哈希保持，只改工具分段逻辑、补Python测试和文档；未改数据库业务/格式，未加入WiscKey或损坏输入支持。示例位于sst_html/ordinary-demo-h4871ujq，完整证据见上方目录summary.json。
