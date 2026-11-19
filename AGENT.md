@@ -14,7 +14,7 @@ KopiDB 是类 RocksDB 的教学级 LSM-tree KV 存储引擎（C++20），沿 [ti
 | [agent/STATE.md](agent/STATE.md) | 当前项目状态、已确认设计、全局约定及整体排期。 |
 | [agent/PLAN.md](agent/PLAN.md) | 本轮任务、各阶段 TODO 和验收标准。 |
 | `agent/skills/<技能名>/SKILL.md` | 可复用的工作方法，按任务选择读取。 |
-| `doc/` | RocksDB 源码精读笔记，作为独立学习副线。 |
+| `docs/rocksdb/` | RocksDB 源码精读笔记，作为独立学习副线。 |
 | [docs/usage.md](docs/usage.md) | 用户接入、配置、完整 API 示例和事务语义。 |
 | [docs/lsm-overview.md](docs/lsm-overview.md)、[docs/optimizations.md](docs/optimizations.md) | LSM 背景资料与有测量依据的优化案例；由 README 导航进入。 |
 | [docs/coverage.md](docs/coverage.md)、[docs/Sst_visualize_tool.md](docs/Sst_visualize_tool.md) | 手动开发工具的使用方法和适用范围。 |
@@ -88,7 +88,7 @@ xmake project -k compile_commands  # 生成 clangd 编译数据库
 
 ## RocksDB 笔记约定
 
-- 本节仅在处理 `doc/` 笔记任务时适用。既有参考为 `~/Desktop/Lab/rocksdb` 的 `e6a2ee0` 版本，新增源码引用前核对实际版本。
+- 本节仅在处理 `docs/rocksdb/` 笔记任务时适用。既有参考为 `~/Desktop/Lab/rocksdb` 的 `e6a2ee0` 版本，新增源码引用前核对实际版本。
 - 源码锚点使用包含完整 commit SHA 和行号的 GitHub 永久链接，不用 main 链接或未核实的 SHA。
 - 笔记只记录 RocksDB 知识，不加入 KopiDB 对照章节；原因解释放在相应知识点中。
 - 使用 `course-notes-generator` 技能规定的笔记体例，术语采用中文与英文对照；技能不可用时明确说明，不假定能读取其他助手的持久记忆。

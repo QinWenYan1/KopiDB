@@ -115,7 +115,7 @@ Detailed guides and study notes are currently in Chinese.
 | Which source lines the tests execute | [Coverage tool](docs/coverage.md) |
 | Records, versions, and blocks inside an ordinary SST | [SST visualization](docs/Sst_visualize_tool.md) |
 | SDK builds, package layout, and releases | [Build and packaging](docs/packaging.md) |
-| Reading RocksDB source code | [Study notes index](doc/README.md) |
+| Reading RocksDB source code | [Study notes index](docs/rocksdb/README.md) |
 
 <a id="optimizations"></a>
 
@@ -135,7 +135,7 @@ The [case studies](docs/optimizations.md) explain the scenarios, architectural c
 
 An LSM-tree first organizes writes in memory, then produces sorted SST files in batches and manages its levels through compaction. This supports write-throughput-oriented designs while introducing read amplification, write amplification, and background compaction costs.
 
-The [LSM overview](docs/lsm-overview.md) covers the principles, trade-offs, use cases, and related papers. The [RocksDB study notes](doc/README.md) provide a chapter index and recommended reading order.
+The [LSM overview](docs/lsm-overview.md) covers the principles, trade-offs, use cases, and related papers. The [RocksDB study notes](docs/rocksdb/README.md) provide a chapter index and recommended reading order.
 
 <a id="acknowledgements"></a>
 

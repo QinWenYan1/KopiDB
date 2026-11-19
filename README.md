@@ -113,7 +113,7 @@ int main() {
 | 哪些代码被测试执行过 | [覆盖率工具](docs/coverage.md) |
 | 查看普通 SST 的记录、版本和分块 | [SST 可视化](docs/Sst_visualize_tool.md) |
 | 构建 SDK、理解包结构与发布流程 | [构建与打包](docs/packaging.md) |
-| 深入阅读 RocksDB 源码 | [学习笔记索引](doc/README.md) |
+| 深入阅读 RocksDB 源码 | [学习笔记索引](docs/rocksdb/README.md) |
 
 <a id="optimizations"></a>
 
@@ -133,7 +133,7 @@ int main() {
 
 LSM-tree 先将写入组织在内存中，再批量生成有序 SST，通过合并管理多个层级。它适合以写入吞吐为重点的设计，但也带来读放大、写放大和后台合并成本。
 
-LSM 原理、设计取舍、应用场景和相关论文见 [LSM 概览](docs/lsm-overview.md)。[RocksDB 源码笔记](doc/README.md) 保留逐篇索引和推荐阅读顺序。
+LSM 原理、设计取舍、应用场景和相关论文见 [LSM 概览](docs/lsm-overview.md)。[RocksDB 源码笔记](docs/rocksdb/README.md) 保留逐篇索引和推荐阅读顺序。
 
 <a id="acknowledgements"></a>
 

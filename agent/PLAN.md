@@ -106,3 +106,10 @@
 - 1826个既有业务/测试/脚本/构建/图标/配置/许可/CHANGELOG及dist文件哈希不变；未改数据库或已发布归档、未写Git或重新发布。新增内容全部是文档及约定，git diff --check通过。
 - 完整证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-docs-final-fnyuy1r8`，含before原稿、文档/知识保留检查、4个真实SDK消费者及日志、工具入口检查、前后哈希及summary.json。
 - 三阶段交付完成，用户可从README.md、docs/usage.md、docs/optimizations.md开始审阅。
+
+## 审阅反馈收尾：统一 docs 目录（2026-11-19）
+
+- 按用户最新要求，原doc目录整体迁入docs/rocksdb，7篇笔记及索引共8文件逐字节保持；原doc目录已移除。
+- 双语README、LSM概览和AGENT中的当前路径同步，笔记内部同级链接保持，无需改写学习内容。
+- 迁移后的179处本地链接/锚点检查通过，无当前旧路径残留；纯文档移动未运行数据库测试或改已发布包。
+- 证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-docs-merge-sdcxwx4y`，含8文件原SHA与迁移检查summary.json。整体仍为100%（3/3），供用户继续审阅。
