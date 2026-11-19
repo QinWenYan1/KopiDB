@@ -1,115 +1,44 @@
 # KopiDB 当前计划
 
-最后更新：2026-11-19。
+## Python SDK 首版
 
-## 跑通覆盖率与普通 SST 可视化工具
+用户在 macOS arm64 的 CPython 3.13 虚拟环境中安装一个 wheel，即可 `import kopidb`，用文本或原始字节读写、遍历和执行事务。包的最低 macOS 版本由最终二进制确定。助手实施，每完成一阶段汇报接口变化和验收结果，经用户审批后进入下一阶段。用户负责最终 Release 验收与发布。
 
-目标：开发者手动运行脚本后，可以查看真实测试覆盖率报告，或者查看一份普通 SST 的内部结构。正常 `xmake build` 不自动执行这些脚本。用户已确认上一轮 SDK 已发布；其交付与验证证据保留在 STATE。
+**进度为 40%（2/5 个阶段通过技术验收）。** 普通与事务接口已按统一读写约定复验，遍历的两种格式已验证；阶段③的维护操作待验收。下面各组接口先在本地扩展验证，最后用发布附件在独立环境验收。
 
-用户已批准三个阶段，每阶段完成后汇报并等待检查，再进入下一阶段。阶段①基础链路及用户追加的默认范围扩展均已完成，阶段②普通 SST 可视化已完成且用户确认可打开；阶段③已按用户批准的阅读编排方案完成并验收，现交用户统一审阅。业务代码、磁盘格式和已发布附件不修改；本轮不添加 WiscKey/VLog 可视化、CI 或全库覆盖率达标任务。
+### ① 数据库与批量读写 · 已通过
 
-**进度：100%（3/3 阶段验收通过），工具与文档交付已完成，等待用户阅读反馈。** 按通过阶段数计算，不代表工时。
+- [x] 在 [LSM 绑定](../sdk/kopidb_pybind.cpp) 中保留 `LSM(path: str)`。先处理 `db.put/get/remove`，再处理 `put_batch/get_batch/remove_batch`。新增的 `get_batch` 调用 [C++ 的同名批量接口](../include/lsm/engine.h)，保留输入顺序、重复 key 与缺失项。
+- [x] 公开接口接受 `str | bytes`，文本按 UTF-8 写入。默认查询返回文本，传 `as_bytes=True` 返回原始字节；批量和遍历用同一模式处理 key 和 value，缺失值保留 None。无效 UTF-8 的默认读取抛出 UnicodeDecodeError。转换实现在 [Python 接口](../sdk/kopidb/kopidb/api.py)。类型错误抛 `TypeError`，写入空 key 或空 value 抛 `ValueError`。每组绑定同步更新[类型提示](../sdk/kopidb/kopidb/core/__init__.pyi)和 [SDK 测试](../sdk/test_sdk.py)。
+- **验收**：写入 `(b"k", b"\xff\x00")` 后，`get_batch([b"k", b"missing", b"k"], as_bytes=True)` 必须给出 `[(b"k", b"\xff\x00"), (b"missing", None), (b"k", b"\xff\x00")]`。更新后点查返回新值，删除后返回 `None`。给 `put_batch` 两项，末项分别传整数或空 value，两次应分别抛 `TypeError` 或 `ValueError`，并且第一次出现的合法 key 仍查不到。
 
-| 阶段 | 文件与工作 | 验收标准 | 状态 |
-| --- | --- | --- | --- |
-| ① 覆盖率（[A18](AUDIT.md#a18)） | test_coverage.sh；xmake.lua 开头 coverage 配置 | macOS 实际运行单目标/多目标并生成源码 HTML；失败或零匹配不报成功；原构建、配置与业务文件保持 | 已通过 |
-| ② 普通 SST 可视化（[A19](AUDIT.md#a19)） | scripts/sst_visualize.py 的 parse_sst 与输出入口，仅在实测需要时修改 | 真实 SSTBuilder 生成文件，多 Block、多版本、墓碑、开/关 Bloom 的解析与已知输入一致 | 已通过 |
-| ③ 文档编排及收尾 | 中文 README、英文/旧链接入口、usage/lsm-overview/optimizations、工具与包内导航、协作约定 | 原知识与完整示例保留，中文默认且快速开始靠前，引用/数字/链接准确，示例及工具入口验证通过 | 已通过 |
+2026-11-20 在 macOS arm64 重新构建 `kopidb_pybind`，使用 CPython 3.13.1 在临时目录加载本地扩展。4 项 CRUD/批量用例及 1 项已有事务用法回归全部通过，包含非 UTF-8 二进制读写、零字节 key 不截断、整批失败时保留旧值且无新增 key。wheel 安装验证安排在阶段⑤。
 
-## ① 覆盖率
+### ② 显式事务 · 技术验收通过，待用户审批
 
-- [x] macOS coverage 使用 Apple Clang 原生插桩与 llvm-profdata/llvm-cov，不混入 gcov 参数；其他平台保留原覆盖率规则，本轮不扩展平台验收。
-- [x] 脚本兼容系统 Bash 3.2，先检查依赖、参数。独立源码副本构建，每个测试目标独立数据目录；不清空原 build，不改原 .xmake。
-- [x] 保留 `bash test_coverage.sh [test_target ...]` 入口；无参数默认全部 test_* 模块，精确排除已说明的四项耗时用例。支持过滤条件；显式目标或 `--all` 不应用默认排除。
-- [x] 仅统计所选测试实际链接且插桩的引擎 src/include；排除第三方和测试代码。保存选择/过滤条件、GTest 结果、日志和统计口径，不称为整个仓库完整覆盖率。
-- [x] profiles 独立命名，合并后生成 coverage-report/index.html；快照清理后网页仍可查看源代码。失败不覆盖之前成功报告。
-- [x] 实跑单目标、默认多目标；检查无效目标、零匹配和必要失败路径。百万条用例不属于本轮工具验收；未运行的测试不算通过。
+- [x] `tx.get_isolation_level() -> IsolationLevel` 已绑定，四种枚举已用本地构建验证。
+- [x] 在 `bind_IsolationLevel` 中提供 `READ_UNCOMMITTED`、`READ_COMMITTED` 和原有两个拼写的兼容别名；保留 `REPEATABLE_READ` 与实验性的 `SERIALIZABLE`。
+- [x] `db.begin_tran(level)` 创建事务。`bind_TranContext` 中的 `tx.put/get/remove` 沿用阶段①的类型及异常约定，业务接口为无参的 `commit() -> bool` 和 `abort() -> bool`。C++ 故障测试参数留给引擎测试。
+- **验收**：向已有值的 key 写入不同值，事务内能读到自己的修改；分别验证提交后读到新值、回滚后读到旧值。两个读已提交事务先后创建并暂存修改同一 key，较晚创建的先提交成功，较早创建的再提交应返回 `False`，库中保留成功者的值。两组新旧枚举名对应同一级别。查询级别的测试仅核对返回值。
 
-边界：覆盖率依赖进程写出计数，异常退出或 `_exit` 路径可能不完整；本轮不改业务退出语义。覆盖率数值不是正确性证明，也不设 100% 门槛。
+2026-11-20 使用 CPython 3.13.1 重新加载本机扩展，SDK 测试 9/9 通过（5 项事务、4 项普通与批量读写）。覆盖事务内二进制读写、RU 和 RC 回滚、同 key 写冲突整笔拒绝、隔离级别新旧名及无参提交接口。
 
-### 已采纳的默认范围扩展（已验收）
+2026-11-20 公开接口改为默认返回文本，使用 `as_bytes=True` 读取原始字节。重建本地扩展后，覆盖点查、批量、事务、遍历及旧用法回归的 13 项 SDK 测试全部通过。
 
-用户在阶段①验收后要求默认覆盖所有模块。保留上述两目标验收作为历史证据，不能直接把它当作新增范围的验收。
+### ③ 遍历与维护 · 遍历已验证，维护操作待验收
 
-- [x] 无参数默认发现全部测试模块，并明确列出排除的大规模／性能基准用例；`--all` 运行完整集合，显式目标仍可单独选择。
-- [x] 根据实际测试代码确定具体排除清单及原因，写入运行摘要和 docs/coverage.md；不能只用“常规测试”概括，也不能因过滤失败用例来宣称成功。
-- [x] 运行扩展后的默认集合，核对各目标及源码统计，再同步文档默认行为。脚本、帮助和文档已同步为全部模块常规集合，实际 570/570 通过。
+- [x] 普通遍历使用 `for key, value in db.begin()`，默认 `tranc_id=0`；保留显式版本上限和 `db.end()`。底层提供原始字节，公开遍历默认返回文本对，`begin(as_bytes=True)` 返回字节对。
+- [ ] 保留 `flush()`、`flush_all()`、`clear()`。校正类型提示，移除当前 Python 没有绑定的 `lsm_iters_monotony_predicate` 声明。
+- **验收**：包含二进制 key/value 的遍历逐项核对，`begin()` 与 `begin(0)` 等价；刷盘后可重开读回；结束事务并释放迭代器后执行 `clear()`，库可继续读写。
 
-## ② 普通 SST 可视化
+### ④ 构建 macOS arm64 wheel · 待实施
 
-- [x] 使用实际普通 SST 的小型样本，验证内容及分段位置。源码对照正确不代替实际解析验收。
-- [x] 若当前脚本已正确，保留实现；若不匹配，只修复完成普通 SST 展示所需的逻辑。
-- [x] 检查缺失输入/文件提示与生成页面，运行时不修改输入 SST。
+- [ ] 复核 [A12 的历史复现](AUDIT.md#a12)。用当前名称检查 [Xmake 的 kopidb_pybind 目标](../xmake.lua) 和 [Python 加载器](../sdk/kopidb/kopidb/core/__init__.py)，让扩展能在安装位置找到包内引擎库。
+- [ ] 调整[构建脚本](../sdk/build_python_sdk.sh)和[包配置](../sdk/kopidb/setup.py)，由指定解释器构建，包含扩展、引擎库、类型提示及所需许可文件。
+- **验收**：一条命令生成 wheel，核对 wheel 标签及元数据与实际 Python ABI、架构、最低系统版本相符。把包移出仓库后能加载同包的库，无需用户设置动态库搜索路径。
 
-## ③ 文档及收尾
+### ⑤ 从用户环境验收并准备 Release · 待实施
 
-用户批准的追加编排（2026-11-19）：默认中文首页、英文README.en、旧README.zh-CN简短兼容入口；详细接入/API迁往usage，原理与论文迁往lsm-overview，新增优化案例并在首页导航/鸣谢tiny-lsm框架。保留旧知识、包内离线说明与已发布附件，修正相关导航和AGENT旧约定。当前执行下列验收：
-
-- [x] 首页简短可操作，双语结构和命令一致；旧中文路径与原锚点仍有入口。
-- [x] 完整C++示例、隔离表、并发/清库约定、内部测试开关及LSM资料已迁移保存。
-- [x] A11/A15优化机制与原有源码/历史数据一致；不把历史测量当本轮重测或全DB性能。
-- [x] 所有新增/迁移链接与目录锚点可用，包内模板语言入口正确；现有发布压缩包保持不变。
-- [x] 使用实际SDK编译运行新版首页和迁移手册的示例；复用哈希一致的覆盖率验收，核对工具文档入口及SST回归。
-
-- [x] docs/coverage.md 已说明当前手动启动、选目标/过滤、报告口径、路径和耗时范围；默认集合扩展及精确排除清单已同步。
-- [x] Sst_visualize_tool.md 已移至 docs/，修正仓库根目录下的命令，说明普通 SST 限制及输入/输出。
-- [x] 双语 README 增加目录项及工具文档导航，链接 coverage、SST 可视化和 packaging；完整知识与 API 示例迁移保留；首页改为最小示例。
-- [x] 按文档复跑；回写阶段验收证据与使用命令。不扩展为全库审计或发布新版本。
-
-## 阶段①验收（2026-11-19）
-
-- `test_coverage.sh` 已改为 Bash 3.2/macOS LLVM 流程；`xmake.lua` 只调整 coverage 配置，debug/release 规则保留。使用 Xcode 工具链提供 Command Line Tools 的 SDK 路径，编译/链接工具与 xcrun LLVM 配套。
-- 首次沙箱执行被用户级依赖缓存文件锁权限拒绝，授权后继续；通用 clang 工具链初测找不到标准库头文件，修正为 Xcode 工具链后实际成功。两次原始日志保留，不把失败说成通过。
-- 默认真实运行 SkipList 31/31、MemTable 51/51，共 82/82，零失败、跳过和禁用。只构建所选目标与依赖，未运行百万条测试或 --all 全量。
-- 在路径含空格、从仓库外启动的一次性副本中验证 `test_config --filter ConfigTest.BasicTest`，1/1 通过；预设 GTest 分片与重复环境被脚本清除，实际仍只运行一次。
-- 未知目标、未知参数、--all 与显式目标冲突均返回失败；零匹配过滤器及一次性副本中的人为失败断言正确退出，原成功报告文件哈希全部保持。人为失败属于脚本错误处理验收，不是数据库现有用例失败。
-- 已发现全部 12 个 test_* 目标；只核对发现列表，未声称 --all 全部测试已跑。
-- 默认 HTML 共 24 页（23 个源码页＋首页），本地链接全部存在；临时源代码目录已清理，网页仍嵌入源码。report/merge/html 日志无警告；报告仅包含允许的 src/include。
-- 本次子集的行覆盖率 58.88%，分母仅为所选程序已链接的插桩引擎代码，不能作为全库覆盖率。`_exit`/异常子进程的计数限制在运行摘要中说明。
-- 验收前后 1815 个原业务、测试、config.toml、.xmake、build 及发布归档文件的 SHA-256 和文件清单完全一致；未修改业务代码或现有单元测试。
-- 用户可打开 `coverage-report/index.html`；摘要与每目标计数位于 `coverage-report/run-summary.txt`、`test-results.tsv`，日志/JSON/profile 一并保存。
-- 完整证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-coverage-stage1-pp23j6zj`（summary.json、原始失败日志、默认报告备份、临时副本探针、前后哈希与 HTML 核查）。阶段②/③尚未开始。
-
-## 阶段①追加验收：默认覆盖全部模块（2026-11-19）
-
-- 用户已采纳默认范围扩展，本轮只改 test_coverage.sh 的目标选择/过滤与摘要，以及 docs/coverage.md；xmake coverage 配置与业务实现不变。
-- 默认从 Xmake 发现全部12个 test_*，排除精确四项：LSMTest.BigPersistence、LSMTest.BigPersistence2、CompactTest.TombstoneDefaultConfig、WiscKeyCompactionBenchmarkDeathTest.MeasuresReferenceCompactionCost。排除理由在脚本、帮助、文档、excluded-tests.tsv 和运行摘要中对应；不按模糊名称排除。
-- 保留两个十万条 Persistence、小内存持久化/墓碑、WAL并发及普通WiscKey功能回归。默认过滤器合并用户已有负向条件；空字符串仍为零匹配。显式目标/--all 不应用默认排除，仍尊重请求的过滤器。
-- 实际12目标570/570通过：Config3、Block37、BlockCache7、BlockMeta6、Compact4、LSM171、MemTable51、SkipList31、SST30、Utils15、WAL148、WiscKey67；零失败/跳过/禁用，另4项显式排除没有执行、不计通过。
-- 本轮包括11项名称含TwoMerge的测试，报告实际含engine.cpp与two_merge_iterator.cpp。行覆盖率90.53%，仅统计已链接插桩引擎代码；较旧58.88%的变化来自测试范围扩大，不能宣称业务性能或正确性提高。
-- HTML共33页，链接完整，源快照删除后可看源码；报告/合并日志无警告。原业务/测试/.xmake/build/配置/归档共1815文件清单及SHA保持。
-- 另用含6个平凡GTest的一次性项目验证脚本契约：default 2/2；--all 6/6；显式target 6/6；default加已有负过滤1/1；空过滤退出1并保留旧报告20文件。使用四个相同排除名的小用例验证选择逻辑，没有运行真实百万级/基准用例，不计入570项数据库测试。
-- 证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-coverage-expanded-ryzeg2qq`，含summary.json、真实默认日志/报告、contract-probes/summary.json、前后哈希与旧报告备份。
-- 覆盖率阶段完整完成，普通SST可视化与最终收尾仍待下一阶段。
-
-## 阶段②验收：普通 SST 可视化（2026-11-19）
-
-- 在独立当前源码副本中构建 SSTBuilder 验收程序，真实生成3份普通文件：Bloom开启/关闭的多块文件（各5 Blocks、9记录）和无Bloom的单块单记录文件。引擎重新open并全版本读取，输入逐条一致。
-- 发现并实测[A19](AUDIT.md#a19)：无Bloom时bloom_offset等于footer起点，旧脚本set后按偏移排序，同址顺序受Python哈希种子影响。491B真实文件在seed2错误出现Bloom导航、隐藏Footer；seed0/1/3正常。
-- 只修改scripts/sst_visualize.py的四段边界计算，按固定布局取相邻起止点；中文注释含467–491的例子。保留编码、界面和其他解析，不添加WiscKey、CRC或损坏输入处理。
-- 3份实际文件×4个哈希种子，12/12 HTML核对通过：全部记录及每块归属、Meta首尾key/偏移、事务范围、Bloom字段/大小、Footer24B与导航；同文件不同种子生成页面完全一致。覆盖墓碑/旧版本、12字节普通值、中文、HTML特殊字符、大于2^53的事务ID，输入文件哈希保持。
-- 新增test/test_sst_visualize.py：491B真实SST黄金样本、四seed回归及缺参/缺文件提示，3/3 unittest通过。相同测试指向修复前脚本时，seed2子用例失败，证明测试抓住A19；没有改测试预期来适配缺陷。
-- 使用文档补充独立Python回归命令并实跑通过；不将这3项算入C++覆盖率的570项。业务、原测试、.xmake/build、config、发布归档及覆盖率入口共1817个既有文件哈希不变（仅新增Python测试）。
-- 可直接打开的3个示例页面放在忽略的sst_html/ordinary-demo-h4871ujq/。WiscKey仍不支持；本轮未运行全库C++测试或修改已发布包。
-- 证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-sst-visualize-8crqx6go`，包含真实夹具程序/manifest/SST、旧版4seed复现、12次HTML结果、回归前后日志与summary.json。首次临时夹具调用错误接口的编译失败已保留，修正的是夹具，不是引擎。
-
-## 阶段③验收：中文首页与文档编排（2026-11-19）
-
-- 用户批准先规划后整体写入，本轮不再逐文件暂停。README.md改为中文主入口144行，README.en.md对应英文146行；下载/最小用法靠前，文档/优化/学习/鸣谢有目录。旧README.zh-CN.md保留16行迁移入口及旧锚点，已有SDK链接继续可达。
-- 新增docs/usage.md（237行），保留完整接入/配置、五类API示例、并发/清库和空KV约束、完整隔离表及版本说明；内部commit(true)细节在进阶章节。原完整C++可执行内容逐字等价（只删除一处测试参数注释）。
-- 新增docs/lsm-overview.md（82行），保留原概念/取舍/应用/三论文，七篇RocksDB笔记通过原索引可达；未删除学习笔记。
-- 新增docs/optimizations.md（239行），分别说明A11同批通知方向与A15引用复用的场景、架构、代码、验证和测量。A11作为历史单次整项测试记录，原临时日志不可用如实说明；A15同日冻结旧/新版5轮中位数核对保留对照文件。未运行新基准，不宣称全DB加速。
-- 中英首页与概览明确鸣谢tiny-lsm代码框架和教程。包内模板链接指向英文新首页/中文使用手册；两个工具文档返回中文主README；打包维护说明链接使用手册；AGENT同步首页/专题分工，不再要求完整内容全部放首页。
-- 133处内部路径/锚点/源码行号范围检查通过；16段shell示例语法检查通过。双语首页的C++（忽略注释）、Lua及shell命令一致。原中文隔离表/补充说明、并发段、commit测试开关、空参数约束与三篇论文均核对保留，旧首页锚点在新中英首页及兼容页均存在。
-- 从现有已发布版SDK压缩包真实解压，按文档原样取代码/配置：中文首页Xmake、英文首页Xmake、完整手册Xmake/CMake，4个独立consumer构建/运行全部通过；检查输出Alice及完整例子的批量/事务结果。只编译消费程序，不重建引擎，不借用原仓库头/库。
-- 覆盖率help与文档四项排除清单一致；按SST文档模式生成000123.sst页面成功且输入不变。当前工具/业务/测试哈希保持，复用已通过的570项覆盖率及阶段②SST回归，不把它们记为本轮重跑。
-- 1826个既有业务/测试/脚本/构建/图标/配置/许可/CHANGELOG及dist文件哈希不变；未改数据库或已发布归档、未写Git或重新发布。新增内容全部是文档及约定，git diff --check通过。
-- 完整证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-docs-final-fnyuy1r8`，含before原稿、文档/知识保留检查、4个真实SDK消费者及日志、工具入口检查、前后哈希及summary.json。
-- 三阶段交付完成，用户可从README.md、docs/usage.md、docs/optimizations.md开始审阅。
-
-## 审阅反馈收尾：统一 docs 目录（2026-11-19）
-
-- 按用户最新要求，原doc目录整体迁入docs/rocksdb，7篇笔记及索引共8文件逐字节保持；原doc目录已移除。
-- 双语README、LSM概览和AGENT中的当前路径同步，笔记内部同级链接保持，无需改写学习内容。
-- 迁移后的179处本地链接/锚点检查通过，无当前旧路径残留；纯文档移动未运行数据库测试或改已发布包。
-- 证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-docs-merge-sdcxwx4y`，含8文件原SHA与迁移检查summary.json。整体仍为100%（3/3），供用户继续审阅。
+- [ ] 在仓库外用全新虚拟环境安装阶段④的实际 wheel，运行前面三组接口测试；另起 Python 进程重开，核对已经提交和回滚的数据。
+- [ ] 中英文 README 放安装命令与最短 CRUD 示例，详细用法与打包步骤分别写入[使用指南](../docs/usage.md)与[维护文档](../docs/packaging.md)。
+- **验收**：在仓库外从 wheel 文件用 `python -m pip install` 普通安装，清除 `PYTHONPATH` 和 `DYLD_LIBRARY_PATH`；确认 Python 从虚拟环境加载安装包及其原生库。在这个环境运行前三组用例、跨进程重开和 README 示例。用于交付的 wheel 与受测文件的 SHA-256 一致，附中英文 Release 说明，由用户最终验收并在 GitHub 发布。

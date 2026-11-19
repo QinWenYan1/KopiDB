@@ -1,4 +1,4 @@
-from typing import Iterator, List, Optional, Tuple, Any, Callable
+from typing import Iterator, List, Optional, Tuple
 from enum import Enum
 
 
@@ -6,7 +6,9 @@ class IsolationLevel(Enum):
     READ_UNCOMMITTED = 0
     READ_COMMITTED = 1
     REPEATABLE_READ = 2
-    SERIALIZABLE = 3
+    SERIALIZABLE = 3  # 实验性级别，完整串行化尚未实现。
+    READ_UNOP_COMMITTED = READ_UNCOMMITTED
+    READ_OP_COMMITTED = READ_COMMITTED
 
 
 class TwoMergeIterator:
@@ -27,8 +29,11 @@ class Level_Iterator:
 
 
 class TranContext:
+    def get_isolation_level(self) -> IsolationLevel:
+        ...
+
     # 事务操作
-    def commit(self, test_fail: bool = False) -> bool:
+    def commit(self) -> bool:
         ...
 
     def abort(self) -> bool:
@@ -64,6 +69,9 @@ class LSM:
     def put_batch(self, kvs: List[Tuple[bytes, bytes]]) -> None:
         ...
 
+    def get_batch(self, keys: List[bytes]) -> List[Tuple[bytes, Optional[bytes]]]:
+        ...
+
     def remove_batch(self, keys: List[bytes]) -> None:
         ...
 
@@ -86,10 +94,4 @@ class LSM:
         ...
 
     def flush_all(self) -> None:
-        ...
-
-    # 高级查询
-    def lsm_iters_monotony_predicate(
-        self, tranc_id: int, predicate: Callable[[bytes], int]
-    ) -> Optional[Tuple[TwoMergeIterator, TwoMergeIterator]]:
         ...
