@@ -160,7 +160,7 @@ printf '[3/4] 安装并整理 SDK 文件\n'
 )
 cp "$source_dir/LICENSE" "$package_dir/"
 cp -R "$metadata_dir/licenses" "$package_dir/"
-# 第六步提供专用包内说明后自动采用；此前保留现有项目说明，不捏造下载链接。
+# 优先采用 SDK 专用说明；源码未提供专用说明时回退到项目 README。
 if [[ -f "$source_dir/packaging/cpp/README.md" ]]; then
   cp "$source_dir/packaging/cpp/README.md" "$package_dir/README.md"
 else

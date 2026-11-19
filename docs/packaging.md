@@ -97,7 +97,7 @@ C++ 标准同样属于接入配置：CMake 的 `cxx_std_20` 表示至少需要 C
 
 源码副本、安装树和中间文件放在本次创建的临时工作目录。待发布归档则先写入最终输出目录中的临时文件，确保最终替换在同一文件系统内完成；`tar` 写入及目录读取成功后，才通过 `mv` 替换同名正式归档。
 
-普通失败或捕获到中断信号时，退出清理只删除本次临时工作目录和临时归档，保留上一次成功生成的正式包。归档清单可读只是打包检查，不能代替消费者运行验收。
+正式归档替换前发生失败或捕获到中断信号时，退出清理只删除本次临时工作目录和临时归档，保留上一次成功生成的正式包。归档清单可读只是打包检查，不能代替消费者运行验收。
 
 改动打包流程或准备发布时，至少检查：
 
@@ -107,5 +107,27 @@ C++ 标准同样属于接入配置：CMake 的 `cxx_std_20` 表示至少需要 C
 - [ ] 从新位置及带空格目录接入，覆盖多个可执行目标、共享库目标和无依赖目标；清除动态库搜索环境变量后直接运行。
 - [ ] 验证 CRUD、事务提交与回滚、批量操作、有序遍历及跨进程重开；普通模式与启用 WiscKey 的模式分别检查。
 - [ ] 修改失败处理时注入归档写入失败，确认旧包内容未变、临时归档和工作目录已清理。
+
+## GitHub Release 发布
+
+Tag 是一个确定提交的版本标记；GitHub Release 在这个标记上附加版本说明和可下载的文件。发布前由维护者提交、推送本轮源码与文档，确认准备发布的提交和打包输入一致。脚本会包含未提交改动，因此不能只看包名就认定它对应某个 Git 提交。
+
+以 `0.0.1` 为例，在生成最终归档后准备校验文件；重新打包后也需重新生成校验文件：
+
+```bash
+cd dist
+shasum -a 256 kopidb-0.0.1-macos-arm64.tar.gz > kopidb-0.0.1-macos-arm64.tar.gz.sha256
+shasum -a 256 -c kopidb-0.0.1-macos-arm64.tar.gz.sha256
+```
+
+然后由维护者在 [GitHub Releases](https://github.com/QinWenYan1/KopiDB/releases) 操作：
+
+1. 选择 **Draft a new release**，创建或选择与本次版本对应的 tag，例如 `v0.0.1`。
+2. 新建 tag 时，**Target** 选择已经包含本轮修改的分支或提交；本项目通常使用 `main`，发布前核对提交。
+3. 填写标题、功能和平台要求，上传 `.tar.gz` 与对应 `.sha256` 两个附件。GitHub 自动生成的 **Source code** 文件是源码快照，不包含我们的预编译 SDK。
+4. 首个实验版本建议选择 **This is a pre-release**。先保存草稿核对附件，确认后再点击 **Publish release**。
+5. 从发布页面重新下载两个附件，放在同一目录运行上述校验命令，并按 README 的接入步骤检查下载结果。
+
+GitHub 界面与选项以[官方发布说明](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository?tool=webui)为准。`dist/` 是本地交付输出，归档通过 Release 附件分发，不需要提交到 Git 仓库。
 
 面向使用者的具体接入步骤见[项目 README](../README.md)和[包内说明](../packaging/cpp/README.md)。实施与验收记录保留在 [STATE](../agent/STATE.md) 和 [PLAN](../agent/PLAN.md)，本页只维护打包设计与检查方法。

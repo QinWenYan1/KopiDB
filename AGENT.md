@@ -15,6 +15,7 @@ KopiDB 是类 RocksDB 的教学级 LSM-tree KV 存储引擎（C++20），沿 [ti
 | [agent/PLAN.md](agent/PLAN.md) | 本轮任务、各阶段 TODO 和验收标准。 |
 | `agent/skills/<技能名>/SKILL.md` | 可复用的工作方法，按任务选择读取。 |
 | `doc/` | RocksDB 源码精读笔记，作为独立学习副线。 |
+| [docs/packaging.md](docs/packaging.md) | KopiDB 构建、打包与 SDK 接入设计，面向维护者；使用步骤见 README，进度见 STATE/PLAN。 |
 
 继续 Lab 前先读 STATE 和 PLAN，确认当前阶段及尚未验收的内容。代码与记录不一致时先核对代码，再更新记录；遵循用户在当前会话中的明确要求。
 
