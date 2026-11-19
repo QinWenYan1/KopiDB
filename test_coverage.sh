@@ -9,8 +9,13 @@ usage() {
 用法: bash test_coverage.sh [--filter GTest模式] [test_target ...]
       bash test_coverage.sh --all [--filter GTest模式]
 
-不指定目标时，仅运行 test_skiplist 和 test_memtable 快速子集。
+不指定目标时，运行全部 test_* 模块的常规用例，排除以下四项：
+  LSMTest.BigPersistence
+  LSMTest.BigPersistence2
+  CompactTest.TombstoneDefaultConfig
+  WiscKeyCompactionBenchmarkDeathTest.MeasuresReferenceCompactionCost
 --all       运行 Xmake 中所有 test_* 二进制，包括大规模和耗时测试。
+test_target 显式指定目标时，不应用上述四项排除；可配合 --filter 使用。
 --filter    指定 GTest 过滤器；未指定时使用 GTEST_FILTER，默认 *。
 --help, -h  显示帮助。
 
@@ -47,6 +52,33 @@ while (( $# > 0 )); do
       shift ;;
   esac
 done
+
+# 默认覆盖全部模块，只排除已确认的大规模/基准用例；不按 Large 等
+# 模糊名称过滤，避免把小规模边界测试和正常持久化检查一起排除。
+# 显式指定目标或 --all 时不应用本表，仍由调用者自己的过滤器决定。
+default_exclusions=(
+  LSMTest.BigPersistence
+  LSMTest.BigPersistence2
+  CompactTest.TombstoneDefaultConfig
+  WiscKeyCompactionBenchmarkDeathTest.MeasuresReferenceCompactionCost
+)
+default_exclusion_reasons=(
+  '约200万条写入、删除及重开逐项查询'
+  '约100万条乱序写入、批量删除及重开查询'
+  '约100万条记录的墓碑持久化检查'
+  '10000条4KiB值的合并基准，预热1轮并采样5轮'
+)
+requested_filter="$test_filter"
+if [[ "$selection" == "default" && -n "$test_filter" ]]; then
+  exclusions_filter="$(IFS=:; printf '%s' "${default_exclusions[*]}")"
+  if [[ "$test_filter" == *-* ]]; then
+    # GTest 的第一个 - 后是排除列表；追加到已有列表，保留正向匹配。
+    test_filter="$test_filter:$exclusions_filter"
+  else
+    test_filter="$test_filter-$exclusions_filter"
+  fi
+fi
+# 空过滤器继续表示零匹配，不能拼成 -排除列表而意外运行全部用例。
 
 # 先检查工具和输入，再创建工作区；缺少依赖不触碰旧报告。
 [[ "$(uname -s)" == "Darwin" ]] || fail "当前仅支持 macOS 原生 LLVM 覆盖率。"
@@ -109,7 +141,8 @@ mkdir -p "$source_dir/sdk" "$evidence_dir/logs" "$evidence_dir/gtest" "$evidence
 summary_file="$evidence_dir/run-summary.txt"
 {
   printf 'KopiDB LLVM 覆盖率运行\n开始时间: %s\n' "$(date '+%Y-%m-%d %H:%M:%S %z')"
-  printf '目标选择: %s\nGTest 过滤器: %s\n' "$selection" "$test_filter"
+  printf '目标选择: %s\n请求的 GTest 过滤器: %s\n实际 GTest 过滤器: %s\n' \
+    "$selection" "$requested_filter" "$test_filter"
   printf '范围: 仅所选测试已链接的 src/include 插桩代码；未链接文件不在分母中。\n'
   printf '进程限制: _exit/异常终止子进程的计数不保证写回，报告不是完整崩溃路径覆盖率。\n'
   printf '运行方式: 各目标独立目录；固定一轮；关闭继承的 GTest 分片/list 模式。\n'
@@ -118,6 +151,19 @@ summary_file="$evidence_dir/run-summary.txt"
   "$llvm_cov" --version
   "$llvm_profdata" --version
 } > "$summary_file"
+
+printf 'test\treason\n' > "$evidence_dir/excluded-tests.tsv"
+if [[ "$selection" == "default" ]]; then
+  printf '\n默认排除的大规模/基准用例（排除不是通过，也不是 GTest 跳过）:\n' | tee -a "$summary_file"
+  for (( index=0; index<${#default_exclusions[@]}; index++ )); do
+    printf '%s\t%s\n' "${default_exclusions[index]}" "${default_exclusion_reasons[index]}" \
+      >> "$evidence_dir/excluded-tests.tsv"
+    printf '  %s: %s\n' "${default_exclusions[index]}" "${default_exclusion_reasons[index]}" \
+      | tee -a "$summary_file"
+  done
+else
+  printf '\n未应用默认排除清单；本次测试范围由所选目标和请求的过滤器决定。\n' | tee -a "$summary_file"
+fi
 
 printf '[1/5] 复制当前源码，隔离原仓库 build/.xmake 与测试数据\n'
 rsync -a --exclude='.DS_Store' --exclude='__pycache__/' --exclude='build/' --exclude='dist/' \
@@ -191,16 +237,16 @@ printf '[2/5] 配置 Apple Clang coverage，并读取 Xmake 测试元数据\n'
   "$xmake_bin" lua "$work_dir/metadata.lua" targets "$evidence_dir/available-targets.tsv"
 ) 2>&1 | tee "$evidence_dir/logs/configure.log"
 
-if [[ "$selection" == "default" ]]; then
-  requested=(test_skiplist test_memtable)
-  requested_count=2
-  printf '默认快速子集: test_skiplist test_memtable（不是全量；全量请显式使用 --all）\n'
-elif [[ "$selection" == "all" ]]; then
+if [[ "$selection" == "default" || "$selection" == "all" ]]; then
   while IFS=$'\t' read -r target binary; do
     requested[requested_count]="$target"
     requested_count=$((requested_count + 1))
   done < "$evidence_dir/available-targets.tsv"
-  printf '已选择全部测试目标，包含大规模和耗时用例。\n'
+  if [[ "$selection" == "default" ]]; then
+    printf '默认常规集合: 全部测试模块，排除上方四项大规模/基准用例。\n'
+  else
+    printf '已选择全部测试目标，不应用默认的大规模/基准排除清单。\n'
+  fi
 fi
 (( requested_count > 0 )) || fail "没有选中测试目标。"
 selected_targets=()

@@ -15,6 +15,9 @@
 以下命令在仓库根目录执行：
 
 ```bash
+# 默认：运行全部模块的常规测试
+bash test_coverage.sh
+
 # 查看参数
 bash test_coverage.sh --help
 
@@ -32,14 +35,25 @@ bash test_coverage.sh test_lsm \
 open coverage-report/index.html
 ```
 
-**当前无参数调用仅运行 `test_skiplist` 和 `test_memtable`，不是所有模块。** 想查看其他模块，应显式指定目标，或使用下面的全量入口。
+**无参数调用会从 Xmake 中发现全部 `test_*` 测试目标，只排除下表中的四项大规模或性能基准用例。** 当前包括配置、SkipList、MemTable、Block、BlockMeta、文件工具、SST、LSM、Block Cache、Compaction、WAL 和 WiscKey 共 12 个测试目标。
+
+| 默认排除的完整用例名 | 原因 |
+| --- | --- |
+| `LSMTest.BigPersistence` | 约 200 万条写入、删除和重开逐项查询 |
+| `LSMTest.BigPersistence2` | 约 100 万条乱序写入、批量删除和重开查询 |
+| `CompactTest.TombstoneDefaultConfig` | 约 100 万条记录的墓碑持久化检查 |
+| `WiscKeyCompactionBenchmarkDeathTest.MeasuresReferenceCompactionCost` | 10000 条 4KiB 值的合并基准，预热 1 轮、正式采样 5 轮 |
+
+只按以上完整用例名排除，不按 `Large`、`Persistence` 等名字模糊排除。两个十万条 `Persistence`、小内存配置下的持久化、墓碑及普通合并测试仍然运行。
+
+排除清单和原因会打印到终端，并保存到 `excluded-tests.tsv` 与运行摘要。**排除的用例没有执行，不能算作通过，也不等于 GTest 的运行时跳过。** 要包含这些用例，使用全量入口：
 
 ```bash
 # 包含全部 test_* 目标及其大规模、性能测试，可能耗时很长
 bash test_coverage.sh --all
 ```
 
-`--all` 与显式目标列表不能一起使用。它会从 Xmake 项目中发现全部 `test_*` 二进制目标；当前包括配置、SkipList、MemTable、Block、BlockMeta、文件工具、SST、LSM、Block Cache、Compaction、WAL 和 WiscKey。
+`--all` 与显式目标列表不能一起使用。**显式指定目标也不会应用默认的四项排除**，例如直接运行 `bash test_coverage.sh test_lsm` 会包含两项百万级用例；只想检查其中一部分时，请同时指定 `--filter`。
 
 TwoMergeIterator 没有单独的测试目标：相关用例位于 `test_lsm` 和 `test_wisckey`。覆盖率以实际执行和链接的代码为准，不要求每个类都拥有同名测试程序。
 
@@ -47,6 +61,7 @@ TwoMergeIterator 没有单独的测试目标：相关用例位于 `test_lsm` 和
 
 - `--filter` 使用 GTest 用例名模式，例如 `SuiteName.TestName`，`*` 可以匹配多个名称。也接受 `--filter=模式`。
 - 显式 `--filter` 优先于环境变量 `GTEST_FILTER`；两者都未设置时使用 `*`。
+- 默认目标模式会在请求的过滤器上追加四项排除；`--all` 或显式指定目标时只使用请求的过滤器。因此想专门运行某项默认排除用例，应指定其测试目标及用例过滤器。
 - 同一过滤器会应用到每个选中的目标。只针对某套件时，应同时指定对应测试目标，避免其他目标零匹配。
 - 每个选中的目标必须成功退出，并至少有一项测试实际完成且通过。零匹配、测试失败或缺少覆盖率数据都会返回失败。
 - 脚本固定执行一轮，清除继承的 GTest 分片、列举及重复执行模式；实际通过、失败、跳过和禁用数量写入结果文件。
@@ -59,6 +74,7 @@ TwoMergeIterator 没有单独的测试目标：相关用例位于 `test_lsm` 和
 | --- | --- |
 | `index.html` | 网页入口，点击文件名查看具体源码行 |
 | `run-summary.txt` | 本轮目标、过滤器、执行结果和统计范围 |
+| `excluded-tests.tsv` | 本次应用的默认排除清单及原因；显式目标或 `--all` 时只有表头 |
 | `test-results.tsv` | 每个目标的测试数量及退出码 |
 | `coverage-summary.txt` | 文件和汇总的行、函数、分支等覆盖率 |
 | `logs/`、`gtest/` | 构建、执行、报告日志与 GTest JSON 结果 |

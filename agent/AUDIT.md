@@ -482,3 +482,5 @@ WiscKey 与 CRC 对照证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T
 - 本轮证据目录：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-coverage-stage1-pp23j6zj`，开始时对 1815 个原业务/测试/配置/构建及发布归档文件建立 SHA-256 基线，验收后补结果。
 
 A18 验收结果（2026-11-19）：原生 LLVM 报告已生成，SkipList 31＋MemTable 51 共 82/82；单目标过滤额外 1/1。未知目标/选项、零匹配和临时副本人为失败正确退出，旧报告保持。24 个 HTML 页面链接完整，源快照删除后仍可查源码；1815 个原业务/测试/构建/配置/归档文件哈希不变。报告明确是已链接插桩代码的测试子集，不代表全库覆盖；未运行 --all 或百万条用例。原始沙箱缓存权限失败及通用 clang SDK 路径失败已留存，最终使用 Xcode 工具链通过。证据见上述目录 summary.json。
+
+A18 后续范围改进（2026-11-19，用户已采纳）：无参数由两个模块扩大到全部12个test_*，精确排除4项已说明的大规模/基准用例；显式target与--all不套用默认排除。真实常规集合570/570通过，覆盖11项TwoMerge测试，行覆盖率90.53%为当前已链接插桩源码范围。四项排除未运行，不计通过。临时6用例夹具验证default/--all/显式target/已有负过滤/空过滤五种契约，原1815业务/测试/构建/配置/包文件哈希保持。完整证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T/kopidb-coverage-expanded-ryzeg2qq`；帮助与docs/coverage.md已同步。A18保持已解决，不将扩大范围误记为此前适配缺陷复发。
