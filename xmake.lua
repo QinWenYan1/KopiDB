@@ -3,12 +3,23 @@ set_project("kopidb")
 set_version("0.0.1")
 set_languages("c++20")
 
-add_rules("mode.debug", "mode.release", "mode.coverage")
+add_rules("mode.debug", "mode.release")
 
--- 在 coverage 模式下设置 flags
-if is_mode("coverage") then
-    add_cxxflags("--coverage")
-    add_ldflags("--coverage")
+-- macOS 直接使用 Apple Clang 配套的 LLVM 工具收集覆盖率、生成网页。
+-- Xmake 内置 mode.coverage 使用 gcov 的 --coverage，不能与这套参数混用。
+-- 只影响 coverage 构建；日常 debug/release 和发布的 SDK 不带这些统计。
+if is_plat("macosx") then
+    if is_mode("coverage") then
+        set_symbols("debug")
+        set_optimize("none")
+        set_policy("build.ccache", false)
+        add_cxflags("-fprofile-instr-generate", "-fcoverage-mapping")
+        add_ldflags("-fprofile-instr-generate")
+        add_shflags("-fprofile-instr-generate")
+    end
+else
+    -- 其他平台保留 Xmake 原有的 gcov 配置；本轮脚本仅验收 macOS。
+    add_rules("mode.coverage")
 end
 
 -- add_repositories("local-repo build")  -- 作者本地的私有仓库残留，build/ 不在 git 中，禁用
