@@ -130,4 +130,4 @@ shasum -a 256 -c kopidb-0.0.1-macos-arm64.tar.gz.sha256
 
 GitHub 界面与选项以[官方发布说明](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository?tool=webui)为准。`dist/` 是本地交付输出，归档通过 Release 附件分发，不需要提交到 Git 仓库。
 
-面向使用者的具体接入步骤见[项目 README](../README.md)和[包内说明](../packaging/cpp/README.md)。实施与验收记录保留在 [STATE](../agent/STATE.md) 和 [PLAN](../agent/PLAN.md)，本页只维护打包设计与检查方法。
+面向使用者的具体接入步骤见[使用手册](usage.md#download-and-use)和[包内说明](../packaging/cpp/README.md)，[返回项目首页](../README.md#tools-and-docs)。实施与验收记录保留在 [STATE](../agent/STATE.md) 和 [PLAN](../agent/PLAN.md)，本页只维护打包设计与检查方法。

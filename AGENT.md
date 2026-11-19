@@ -15,13 +15,18 @@ KopiDB 是类 RocksDB 的教学级 LSM-tree KV 存储引擎（C++20），沿 [ti
 | [agent/PLAN.md](agent/PLAN.md) | 本轮任务、各阶段 TODO 和验收标准。 |
 | `agent/skills/<技能名>/SKILL.md` | 可复用的工作方法，按任务选择读取。 |
 | `doc/` | RocksDB 源码精读笔记，作为独立学习副线。 |
+| [docs/usage.md](docs/usage.md) | 用户接入、配置、完整 API 示例和事务语义。 |
+| [docs/lsm-overview.md](docs/lsm-overview.md)、[docs/optimizations.md](docs/optimizations.md) | LSM 背景资料与有测量依据的优化案例；由 README 导航进入。 |
+| [docs/coverage.md](docs/coverage.md)、[docs/Sst_visualize_tool.md](docs/Sst_visualize_tool.md) | 手动开发工具的使用方法和适用范围。 |
 | [docs/packaging.md](docs/packaging.md) | KopiDB 构建、打包与 SDK 接入设计，面向维护者；使用步骤见 README，进度见 STATE/PLAN。 |
 
 继续 Lab 前先读 STATE 和 PLAN，确认当前阶段及尚未验收的内容。代码与记录不一致时先核对代码，再更新记录；遵循用户在当前会话中的明确要求。
 
-README 是面向使用者的简洁手册：保留 LSM-tree 介绍、设计取舍、应用场景和学习文档，与构建、使用示例及项目结构统一组织，并提供可跳转的目录；修改章节时同步维护目录。只保留影响实际使用的必要限制。内部能力核查、待确认设计、阶段验收与完整验证程序放 STATE，问题事实与复现放 AUDIT；迁移时合并已有内容，不重复维护。
+README 是面向使用者的简洁入口：默认 `README.md` 为中文，`README.en.md` 为对应英文首页，`README.zh-CN.md` 只保留旧链接入口。阅读顺序是认识项目、下载接入、最小示例、文档导航、优化简介、学习资料和鸣谢。保留 logo、带图标的目录、必要使用限制，以及 tiny-lsm 代码框架和教程来源；不把内部状态记录放在首页。
 
-修改 README 时先读取用户最新版本，保留用户恢复的知识、参考资料和组织结构，不为“简洁”擅自删除正文。各小节标题配图标，目录同步显示图标并链接到对应小节。API 示例按用户最新要求合并为一个完整代码块，用中文注释区分普通 CRUD、事务提交、事务回滚、批量操作和有序遍历；突出基本调用流程，不展开应用侧的报错输出和进程退出策略。省略提交结果处理时简短注明，不改变实际接口的成功／失败语义。
+修改前先读用户最新版本。首页保留简短 CRUD/事务示例；完整五类 API 单代码块、事务对比与高级说明维护在 `docs/usage.md`，LSM 原理/取舍/场景及论文资料维护在 `docs/lsm-overview.md`，优化机制与实测维护在 `docs/optimizations.md`。迁移有用内容而非直接删除，不再要求所有细节都塞回首页。小节配图标、目录与双语入口同步；变更路径时检查旧链接和已发布 SDK 中的文档链接。
+
+完整 API 示例继续用注释区分普通 CRUD、提交、回滚、批量和遍历，突出调用流程；省略提交结果处理时简短注明，不改变成功／失败语义。优化数字须附场景和测量口径，历史记录不称为本轮重测。内部能力核查、全局约定与阶段验收放 STATE，当前执行放 PLAN，问题事实与复现放 AUDIT，避免重复维护。
 
 README 的普通 KV 示例使用对外 `LSM::put/get/remove`，不要求用户组装 Engine/TranManager、分配事务 ID 或保存内部状态。显式事务示例只展示 `LSM::begin_tran` 与事务句柄的读写、commit/abort，不混入底层组件 API。对外入口尚未接通时简短标明接口示意，不用内部联调代码冒充已可运行的用户入口，也不为文档擅自提前实现后续 Lab。
 

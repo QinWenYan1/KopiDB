@@ -96,6 +96,6 @@ cmake --build build
 - 示例数据位于运行目录的 `my-data/`。默认使用不需要配置文件，首次运行可能打印默认配置提示；WiscKey 默认关闭。
 - 自定义参数时，将 [config.toml](https://github.com/QinWenYan1/KopiDB/blob/main/config.toml) 放到程序的工作目录。
 
-For transactions, iteration and usage constraints, see the [English manual](https://github.com/QinWenYan1/KopiDB/blob/main/README.md) or [中文手册](https://github.com/QinWenYan1/KopiDB/blob/main/README.zh-CN.md). `SERIALIZABLE` remains experimental and does not provide complete serializable isolation.
+For transactions, iteration and usage constraints, see the [English overview](https://github.com/QinWenYan1/KopiDB/blob/main/README.en.md) or [中文使用手册](https://github.com/QinWenYan1/KopiDB/blob/main/docs/usage.md). `SERIALIZABLE` remains experimental and does not provide complete serializable isolation.
 
 事务、遍历及使用约定见上述手册。`SERIALIZABLE` 尚未提供完整可串行化保证。

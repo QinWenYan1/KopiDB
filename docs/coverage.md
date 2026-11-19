@@ -1,6 +1,6 @@
 # 📊 测试覆盖率
 
-[返回项目 README](../README.zh-CN.md#tools-and-docs)
+[返回项目 README](../README.md#tools-and-docs)
 
 [`test_coverage.sh`](../test_coverage.sh) 用来检查测试实际执行到了哪些引擎代码。完成一个功能或补充测试后，可以手动运行；正常 `xmake build` 不会自动触发覆盖率统计。
 

@@ -1,6 +1,6 @@
 # 🔎 普通 SST 可视化
 
-[返回项目 README](../README.zh-CN.md#tools-and-docs)
+[返回项目 README](../README.md#tools-and-docs)
 
 [`scripts/sst_visualize.py`](../scripts/sst_visualize.py) 将一份普通 SST 文件解析为可离线浏览的 HTML 网页，用来查看文件内部的分块和记录。
 
