@@ -18,7 +18,7 @@ KopiDB is an embedded LSM-tree key-value engine written in C++20 for learning ho
 - [💡 Why Use an LSM-tree?](#why-lsm)
 - [🎯 Use Cases](#use-cases)
 - [📚 Learning Notes (Chinese)](#learning-docs)
-- [🛠️ Build and Test](#build-and-test)
+- [📦 Download and Use](#download-and-use)
 - [🧵 Concurrency and Transactions](#concurrency-and-transactions)
 - [💻 C++ Usage Example](#cpp-example)
 - [🧭 Choosing a Read/Write Mode](#choosing-read-write-mode)
@@ -84,17 +84,103 @@ The `doc/` directory contains **RocksDB source code study notes**, developed alo
 ---
 
 <a id="build-and-test"></a>
+<a id="download-and-use"></a>
 
-## 🛠️ Build and Test
+## 📦 Download and Use
 
-A C++20 compiler and [Xmake](https://xmake.io) are required. The following installation and integration steps have been verified on **macOS arm64**.
+The prebuilt SDK targets **macOS arm64**. You need a C++20-capable compiler and **either Xmake or CMake**. See `BUILD-INFO.txt` inside the package for its build environment and the library's minimum OS version.
 
-**📦 Build and Install**
+**⬇️ Get the SDK**
 
-Run these commands from the KopiDB repository root:
+Select the `kopidb-<version>-macos-arm64.tar.gz` asset on [GitHub Releases](https://github.com/QinWenYan1/KopiDB/releases). If no matching asset is available yet, use the source-build instructions below to produce the same SDK.
+
+Extract the archive, rename its folder to `kopidb`, and place it in your own project's `third_party/` directory:
+
+```text
+your-project/
+├── main.cpp
+├── xmake.lua or CMakeLists.txt
+└── third_party/kopidb/
+    ├── include/kopidb/
+    ├── lib/libkopidb.so
+    ├── xmake.lua
+    └── KopiDBConfig.cmake
+```
+
+**🔗 Add the Dependency Once**
+
+Save the [C++ usage example below](#cpp-example) as your own `main.cpp`. The examples use a program target named `my_app`; in an existing project, add the package reference and dependency to your own target. **Do not edit the configuration files inside the SDK.**
+
+<details>
+<summary>🛠️ Use Xmake</summary>
+
+In your own project's `xmake.lua`:
+
+```lua
+includes("third_party/kopidb")
+
+target("my_app")
+    set_kind("binary")
+    add_files("main.cpp")
+    add_deps("kopidb")
+```
+
+Run from your project directory:
 
 ```bash
-# Change this to your preferred installation directory
+xmake
+xmake run my_app
+```
+
+This configuration sets targets that depend on KopiDB to C++20. Targets without that dependency are unaffected.
+
+</details>
+
+<details>
+<summary>🔧 Use CMake</summary>
+
+In your own project's `CMakeLists.txt`:
+
+```cmake
+cmake_minimum_required(VERSION 3.20)
+project(my_app LANGUAGES CXX)
+
+find_package(KopiDB CONFIG REQUIRED
+    PATHS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/kopidb"
+    NO_DEFAULT_PATH)
+
+add_executable(my_app main.cpp)
+target_link_libraries(my_app PRIVATE KopiDB::KopiDB)
+```
+
+Run from your project directory:
+
+```bash
+cmake -S . -B build
+cmake --build build
+./build/my_app
+```
+
+</details>
+
+Both methods compile only your application and link the database already built into the SDK. Your code needs just `#include <lsm/engine.h>` as its KopiDB entry header. Keep the SDK's shared library available at runtime; reconfigure and rebuild your application after moving the SDK. The example below stores its database in `api-demo/` under the working directory.
+
+**⚙️ Configuration**
+
+No configuration file is needed to use the defaults; the first run may print a default-configuration message. WiscKey is disabled by default. To customize settings, place [config.toml](config.toml) in the program's working directory and edit the relevant options.
+
+<details>
+<summary>🧰 Build from Source and Run Tests (Optional)</summary>
+
+From the KopiDB source repository root, with a C++20 compiler and [Xmake](https://xmake.io):
+
+```bash
+./scripts/package_cpp.sh
+```
+
+The script builds a temporary source snapshot and writes the archive to `dist/`, without changing the original working tree's build mode. You can also build and install just the shared library and integration files:
+
+```bash
 KOPIDB_PREFIX="$HOME/.local/kopidb"
 
 xmake f -m release
@@ -102,49 +188,18 @@ xmake build kopidb_shared
 xmake install -o "$KOPIDB_PREFIX" kopidb_shared
 ```
 
-The main installed files are located at:
-
-```text
-installation-directory/
-├── include/kopidb/     # Header files
-└── lib/libkopidb.so    # Shared library
-```
-
-**🔗 Use KopiDB in Your C++ Project**
-
-Save the [C++ usage example below](#cpp-example) as `main.cpp`, then run these commands from its directory:
-
-```bash
-# Use the same path as in the installation step
-KOPIDB_PREFIX="$HOME/.local/kopidb"
-
-clang++ -std=c++20 -pthread main.cpp \
-  -I"$KOPIDB_PREFIX/include/kopidb" \
-  "$KOPIDB_PREFIX/lib/libkopidb.so" \
-  "-Wl,-rpath,$KOPIDB_PREFIX/lib" \
-  -o demo
-
-./demo
-```
-
-`-I` specifies the header search directory, and `-rpath` specifies where the program looks for the shared library at runtime. The example stores its database in `api-demo/` under the current working directory.
-
-**⚙️ Configuration**
-
-To customize settings, place the repository's [config.toml](config.toml) in the program's working directory and edit the relevant options.
-
-If the configuration file is absent, KopiDB prints a message and uses the defaults. WiscKey is disabled by default.
-
-**🧪 Run Tests**
-
-Run a specific module's tests from the KopiDB repository root:
+**🧪 Run Module Tests**
 
 ```bash
 xmake build test_skiplist
 xmake run test_skiplist
 ```
 
-For environment setup instructions, see [Lab 0](https://vanilla-beauty.github.io/tiny-lsm/book/lab0-env.html) in the tutorial (Chinese).
+For environment setup, see the tutorial's [Lab 0](https://vanilla-beauty.github.io/tiny-lsm/book/lab0-env.html) (Chinese).
+
+</details>
+
+See the [packaging notes](docs/packaging.md) (Chinese) for build responsibilities and design decisions.
 
 ---
 
