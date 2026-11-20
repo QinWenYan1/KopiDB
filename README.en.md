@@ -16,21 +16,44 @@ KopiDB is an **embedded LSM-tree key-value database in C++20**, built for learni
 
 ## 🧭 Contents
 
-- [📦 Quick Start](#download-and-use)
+- [🐍 Python Quick Start](#python-sdk)
+- [📦 C++ Quick Start](#download-and-use)
 - [💻 Minimal Example](#cpp-example)
 - [📚 Documentation](#tools-and-docs)
 - [⚡ Optimization Notes](#optimizations)
 - [📖 LSM and Learning Resources](#learning-docs)
 - [🙏 Origins and Acknowledgements](#acknowledgements)
 
+<a id="python-sdk"></a>
+
+## 🐍 Python Quick Start
+
+The v0.1.0 Python SDK supports **Apple Silicon, macOS 18.0 or later, and standard arm64 CPython 3.13**. Download the wheel named below from [GitHub Releases](https://github.com/QinWenYan1/KopiDB/releases) and run these commands in the download directory.
+
+```bash
+python3.13 -m venv .venv
+.venv/bin/python -m pip install ./kopidb-0.1.0-cp313-cp313-macosx_18_0_arm64.whl
+```
+
+Run this example with the Python interpreter from the same virtual environment. The [usage guide](docs/usage.md#python-sdk) covers text, bytes, batches, and transactions (in Chinese).
+
+```python
+import kopidb
+
+db = kopidb.LSM("my-data")
+db.put("name", "Alice")
+print(db.get("name"))  # Alice
+db.remove("name")
+```
+
 <a id="build-and-test"></a>
 <a id="download-and-use"></a>
 
-## 📦 Quick Start
+## 📦 C++ Quick Start
 
-The current prebuilt SDK targets **macOS arm64**. Use a C++20-capable compiler and either Xmake or CMake. The package's `BUILD-INFO.txt` records its build environment and minimum OS version.
+The prebuilt C++ SDK targets **macOS arm64**. Use a C++20-capable compiler and either Xmake or CMake. The package's `BUILD-INFO.txt` records its build environment and minimum OS version.
 
-**1. Download the SDK.** Get `kopidb-<version>-macos-arm64.tar.gz` from [GitHub Releases](https://github.com/QinWenYan1/KopiDB/releases). Rename the extracted directory to `kopidb` and place it in your project's `third_party/` directory:
+**1. Download the SDK.** Get `kopidb-<version>-macos-arm64.tar.gz` from [C++ SDK v0.0.1](https://github.com/QinWenYan1/KopiDB/releases/tag/v0.0.1). Rename the extracted directory to `kopidb` and place it in your project's `third_party/` directory:
 
 ```text
 your-project/

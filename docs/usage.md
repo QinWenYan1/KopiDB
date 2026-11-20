@@ -2,11 +2,12 @@
 
 [← 返回项目主页](../README.md#tools-and-docs)
 
-本页说明预编译 C++ SDK 的接入方式、公开 API 和当前实现的使用边界。KopiDB 是用于学习数据库实现的嵌入式 KV 引擎，应用通过库接口直接使用，无需启动独立服务。
+本页说明Python 和 C++ SDK 的接入方式、公开 API 和当前实现的使用边界。KopiDB 是用于学习数据库实现的嵌入式 KV 引擎，应用通过库接口直接使用，无需启动独立服务。
 
 ## 🧭 目录
 
-- [📦 下载与接入](#download-and-use)
+- [🐍 Python 使用方法](#python-sdk)
+- [📦 C++ 下载与接入](#download-and-use)
 - [🛠️ 使用 Xmake](#xmake)
 - [🔧 使用 CMake](#cmake)
 - [⚙️ 运行配置](#configuration)
@@ -15,9 +16,44 @@
 - [🧭 如何选择读写方式](#choosing-read-write-mode)
 - [🧪 进阶：源码构建与恢复测试](#advanced-testing)
 
+<a id="python-sdk"></a>
+
+## 🐍 Python 使用方法
+
+按[首页的安装步骤](../README.md#python-sdk)下载 wheel。如果同时下载了同名的 `.sha256`，可在安装前运行 `shasum -a 256 -c kopidb-0.1.0-cp313-cp313-macosx_18_0_arm64.whl.sha256`，应显示 `OK`。
+
+`put`、`get`、`remove` 和对应的批量方法都接受文本或字节。文本按 UTF-8 存储，因此 `"name"` 和 `b"name"` 是同一个 key。读取默认返回文本；读图片等任意字节时加 `as_bytes=True`。这也适用于事务和遍历。
+
+```python
+import kopidb
+
+db = kopidb.LSM("python-demo")
+db.put_batch([("name", "小林"), ("avatar", b"\xff\x00")])
+assert db.get("name") == "小林"
+assert db.get("avatar", as_bytes=True) == b"\xff\x00"
+
+# 批量结果保留输入顺序、重复 key 和缺失项。
+assert db.get_batch(["name", "missing", "name"]) == [
+    ("name", "小林"), ("missing", None), ("name", "小林"),
+]
+
+tx = db.begin_tran(kopidb.IsolationLevel.READ_COMMITTED)
+tx.put("name", "小陈")
+if tx.commit():
+    print(db.get("name"))
+
+for key, value in db.begin(as_bytes=True):
+    print(key, value)
+```
+
+- **返回值**：查不到返回 `None`。批量读取和遍历用同一模式返回 key 和 value。如果数据不是有效 UTF-8，默认读取会抛 `UnicodeDecodeError`。
+- **写入**：不支持的参数类型抛 `TypeError`；写入空 key 或空 value 抛 `ValueError`。批量参数有错时整批都不会写入。
+- **事务**：`tx.get_isolation_level()` 返回创建时选择的级别。`commit()` 遇到写冲突返回 `False`，主动取消用 `abort()`。同一事务对象应串行使用，`SERIALIZABLE` 仍是实验性级别。[隔离级别对照](#choosing-read-write-mode)
+- **维护**：`flush()` 刷一张内存表，`flush_all()` 刷完所有待刷表。`clear()` 清空整库；调用前结束事务、释放迭代器，并暂停其他线程对该库的访问。
+
 <a id="download-and-use"></a>
 
-## 📦 下载与接入
+## 📦 C++ 下载与接入
 
 预编译 SDK 面向 **macOS arm64**。使用时需要支持 C++20 的编译器，以及 **Xmake 或 CMake，任选一种**。具体构建环境与库的最低系统版本见包内 `BUILD-INFO.txt`。
 

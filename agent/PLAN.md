@@ -4,7 +4,7 @@
 
 用户在 macOS arm64 的 CPython 3.13 虚拟环境中安装一个 wheel，即可 `import kopidb`，用文本或原始字节读写、遍历和执行事务。包的最低 macOS 版本由最终二进制确定。助手实施，每完成一阶段汇报接口变化和验收结果，经用户审批后进入下一阶段。用户负责最终 Release 验收与发布。
 
-**进度为 80%（4/5 个阶段通过技术验收）。** 阶段④已生成候选 wheel，等待用户审批后进入完整安装回归与 Release 准备。下面各组接口先在本地扩展验证，最后用发布附件在独立环境验收。
+**进度为 100%（5/5 个阶段通过技术验收）。** 最终 wheel 已完成独立安装回归，附件和双语发布说明已备齐，待用户在 GitHub 发布。
 
 ### ① 数据库与批量读写 · 已通过
 
@@ -33,7 +33,7 @@
 
 2026-11-20 本地 SDK 测试 16/16 通过。新增刷盘重开、清空后重用、活跃事务阻止清空 3 个回归用例。另在临时目录使用 128 字节单表阈值准备 4 张内存表，首次 flush、随后两次 flush_all 前后的 SST 文件数为 0 → 1 → 4 → 4；新的 Python 进程重开后逐字节读回全部四项。
 
-### ④ 构建 macOS arm64 wheel · 技术验收通过，待用户审批
+### ④ 构建 macOS arm64 wheel · 已通过
 
 - [x] 复核 [A12 的历史复现](AUDIT.md#a12)。用当前名称检查 [Xmake 的 kopidb_pybind 目标](../xmake.lua) 和 [Python 加载器](../sdk/kopidb/kopidb/core/__init__.py)，让扩展能在安装位置找到包内引擎库。
 - [x] 调整[构建脚本](../sdk/build_python_sdk.sh)和[包配置](../sdk/kopidb/setup.py)，由指定解释器构建，包含扩展、引擎库、类型提示及所需许可文件。
@@ -41,8 +41,10 @@
 
 2026-11-20 在 macOS arm64 / CPython 3.13.1 运行 `./sdk/build_python_sdk.sh`。Xmake 构建 Release 引擎，setuptools 使用当前解释器编译绑定。生成 `dist/kopidb-0.1.0-cp313-cp313-macosx_18_0_arm64.whl`（629777 B，SHA-256 `f258e584c6aa3c5e18fa347ba1398ceb3f0018146a947af4341b3d9240c23aac`）。两个 Mach-O 均为 arm64、最低 macOS 18.0，与 wheel 标签一致。仓库外在新虚拟环境用 pip --no-index 安装候选件，清除 Python/dyld 路径变量，中文写入读回；dyld 确认两个二进制均来自该环境的 site-packages。
 
-### ⑤ 从用户环境验收并准备 Release · 待实施
+### ⑤ 从用户环境验收并准备 Release · 已通过，待用户发布
 
-- [ ] 在仓库外用全新虚拟环境安装阶段④的实际 wheel，运行前面三组接口测试；另起 Python 进程重开，核对已经提交和回滚的数据。
-- [ ] 中英文 README 放安装命令与最短 CRUD 示例，详细用法与打包步骤分别写入[使用指南](../docs/usage.md)与[维护文档](../docs/packaging.md)。
+- [x] 在仓库外用全新虚拟环境安装阶段④的实际 wheel，运行前面三组接口测试；另起 Python 进程重开，核对已经提交和回滚的数据。
+- [x] 中英文 README 放安装命令与最短 CRUD 示例，详细用法与打包步骤分别写入[使用指南](../docs/usage.md)与[维护文档](../docs/packaging.md)。
 - **验收**：在仓库外从 wheel 文件用 `python -m pip install` 普通安装，清除 `PYTHONPATH` 和 `DYLD_LIBRARY_PATH`；确认 Python 从虚拟环境加载安装包及其原生库。在这个环境运行前三组用例、跨进程重开和 README 示例。用于交付的 wheel 与受测文件的 SHA-256 一致，附中英文 Release 说明，由用户最终验收并在 GitHub 发布。
+
+2026-11-21 在仓库外以标准 CPython 3.13.1 / macOS 27.2 arm64 离线安装阶段④的原件，清除 Python/dyld 搜索路径，SDK 测试 16/16 通过。独立写进程提交文本与二进制、回滚已可见的 RU 修改；新读进程验证提交数据、被删除后恢复的旧值、已回滚新 key 的缺失。中英文 README、手册及发布说明中的 Python 示例均按原文运行通过。dist/ 中同名 .whl.sha256、RELEASE_NOTES-v0.1.0.md 已准备，交付件与受测副本 SHA-256 相同。

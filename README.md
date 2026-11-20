@@ -16,21 +16,44 @@ KopiDB 是一个用于学习与实验的 **C++20 嵌入式 LSM-tree KV 数据库
 
 ## 🧭 目录
 
-- [📦 快速开始](#download-and-use)
+- [🐍 Python 快速开始](#python-sdk)
+- [📦 C++ 快速开始](#download-and-use)
 - [💻 最小使用示例](#cpp-example)
 - [📚 文档导航](#tools-and-docs)
 - [⚡ 优化记录](#optimizations)
 - [📖 LSM 与学习资料](#learning-docs)
 - [🙏 来源与鸣谢](#acknowledgements)
 
+<a id="python-sdk"></a>
+
+## 🐍 Python 快速开始
+
+Python SDK v0.1.0 适用于 **Apple Silicon、macOS 18.0 或更高版本、标准 CPython 3.13（arm64）**。从 [GitHub Releases](https://github.com/QinWenYan1/KopiDB/releases) 下载下方命令中的 wheel，在下载目录运行：
+
+```bash
+python3.13 -m venv .venv
+.venv/bin/python -m pip install ./kopidb-0.1.0-cp313-cp313-macosx_18_0_arm64.whl
+```
+
+用同一个虚拟环境运行以下 Python 示例。完整用法见[文本与二进制、批量和事务](docs/usage.md#python-sdk)。
+
+```python
+import kopidb
+
+db = kopidb.LSM("my-data")
+db.put("name", "Alice")
+print(db.get("name"))  # Alice
+db.remove("name")
+```
+
 <a id="build-and-test"></a>
 <a id="download-and-use"></a>
 
-## 📦 快速开始
+## 📦 C++ 快速开始
 
-当前预编译 SDK 面向 **macOS arm64**。准备支持 C++20 的编译器，以及 Xmake 或 CMake；包内 `BUILD-INFO.txt` 记录该产物的构建环境和最低系统版本。
+预编译 C++ SDK 面向 **macOS arm64**。准备支持 C++20 的编译器，以及 Xmake 或 CMake；包内 `BUILD-INFO.txt` 记录该产物的构建环境和最低系统版本。
 
-**1. 下载 SDK。** 在 [GitHub Releases](https://github.com/QinWenYan1/KopiDB/releases) 下载 `kopidb-<版本>-macos-arm64.tar.gz`，解压后将目录命名为 `kopidb`，放入自己项目的 `third_party/`：
+**1. 下载 SDK。** 在 [C++ SDK v0.0.1](https://github.com/QinWenYan1/KopiDB/releases/tag/v0.0.1) 下载 `kopidb-<版本>-macos-arm64.tar.gz`，解压后将目录命名为 `kopidb`，放入自己项目的 `third_party/`：
 
 ```text
 你的项目/

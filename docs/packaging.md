@@ -1,8 +1,29 @@
-# C++ SDK 打包与维护
+# KopiDB SDK 打包与维护
 
 KopiDB 的 C++ SDK 将头文件、已编译的共享库和接入配置一起分发。维护者负责构建引擎；使用者下载后，只需编译自己的程序并链接 SDK。当前打包入口支持 **macOS arm64 / Release**。
 
-## 文件分工
+
+<a id="python-wheel"></a>
+
+## 🐍 Python wheel 的构建与发布
+
+在 Apple Silicon Mac 上准备标准 CPython 3.13 及 C++ SDK 所需构建工具，从仓库运行 `./sdk/build_python_sdk.sh`。可用 `PYTHON=/path/to/python3.13` 选择解释器。pip 会在隔离构建环境安装 setuptools 和 pybind11。
+
+1. [构建脚本](../sdk/build_python_sdk.sh) 调用 C++ 打包流程，从临时 SDK 中取出配套头文件、Release 引擎及许可证。
+2. [Python 包配置](../sdk/kopidb/pyproject.toml)给出 SDK 版本和构建依赖。[扩展构建](../sdk/kopidb/setup.py)使用选定解释器的头文件编译绑定。扩展通过 `@loader_path` 加载同目录的引擎。
+3. [产物检查](../packaging/python/check_wheel.py)核对 wheel 标签、两个二进制的架构和最低系统版本、依赖路径及许可证。通过后将 wheel 放入 `dist/`。
+4. 发布前将该 wheel 放到仓库外，在新的虚拟环境中执行[用户安装步骤](../README.md#python-sdk)，清除 `PYTHONPATH` 和 `DYLD_LIBRARY_PATH`。用虚拟环境的 Python 运行 [SDK 测试](../sdk/test_sdk.py)，另起进程验证提交和回滚后的数据，再运行首页示例。
+5. 在 `dist/` 内为**实际验收的文件**生成校验值，附件名用下面的 v0.1.0 产物作例子。
+
+```bash
+wheel=kopidb-0.1.0-cp313-cp313-macosx_18_0_arm64.whl
+shasum -a 256 "$wheel" > "$wheel.sha256"
+shasum -a 256 -c "$wheel.sha256"
+```
+
+新建 GitHub Release 时，将 `v0.1.0` 指向包含该 Python SDK 的提交，填写发布说明，上传受测的 `.whl` 和对应的 `.whl.sha256`。Python 使用者从 Release 下载这两个附件；C++ SDK 的压缩包仍在 `v0.0.1`。
+
+## C++ SDK 文件分工
 
 | 文件 | 职责 |
 | --- | --- |
