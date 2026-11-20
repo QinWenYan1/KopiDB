@@ -1,50 +1,13 @@
 # KopiDB 当前计划
 
-## Python SDK 首版
+## A16 · SST 合并时跳过已确认回滚的版本
 
-用户在 macOS arm64 的 CPython 3.13 虚拟环境中安装一个 wheel，即可 `import kopidb`，用文本或原始字节读写、遍历和执行事务。包的最低 macOS 版本由最终二进制确定。助手实施，每完成一阶段汇报接口变化和验收结果，经用户审批后进入下一阶段。用户负责最终 Release 验收与发布。
+[问题与源码核查](AUDIT.md#a16)。目标是减少输出 SST 中的无效记录，同时测量每条输入记录检查回滚状态的开销。当前为方案审阅，技术验收 **0/3（0%）**。
 
-**进度为 100%（5/5 个阶段通过技术验收）。** 最终 wheel 已完成独立安装回归，附件和双语发布说明已备齐，待用户在 GitHub 发布。
+| 阶段 | 工作 | 验收 |
+| --- | --- | --- |
+| ① 基线 | 固定优化前引擎提交 d243747ad4802947e660ccbc4166f3265baf41cc；用普通 SST、固定键值、版本数、分层和回滚名单生成可复制的输入。先用现有引擎触发合并，读取实际输出文件。 | 通过不带过滤的全版本迭代确认示例旧版确实搬运回滚版本；保存构建参数、输入、预热及每轮原始结果。 |
+| ② 接入与正确性 | 在 full_l0_l1_compact 和 full_common_compact 为两个输入层的迭代器提供同一个已确认回滚判断。复用 BlockIterator 的逐版本过滤，保持全版本读取与 WiscKey 读取模式。无管理器时保留输入。 | 两条路径清除已回滚值和墓碑；保留有效历史版本、有效墓碑、活跃事务，全部被过滤时没有空 SST；比较查询、快照、重开及 WiscKey 引用读回结果。 |
+| ③ 前后对照 | 用冻结的旧引擎与新引擎、相同构建参数、同一份输入副本分别合并。每组预热 1 次、正式至少 5 次，交替新旧顺序。 | 报告 0% 和 50% 输入版本已回滚时的输出条目、SST 文件总字节、耗时中位数与范围；记录无回滚代价，不将文件量当成实测物理读写量。 |
 
-### ① 数据库与批量读写 · 已通过
-
-- [x] 在 [LSM 绑定](../sdk/kopidb_pybind.cpp) 中保留 `LSM(path: str)`。先处理 `db.put/get/remove`，再处理 `put_batch/get_batch/remove_batch`。新增的 `get_batch` 调用 [C++ 的同名批量接口](../include/lsm/engine.h)，保留输入顺序、重复 key 与缺失项。
-- [x] 公开接口接受 `str | bytes`，文本按 UTF-8 写入。默认查询返回文本，传 `as_bytes=True` 返回原始字节；批量和遍历用同一模式处理 key 和 value，缺失值保留 None。无效 UTF-8 的默认读取抛出 UnicodeDecodeError。转换实现在 [Python 接口](../sdk/kopidb/kopidb/api.py)。类型错误抛 `TypeError`，写入空 key 或空 value 抛 `ValueError`。每组绑定同步更新[类型提示](../sdk/kopidb/kopidb/core/__init__.pyi)和 [SDK 测试](../sdk/test_sdk.py)。
-- **验收**：写入 `(b"k", b"\xff\x00")` 后，`get_batch([b"k", b"missing", b"k"], as_bytes=True)` 必须给出 `[(b"k", b"\xff\x00"), (b"missing", None), (b"k", b"\xff\x00")]`。更新后点查返回新值，删除后返回 `None`。给 `put_batch` 两项，末项分别传整数或空 value，两次应分别抛 `TypeError` 或 `ValueError`，并且第一次出现的合法 key 仍查不到。
-
-2026-11-20 在 macOS arm64 重新构建 `kopidb_pybind`，使用 CPython 3.13.1 在临时目录加载本地扩展。4 项 CRUD/批量用例及 1 项已有事务用法回归全部通过，包含非 UTF-8 二进制读写、零字节 key 不截断、整批失败时保留旧值且无新增 key。wheel 安装验证安排在阶段⑤。
-
-### ② 显式事务 · 已通过
-
-- [x] `tx.get_isolation_level() -> IsolationLevel` 已绑定，四种枚举已用本地构建验证。
-- [x] 在 `bind_IsolationLevel` 中提供 `READ_UNCOMMITTED`、`READ_COMMITTED` 和原有两个拼写的兼容别名；保留 `REPEATABLE_READ` 与实验性的 `SERIALIZABLE`。
-- [x] `db.begin_tran(level)` 创建事务。`bind_TranContext` 中的 `tx.put/get/remove` 沿用阶段①的类型及异常约定，业务接口为无参的 `commit() -> bool` 和 `abort() -> bool`。C++ 故障测试参数留给引擎测试。
-- **验收**：向已有值的 key 写入不同值，事务内能读到自己的修改；分别验证提交后读到新值、回滚后读到旧值。两个读已提交事务先后创建并暂存修改同一 key，较晚创建的先提交成功，较早创建的再提交应返回 `False`，库中保留成功者的值。两组新旧枚举名对应同一级别。查询级别的测试仅核对返回值。
-
-2026-11-20 使用 CPython 3.13.1 重新加载本机扩展，SDK 测试 9/9 通过（5 项事务、4 项普通与批量读写）。覆盖事务内二进制读写、RU 和 RC 回滚、同 key 写冲突整笔拒绝、隔离级别新旧名及无参提交接口。
-
-2026-11-20 公开接口改为默认返回文本，使用 `as_bytes=True` 读取原始字节。重建本地扩展后，覆盖点查、批量、事务、遍历及旧用法回归的 13 项 SDK 测试全部通过。
-
-### ③ 遍历与维护 · 已通过
-
-- [x] 普通遍历使用 `for key, value in db.begin()`，默认 `tranc_id=0`；保留显式版本上限和 `db.end()`。底层提供原始字节，公开遍历默认返回文本对，`begin(as_bytes=True)` 返回字节对。
-- [x] 保留 `flush()`、`flush_all()`、`clear()`。校正类型提示，移除当前 Python 没有绑定的 `lsm_iters_monotony_predicate` 声明。
-- **验收**：包含二进制 key/value 的遍历逐项核对，`begin()` 与 `begin(0)` 等价；刷盘后可重开读回；结束事务并释放迭代器后执行 `clear()`，库可继续读写。
-
-2026-11-20 本地 SDK 测试 16/16 通过。新增刷盘重开、清空后重用、活跃事务阻止清空 3 个回归用例。另在临时目录使用 128 字节单表阈值准备 4 张内存表，首次 flush、随后两次 flush_all 前后的 SST 文件数为 0 → 1 → 4 → 4；新的 Python 进程重开后逐字节读回全部四项。
-
-### ④ 构建 macOS arm64 wheel · 已通过
-
-- [x] 复核 [A12 的历史复现](AUDIT.md#a12)。用当前名称检查 [Xmake 的 kopidb_pybind 目标](../xmake.lua) 和 [Python 加载器](../sdk/kopidb/kopidb/core/__init__.py)，让扩展能在安装位置找到包内引擎库。
-- [x] 调整[构建脚本](../sdk/build_python_sdk.sh)和[包配置](../sdk/kopidb/setup.py)，由指定解释器构建，包含扩展、引擎库、类型提示及所需许可文件。
-- **验收**：一条命令生成 wheel，核对 wheel 标签及元数据与实际 Python ABI、架构、最低系统版本相符。把包移出仓库后能加载同包的库，无需用户设置动态库搜索路径。
-
-2026-11-20 在 macOS arm64 / CPython 3.13.1 运行 `./sdk/build_python_sdk.sh`。Xmake 构建 Release 引擎，setuptools 使用当前解释器编译绑定。生成 `dist/kopidb-0.1.0-cp313-cp313-macosx_18_0_arm64.whl`（629777 B，SHA-256 `f258e584c6aa3c5e18fa347ba1398ceb3f0018146a947af4341b3d9240c23aac`）。两个 Mach-O 均为 arm64、最低 macOS 18.0，与 wheel 标签一致。仓库外在新虚拟环境用 pip --no-index 安装候选件，清除 Python/dyld 路径变量，中文写入读回；dyld 确认两个二进制均来自该环境的 site-packages。
-
-### ⑤ 从用户环境验收并准备 Release · 已通过，待用户发布
-
-- [x] 在仓库外用全新虚拟环境安装阶段④的实际 wheel，运行前面三组接口测试；另起 Python 进程重开，核对已经提交和回滚的数据。
-- [x] 中英文 README 放安装命令与最短 CRUD 示例，详细用法与打包步骤分别写入[使用指南](../docs/usage.md)与[维护文档](../docs/packaging.md)。
-- **验收**：在仓库外从 wheel 文件用 `python -m pip install` 普通安装，清除 `PYTHONPATH` 和 `DYLD_LIBRARY_PATH`；确认 Python 从虚拟环境加载安装包及其原生库。在这个环境运行前三组用例、跨进程重开和 README 示例。用于交付的 wheel 与受测文件的 SHA-256 一致，附中英文 Release 说明，由用户最终验收并在 GitHub 发布。
-
-2026-11-21 在仓库外以标准 CPython 3.13.1 / macOS 27.2 arm64 离线安装阶段④的原件，清除 Python/dyld 搜索路径，SDK 测试 16/16 通过。独立写进程提交文本与二进制、回滚已可见的 RU 修改；新读进程验证提交数据、被删除后恢复的旧值、已回滚新 key 的缺失。中英文 README、手册及发布说明中的 Python 示例均按原文运行通过。dist/ 中同名 .whl.sha256、RELEASE_NOTES-v0.1.0.md 已准备，交付件与受测副本 SHA-256 相同。
+计时仅包围同一合并调用。输入准备、拷贝、重开和结果校验放在计时外。读取时使用原始输出确认物理条目，再独立检查用户可见结果。百分比按全部物理输入版本数计算。一次合并后才回滚的记录允许留到下一次处理。
