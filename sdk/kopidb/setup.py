@@ -1,57 +1,19 @@
-import os
-import platform
-from setuptools import setup, find_packages
-from setuptools.command.build_py import build_py
+from pathlib import Path
 
-# 版本和基本描述
-VERSION = "0.1.0"
-DESCRIPTION = "A Python binding for KopiDB Storage Engine"
+from pybind11.setup_helpers import Pybind11Extension
+from setuptools import setup
 
-class CustomBuild(build_py):
-    def run(self):
-        # 使用绝对路径确保准确性
-        build_lib_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../build/lib"))
-        package_lib_dir = os.path.join(self.build_lib, "kopidb/core/lib")
-        
-        # 创建目标目录
-        self.mkpath(package_lib_dir)
-        
-        # 动态库文件列表
-        lib_files = [
-            ("libkopidb.so", "libkopidb.so"),
-            ("kopidb_pybind.so", "kopidb_pybind.so")
-        ]
-        
-        # 复制文件
-        for src_name, dst_name in lib_files:
-            src = os.path.join(build_lib_dir, src_name)
-            dst = os.path.join(package_lib_dir, dst_name)
-            if os.path.exists(src):
-                self.copy_file(src, dst)
-            else:
-                raise FileNotFoundError(f"Missing library file: {src}")
-        
-        super().run()
+# 构建脚本把当前版本的 C++ SDK 和绑定源码放在临时工程中。
+# 使用构建 wheel 的解释器提供的 Python.h 和 ABI 编译扩展。
+engine = Path("kopidb/core/lib/libkopidb.so")
+if not engine.is_file():
+    raise RuntimeError("请从仓库运行 sdk/build_python_sdk.sh，以准备 C++ SDK")
 
-setup(
-    name="kopidb",
-    version=VERSION,
-    description=DESCRIPTION,
-    packages=find_packages(),
-package_data={
-    "kopidb.core": [
-        "lib/*.so",
-        "lib/*.dylib",
-        "lib/*.dll",
-        "lib/*.pyd"
-    ]
-},
-    cmdclass={"build_py": CustomBuild},
-    install_requires=["pybind11>=2.10"],  # 需声明绑定依赖
-    python_requires=">=3.8",
-    author="Your Name",
-    classifiers=[
-        "Development Status :: 3 - Alpha",
-        "Programming Language :: Python :: 3",
-    ]
-)
+setup(ext_modules=[Pybind11Extension(
+    "kopidb.core.lib.kopidb_pybind",
+    ["kopidb_pybind.cpp"],
+    include_dirs=["include/kopidb"],
+    extra_objects=[str(engine)],
+    extra_link_args=["-Wl,-rpath,@loader_path"],
+    cxx_std=20,
+)])

@@ -4,7 +4,7 @@
 
 用户在 macOS arm64 的 CPython 3.13 虚拟环境中安装一个 wheel，即可 `import kopidb`，用文本或原始字节读写、遍历和执行事务。包的最低 macOS 版本由最终二进制确定。助手实施，每完成一阶段汇报接口变化和验收结果，经用户审批后进入下一阶段。用户负责最终 Release 验收与发布。
 
-**进度为 60%（3/5 个阶段通过技术验收）。** 阶段③已完成本地验收，等待用户审批后进入 wheel 打包。下面各组接口先在本地扩展验证，最后用发布附件在独立环境验收。
+**进度为 80%（4/5 个阶段通过技术验收）。** 阶段④已生成候选 wheel，等待用户审批后进入完整安装回归与 Release 准备。下面各组接口先在本地扩展验证，最后用发布附件在独立环境验收。
 
 ### ① 数据库与批量读写 · 已通过
 
@@ -25,7 +25,7 @@
 
 2026-11-20 公开接口改为默认返回文本，使用 `as_bytes=True` 读取原始字节。重建本地扩展后，覆盖点查、批量、事务、遍历及旧用法回归的 13 项 SDK 测试全部通过。
 
-### ③ 遍历与维护 · 技术验收通过，待用户审批
+### ③ 遍历与维护 · 已通过
 
 - [x] 普通遍历使用 `for key, value in db.begin()`，默认 `tranc_id=0`；保留显式版本上限和 `db.end()`。底层提供原始字节，公开遍历默认返回文本对，`begin(as_bytes=True)` 返回字节对。
 - [x] 保留 `flush()`、`flush_all()`、`clear()`。校正类型提示，移除当前 Python 没有绑定的 `lsm_iters_monotony_predicate` 声明。
@@ -33,11 +33,13 @@
 
 2026-11-20 本地 SDK 测试 16/16 通过。新增刷盘重开、清空后重用、活跃事务阻止清空 3 个回归用例。另在临时目录使用 128 字节单表阈值准备 4 张内存表，首次 flush、随后两次 flush_all 前后的 SST 文件数为 0 → 1 → 4 → 4；新的 Python 进程重开后逐字节读回全部四项。
 
-### ④ 构建 macOS arm64 wheel · 待实施
+### ④ 构建 macOS arm64 wheel · 技术验收通过，待用户审批
 
-- [ ] 复核 [A12 的历史复现](AUDIT.md#a12)。用当前名称检查 [Xmake 的 kopidb_pybind 目标](../xmake.lua) 和 [Python 加载器](../sdk/kopidb/kopidb/core/__init__.py)，让扩展能在安装位置找到包内引擎库。
-- [ ] 调整[构建脚本](../sdk/build_python_sdk.sh)和[包配置](../sdk/kopidb/setup.py)，由指定解释器构建，包含扩展、引擎库、类型提示及所需许可文件。
+- [x] 复核 [A12 的历史复现](AUDIT.md#a12)。用当前名称检查 [Xmake 的 kopidb_pybind 目标](../xmake.lua) 和 [Python 加载器](../sdk/kopidb/kopidb/core/__init__.py)，让扩展能在安装位置找到包内引擎库。
+- [x] 调整[构建脚本](../sdk/build_python_sdk.sh)和[包配置](../sdk/kopidb/setup.py)，由指定解释器构建，包含扩展、引擎库、类型提示及所需许可文件。
 - **验收**：一条命令生成 wheel，核对 wheel 标签及元数据与实际 Python ABI、架构、最低系统版本相符。把包移出仓库后能加载同包的库，无需用户设置动态库搜索路径。
+
+2026-11-20 在 macOS arm64 / CPython 3.13.1 运行 `./sdk/build_python_sdk.sh`。Xmake 构建 Release 引擎，setuptools 使用当前解释器编译绑定。生成 `dist/kopidb-0.1.0-cp313-cp313-macosx_18_0_arm64.whl`（629777 B，SHA-256 `f258e584c6aa3c5e18fa347ba1398ceb3f0018146a947af4341b3d9240c23aac`）。两个 Mach-O 均为 arm64、最低 macOS 18.0，与 wheel 标签一致。仓库外在新虚拟环境用 pip --no-index 安装候选件，清除 Python/dyld 路径变量，中文写入读回；dyld 确认两个二进制均来自该环境的 site-packages。
 
 ### ⑤ 从用户环境验收并准备 Release · 待实施
 

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=77", "pybind11==3.0.4"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kopidb"
+version = "0.1.0"
+description = "Python bindings for the KopiDB embedded storage engine"
+requires-python = ">=3.13,<3.14"
+license-files = ["LICENSE", "licenses/*"]
+
+[tool.setuptools]
+packages = ["kopidb", "kopidb.core", "kopidb.core.lib"]
+include-package-data = false
+
+[tool.setuptools.package-data]
+kopidb = ["py.typed"]
+"kopidb.core" = ["__init__.pyi"]
+"kopidb.core.lib" = ["libkopidb.so"]

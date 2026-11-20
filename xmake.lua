@@ -327,7 +327,11 @@ else
         add_includedirs("include", {public = true})
         set_targetdir("$(buildir)/lib")
         set_filename("kopidb_pybind.so")
-        add_ldflags("-Wl,-rpath,$ORIGIN")
+        if is_plat("macosx") then
+            add_rpathdirs("@loader_path")
+        else
+            add_rpathdirs("$ORIGIN")
+        end
         add_defines("KOPIDB_EXPORT=__attribute__((visibility(\"default\")))")
         add_cxxflags("-fvisibility=hidden")
 end
