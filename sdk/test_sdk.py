@@ -9,9 +9,54 @@ class DatabaseTest(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        self.db = kopidb.LSM(path=str(Path(directory.name) / "db"))
+        self.path = Path(directory.name) / "db"
+        self.db = kopidb.LSM(path=str(self.path))
         # 先关闭引擎，再让 TemporaryDirectory 删除它正在使用的数据目录。
         self.addCleanup(delattr, self, "db")
+
+    def reopen(self):
+        del self.db
+        self.db = kopidb.LSM(str(self.path))
+
+    def test_flush_and_reopen(self):
+        self.db.put("名字", "小林")
+        self.db.flush()
+        # 关闭数据库也会自动刷盘，因此先验证显式调用已经生成 SST。
+        first_files = set(self.path.glob("sst_*"))
+        self.assertTrue(first_files)
+        self.db.remove("名字")
+        self.db.put("头像", b"\xff\x00")
+        self.db.flush_all()
+        self.assertTrue(set(self.path.glob("sst_*")) - first_files)
+
+        self.reopen()
+        self.assertIsNone(self.db.get("名字"))
+        self.assertEqual(self.db.get("头像", as_bytes=True), b"\xff\x00")
+        self.assertEqual(list(self.db.begin(as_bytes=True)), [("头像".encode(), b"\xff\x00")])
+
+    def test_clear_and_reuse(self):
+        self.db.put("disk", "old")
+        self.db.flush_all()
+        self.db.put("memory", "old")
+        self.assertEqual(list(self.db.begin()), list(self.db.begin(0)))
+        self.db.clear()
+        self.assertEqual(list(self.db.begin()), [])
+        self.assertEqual(list(self.db.end()), [])
+        self.db.put("fresh", "新值")
+        self.reopen()
+        self.assertEqual(list(self.db.begin()), [("fresh", "新值")])
+
+    def test_clear_rejects_active_transaction(self):
+        self.db.put("key", "old")
+        tx = self.db.begin_tran(kopidb.IsolationLevel.READ_COMMITTED)
+        tx.put("key", "new")
+        with self.assertRaises(RuntimeError):
+            self.db.clear()
+        self.assertEqual(self.db.get("key"), "old")
+        self.assertTrue(tx.commit())
+        self.assertEqual(self.db.get("key"), "new")
+        self.db.clear()
+        self.assertIsNone(self.db.get("key"))
 
     def test_binary_crud(self):
         # 相同前缀的两个 key 用来检测零字节处是否发生了截断。

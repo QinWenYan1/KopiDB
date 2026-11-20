@@ -88,7 +88,7 @@ class LSM:
 
     # 维护操作
     def clear(self) -> None:
-        ...  # ! Fixme
+        ...
 
     def flush(self) -> None:
         ...

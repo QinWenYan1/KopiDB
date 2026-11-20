@@ -123,10 +123,13 @@ class LSM(_KeyValue[core.LSM]):
         return TranContext(self, isolation_level)
 
     def flush(self) -> None:
+        """执行一次刷盘，优先处理最老的内存表。"""
         self._raw.flush()
 
     def flush_all(self) -> None:
+        """持续刷盘直到所有待刷的内存表都已处理。"""
         self._raw.flush_all()
 
     def clear(self) -> None:
+        """清空整库。请先结束事务、释放迭代器，并暂停其他线程对该库的访问。"""
         self._raw.clear()
