@@ -915,10 +915,15 @@ LSMEngine::full_common_compact(std::vector<size_t> &lx_ids,
 
   // 2. 两层内部都有序不重叠 -> 各用一个 ConcactIterator 串联整层
   //    tranc_id=0: compact 不做可见性过滤; keep_all_versions=true: 全版本保留
+
+  // 两层都可能含有上次合并后才回滚的版本，因此读取两侧时都要检查
+  // 0 表示没有读取版本上限；true 让其他历史版本和有效墓碑继续参与合并
+  const auto is_aborted = make_compaction_abort_filter(tran_manager);
+
   std::shared_ptr<ConcactIterator> old_lx_begin_ptr =
-      std::make_shared<ConcactIterator>(lx_ssts, 0, true, std::function<bool(uint64_t)>{}, read_mode);
+      std::make_shared<ConcactIterator>(lx_ssts, 0, true, is_aborted, read_mode);
   std::shared_ptr<ConcactIterator> old_ly_begin_ptr =
-      std::make_shared<ConcactIterator>(ly_ssts, 0, true, std::function<bool(uint64_t)>{}, read_mode);
+      std::make_shared<ConcactIterator>(ly_ssts, 0, true, is_aborted, read_mode);
 
   // 3. a 路 = lx (较新层, 同 key 时赢), b 路 = ly
   //    通过 TwoMergeIterator 合并后调用 gen_sst_from_iter
