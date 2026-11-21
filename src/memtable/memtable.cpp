@@ -370,7 +370,8 @@ void MemTable::clear() {
 std::shared_ptr<SST>
 MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
                      std::vector<uint64_t> &flushed_tranc_ids,
-                     std::shared_ptr<BlockCache> block_cache) {
+                     std::shared_ptr<BlockCache> block_cache,
+                     const std::function<bool(uint64_t)>& is_aborted) {
   spdlog::debug("MemTable--flush_last(): Starting to flush memtable to SST{}",
                 sst_id);
 
@@ -415,6 +416,13 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
       pending_ids.push_back(version);
       continue;
     }
+
+    // 走到这里的是业务记录，完成标记已由上面的分支单独收集
+    // 现在我们还要过滤掉回滚事务然后再落盘
+    // 这属于后期优化，进一步缩小读写放大
+    // 例如 k@6 已回滚、k@5 仍有效：只跳过 @6，让 @5 正常写入
+    if (is_aborted && is_aborted(version))
+      continue; 
 
     // 业务记录保留全部版本
     // 特别注意：非空 key、空 value 是墓碑，必须正常写入

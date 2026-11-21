@@ -688,6 +688,59 @@ void measure_a16(const fs::path &dir, int percent) {
 }
 } // namespace
 
+// 首次刷盘对照：输入全部放在同一张 MemTable，L0 起初为空，确保没有合并。
+// 准备记录和登记事务状态都在计时外；只测公共 flush()，随后读取物理输出。
+static void measure_a16_first_flush(const std::string &dir, bool abort_new) {
+  auto engine = std::make_shared<LSMEngine>(dir);
+  auto manager = std::make_shared<TranManager>(dir);
+  engine->set_tran_manager(manager);
+  const auto threshold = TomlConfig::getInstance().getWisckeyValueThreshold();
+  ASSERT_TRUE(threshold == 0 || threshold == 64);
+  for (size_t i = 0; i < a16_keys; ++i) {
+    for (bool newer : {false, true}) {
+      auto id = manager->getNextTransactionId();
+      engine->memtable.put(a16_key(i), a16_value(newer), id);
+      manager->add_ready_to_flush_tranc_id(id, newer && abort_new
+          ? TransactionState::ABORTED : TransactionState::OP_COMMITTED);
+    }
+  }
+  ASSERT_EQ(engine->memtable.get_frozen_size(), 0u);
+  const auto before = engine->vlog_->tail_offset();
+  const auto start = std::chrono::steady_clock::now();
+  engine->flush();
+  const auto end = std::chrono::steady_clock::now();
+  ASSERT_EQ(engine->memtable.get_total_size(), 0u);
+  ASSERT_EQ(engine->level_sst_ids[0].size(), 1u);
+  const auto id = engine->level_sst_ids[0].front();
+  const auto path = engine->get_sst_path(id, 0);
+  auto sst = SST::open(id, FileObj::open(path, false), std::make_shared<BlockCache>(16, 2),
+                       engine->vlog_);
+  const char *mode = std::getenv("KOPIDB_A16_FLUSH_PRUNED");
+  const bool pruned = abort_new && mode && std::string_view(mode) == "1";
+  auto it = sst->begin(0, true);
+  size_t rows = 0;
+  for (size_t i = 0; i < a16_keys; ++i) {
+    for (bool newer : {true, false}) {
+      if (pruned && newer) continue;
+      ASSERT_TRUE(it.is_valid());
+      ASSERT_EQ(it.key(), a16_key(i));
+      ASSERT_EQ(it.get_cur_tranc_id(), 2*i + (newer ? 2 : 1));
+      ASSERT_EQ(it.value(), a16_value(newer));
+      ++it;
+      ++rows;
+    }
+  }
+  ASSERT_TRUE(it.is_end());
+  std::cout << "A16_FLUSH threshold=" << threshold << " percent=" << (abort_new ? 50 : 0)
+            << " rows=" << rows << " bytes=" << std::filesystem::file_size(path)
+            << " vlog=" << engine->vlog_->tail_offset() - before << " ms="
+            << std::fixed << std::setprecision(6)
+            << std::chrono::duration<double, std::milli>(end - start).count() << '\n';
+}
+
+TEST_F(CompactTest, DISABLED_A16FirstFlush0) { measure_a16_first_flush(test_dir, false); }
+TEST_F(CompactTest, DISABLED_A16FirstFlush50) { measure_a16_first_flush(test_dir, true); }
+
 TEST_F(CompactTest, DISABLED_A16Measure0) { measure_a16(test_dir, 0); }
 TEST_F(CompactTest, DISABLED_A16Measure50) { measure_a16(test_dir, 50); }
 
