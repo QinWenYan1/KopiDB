@@ -453,7 +453,7 @@ WiscKey 与 CRC 对照证据：`/var/folders/tc/r_qvpl1d1tqdqf7td2y5chlr0000gn/T
 
 2026-11-21 旧版物理结果已复现。0% 与 50% 回滚均输出 20,000 条、3,021,873 B；后者点查返回 @5，但新 L1 仍有已回滚的 @6。见[合并原始数据](benchmarks/a16-baseline.json)和[正式点查基线（每轮 25 万次）](benchmarks/a16-point-lookup-250k.json)。尚无新版对照结果。
 
-2026-11-21 已纳入[当前计划](PLAN.md)，先记录基线，再修改并进行前后对照。最初结论来自静态核查。
+2026-11-21 已纳入[当时的 A16 计划](https://github.com/QinWenYan1/KopiDB/blob/ab920dcb59d94915cd66a35d2006b8ae92bc4a6f/agent/PLAN.md)，先记录基线，再修改并进行前后对照。最初结论来自静态核查。
 
 类型：已确认的性能／空间优化机会，不以此认定当前用户查询结果错误。状态：2026-11-17 用户明确要求先记录、留待之后处理；不加入当前 A15 引用复用计划。
 
