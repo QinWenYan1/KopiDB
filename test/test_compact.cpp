@@ -3,7 +3,12 @@
 #include "logger/logger.h"
 #include "lsm/engine.h"
 #include "lsm/transaction.h"
+#include "sst/sst_iterator.h"
+#include <spdlog/sinks/callback_sink.h>
+#include <spdlog/spdlog.h>
+#include <chrono>
 #include <cstdlib>
+#include <string_view>
 #include <filesystem>
 #include <gtest/gtest.h>
 #include <iostream>
@@ -411,6 +416,134 @@ TEST_F(CompactTest, TombstoneDefaultConfig) {
     EXPECT_EQ(fail_count, 0) << "Some deleted keys are still visible";
   }
 }
+
+// A16 专项基准，在独立目录用 --gtest_also_run_disabled_tests 显式运行。
+// 先运行 PrepareSeeds 一次，再对同一份种子重复运行 Measure0 或 Measure50。
+// 旧程序期望保留全部版本；新版测量时设置 KOPIDB_A16_PRUNED=1。
+namespace {
+namespace fs = std::filesystem;
+constexpr size_t a16_keys = 10000;
+
+std::string a16_key(size_t i) { return "k" + std::to_string(100000 + i); }
+std::string a16_value(bool newer) { return std::string(128, newer ? 'N' : 'O'); }
+
+TEST(A16Compaction, DISABLED_PrepareSeeds) {
+  fs::path committed = "a16-seeds/0", aborted = "a16-seeds/50";
+  ASSERT_TRUE(fs::create_directory("a16-seeds")) << "请在新的工作目录准备种子";
+  fs::create_directory(committed);
+  const auto &cfg = TomlConfig::getInstance();
+  auto cache = std::make_shared<BlockCache>(cfg.getLsmBlockCacheCapacity(),
+                                            cfg.getLsmBlockCacheK());
+  // 一张 L1 存全部旧版本；四张 L0 交错存放全部新版本，key 范围重叠。
+  // 两种负载复用完全相同的 SST，唯一差异是事务状态文件。
+  for (size_t shard = 0; shard <= 4; ++shard) {
+    const bool newer = shard != 0;
+    SSTBuilder builder(cfg.getLsmBlockSize(), true);
+    for (size_t i = newer ? shard - 1 : 0; i < a16_keys; i += newer ? 4 : 1)
+      builder.add(a16_key(i), a16_value(newer), 2 * i + (newer ? 2 : 1));
+    const auto id = shard + 1;
+    const auto file = "sst_" + std::to_string(id) + (newer ? ".0" : ".1");
+    builder.build(id, (committed / file).string(), cache);
+  }
+  fs::copy(committed, aborted, fs::copy_options::recursive);
+  for (const auto &dir : {committed, aborted}) {
+    TranManager manager(dir.string());
+    for (size_t n = 0; n < 2 * a16_keys; ++n) {
+      const auto id = manager.getNextTransactionId();
+      ASSERT_EQ(id, n + 1);
+      const bool skip = dir == aborted && id % 2 == 0;
+      manager.add_ready_to_flush_tranc_id(id, skip ? TransactionState::ABORTED
+                                                   : TransactionState::OP_COMMITTED);
+      manager.add_flushed_tranc_id(id);
+    }
+    manager.write_tranc_id_file();
+  }
+}
+
+void measure_a16(const fs::path &dir, int percent) {
+  const auto seed = fs::path("a16-seeds") / std::to_string(percent);
+  ASSERT_TRUE(fs::exists(seed / "tranc_id")) << "请先运行 DISABLED_PrepareSeeds";
+  fs::copy(seed, dir, fs::copy_options::recursive);
+  auto engine = std::make_shared<LSMEngine>(dir.string());
+  auto manager = std::make_shared<TranManager>(dir.string());
+  engine->set_tran_manager(manager);
+  ASSERT_EQ(engine->level_sst_ids[0].size(), 4u);
+  ASSERT_EQ(engine->level_sst_ids[1].size(), 1u);
+  ASSERT_EQ(TomlConfig::getInstance().getLsmSstLevelRatio(), 4);
+  ASSERT_EQ(TomlConfig::getInstance().getWisckeyValueThreshold(), 0u);
+  ASSERT_EQ(engine->put("zz-trigger", "trigger", manager->getNextTransactionId()), 0u);
+
+  // 在同步日志的两个合并标记处取单调时钟，不把随后单独生成的 L0 计入。
+  using Clock = std::chrono::steady_clock;
+  Clock::time_point start, finish;
+  int starts = 0, finishes = 0;
+  auto logger = spdlog::default_logger();
+  logger->sinks().push_back(std::make_shared<spdlog::sinks::callback_sink_st>(
+      [&](const spdlog::details::log_msg &msg) {
+        std::string_view text(msg.payload.data(), msg.payload.size());
+        if (text == "LSMEngine--Compaction: Starting full compaction from level0 to level1") {
+          start = Clock::now();
+          ++starts;
+        } else if (text == "LSMEngine--Compaction: Finished compaction. New SSTs added at level1") {
+          finish = Clock::now();
+          ++finishes;
+        }
+      }));
+  EXPECT_NO_THROW(engine->flush());
+  logger->sinks().pop_back();
+  ASSERT_EQ(starts, 1);
+  ASSERT_EQ(finishes, 1);
+  ASSERT_GT(finish, start);
+
+  const char *mode = std::getenv("KOPIDB_A16_PRUNED");
+  const bool prune = mode && std::string_view(mode) == "1" && percent == 50;
+  const auto &outputs = engine->level_sst_ids[1];
+  ASSERT_FALSE(outputs.empty());
+  std::vector<bool> seen(2 * a16_keys + 1, false);
+  std::vector<uint64_t> sample;
+  size_t records = 0;
+  uintmax_t bytes = 0;
+  auto cache = std::make_shared<BlockCache>(16, 2);
+  for (auto id : outputs) {
+    const auto path = engine->get_sst_path(id, 1);
+    bytes += fs::file_size(path);
+    auto disk = SST::open(id, FileObj::open(path, false), cache);
+    for (auto it = disk->begin(0, true); it.is_valid(); ++it) {
+      const auto version = it.get_cur_tranc_id();
+      ASSERT_GE(version, 1u);
+      ASSERT_LT(version, seen.size());
+      ASSERT_FALSE(seen[version]);
+      seen[version] = true;
+      ++records;
+      const auto key_index = (version - 1) / 2;
+      ASSERT_EQ(it.key(), a16_key(key_index));
+      ASSERT_EQ(it.value(), a16_value(version % 2 == 0));
+      if (key_index == 2) sample.push_back(version);
+    }
+  }
+  for (size_t i = 0; i < a16_keys; ++i) {
+    ASSERT_TRUE(seen[2*i+1]);
+    ASSERT_EQ(seen[2*i+2], !prune);
+  }
+  const auto key = a16_key(2);
+  ASSERT_EQ(manager->is_aborted(6), percent == 50);
+  auto visible = engine->get(key, 0);
+  ASSERT_TRUE(visible);
+  ASSERT_EQ(visible->second, percent == 50 ? 5u : 6u);
+  ASSERT_EQ(visible->first, a16_value(percent == 0));
+  auto old = engine->get(key, 5);
+  ASSERT_TRUE(old);
+  ASSERT_EQ(old->second, 5u);
+  ASSERT_EQ(sample, prune ? std::vector<uint64_t>{5} : (std::vector<uint64_t>{6, 5}));
+  std::cout << "A16 percent=" << percent << " records=" << records << " bytes=" << bytes
+            << " files=" << outputs.size() << " sample=" << (prune ? "5" : "6,5")
+            << " visible=" << visible->second << " ms=" << std::fixed << std::setprecision(6)
+            << std::chrono::duration<double, std::milli>(finish - start).count() << '\n';
+}
+} // namespace
+
+TEST_F(CompactTest, DISABLED_A16Measure0) { measure_a16(test_dir, 0); }
+TEST_F(CompactTest, DISABLED_A16Measure50) { measure_a16(test_dir, 50); }
 
 int main(int argc, char **argv) {
   testing::InitGoogleTest(&argc, argv);

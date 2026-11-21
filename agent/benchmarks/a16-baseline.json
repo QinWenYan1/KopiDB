@@ -1,0 +1,184 @@
+{
+  "commit": "d243747ad4802947e660ccbc4166f3265baf41cc",
+  "mode": "release",
+  "machine": "arm64",
+  "macos": "27.2",
+  "compiler": "Apple clang version 16.0.0 (clang-1600.0.26.6)",
+  "binary_sha256": "fffcbb1aeb839d996440d8b5a9f2633bf90079de9be4ac62fa8c8eab8155c216",
+  "test_sha256": "fdde881c5a098de58284678272b21af9b4658e43f609432189e81d4cc264fd80",
+  "config_sha256": "b124792810d32ca9b5991f6b5c106d2d920deef89b810fbbace342180f3f53d0",
+  "seeds": {
+    "a16-seeds/0/sst_1.1": "5137dd0e07004b871d1396b13d940327d7f57854f12debcb0967a162829acef9",
+    "a16-seeds/0/sst_2.0": "b9fdf5b31e600e79a61c421abcfa1791053ef59c40e676bfb172120b8bb126a2",
+    "a16-seeds/0/sst_3.0": "6ad8beba870c98a2210a811f2d71992370ca60e45a49629dc21661b1c8ca3edf",
+    "a16-seeds/0/sst_4.0": "4a6b5f834c3f6d6faf2a3b8f824b8eff9dcf8d7f72f2b16cf4850620c807ef6c",
+    "a16-seeds/0/sst_5.0": "b3ca3585f86d1d8b3b3f055c91da106dc05227348e241e4e29e56c78fda270c3",
+    "a16-seeds/0/tranc_id": "ec89c929ab497460f7b1304e1db01bc96e77990959bc466036df27aeca7fc101",
+    "a16-seeds/50/sst_1.1": "5137dd0e07004b871d1396b13d940327d7f57854f12debcb0967a162829acef9",
+    "a16-seeds/50/sst_2.0": "b9fdf5b31e600e79a61c421abcfa1791053ef59c40e676bfb172120b8bb126a2",
+    "a16-seeds/50/sst_3.0": "6ad8beba870c98a2210a811f2d71992370ca60e45a49629dc21661b1c8ca3edf",
+    "a16-seeds/50/sst_4.0": "4a6b5f834c3f6d6faf2a3b8f824b8eff9dcf8d7f72f2b16cf4850620c807ef6c",
+    "a16-seeds/50/sst_5.0": "b3ca3585f86d1d8b3b3f055c91da106dc05227348e241e4e29e56c78fda270c3",
+    "a16-seeds/50/tranc_id": "24da395a7d852a46e1f04279661b825d3c129b9050c9c5bf6933bef2c937dd71"
+  },
+  "raw": [
+    {
+      "percent": "0",
+      "records": "20000",
+      "bytes": "3021873",
+      "files": "1",
+      "sample": "6,5",
+      "visible": "6",
+      "ms": 51.640333,
+      "round": 0
+    },
+    {
+      "percent": "50",
+      "records": "20000",
+      "bytes": "3021873",
+      "files": "1",
+      "sample": "6,5",
+      "visible": "5",
+      "ms": 51.472625,
+      "round": 0
+    },
+    {
+      "percent": "50",
+      "records": "20000",
+      "bytes": "3021873",
+      "files": "1",
+      "sample": "6,5",
+      "visible": "5",
+      "ms": 50.375125,
+      "round": 1
+    },
+    {
+      "percent": "0",
+      "records": "20000",
+      "bytes": "3021873",
+      "files": "1",
+      "sample": "6,5",
+      "visible": "6",
+      "ms": 53.372917,
+      "round": 1
+    },
+    {
+      "percent": "0",
+      "records": "20000",
+      "bytes": "3021873",
+      "files": "1",
+      "sample": "6,5",
+      "visible": "6",
+      "ms": 50.191209,
+      "round": 2
+    },
+    {
+      "percent": "50",
+      "records": "20000",
+      "bytes": "3021873",
+      "files": "1",
+      "sample": "6,5",
+      "visible": "5",
+      "ms": 51.035,
+      "round": 2
+    },
+    {
+      "percent": "50",
+      "records": "20000",
+      "bytes": "3021873",
+      "files": "1",
+      "sample": "6,5",
+      "visible": "5",
+      "ms": 49.89975,
+      "round": 3
+    },
+    {
+      "percent": "0",
+      "records": "20000",
+      "bytes": "3021873",
+      "files": "1",
+      "sample": "6,5",
+      "visible": "6",
+      "ms": 61.632542,
+      "round": 3
+    },
+    {
+      "percent": "0",
+      "records": "20000",
+      "bytes": "3021873",
+      "files": "1",
+      "sample": "6,5",
+      "visible": "6",
+      "ms": 50.789708,
+      "round": 4
+    },
+    {
+      "percent": "50",
+      "records": "20000",
+      "bytes": "3021873",
+      "files": "1",
+      "sample": "6,5",
+      "visible": "5",
+      "ms": 50.143709,
+      "round": 4
+    },
+    {
+      "percent": "50",
+      "records": "20000",
+      "bytes": "3021873",
+      "files": "1",
+      "sample": "6,5",
+      "visible": "5",
+      "ms": 49.914917,
+      "round": 5
+    },
+    {
+      "percent": "0",
+      "records": "20000",
+      "bytes": "3021873",
+      "files": "1",
+      "sample": "6,5",
+      "visible": "6",
+      "ms": 49.959625,
+      "round": 5
+    }
+  ],
+  "summary": {
+    "0": {
+      "formal_ms": [
+        53.372917,
+        50.191209,
+        61.632542,
+        50.789708,
+        49.959625
+      ],
+      "median_ms": 50.789708,
+      "range_ms": [
+        49.959625,
+        61.632542
+      ],
+      "output_bytes": 3021873,
+      "physical_records": 20000,
+      "output_files": 1,
+      "warmup_ms": 51.640333
+    },
+    "50": {
+      "formal_ms": [
+        50.375125,
+        51.035,
+        49.89975,
+        50.143709,
+        49.914917
+      ],
+      "median_ms": 50.143709,
+      "range_ms": [
+        49.89975,
+        51.035
+      ],
+      "output_bytes": 3021873,
+      "physical_records": 20000,
+      "output_files": 1,
+      "warmup_ms": 51.472625
+    }
+  }
+}
