@@ -819,6 +819,21 @@ void LSMEngine::full_compact(size_t src_level) {
   cur_max_level = (std::max)(cur_max_level, src_level + 1);
 }
 
+static std::function<bool(uint64_t)> make_compaction_abort_filter(const std::weak_ptr<TranManager>& man){
+  auto man_ptr = man.lock(); 
+
+  if (!man_ptr)
+    // 单独使用 Engine 时可能没有事务管理器, 此时无法确认哪些版本
+    // 已经回滚，返回空回调，让合并保留所有输入版本
+    return {}; 
+
+  // 迭代器会在遍历 SST 时调用这个函数。持有 shared_ptr，保证遍历期间
+  // 管理器仍然有效。只有已登记回滚的版本才跳过；活跃事务之后仍可能提交
+  return [man_ptr = std::move(man_ptr)](uint64_t id){
+    return man_ptr->is_aborted(id); 
+  }; 
+}
+
 // 负责完成 l0 和 l1 的 full compact
 std::vector<std::shared_ptr<SST>>
 LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
