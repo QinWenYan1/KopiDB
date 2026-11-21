@@ -424,7 +424,7 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
     if (is_aborted && is_aborted(version))
       continue; 
 
-    // 业务记录保留全部版本
+    // 保留所有未确认回滚的业务版本，包括有效墓碑
     // 特别注意：非空 key、空 value 是墓碑，必须正常写入
     // 否则更旧的值可能重新被查询到
     builder.add(key, value, version);

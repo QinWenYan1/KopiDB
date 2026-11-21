@@ -19,7 +19,7 @@
 
 ## 阶段③ · 首次刷盘基线
 
-阶段③局部验收：MemTable::flush_last 已在完成标记分支之后、SSTBuilder::add 之前检查回滚回调。在隔离目录构建并运行 MemTableFlushTest.*，7/7 通过（含两项新增用例）：失败后冻结表和通知保留，重试后有效旧值和墓碑可读；业务版本全部被过滤时无 SST、仍输出完成 ID。当前步骤为接通 LSMEngine::flush 的普通与 WiscKey 两种输出。
+阶段③局部验收：MemTable::flush_last 已在完成标记分支之后、SSTBuilder::add 之前检查回滚回调。在隔离目录构建并运行 MemTableFlushTest.*，7/7 通过（含两项新增用例）：失败后冻结表和通知保留，重试后有效旧值和墓碑可读；业务版本全部被过滤时无 SST、仍输出完成 ID。当前步骤为接通 LSMEngine::flush 的普通与 WiscKey 两种输出。 Engine 三个入口已改为调用同名工厂，flush_last 也已收到回调；当前工作树构建 test_compact 时发现工厂在 flush 首次调用前尚未声明，且 config 局部变量缺少定义。本次未运行 Engine 测试，修正后再验收。
 
 [原始样本与指纹](benchmarks/a16-first-flush-baseline.json)。冻结于 812b6be（已有合并过滤、尚无首次刷盘过滤）。每组准备一张含 10,000 个 key × 两版本 × 128 B 的内存表，L0 为空；只测一次公共 flush，建表、事务登记和逐条读回都在计时外。四组分别预热一次、正式五轮。无完成标记的受控负载用于比较业务记录写入，标记通知单独验正确性。0% / 50% 回滚分别为：普通 SST 27.026 / 27.277 ms（均 20,000 条，3,021,873 B）；WiscKey 阈值 64 为 80.588 / 81.277 ms（均 20,000 条，699,915 B，VLog 均新增 2,900,000 B）。冻结程序及配置保存在 build/benchmarks/a16/first-flush 下。
 

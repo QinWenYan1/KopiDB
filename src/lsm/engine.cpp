@@ -420,6 +420,19 @@ void LSMEngine::clear() {
   // 然后初始化新 WAL
 }
 
+static std::function<bool(uint64_t)> make_abort_filter(const std::shared_ptr<TranManager>& man){
+  if (!man)
+    // 单独使用 Engine 时可能没有事务管理器, 此时无法确认哪些版本
+    // 已经回滚，返回空回调，让合并保留所有输入版本
+    return {}; 
+
+  // 迭代器会在遍历 SST 时调用这个函数。持有 shared_ptr，保证遍历期间
+  // 管理器仍然有效。只有已登记回滚的版本才跳过；活跃事务之后仍可能提交
+  return [man](uint64_t id){
+    return man->is_aborted(id); 
+  }; 
+}
+
 // Lab 4.1 刷盘形成sst文件
 uint64_t LSMEngine::flush() {
 
@@ -460,18 +473,20 @@ uint64_t LSMEngine::flush() {
   // 例如 A@5 已经在之前刷盘，当前表只剩完成标记@5：
   // 此时无需再创建 SST，但仍需要返回 ID 5，供下面通知管理器
   std::vector<uint64_t> flushed_tranc_ids;
-  std::shared_ptr<SST> new_sst;
+  auto manager = tran_manager.lock();
+  const auto is_aborted = make_abort_filter(manager);
+  const auto &config = TomlConfig::getInstance();
+  const auto block_size = config.getLsmBlockSize();
   size_t wk = TomlConfig::getInstance().getWisckeyValueThreshold();
-  if (wk > 0 && vlog_) {
-    SSTBuilder builder(TomlConfig::getInstance().getLsmBlockSize(), true, vlog_,
-                       wk);
-    new_sst = memtable.flush_last(builder, sst_path, new_sst_id,
-                                  flushed_tranc_ids, block_cache);
-  } else {
-    SSTBuilder builder(TomlConfig::getInstance().getLsmBlockSize(), true);
-    new_sst = memtable.flush_last(builder, sst_path, new_sst_id,
-                                  flushed_tranc_ids, block_cache);
-  }
+
+  SSTBuilder builder = (wk > 0 && vlog_)
+        ? SSTBuilder(block_size, true, vlog_, wk)
+        : SSTBuilder(block_size, true);
+
+  // flush_last 在 builder.add() 前跳过已回滚版本
+  // 因此 WiscKey 模式也不会把这些版本的大 value 追加进 VLog
+  auto new_sst = memtable.flush_last(builder, sst_path, new_sst_id,
+                                    flushed_tranc_ids, block_cache, is_aborted);
 
   // 5. 只有生成了 SST，才登记文件并读取其中的最大版本号
   //
@@ -505,7 +520,6 @@ uint64_t LSMEngine::flush() {
   //
   //    从尾向前访问，通知顺序就变为 1、2、3，无需额外排序
   //    较小的已完成项先移出 ready 表，减少后续通知的重复扫描
-  auto manager = tran_manager.lock();
 
   // rbegin() 从最后一项开始；
   // 反向迭代器的 ++ 会向数组前方移动，直到 rend()
@@ -819,21 +833,6 @@ void LSMEngine::full_compact(size_t src_level) {
   cur_max_level = (std::max)(cur_max_level, src_level + 1);
 }
 
-static std::function<bool(uint64_t)> make_compaction_abort_filter(const std::weak_ptr<TranManager>& man){
-  auto man_ptr = man.lock(); 
-
-  if (!man_ptr)
-    // 单独使用 Engine 时可能没有事务管理器, 此时无法确认哪些版本
-    // 已经回滚，返回空回调，让合并保留所有输入版本
-    return {}; 
-
-  // 迭代器会在遍历 SST 时调用这个函数。持有 shared_ptr，保证遍历期间
-  // 管理器仍然有效。只有已登记回滚的版本才跳过；活跃事务之后仍可能提交
-  return [man_ptr = std::move(man_ptr)](uint64_t id){
-    return man_ptr->is_aborted(id); 
-  }; 
-}
-
 // 负责完成 l0 和 l1 的 full compact
 std::vector<std::shared_ptr<SST>>
 LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
@@ -841,7 +840,7 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
   std::vector<SstIterator> l0_iters;
   std::vector<std::shared_ptr<SST>> l1_ssts;
   // L0 和 L1 都可能含有已经回滚的版本，两侧共用同一个判断
-  const auto is_aborted = make_compaction_abort_filter(tran_manager); 
+  const auto is_aborted = make_abort_filter(tran_manager.lock()); 
 
   // 0. 按目标 SST 的模式决定输入如何读取 value。
   // 条件与 gen_sst_from_iter 创建 builder 时一致：
@@ -918,7 +917,7 @@ LSMEngine::full_common_compact(std::vector<size_t> &lx_ids,
 
   // 两层都可能含有上次合并后才回滚的版本，因此读取两侧时都要检查
   // 0 表示没有读取版本上限；true 让其他历史版本和有效墓碑继续参与合并
-  const auto is_aborted = make_compaction_abort_filter(tran_manager);
+  const auto is_aborted = make_abort_filter(tran_manager.lock());
 
   std::shared_ptr<ConcactIterator> old_lx_begin_ptr =
       std::make_shared<ConcactIterator>(lx_ssts, 0, true, is_aborted, read_mode);
