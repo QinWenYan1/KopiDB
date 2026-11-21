@@ -1,0 +1,234 @@
+{
+  "engine_commit": "d243747ad4802947e660ccbc4166f3265baf41cc",
+  "mode": "release",
+  "compiler": "Apple clang version 16.0.0 (clang-1600.0.26.6)",
+  "machine": "arm64",
+  "macos": "27.2",
+  "config_sha256": "b124792810d32ca9b5991f6b5c106d2d920deef89b810fbbace342180f3f53d0",
+  "seeds_manifest": "a16-baseline.json",
+  "binary_sha256": "70e09af53e92573ee88bb3f71b49ac689018378114f5afa274d3354b24c09ab0",
+  "test_sha256": "e4cca346720a6ec5dfa8e05a9130c875c0e86200528834a886d67ca1309b026a",
+  "key_count": 10000,
+  "input_versions": 20000,
+  "warmup_passes_per_workload": 1,
+  "timed_passes": 25,
+  "calls_per_pass": 10000,
+  "round_zero": "warmup, excluded",
+  "hot_key": "k100002",
+  "raw": [
+    {
+      "round": 0,
+      "aborted_pct": 0,
+      "workload": "hot",
+      "calls": 250000,
+      "us_per_get": 0.392762,
+      "elapsed_ms": 98.190416
+    },
+    {
+      "round": 0,
+      "aborted_pct": 0,
+      "workload": "all",
+      "calls": 250000,
+      "us_per_get": 0.490385,
+      "elapsed_ms": 122.59625
+    },
+    {
+      "round": 0,
+      "aborted_pct": 50,
+      "workload": "hot",
+      "calls": 250000,
+      "us_per_get": 0.432023,
+      "elapsed_ms": 108.00575
+    },
+    {
+      "round": 0,
+      "aborted_pct": 50,
+      "workload": "all",
+      "calls": 250000,
+      "us_per_get": 0.577813,
+      "elapsed_ms": 144.453334
+    },
+    {
+      "round": 1,
+      "aborted_pct": 50,
+      "workload": "hot",
+      "calls": 250000,
+      "us_per_get": 0.412018,
+      "elapsed_ms": 103.004458
+    },
+    {
+      "round": 1,
+      "aborted_pct": 50,
+      "workload": "all",
+      "calls": 250000,
+      "us_per_get": 0.520102,
+      "elapsed_ms": 130.025584
+    },
+    {
+      "round": 1,
+      "aborted_pct": 0,
+      "workload": "hot",
+      "calls": 250000,
+      "us_per_get": 0.394835,
+      "elapsed_ms": 98.708834
+    },
+    {
+      "round": 1,
+      "aborted_pct": 0,
+      "workload": "all",
+      "calls": 250000,
+      "us_per_get": 0.492888,
+      "elapsed_ms": 123.222
+    },
+    {
+      "round": 2,
+      "aborted_pct": 0,
+      "workload": "hot",
+      "calls": 250000,
+      "us_per_get": 0.400542,
+      "elapsed_ms": 100.135459
+    },
+    {
+      "round": 2,
+      "aborted_pct": 0,
+      "workload": "all",
+      "calls": 250000,
+      "us_per_get": 0.49009,
+      "elapsed_ms": 122.522625
+    },
+    {
+      "round": 2,
+      "aborted_pct": 50,
+      "workload": "hot",
+      "calls": 250000,
+      "us_per_get": 0.417865,
+      "elapsed_ms": 104.46625
+    },
+    {
+      "round": 2,
+      "aborted_pct": 50,
+      "workload": "all",
+      "calls": 250000,
+      "us_per_get": 0.517473,
+      "elapsed_ms": 129.368208
+    },
+    {
+      "round": 3,
+      "aborted_pct": 50,
+      "workload": "hot",
+      "calls": 250000,
+      "us_per_get": 0.41341,
+      "elapsed_ms": 103.352459
+    },
+    {
+      "round": 3,
+      "aborted_pct": 50,
+      "workload": "all",
+      "calls": 250000,
+      "us_per_get": 0.531278,
+      "elapsed_ms": 132.819625
+    },
+    {
+      "round": 3,
+      "aborted_pct": 0,
+      "workload": "hot",
+      "calls": 250000,
+      "us_per_get": 0.41554,
+      "elapsed_ms": 103.885041
+    },
+    {
+      "round": 3,
+      "aborted_pct": 0,
+      "workload": "all",
+      "calls": 250000,
+      "us_per_get": 0.502342,
+      "elapsed_ms": 125.585542
+    },
+    {
+      "round": 4,
+      "aborted_pct": 0,
+      "workload": "hot",
+      "calls": 250000,
+      "us_per_get": 0.410972,
+      "elapsed_ms": 102.742916
+    },
+    {
+      "round": 4,
+      "aborted_pct": 0,
+      "workload": "all",
+      "calls": 250000,
+      "us_per_get": 0.499247,
+      "elapsed_ms": 124.811791
+    },
+    {
+      "round": 4,
+      "aborted_pct": 50,
+      "workload": "hot",
+      "calls": 250000,
+      "us_per_get": 0.424334,
+      "elapsed_ms": 106.0835
+    },
+    {
+      "round": 4,
+      "aborted_pct": 50,
+      "workload": "all",
+      "calls": 250000,
+      "us_per_get": 0.529814,
+      "elapsed_ms": 132.453542
+    },
+    {
+      "round": 5,
+      "aborted_pct": 50,
+      "workload": "hot",
+      "calls": 250000,
+      "us_per_get": 0.420133,
+      "elapsed_ms": 105.033291
+    },
+    {
+      "round": 5,
+      "aborted_pct": 50,
+      "workload": "all",
+      "calls": 250000,
+      "us_per_get": 0.525387,
+      "elapsed_ms": 131.346667
+    },
+    {
+      "round": 5,
+      "aborted_pct": 0,
+      "workload": "hot",
+      "calls": 250000,
+      "us_per_get": 0.403154,
+      "elapsed_ms": 100.788416
+    },
+    {
+      "round": 5,
+      "aborted_pct": 0,
+      "workload": "all",
+      "calls": 250000,
+      "us_per_get": 0.500735,
+      "elapsed_ms": 125.183833
+    }
+  ],
+  "summary_us_per_get": {
+    "0_hot": {
+      "median": 0.403154,
+      "min": 0.394835,
+      "max": 0.41554
+    },
+    "0_all": {
+      "median": 0.499247,
+      "min": 0.49009,
+      "max": 0.502342
+    },
+    "50_hot": {
+      "median": 0.417865,
+      "min": 0.412018,
+      "max": 0.424334
+    },
+    "50_all": {
+      "median": 0.525387,
+      "min": 0.517473,
+      "max": 0.531278
+    }
+  }
+}

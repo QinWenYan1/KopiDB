@@ -535,6 +535,41 @@ void measure_a16(const fs::path &dir, int percent) {
   ASSERT_TRUE(old);
   ASSERT_EQ(old->second, 5u);
   ASSERT_EQ(sample, prune ? std::vector<uint64_t>{5} : (std::vector<uint64_t>{6, 5}));
+  // 先用一遍预热，再对同一序列连续计时 25 遍。只拉长采样窗口，
+  // 保持数据集、读缓存和每遍的访问顺序与原先的 10,000 次基线一致。
+  constexpr size_t timed_passes = 25;
+  for (bool hot : {true, false}) {
+    std::vector<std::string> queries;
+    queries.reserve(a16_keys);
+    uint64_t expected_sum = 0;
+    for (size_t i = 0; i < a16_keys; ++i) {
+      // 7919 与 10000 互质，因而离散查询恰好访问每个 key 一次。
+      const size_t k = hot ? 2 : (7919 * i) % a16_keys;
+      queries.push_back(a16_key(k));
+      expected_sum += 2 * k + (percent == 50 ? 1 : 2);
+    }
+    auto read_all = [&]() {
+      uint64_t sum = 0;
+      for (const auto &q : queries) {
+        const auto result = engine->get(q, 0);
+        if (result) sum += result->second;
+      }
+      return sum;
+    };
+    ASSERT_EQ(read_all(), expected_sum);
+    const auto query_start = Clock::now();
+    uint64_t sum = 0;
+    for (size_t pass = 0; pass < timed_passes; ++pass)
+      sum += read_all();
+    const auto query_end = Clock::now();
+    ASSERT_EQ(sum, expected_sum * timed_passes);
+    const size_t calls = queries.size() * timed_passes;
+    const auto us = std::chrono::duration<double, std::micro>(query_end - query_start);
+    std::cout << "A16_GET percent=" << percent << " workload=" << (hot ? "hot" : "all")
+              << " calls=" << calls << " us_per_get=" << std::fixed
+              << std::setprecision(6) << us.count() / calls
+              << " elapsed_ms=" << us.count() / 1000.0 << '\n';
+  }
   std::cout << "A16 percent=" << percent << " records=" << records << " bytes=" << bytes
             << " files=" << outputs.size() << " sample=" << (prune ? "5" : "6,5")
             << " visible=" << visible->second << " ms=" << std::fixed << std::setprecision(6)

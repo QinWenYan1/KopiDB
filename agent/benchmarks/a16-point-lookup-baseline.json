@@ -1,0 +1,204 @@
+{
+  "engine_commit": "d243747ad4802947e660ccbc4166f3265baf41cc",
+  "mode": "release",
+  "get": "LSMEngine::get(key, 0), one reader, hit, warmed block cache",
+  "key_count": 10000,
+  "input_versions": 20000,
+  "hot_key": "k100002",
+  "clock_unit": "microseconds per get, mean of timed loop",
+  "config_sha256": "b124792810d32ca9b5991f6b5c106d2d920deef89b810fbbace342180f3f53d0",
+  "test_sha256": "aa240f9e6e8cbdc7b4504d0a36ad1bf1dbe0f16698aba59b1f5d356236bc36af",
+  "binary_sha256": "70f0b842feed61c8ab343149f7ff6d67b0fc7bed237cb1622b8e6b355db02ee6",
+  "raw": [
+    {
+      "round": 0,
+      "aborted_pct": 0,
+      "workload": "hot",
+      "calls": 10000,
+      "us_per_get": 0.398813
+    },
+    {
+      "round": 0,
+      "aborted_pct": 0,
+      "workload": "all",
+      "calls": 10000,
+      "us_per_get": 0.508304
+    },
+    {
+      "round": 0,
+      "aborted_pct": 50,
+      "workload": "hot",
+      "calls": 10000,
+      "us_per_get": 0.403133
+    },
+    {
+      "round": 0,
+      "aborted_pct": 50,
+      "workload": "all",
+      "calls": 10000,
+      "us_per_get": 0.50655
+    },
+    {
+      "round": 1,
+      "aborted_pct": 50,
+      "workload": "hot",
+      "calls": 10000,
+      "us_per_get": 0.410783
+    },
+    {
+      "round": 1,
+      "aborted_pct": 50,
+      "workload": "all",
+      "calls": 10000,
+      "us_per_get": 0.512158
+    },
+    {
+      "round": 1,
+      "aborted_pct": 0,
+      "workload": "hot",
+      "calls": 10000,
+      "us_per_get": 0.400654
+    },
+    {
+      "round": 1,
+      "aborted_pct": 0,
+      "workload": "all",
+      "calls": 10000,
+      "us_per_get": 0.486258
+    },
+    {
+      "round": 2,
+      "aborted_pct": 0,
+      "workload": "hot",
+      "calls": 10000,
+      "us_per_get": 0.395171
+    },
+    {
+      "round": 2,
+      "aborted_pct": 0,
+      "workload": "all",
+      "calls": 10000,
+      "us_per_get": 0.486
+    },
+    {
+      "round": 2,
+      "aborted_pct": 50,
+      "workload": "hot",
+      "calls": 10000,
+      "us_per_get": 0.416388
+    },
+    {
+      "round": 2,
+      "aborted_pct": 50,
+      "workload": "all",
+      "calls": 10000,
+      "us_per_get": 0.515487
+    },
+    {
+      "round": 3,
+      "aborted_pct": 50,
+      "workload": "hot",
+      "calls": 10000,
+      "us_per_get": 0.427771
+    },
+    {
+      "round": 3,
+      "aborted_pct": 50,
+      "workload": "all",
+      "calls": 10000,
+      "us_per_get": 0.517958
+    },
+    {
+      "round": 3,
+      "aborted_pct": 0,
+      "workload": "hot",
+      "calls": 10000,
+      "us_per_get": 0.397517
+    },
+    {
+      "round": 3,
+      "aborted_pct": 0,
+      "workload": "all",
+      "calls": 10000,
+      "us_per_get": 0.474846
+    },
+    {
+      "round": 4,
+      "aborted_pct": 0,
+      "workload": "hot",
+      "calls": 10000,
+      "us_per_get": 0.399821
+    },
+    {
+      "round": 4,
+      "aborted_pct": 0,
+      "workload": "all",
+      "calls": 10000,
+      "us_per_get": 0.552262
+    },
+    {
+      "round": 4,
+      "aborted_pct": 50,
+      "workload": "hot",
+      "calls": 10000,
+      "us_per_get": 0.417404
+    },
+    {
+      "round": 4,
+      "aborted_pct": 50,
+      "workload": "all",
+      "calls": 10000,
+      "us_per_get": 0.522383
+    },
+    {
+      "round": 5,
+      "aborted_pct": 50,
+      "workload": "hot",
+      "calls": 10000,
+      "us_per_get": 0.409983
+    },
+    {
+      "round": 5,
+      "aborted_pct": 50,
+      "workload": "all",
+      "calls": 10000,
+      "us_per_get": 0.520008
+    },
+    {
+      "round": 5,
+      "aborted_pct": 0,
+      "workload": "hot",
+      "calls": 10000,
+      "us_per_get": 0.396738
+    },
+    {
+      "round": 5,
+      "aborted_pct": 0,
+      "workload": "all",
+      "calls": 10000,
+      "us_per_get": 0.549671
+    }
+  ],
+  "summary": {
+    "0_hot": {
+      "median": 0.397517,
+      "min": 0.395171,
+      "max": 0.400654
+    },
+    "0_all": {
+      "median": 0.486258,
+      "min": 0.474846,
+      "max": 0.552262
+    },
+    "50_hot": {
+      "median": 0.416388,
+      "min": 0.409983,
+      "max": 0.427771
+    },
+    "50_all": {
+      "median": 0.517958,
+      "min": 0.512158,
+      "max": 0.522383
+    }
+  }
+}
