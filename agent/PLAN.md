@@ -2,7 +2,7 @@
 
 ## A16 · 首次刷盘与 SST 合并时跳过已确认回滚的版本
 
-[问题与源码核查](AUDIT.md#a16)。目标是减少输出 SST 中的无效记录，同时测量每条输入记录检查回滚状态的开销。阶段①至③已通过技术验收，总进度 **3/4（75%）**。阶段④ Release 新旧同条件交替采样待开始。
+[问题与源码核查](AUDIT.md#a16)。目标是减少输出 SST 中的无效记录，同时测量每条输入记录检查回滚状态的开销。四个阶段均已验收，总进度 **4/4（100%）**。阶段④已完成 Release 配对测量，原始结果和口径见下。
 
 | 阶段 | 工作 | 验收 |
 | --- | --- | --- |
@@ -38,7 +38,7 @@
 
 两个场景各预热一次、测五次，均输出一张 L1。重新打开输出 SST 核对每个 key、真实版本、value 和出现次数。示例 k100002 在两组磁盘上均有 @6 和 @5；50% 组的 @6 已登记回滚，点查正确返回 @5。耗时差异不能当成优化收益。
 
-[原始采样、构建与输入指纹](benchmarks/a16-baseline.json)。冻结二进制、种子、配置及逐轮日志另存本机 `build/benchmarks/a16/fffcbb1aeb83`（构建目录）。阶段③应从相同种子运行冻结旧程序和新程序，交替采样。复测时将可执行文件置于独立工作目录，复制同一份 config.toml 和 a16-seeds；传 `--gtest_also_run_disabled_tests --gtest_filter=CompactTest.DISABLED_A16Measure0` 或 `CompactTest.DISABLED_A16Measure50`。从零准备种子使用 `A16Compaction.DISABLED_PrepareSeeds`。新版物理结果验收设 `KOPIDB_A16_PRUNED=1`。
+[原始采样、构建与输入指纹](benchmarks/a16-baseline.json)。冻结二进制、种子、配置及逐轮日志另存本机 `build/benchmarks/a16/fffcbb1aeb83`（构建目录）。阶段④应从相同种子运行冻结旧程序和新程序，交替采样。复测时将可执行文件置于独立工作目录，复制同一份 config.toml 和 a16-seeds；传 `--gtest_also_run_disabled_tests --gtest_filter=CompactTest.DISABLED_A16Measure0` 或 `CompactTest.DISABLED_A16Measure50`。从零准备种子使用 `A16Compaction.DISABLED_PrepareSeeds`。新版物理结果验收设 `KOPIDB_A16_PRUNED=1`。
 
 ## 合并后的点查询 · 首次短窗口采样
 
@@ -61,3 +61,9 @@
 | 50% | 0.417865（0.412018–0.424334） | 0.525387（0.517473–0.531278） |
 
 阶段④用同一份种子与该版冻结程序交替运行，比较各自的合并成本和点查成本。[25 万次逐轮数据与指纹](benchmarks/a16-point-lookup-250k.json)。冻结程序位于原基线目录下的 `query-250k/70e09af53e92/baseline_test_compact`。
+
+## 阶段④ · 新旧 Release 配对结果（2026-11-21）
+
+在同一台 macOS arm64 主机上复核旧版可执行文件、配置及 SST 种子哈希。6 种负载各执行新旧程序，预热 1 对、正式 8 对，共 108 次基准执行（正式 96 次）。每次都通过物理输出断言，合并负载同时验证点查结果。50% 回滚时，普通/WiscKey 首次刷盘耗时中位数分别减少 53.82% / 49.21%，普通合并减少 38.87%；合并后热点/分散点查平均每次耗时的轮中位数分别减少 4.09% / 3.53%。0% 回滚时刷盘与合并中位数变化均不足 0.3%，点查中位数分别增加 2.10% / 1.64%。
+
+[结果表、计时范围和解读](../docs/optimizations.md#aborted-versions) · [新旧逐轮原始数据与指纹](benchmarks/a16-release-comparison.json)。原始运行日志与新程序保存在本地 build/benchmarks/a16/comparison/4f48070f5748/。

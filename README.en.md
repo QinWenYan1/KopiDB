@@ -146,6 +146,7 @@ Detailed guides and study notes are currently in Chinese.
 
 - **Flush completion notification order**: Use the existing order of IDs within one batch to reduce repeated scans in the transaction manager.
 - **Reuse VLog references during compaction**: Copy existing references directly, avoiding value reconstruction and repeated VLog appends.
+- **Aborted versions**: Flush and compaction skip versions from rolled-back transactions. [Flush, compaction, and lookup measurements](docs/optimizations.md#aborted-versions) (Chinese).
 
 The [case studies](docs/optimizations.md) explain the scenarios, architectural changes, code locations, test conditions, and before/after measurements. Results apply to the workloads described there.
 
