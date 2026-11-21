@@ -840,6 +840,8 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
                               std::vector<size_t> &l1_ids) {
   std::vector<SstIterator> l0_iters;
   std::vector<std::shared_ptr<SST>> l1_ssts;
+  // L0 和 L1 都可能含有已经回滚的版本，两侧共用同一个判断
+  const auto is_aborted = make_compaction_abort_filter(tran_manager); 
 
   // 0. 按目标 SST 的模式决定输入如何读取 value。
   // 条件与 gen_sst_from_iter 创建 builder 时一致：
@@ -851,7 +853,7 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
 
   // 1. L0 每张表各开一个全版本迭代器
   for (auto id : l0_ids) {
-    auto sst_it = ssts[id]->begin(0, true, {}, read_mode);
+    auto sst_it = ssts[id]->begin(0, true, is_aborted, read_mode);
     l0_iters.push_back(sst_it);
   }
 
@@ -876,7 +878,7 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
   //    再用 TwoMergeIterator 与 L1 的 ConcactIterator 合并
   std::shared_ptr<ConcactIterator> old_l1_begin_ptr =
       std::make_shared<ConcactIterator>(
-          l1_ssts, 0, true, std::function<bool(uint64_t)>{}, read_mode);
+          l1_ssts, 0, true, is_aborted, read_mode);
 
   // 5. a 路 = L0 堆 (较新), b 路 = L1
   TwoMergeIterator l0_l1_begin(l0_begin_ptr, old_l1_begin_ptr, 0, true);
