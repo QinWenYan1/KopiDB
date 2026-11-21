@@ -15,6 +15,7 @@
 #include <iomanip>
 #include <memory>
 #include <sstream>
+#include <tuple>
 
 using namespace ::kopidb;
 
@@ -415,6 +416,116 @@ TEST_F(CompactTest, TombstoneDefaultConfig) {
     if (fail_count > 0) std::cout << "Total failures: " << fail_count << "\n";
     EXPECT_EQ(fail_count, 0) << "Some deleted keys are still visible";
   }
+}
+
+// 用已知层布局触发公共 flush，直接读输出文件，避免查询过滤掩盖物理残留。
+class A16FilterTest : public CompactTest {
+protected:
+  using Row = std::tuple<std::string, uint64_t, std::string>;
+
+  static void add_input(LSMEngine &engine, size_t level, std::vector<Row> rows) {
+    const auto &cfg = TomlConfig::getInstance();
+    SSTBuilder builder(cfg.getLsmBlockSize(), true, engine.vlog_, cfg.getWisckeyValueThreshold());
+    for (const auto &[key, version, value] : rows)
+      builder.add(key, value, version);
+    const auto id = engine.next_sst_id++;
+    engine.ssts[id] = builder.build(id, engine.get_sst_path(id, level), engine.block_cache);
+    auto &ids = engine.level_sst_ids[level];
+    if (level == 0) ids.push_front(id);
+    else ids.push_back(id);
+    engine.cur_max_level = std::max(engine.cur_max_level, level);
+  }
+
+  void check_merge(size_t src) {
+    const size_t dst = src + 1;
+    const size_t ratio = TomlConfig::getInstance().getLsmSstLevelRatio();
+    ASSERT_GE(ratio, 2u);
+    const std::string old(160, 'O');
+    const std::vector<Row> expected{{"a", 1, old}, {"b", 1, old},
+                                    {"c", 3, ""}, {"c", 1, old}, {"d", 1, old}};
+    {
+      auto [engine, manager] = make_engine();
+      // 构造一份真实 SST 布局：两侧分别有 @2 的脏值和脏墓碑；
+      // c@3 是合法删除，c@1 必须同时保留给旧快照。
+      add_input(*engine, dst, {{"a", 2, ""}, {"a", 1, old}, {"b", 1, old},
+                               {"c", 2, "dirty"}, {"c", 1, old}, {"d", 1, old}});
+      add_input(*engine, src, {{"b", 2, "dirty"}, {"c", 3, ""}, {"d", 2, ""}});
+      for (size_t i = 1; i < ratio; ++i)
+        add_input(*engine, src, {{"z" + std::to_string(100000 + i), 2, "dirty"}});
+      // 当 L0、L1 同时到阈值，flush 会先合并 L1→L2，再合并 L0→L1。
+      if (src == 1)
+        for (size_t i = 0; i < ratio; ++i)
+          add_input(*engine, 0, {{"z_trigger", 2, "dirty"}});
+      for (int id = 1; id <= 3; ++id) {
+        ASSERT_EQ(manager->getNextTransactionId(), id);
+        manager->add_ready_to_flush_tranc_id(id, id == 2 ? TransactionState::ABORTED
+                                                         : TransactionState::OP_COMMITTED);
+        manager->add_flushed_tranc_id(id);
+      }
+      engine->put("zz_flush", "t", manager->getNextTransactionId());
+      engine->flush();
+      ASSERT_FALSE(engine->level_sst_ids[dst].empty());
+      if (src == 1) {
+        EXPECT_TRUE(engine->level_sst_ids[1].empty());
+        for (const auto &entry : std::filesystem::directory_iterator(test_dir))
+          EXPECT_NE(entry.path().extension(), ".1");
+      }
+    }
+    // 释放前一实例，再用新的 VLog、缓存和管理器打开现有文件。
+    auto [reopened, manager] = make_engine();
+    ASSERT_TRUE(manager->is_aborted(2));
+    std::vector<Row> actual;
+    for (auto id : reopened->level_sst_ids[dst]) {
+      auto table = reopened->ssts.at(id);
+      EXPECT_EQ(table->is_wisckey(), TomlConfig::getInstance().getWisckeyValueThreshold() > 0);
+      for (auto it = table->begin(0, true); it.is_valid(); ++it)
+        actual.emplace_back(it.key(), it.get_cur_tranc_id(), it.value());
+    }
+    ASSERT_EQ(actual, expected);
+    EXPECT_FALSE(reopened->get("c", 0));
+    auto snapshot = reopened->get("c", 1);
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->first, old);
+  }
+};
+
+TEST_F(A16FilterTest, FiltersBothInputsAtL0) { check_merge(0); }
+TEST_F(A16FilterTest, FiltersBothDeepInputsAndProducesNoEmptyL1) { check_merge(1); }
+
+TEST_F(A16FilterTest, ActiveVersionCanCommitAfterCompaction) {
+  auto [engine, manager] = make_engine();
+  auto tx = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  const auto ratio = TomlConfig::getInstance().getLsmSstLevelRatio();
+  for (int i = 0; i < ratio; ++i) {
+    tx->put("live" + std::to_string(i), "pending");
+    engine->flush();
+  }
+  engine->put("zz_flush", "t", manager->getNextTransactionId());
+  engine->flush();
+  ASSERT_FALSE(engine->level_sst_ids[1].empty());
+  ASSERT_FALSE(engine->get("live0", 0, true));
+  ASSERT_TRUE(tx->commit());
+  auto record = engine->get("live0", 0, true);
+  ASSERT_TRUE(record);
+  EXPECT_EQ(record->first, "pending");
+  EXPECT_EQ(record->second, tx->tranc_id_);
+}
+
+TEST_F(A16FilterTest, MissingManagerPreservesStoredVersions) {
+  LSMEngine engine(test_dir);
+  add_input(engine, 1, {{"k", 1, "old"}});
+  const auto ratio = TomlConfig::getInstance().getLsmSstLevelRatio();
+  for (int i = 0; i < ratio; ++i)
+    add_input(engine, 0, {{"k", static_cast<uint64_t>(i + 2), "new"}});
+  engine.put("zz_flush", "t", ratio + 2);
+  engine.flush();
+  std::vector<uint64_t> versions;
+  for (auto id : engine.level_sst_ids[1])
+    for (auto it = engine.ssts.at(id)->begin(0, true); it.is_valid(); ++it)
+      versions.push_back(it.get_cur_tranc_id());
+  ASSERT_EQ(versions.size(), static_cast<size_t>(ratio + 1));
+  for (size_t i = 0; i < versions.size(); ++i)
+    EXPECT_EQ(versions[i], versions.size() - i);
 }
 
 // A16 专项基准，在独立目录用 --gtest_also_run_disabled_tests 显式运行。
