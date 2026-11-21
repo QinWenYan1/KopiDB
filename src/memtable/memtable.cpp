@@ -371,7 +371,7 @@ std::shared_ptr<SST>
 MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
                      std::vector<uint64_t> &flushed_tranc_ids,
                      std::shared_ptr<BlockCache> block_cache,
-                     const std::function<bool(uint64_t)>& is_aborted) {
+                     const std::function<bool(uint64_t)> &is_aborted) {
   spdlog::debug("MemTable--flush_last(): Starting to flush memtable to SST{}",
                 sst_id);
 
@@ -422,7 +422,7 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
     // 这属于后期优化，进一步缩小读写放大
     // 例如 k@6 已回滚、k@5 仍有效：只跳过 @6，让 @5 正常写入
     if (is_aborted && is_aborted(version))
-      continue; 
+      continue;
 
     // 保留所有未确认回滚的业务版本，包括有效墓碑
     // 特别注意：非空 key、空 value 是墓碑，必须正常写入
