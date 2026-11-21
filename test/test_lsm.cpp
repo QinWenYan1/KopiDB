@@ -71,6 +71,19 @@ bind_test_manager(const std::shared_ptr<LSMEngine> &engine) {
   return manager;
 }
 
+// 原始 SST 版本用于区分“读时隐藏”和“合并时已物理清除”。
+std::vector<uint64_t> physical_versions(const LSMEngine &engine,
+                                        const std::string &key) {
+  std::vector<uint64_t> versions;
+  for (const auto &[id, sst] : engine.ssts) {
+    for (auto it = sst->begin(0, true); it.is_valid(); ++it) {
+      if (it->first == key) versions.push_back(it.get_cur_tranc_id());
+    }
+  }
+  std::sort(versions.begin(), versions.end());
+  return versions;
+}
+
 // 用有限的期望序列检查内容、真实版本及结束状态，避免错误实现导致测试无限遍历。
 void expect_mvcc_records(BaseIterator &it,
                          const std::vector<MvccRecord> &expected) {
@@ -5174,6 +5187,7 @@ TEST_F(EngineGetRollbackTest, RangeRollbackSurvivesActualCompaction) {
           std::make_pair(std::string("old"), uint64_t{3})));
     }
   };
+  EXPECT_EQ(physical_versions(*engine, "p/k"), (std::vector<uint64_t>{3, 5}));
   check_range();
   const int ratio = TomlConfig::getInstance().getLsmSstLevelRatio();
   ASSERT_GE(ratio, 2);
@@ -5184,14 +5198,7 @@ TEST_F(EngineGetRollbackTest, RangeRollbackSurvivesActualCompaction) {
   ASSERT_FALSE(engine->level_sst_ids[1].empty());
   check_range();
 
-  std::vector<uint64_t> versions;
-  for (const auto &[id, sst] : engine->ssts) {
-    for (auto it = sst->begin(0, true); it.is_valid(); ++it) {
-      if (it->first == "p/k") versions.push_back(it.get_cur_tranc_id());
-    }
-  }
-  std::sort(versions.begin(), versions.end());
-  EXPECT_EQ(versions, (std::vector<uint64_t>{3, 5}));
+  EXPECT_EQ(physical_versions(*engine, "p/k"), (std::vector<uint64_t>{3}));
 }
 
 // 目的：内存与磁盘都过滤后，再按真实版本比较；同版本仍优先内存来源。
@@ -5683,6 +5690,8 @@ TEST_F(TranCommitTest, RollbackStateSurvivesFlushCompactionAndRestart) {
     expect_mvcc_records(range->first,
                         {{"p/revive", "keep", base_id}, {"p/update", "old", base_id}});
   };
+  EXPECT_EQ(physical_versions(*engine, "p/update"),
+            (std::vector<uint64_t>{base_id, cancelled_id}));
   check_visible();
 
   const int ratio = config->getLsmSstLevelRatio();
@@ -5707,15 +5716,8 @@ TEST_F(TranCommitTest, RollbackStateSurvivesFlushCompactionAndRestart) {
   }
   check_visible();
 
-  // 原始 SST 仍有取消版本，证明查询正确依赖回滚名单，而不是记录偶然被删除。
-  std::vector<uint64_t> versions;
-  for (const auto &[id, sst] : engine->ssts) {
-    for (auto it = sst->begin(0, true); it.is_valid(); ++it) {
-      if (it->first == "p/update") versions.push_back(it.get_cur_tranc_id());
-    }
-  }
-  std::sort(versions.begin(), versions.end());
-  EXPECT_EQ(versions, (std::vector<uint64_t>{base_id, cancelled_id}));
+  // 经过合并后，已回滚版本退出物理输出；旧的有效版本仍应保留。
+  EXPECT_EQ(physical_versions(*engine, "p/update"), (std::vector<uint64_t>{base_id}));
 
   // 释放旧上下文与组件，让析构保存状态，再创建全新的管理器和引擎。
   base.reset();

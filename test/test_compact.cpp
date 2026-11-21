@@ -528,6 +528,58 @@ TEST_F(A16FilterTest, MissingManagerPreservesStoredVersions) {
     EXPECT_EQ(versions[i], versions.size() - i);
 }
 
+// RU 写完后在首次刷盘前取消。用另一笔只读提交提供真实完成标记，
+// 即使没有 SST，通知也必须让检查点越过两笔已结束的事务。
+TEST_F(A16FilterTest, AbortedFirstFlushNotifiesWithoutWritingSstOrVlog) {
+  uint64_t cancelled_id, finished_id;
+  {
+    auto [engine, manager] = make_engine();
+    auto cancelled = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+    cancelled_id = cancelled->tranc_id_;
+    cancelled->put("large", std::string(160, 'x'));
+    cancelled->remove("gone");
+    ASSERT_TRUE(cancelled->abort());
+    auto reader = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+    finished_id = reader->tranc_id_;
+    ASSERT_TRUE(reader->commit());
+    const auto tail = engine->vlog_->tail_offset();
+    ASSERT_LT(manager->get_checkpoint_tranc_id(), finished_id);
+    ASSERT_EQ(engine->flush(), finished_id);
+    EXPECT_EQ(manager->get_checkpoint_tranc_id(), finished_id);
+    EXPECT_EQ(engine->memtable.get_total_size(), 0u);
+    EXPECT_EQ(engine->vlog_->tail_offset(), tail);
+    EXPECT_TRUE(engine->ssts.empty());
+    for (const auto &file : std::filesystem::directory_iterator(test_dir))
+      EXPECT_FALSE(file.path().filename().string().starts_with("sst_"));
+  }
+  auto [reopened, manager] = make_engine();
+  EXPECT_TRUE(manager->is_aborted(cancelled_id));
+  EXPECT_EQ(manager->get_checkpoint_tranc_id(), finished_id);
+  EXPECT_FALSE(reopened->get("large", 0));
+  EXPECT_FALSE(reopened->get("gone", 0));
+}
+
+TEST_F(A16FilterTest, FirstFlushWithoutManagerPreservesHistoryAndTombstone) {
+  LSMEngine engine(test_dir);
+  const std::string old(160, 'v');
+  engine.put("k", old, 3);
+  engine.remove("k", 5);
+  ASSERT_EQ(engine.flush(), 5u);
+  ASSERT_EQ(engine.level_sst_ids[0].size(), 1u);
+  const auto id = engine.level_sst_ids[0].front();
+  auto disk = SST::open(id, FileObj::open(engine.get_sst_path(id, 0), false),
+                        std::make_shared<BlockCache>(16, 2), engine.vlog_);
+  auto it = disk->begin(0, true);
+  ASSERT_TRUE(it.is_valid());
+  EXPECT_EQ(it.get_cur_tranc_id(), 5u);
+  EXPECT_TRUE(it.value().empty());
+  ++it;
+  ASSERT_TRUE(it.is_valid());
+  EXPECT_EQ(it.get_cur_tranc_id(), 3u);
+  EXPECT_EQ(it.value(), old);
+  EXPECT_TRUE((++it).is_end());
+}
+
 // A16 专项基准，在独立目录用 --gtest_also_run_disabled_tests 显式运行。
 // 先运行 PrepareSeeds 一次，再对同一份种子重复运行 Measure0 或 Measure50。
 // 旧程序期望保留全部版本；新版测量时设置 KOPIDB_A16_PRUNED=1。
