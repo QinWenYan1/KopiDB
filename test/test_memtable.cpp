@@ -1644,6 +1644,59 @@ protected:
   }
 };
 
+// 同一个版本可能写值，也可能写墓碑。物理输出应只排除被取消的版本。
+TEST_F(MemTableFlushTest, SkipsOnlyAbortedBusinessRowsOnRetry) {
+  MemTable table;
+  table.put("A", "old", 3);
+  table.remove("A", 7);
+  table.put("B", "dirty", 7);
+  table.remove("C", 5);
+  table.put("", "", 5);
+  table.frozen_cur_table();
+  const auto frozen_size = table.get_frozen_size();
+  auto aborted = [](uint64_t id) { return id == 7; };
+  std::vector<uint64_t> ids = {99};
+  auto bad = (directory / "missing" / "output.sst").string();
+  SSTBuilder first(256, false);
+  EXPECT_THROW(table.flush_last(first, bad, 1, ids, cache, aborted), std::runtime_error);
+  EXPECT_EQ(ids, std::vector<uint64_t>({99}));
+  EXPECT_EQ(table.get_frozen_size(), frozen_size);
+
+  auto path = (directory / "retry.sst").string();
+  SSTBuilder retry(256, false);
+  ASSERT_NE(table.flush_last(retry, path, 1, ids, cache, aborted), nullptr);
+  EXPECT_EQ(ids, std::vector<uint64_t>({99, 5}));
+  EXPECT_EQ(table.get_total_size(), 0u);
+  auto disk = SST::open(1, FileObj::open(path, false), cache);
+  auto it = disk->begin(0, true);
+  ASSERT_TRUE(it.is_valid());
+  EXPECT_EQ(it.key(), "A");
+  EXPECT_EQ(it.value(), "old");
+  EXPECT_EQ(it.get_cur_tranc_id(), 3u);
+  ++it;
+  ASSERT_TRUE(it.is_valid());
+  EXPECT_EQ(it.key(), "C");
+  EXPECT_TRUE(it.value().empty());
+  EXPECT_EQ(it.get_cur_tranc_id(), 5u);
+  EXPECT_TRUE((++it).is_end());
+}
+
+// 回调只能决定业务记录的去留；完成标记即使版本号相同也要交给通知路径。
+TEST_F(MemTableFlushTest, AllAbortedBusinessRowsEmitMarkerWithoutCreatingSst) {
+  MemTable table;
+  table.put("A", "dirty", 7);
+  table.remove("B", 7);
+  table.put("", "", 7);
+  std::vector<uint64_t> ids;
+  auto path = (directory / "absent.sst").string();
+  SSTBuilder builder(256, false);
+  EXPECT_EQ(table.flush_last(builder, path, 1, ids, cache,
+                             [](uint64_t id) { return id == 7; }), nullptr);
+  EXPECT_FALSE(std::filesystem::exists(path));
+  EXPECT_EQ(ids, std::vector<uint64_t>({7}));
+  EXPECT_EQ(table.get_total_size(), 0u);
+}
+
 // 目的：验证 SST 创建失败不会丢失冻结表，也不会提前报告事务已经刷盘。
 // 场景：冻结 K@5 和事务完成标记 @5，向不存在的目录刷盘；随后换新 builder 重试。
 // 预期：第一次抛异常后数据、统计和输出 ID 不变；重试成功后才移除内存表并报告 ID。
