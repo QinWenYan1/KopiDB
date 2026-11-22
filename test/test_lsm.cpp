@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <future>
 #include <gtest/gtest.h>
 #include <iostream>
 #include <latch>
@@ -2264,6 +2265,23 @@ TEST_F(LSMTest, MonotonyPredicate) {
   }
 
   EXPECT_EQ(actual_keys, expected_keys);
+}
+
+// 事务由创建线程使用。即使两个线程没有同时操作，另一个线程也不能读取
+// 本事务的暂存值；拒绝这次调用后，创建线程仍能正常读取并提交。
+TEST_F(LSMTest, TranContextGetRejectsOtherThread) {
+  LSM db(test_dir);
+  auto tx = db.begin_tran(IsolationLevel::REPEATABLE_READ);
+  tx->put("key", "pending");
+
+  auto foreign_read = std::async(std::launch::async, [tx] {
+    return tx->get("key");
+  });
+  EXPECT_THROW(foreign_read.get(), std::logic_error);
+
+  EXPECT_EQ(tx->get("key"), std::make_optional(std::string("pending")));
+  ASSERT_TRUE(tx->commit());
+  EXPECT_EQ(db.get("key"), std::make_optional(std::string("pending")));
 }
 
 // 目的：新事务应处于未结束状态，并为后续操作保留正确的事务身份和开始记录。
