@@ -13,6 +13,15 @@
 
 ### 实施草案与阶段验收
 
+**先落地线程规则（属于阶段①至③）。** 业务实现从下面的入口顺序开始，独占锁的选型可以另行讨论。
+
+1. 在 [transaction.h](../include/lsm/transaction.h) 的 `TranContext` 中记录只读的创建线程 ID，新增私有 `require_owner_thread() const`；[构造函数和六个公开方法](../src/lsm/transation.cpp) 的 `put/remove/get/commit/abort/get_isolation_level` 共用此检查。检查在访问可变状态与写 WAL 前运行。事务对象本身应禁止复制或移动；仍可复制 `shared_ptr`，跨线程调用由入口拒绝。
+2. `TranManager::new_tranc()` 是 `LSM::begin_tran()` 的创建入口。建议用一个 `thread_local std::weak_ptr<TranContext>` 记录本线程经工厂创建的活动事务。同线程再次申请时先报错，再谈等待和分配 ID；成功插入 `activeTrans_` 后才登记到线程槽。按“每线程一笔”使用线程级槽位，独占控制仍按数据库实例独立。
+3. `TranManager::add_ready_to_flush_tranc_id()` 成功结算显式事务后，按该上下文的身份清理线程槽。正常提交、显式回滚及冲突回滚都走这里；普通写的结束登记、重复登记和失败的登记不能误清其他事务。保留已结束事务的用户句柄不占用下一笔的名额。
+4. 在 [engine.cpp](../src/lsm/engine.cpp) 的 `LSM::put/put_batch/remove/remove_batch` 取资格或分配 ID 之前，复用同一线程槽检查本库活动事务。通过 `tx->put/remove` 的事务内操作继续走已有路径。
+
+验收从公开工厂走。当前 `TranContext` 的构造函数和若干字段公开，白盒用例直接组装上下文；工厂登记本身不能拦截手工构造。若将直接构造也作为对外入口，必须覆盖该路径；否则应将其收口成仅工厂与测试夹具可用。
+
 锁实现仍待选定。候选是一把 `std::shared_mutex`（普通事务和普通写持共享锁，可串行化事务持独占锁），或由 `TranManager` 用短时互斥锁、条件变量和计数控制准入。下文内部凭证是计数路线的草案。两条路线都要落实线程约定。
 
 | 阶段 | 新增或修改的函数 | 验收 | 状态 |
@@ -36,4 +45,4 @@
 2. **如何反馈误用。** 建议统一抛 `std::logic_error`。同线程重复开事务、活动事务内对本库发起独立写、其他线程调用活动句柄都应明确指出操作名与事务 ID，并保留原事务；`get/remove/put` 等事务内操作使用原事务资格。跨线程复制 `shared_ptr` 本身不是可拦截的 API 调用，检查发生在上下文入口。
 3. **合法的等待。** 另一线程在独占期间请求普通写，或请求独占时仍有其他线程的活动事务，可以等待。长等告警注明操作、等待时间和可定位的事务 ID；误用在等待前反馈。锁选型时同时核对等待诊断与线程退出前结束事务的约定。
 
-**当前讨论**：线程使用规则已确定，下一步选定锁实现及等待诊断。业务代码尚未实施。
+**当前函数**：`TranContext::TranContext()` 与拟新增的 `TranContext::require_owner_thread() const`。业务代码尚未实施。
