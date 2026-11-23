@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <sys/types.h>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -249,8 +250,18 @@ void TranContext::remove(const std::string &key) {
                 isolation_level_to_string(isolation_level_), key);
 }
 
+void TranContext::require_owner_thread(const char *operation) const {
+  if (std::this_thread::get_id() == owner_thread_id_)
+    return; 
+
+  // 拒绝当前调用。事务状态保持原样，创建线程仍能继续读取或提交
+  throw std::logic_error(std::string("TranContext::") + operation + ": transaction " +
+    std::to_string(tranc_id_) + " must be used by its creating thread"); 
+}
+
 // Lab 5.2 get 实现
 std::optional<std::string> TranContext::get(const std::string &key) {
+  require_owner_thread(__func__); 
   spdlog::trace("TranContext--get({}) called, tranc_id={}", key, tranc_id_);
 
   // 1. 已结束的事务不能继续使用
