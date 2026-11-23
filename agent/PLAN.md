@@ -44,7 +44,7 @@
 2. **如何反馈误用。** 建议统一抛 `std::logic_error`。同线程重复开事务、活动事务内对本库发起独立写、其他线程调用活动句柄都应明确指出操作名与事务 ID，并保留原事务；`get/remove/put` 等事务内操作使用原事务资格。跨线程复制 `shared_ptr` 本身不是可拦截的 API 调用，检查发生在上下文入口。
 3. **合法的等待。** 另一线程在独占期间请求普通写，或请求独占时仍有其他线程的活动事务，可以等待。长等告警注明操作、等待时间和可定位的事务 ID；误用在等待前反馈。锁选型时同时核对等待诊断与线程退出前结束事务的约定。
 
-**当前修改位置**：[TranContext 构造函数](../include/lsm/transaction.h) 和 [TranManager::new_tranc()](../src/lsm/transation.cpp)。禁用按值拷贝与移动已经验收。构造函数仍公开，应用代码可以传入自己的 ID 绕过工厂登记。建议将现有构造函数移到 `private`，保留管理器的友元权限，给测试夹具 `kopidb::LSMTest` 构造白盒数据的权限。在管理器内直接构造并立即交由 `shared_ptr` 管理；公开用户调用继续使用 `db.begin_tran()`。类前的旧注释应随同更新为创建线程约定。
+**当前修改位置**：[TranContext 的访问权限](../include/lsm/transaction.h) 和 [TranManager::new_tranc()](../src/lsm/transation.cpp)。工作区构造函数已设为私有；需把 `public:` 放在构造声明与 `put()` 之间，给夹具 `LSMTest` 添加友元声明，并在管理器内直接调用私有构造。修正后重建并验证工厂及公开接口，再进入锁方案讨论。
 
 首次基线：`xmake build test_lsm` 成功。独立目录运行 `LSMTest.TranContextGetRejectsOtherThread`，0/1 通过。旧实现允许另一个线程读取暂存值，没有抛出 `std::logic_error`；创建线程后续读取、提交和普通点查均通过。接入检查后用同一个用例验收。
 
@@ -69,3 +69,5 @@
 阶段①局部验收：工作区的四条删除声明通过实际检查，`LSMTest.TranContextDisallowsValueCopiesButAllowsSharedHandles` 已通过。含该用例的 38 项公开读写、事务创建与线程归属定向回归全部通过。中英文首页和使用手册已说明复制句柄后的共同可见数据及结束状态，并注明现有发布包的边界。
 
 生产代码仅在 `TranManager::new_tranc()` 创建上下文。测试中的 55 个显式指定 ID 的构造点已归集到 `LSMTest::make_context()`，相应的 42 项白盒用例通过。下一个验收用例 `LSMTest.TranContextRequiresFactoryToCreateTransaction` 在工作区为 0/1，唯一失败是普通代码仍可从 ID、引擎、管理器和隔离级别直接构造上下文。临时副本应用私有构造及工厂两处调整后，以现有 Debug 构建参数重编受影响单元，79/79 项去重用例通过。业务修改仍由用户手动加入。
+
+本轮工作区构建检查：`xmake build test_lsm` 报测试夹具无法调用私有构造，公开读写调用也遇到私有成员访问错误；`xmake build kopidb` 单独确认 `new_tranc()` 仍使用 `std::make_shared<TranContext>`，标准库无权调用私有构造。两项目标均未完成构建，本轮没有运行单元测试。

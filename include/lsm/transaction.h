@@ -31,21 +31,18 @@ inline std::string isolation_level_to_string(const IsolationLevel &level);
 class LSMEngine;
 class TranManager;
 
-// 一个 TranContext 对应一个事务，每次 begin_tran() 都创建独立上下文。
-// 本类不提供内部线程同步，也不会自动绑定到某个线程。
+// 一个 TranContext 对应一个事务，每次 begin_tran() 都创建独立上下文
+// 本类不提供内部线程同步，也不会自动绑定到某个线程
 //
-// 通常由一个线程依次执行本事务的 put/get/remove/commit/abort。
-// 不同线程可以各自操作不同的事务上下文。
-// 若多个线程访问同一个上下文，调用方必须通过外部同步保证串行访问，
-// 包括直接访问其成员；跨线程移交时也必须正确同步。
+// 一个线程依次执行本事务的 put/get/remove/commit/abort
+// 事务由创建线程操作，并由该线程显式提交或回滚
 //
-// shared_ptr 只管理对象生命周期，不保证上下文成员的并发访问安全。
-// !
-// SERIALIZABLE（未完整实现）：以下接口保留实验性分支，不能作为完整串行化使用。
+// shared_ptr 只管理对象生命周期，不保证上下文成员的并发访问安全
+// SERIALIZABLE（未完整实现）：以下接口保留实验性分支，不能作为完整串行化使用
 class TranContext {
   friend class TranManager;
 
-public:
+  // TranContext 构造函数不要成public，大家都通过 new_tranc() 唯一入口构建 
   TranContext(uint64_t tranc_id, std::shared_ptr<LSMEngine> engine,
               std::shared_ptr<TranManager> tranManager,
               const enum IsolationLevel &isolation_level);
@@ -53,6 +50,7 @@ public:
   void remove(const std::string &key);
   std::optional<std::string> get(const std::string &key);
 
+public:
   // 一个事务只有一份暂存数据和结束状态。需要另一个句柄时，复制 shared_ptr
   TranContext(const TranContext &) = delete;
   TranContext &operator=(const TranContext &) = delete;
