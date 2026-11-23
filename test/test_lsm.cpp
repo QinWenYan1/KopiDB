@@ -1236,6 +1236,29 @@ TEST_F(LSMTest, DirectPutOversizedRecordCancelsIdWithoutBlockingCheckpoint) {
   EXPECT_EQ(saved.getNextTransactionId(), 4u);
 }
 
+// 同一线程已经有本库的活动事务时，拒绝普通写；事务值、WAL 和下一个 ID 均不受影响。
+TEST_F(LSMTest, DirectPutRejectsActiveTransactionOnCallingThread) {
+  LSM db(test_dir);
+  auto tx = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  tx->put("key", "pending");
+  const auto wal_path = test_dir + "/wal.0";
+  const auto wal_size = std::filesystem::file_size(wal_path);
+
+  EXPECT_THROW(db.put("other", "unexpected"), std::logic_error);
+  EXPECT_EQ(std::filesystem::file_size(wal_path), wal_size);
+  EXPECT_FALSE(db.get("other").has_value());
+  EXPECT_EQ(tx->get("key"), std::make_optional(std::string("pending")));
+  ASSERT_TRUE(tx->commit());
+  EXPECT_EQ(db.get("key"), std::make_optional(std::string("pending")));
+
+  // 保留已结束的句柄也能普通写。被拒的写未消耗 ID，所以只隔一笔普通写。
+  db.put("other", "allowed");
+  EXPECT_EQ(db.get("other"), std::make_optional(std::string("allowed")));
+  auto next = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  EXPECT_EQ(next->tranc_id_, tx->tranc_id_ + 2);
+  EXPECT_TRUE(next->abort());
+}
+
 // 目的：普通 put 与显式事务共用 ID 分配器，重复覆盖保留正确的最新版本和历史版本。
 // 较旧的暂存事务不能覆盖后来成功的普通写入；后续显式提交和普通写入仍可继续。
 TEST_F(LSMTest, DirectPutOverwritesAndSharesVersionsWithExplicitTransactions) {
@@ -1244,7 +1267,8 @@ TEST_F(LSMTest, DirectPutOverwritesAndSharesVersionsWithExplicitTransactions) {
   auto older = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
   ASSERT_EQ(older->tranc_id_, 2u);
   older->put("key", "staged-old");
-  db.put("key", "second");
+  // 由另一个线程完成独立写，原事务随后提交时仍应检测到版本冲突。
+  std::async(std::launch::async, [&db] { db.put("key", "second"); }).get();
   EXPECT_FALSE(older->commit());
   EXPECT_EQ(db.get("key"), std::make_optional(std::string("second")));
 
@@ -2448,8 +2472,8 @@ TEST_F(LSMTest, BeginTranRejectsSecondDatabaseOnSameThread) {
 }
 
 // 目的：new_tranc 创建具有独立 ID 的上下文，并将它们登记为活跃事务。
-// 场景：不同隔离级别各创建一个事务；调用者释放句柄后，管理器仍持有上下文。
-//       管理器销毁后上下文也能释放，避免双方互持形成循环引用。
+// 场景：同一线程依次创建不同隔离级别的事务。通过弱引用验证，管理器在活跃期间
+//       持有上下文，结束登记或管理器析构后可正常释放。
 //       查询未登记 ID 不消耗事务 ID；活跃事务也不应被误判为已回滚。
 TEST_F(LSMTest, NewTransactionRegistersContexts) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
@@ -2460,13 +2484,21 @@ TEST_F(LSMTest, NewTransactionRegistersContexts) {
   EXPECT_FALSE(read_only_manager.is_aborted(1));
 
   auto first = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
-  auto second = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
   ASSERT_NE(first, nullptr);
+  EXPECT_FALSE(read_only_manager.is_aborted(first->tranc_id_));
+  ASSERT_EQ(first->operations.size(), 1u);
+  EXPECT_EQ(first->operations.front().getTrancId(), first->tranc_id_);
+  std::weak_ptr<TranContext> first_observer = first;
+  first.reset();
+  first = first_observer.lock();
+  ASSERT_NE(first, nullptr);
+  ASSERT_TRUE(first->abort());
+
+  auto second = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
   ASSERT_NE(second, nullptr);
   EXPECT_NE(first, second);
   EXPECT_EQ(first->tranc_id_, 1u);
   EXPECT_EQ(second->tranc_id_, 2u);
-  EXPECT_FALSE(read_only_manager.is_aborted(first->tranc_id_));
   EXPECT_FALSE(read_only_manager.is_aborted(second->tranc_id_));
   EXPECT_EQ(first->engine_, engine);
   EXPECT_EQ(second->engine_, engine);
@@ -2474,14 +2506,13 @@ TEST_F(LSMTest, NewTransactionRegistersContexts) {
   EXPECT_EQ(second->tranManager_.lock(), manager);
   EXPECT_EQ(first->isolation_level_, IsolationLevel::READ_OP_COMMITTED);
   EXPECT_EQ(second->isolation_level_, IsolationLevel::REPEATABLE_READ);
-  ASSERT_EQ(first->operations.size(), 1u);
-  EXPECT_EQ(first->operations.front().getTrancId(), first->tranc_id_);
+  ASSERT_EQ(second->operations.size(), 1u);
+  EXPECT_EQ(second->operations.front().getTrancId(), second->tranc_id_);
 
-  std::weak_ptr<TranContext> first_observer = first;
   std::weak_ptr<TranContext> second_observer = second;
   first.reset();
   second.reset();
-  EXPECT_FALSE(first_observer.expired());
+  EXPECT_TRUE(first_observer.expired());
   EXPECT_FALSE(second_observer.expired());
   manager.reset();
   EXPECT_TRUE(first_observer.expired());
@@ -2500,10 +2531,11 @@ TEST_F(LSMTest, NewTransactionRequiresEngine) {
   auto context = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
   ASSERT_NE(context, nullptr);
   EXPECT_EQ(context->tranc_id_, 1u);
+  EXPECT_TRUE(context->abort());
 }
 
 // 目的：并发创建事务时，ID 不重复，且每个上下文都成功登记。
-// 场景：4 个线程同时各创建 64 个事务，结束后逐个检查句柄和管理器持有关系。
+// 场景：4 个线程各自创建并结束 64 笔事务；每个线程在活跃期间检查管理器持有关系。
 TEST_F(LSMTest, NewTransactionConcurrentCreation) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
   auto manager = std::make_shared<TranManager>(test_dir);
@@ -2511,8 +2543,7 @@ TEST_F(LSMTest, NewTransactionConcurrentCreation) {
 
   constexpr size_t worker_count = 4;
   constexpr size_t per_worker = 64;
-  std::vector<std::vector<std::shared_ptr<TranContext>>> contexts(
-      worker_count, std::vector<std::shared_ptr<TranContext>>(per_worker));
+  std::vector<std::vector<uint64_t>> worker_ids(worker_count);
   std::vector<std::exception_ptr> errors(worker_count);
   std::vector<std::thread> workers;
   std::latch start(1);
@@ -2520,8 +2551,20 @@ TEST_F(LSMTest, NewTransactionConcurrentCreation) {
     workers.emplace_back([&, worker] {
       start.wait();
       try {
-        for (auto &context : contexts[worker]) {
-          context = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
+        for (size_t i = 0; i < per_worker; ++i) {
+          auto context = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
+          ASSERT_NE(context, nullptr);
+          worker_ids[worker].push_back(context->tranc_id_);
+          EXPECT_EQ(context->engine_, engine);
+          EXPECT_EQ(context->tranManager_.lock(), manager);
+
+          std::weak_ptr<TranContext> observer = context;
+          context.reset();
+          context = observer.lock();
+          ASSERT_NE(context, nullptr);
+          ASSERT_TRUE(context->abort());
+          context.reset();
+          EXPECT_TRUE(observer.expired());
         }
       } catch (...) {
         errors[worker] = std::current_exception();
@@ -2537,28 +2580,14 @@ TEST_F(LSMTest, NewTransactionConcurrentCreation) {
     ASSERT_FALSE(static_cast<bool>(error));
   }
   std::set<uint64_t> ids;
-  std::vector<std::weak_ptr<TranContext>> observers;
-  for (const auto &batch : contexts) {
-    for (const auto &context : batch) {
-      ASSERT_NE(context, nullptr);
-      EXPECT_TRUE(ids.insert(context->tranc_id_).second);
-      EXPECT_EQ(context->engine_, engine);
-      EXPECT_EQ(context->tranManager_.lock(), manager);
-      observers.emplace_back(context);
+  for (const auto &batch : worker_ids) {
+    for (const auto id : batch) {
+      EXPECT_TRUE(ids.insert(id).second);
     }
   }
   ASSERT_EQ(ids.size(), worker_count * per_worker);
   EXPECT_EQ(*ids.begin(), 1u);
   EXPECT_EQ(*ids.rbegin(), worker_count * per_worker);
-
-  contexts.clear();
-  for (const auto &observer : observers) {
-    EXPECT_FALSE(observer.expired());
-  }
-  manager.reset();
-  for (const auto &observer : observers) {
-    EXPECT_TRUE(observer.expired());
-  }
 }
 
 
@@ -4200,7 +4229,7 @@ TEST_F(LSMTest, TranContextTest) {
     tran_ctx2->put("key1", "value1");
     tran_ctx2->put("key2", "value2");
 
-    lsm.put("key2", "value22");
+    std::async(std::launch::async, [&lsm] { lsm.put("key2", "value22"); }).get();
 
     commit_res = tran_ctx2->commit();
     EXPECT_FALSE(commit_res);
