@@ -30,12 +30,21 @@
 #include <unistd.h>
 #endif
 
-using namespace ::kopidb;
+namespace kopidb {
 
 // ! SERIALIZABLE（未完整实现）：本文件涉及该级别的用例只验证现有的局部行为。
 // 测试通过不代表已验证范围幻读保护或完整可串行化。
 class LSMTest : public ::testing::Test {
 protected:
+  // 白盒用例需要指定历史版本，部分用例还要模拟没有管理器的情况。
+  // 对外行为由使用 db.begin_tran() 的用例验证。
+  static TranContext make_context(uint64_t id,
+                                  const std::shared_ptr<LSMEngine> &engine,
+                                  const std::shared_ptr<TranManager> &manager,
+                                  IsolationLevel level) {
+    return TranContext(id, engine, manager, level);
+  }
+
   void SetUp() override {
     // Create a temporary test directory
     test_dir = "test_lsm_data";
@@ -59,6 +68,9 @@ protected:
   std::string test_dir;
   bool no_clear = false;
 };
+} // namespace kopidb
+
+using namespace ::kopidb;
 
 namespace {
 using MvccRecord = std::tuple<std::string, std::string, uint64_t>;
@@ -669,8 +681,8 @@ TEST_F(LSMTest, MvccReadUncommittedDeleteSurvivesActualCompaction) {
   auto manager = bind_test_manager(engine);
   // RU 写入现在先写 WAL；新目录显式接通依赖，保留原压缩语义断言。
   manager->init_new_wal();
-  TranContext transaction(5, engine, manager,
-                          IsolationLevel::READ_UNOP_COMMITTED);
+  auto transaction = make_context(
+      5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
   const int ratio = TomlConfig::getInstance().getLsmSstLevelRatio();
   ASSERT_GE(ratio, 2);
 
@@ -710,8 +722,8 @@ TEST_F(LSMTest, MvccReadUncommittedRewriteSurvivesActualCompaction) {
   auto manager = bind_test_manager(engine);
   // RU 写入现在先写 WAL；新目录显式接通依赖，保留原压缩语义断言。
   manager->init_new_wal();
-  TranContext transaction(5, engine, manager,
-                          IsolationLevel::READ_UNOP_COMMITTED);
+  auto transaction = make_context(
+      5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
   const int ratio = TomlConfig::getInstance().getLsmSstLevelRatio();
   ASSERT_GE(ratio, 2);
 
@@ -2442,6 +2454,19 @@ TEST_F(LSMTest, TranContextGetIsolationLevelRejectsOtherThread) {
   EXPECT_TRUE(tx->abort());
 }
 
+// 外部调用者只能通过工厂取得事务 ID 并登记，不能自己传一个 ID 新建上下文。
+TEST_F(LSMTest, TranContextRequiresFactoryToCreateTransaction) {
+  using CanConstructDirectly =
+      std::is_constructible<TranContext, uint64_t, std::shared_ptr<LSMEngine>,
+                            std::shared_ptr<TranManager>, IsolationLevel>;
+  EXPECT_FALSE(CanConstructDirectly::value);
+
+  LSM db(test_dir);
+  auto tx = db.begin_tran(IsolationLevel::REPEATABLE_READ);
+  EXPECT_EQ(tx->get_isolation_level(), IsolationLevel::REPEATABLE_READ);
+  EXPECT_TRUE(tx->abort());
+}
+
 // 一个事务只有一份暂存数据和结束状态。同一线程可以复制句柄，共用这份状态。
 TEST_F(LSMTest, TranContextDisallowsValueCopiesButAllowsSharedHandles) {
   EXPECT_FALSE(std::is_copy_constructible_v<TranContext>);
@@ -2470,7 +2495,7 @@ TEST_F(LSMTest, TranContextConstructorInitializesTransaction) {
                      IsolationLevel::REPEATABLE_READ,
                      IsolationLevel::SERIALIZABLE}) {
     SCOPED_TRACE(static_cast<int>(level));
-    TranContext context(id, engine, manager, level);
+    auto context = make_context(id, engine, manager, level);
 
     EXPECT_EQ(context.tranc_id_, id);
     EXPECT_EQ(context.engine_, engine);
@@ -2494,16 +2519,14 @@ TEST_F(LSMTest, TranContextConstructorPreservesOwnershipRules) {
   auto manager = std::make_shared<TranManager>(test_dir);
   std::weak_ptr<LSMEngine> engine_observer = engine;
   std::weak_ptr<TranManager> manager_observer = manager;
-  auto context = std::make_shared<TranContext>(
-      7, engine, manager, IsolationLevel::REPEATABLE_READ);
-
-  engine.reset();
-  manager.reset();
-  EXPECT_FALSE(engine_observer.expired());
-  EXPECT_TRUE(manager_observer.expired());
-  EXPECT_TRUE(context->tranManager_.expired());
-
-  context.reset();
+  {
+    auto context = make_context(7, engine, manager, IsolationLevel::REPEATABLE_READ);
+    engine.reset();
+    manager.reset();
+    EXPECT_FALSE(engine_observer.expired());
+    EXPECT_TRUE(manager_observer.expired());
+    EXPECT_TRUE(context.tranManager_.expired());
+  }
   EXPECT_TRUE(engine_observer.expired());
 }
 
@@ -2679,7 +2702,7 @@ TEST_F(LSMTest, TranContextPutStagesWritesAndRecordsOperations) {
                      IsolationLevel::REPEATABLE_READ,
                      IsolationLevel::SERIALIZABLE}) {
     SCOPED_TRACE(static_cast<int>(level));
-    TranContext context(7, engine, nullptr, level);
+    auto context = make_context(7, engine, nullptr, level);
     context.put("existing", "first");
     context.put("existing", "last");
     context.put("new", "new-value");
@@ -2715,7 +2738,7 @@ TEST_F(LSMTest, TranContextPutReadUncommittedWritesOwnVersion) {
   // RU put 已接入预写日志：提供真实管理器，并在新测试目录初始化 WAL。
   manager->init_new_wal();
   engine->put("k", "old", 3);
-  TranContext context(7, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  auto context = make_context(7, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
 
   context.put("k", "first");
   EXPECT_EQ(engine->get("k", 0),
@@ -2747,7 +2770,7 @@ TEST_F(LSMTest, TranContextPutRejectsFinishedTransactions) {
     for (bool committed : {false, true}) {
       SCOPED_TRACE(static_cast<int>(level));
       SCOPED_TRACE(committed);
-      TranContext context(7, engine, nullptr, level);
+      auto context = make_context(7, engine, nullptr, level);
       context.isCommited = committed;
       context.isAborted = !committed;
 
@@ -2882,7 +2905,7 @@ TEST_F(LSMTest, TranContextGetOwnWritesOverrideReadCache) {
                      IsolationLevel::REPEATABLE_READ,
                      IsolationLevel::SERIALIZABLE}) {
     SCOPED_TRACE(static_cast<int>(level));
-    TranContext context(10, engine, nullptr, level);
+    auto context = make_context(10, engine, nullptr, level);
     EXPECT_EQ(context.get("k"), std::make_optional(std::string("old")));
     context.put("k", "own");
     EXPECT_EQ(context.get("k"), std::make_optional(std::string("own")));
@@ -2907,11 +2930,11 @@ TEST_F(LSMTest, TranContextGetReadCacheBelongsToEachTransaction) {
     const auto key = "k" + std::to_string(static_cast<int>(level));
     SCOPED_TRACE(key);
     engine->put(key, "old", 3);
-    TranContext first(10, engine, nullptr, level);
+    auto first = make_context(10, engine, nullptr, level);
     EXPECT_EQ(first.get(key), std::make_optional(std::string("old")));
     engine->put(key, "new", 7);
     EXPECT_EQ(first.get(key), std::make_optional(std::string("old")));
-    TranContext second(11, engine, nullptr, level);
+    auto second = make_context(11, engine, nullptr, level);
     EXPECT_EQ(second.get(key), std::make_optional(std::string("new")));
   }
 }
@@ -2930,14 +2953,14 @@ TEST_F(LSMTest, TranContextGetReadCachePreservesMissingResults) {
     SCOPED_TRACE(suffix);
     engine->put(deleted, "old", 3);
     engine->remove(deleted, 7);
-    TranContext first(10, engine, nullptr, level);
+    auto first = make_context(10, engine, nullptr, level);
     EXPECT_FALSE(first.get(missing).has_value());
     EXPECT_FALSE(first.get(deleted).has_value());
     engine->put(missing, "created", 8);
     engine->put(deleted, "restored", 8);
     EXPECT_FALSE(first.get(missing).has_value());
     EXPECT_FALSE(first.get(deleted).has_value());
-    TranContext second(11, engine, nullptr, level);
+    auto second = make_context(11, engine, nullptr, level);
     EXPECT_EQ(second.get(missing), std::make_optional(std::string("created")));
     EXPECT_EQ(second.get(deleted), std::make_optional(std::string("restored")));
   }
@@ -2956,7 +2979,7 @@ TEST_F(LSMTest, TranContextGetRefreshesCurrentVersions) {
     const auto missing = "missing" + suffix;
     SCOPED_TRACE(suffix);
     engine->put(key, "old", 3);
-    TranContext context(5, engine, nullptr, level);
+    auto context = make_context(5, engine, nullptr, level);
     EXPECT_EQ(context.get(key), std::make_optional(std::string("old")));
     EXPECT_FALSE(context.get(missing).has_value());
     engine->put(key, "new", 7);
@@ -2982,9 +3005,9 @@ TEST_F(LSMTest, TranContextGetFirstReadRespectsVersionBound) {
   for (auto level : {IsolationLevel::REPEATABLE_READ,
                      IsolationLevel::SERIALIZABLE}) {
     SCOPED_TRACE(static_cast<int>(level));
-    TranContext at10(10, engine, nullptr, level);
-    TranContext at4(4, engine, nullptr, level);
-    TranContext at2(2, engine, nullptr, level);
+    auto at10 = make_context(10, engine, nullptr, level);
+    auto at4 = make_context(4, engine, nullptr, level);
+    auto at2 = make_context(2, engine, nullptr, level);
     EXPECT_EQ(at10.get("k"), std::make_optional(std::string("v7")));
     EXPECT_EQ(at4.get("k"), std::make_optional(std::string("v3")));
     EXPECT_FALSE(at2.get("k").has_value());
@@ -3005,7 +3028,7 @@ TEST_F(LSMTest, TranContextGetRejectsFinishedTransactions) {
     for (bool committed : {false, true}) {
       SCOPED_TRACE(static_cast<int>(level));
       SCOPED_TRACE(committed);
-      TranContext context(7, engine, manager, level);
+      auto context = make_context(7, engine, manager, level);
       context.put("k", "own");
       context.isCommited = committed;
       context.isAborted = !committed;
@@ -3342,7 +3365,7 @@ TEST_F(TranRemoveTest, StagesTombstonesUntilCommit) {
     const auto existing = "existing-" + std::to_string(id);
     const auto missing = "missing-" + std::to_string(id);
     engine->put(existing, "old", 3);
-    TranContext context(id, engine, manager, level);
+    auto context = make_context(id, engine, manager, level);
     EXPECT_EQ(context.get(existing), std::make_optional(std::string("old")));
     context.put(existing, "pending");
     context.remove(existing);
@@ -3380,7 +3403,7 @@ TEST_F(TranRemoveTest, StagesTombstonesUntilCommit) {
 //       删除不存在的 key 也记录删除意图，并且不使用暂存表。
 TEST_F(TranRemoveTest, ReadUncommittedDeletesImmediatelyAndKeepsHistory) {
   engine->put("k", "old", 3);
-  TranContext context(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  auto context = make_context(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
   context.remove("k");
   context.remove("k");
   context.remove("missing");
@@ -3417,7 +3440,7 @@ TEST_F(TranRemoveTest, LastOperationWinsWhenMixedWithPut) {
     const auto removed = "removed-" + std::to_string(id);
     engine->put(kept, "old", 3);
     engine->put(removed, "old", 3);
-    TranContext context(id, engine, manager, level);
+    auto context = make_context(id, engine, manager, level);
     context.put(kept, "first");
     context.remove(kept);
     EXPECT_FALSE(context.get(kept));
@@ -3454,7 +3477,7 @@ TEST_F(TranRemoveTest, RejectsFinishedTransactionsWithoutSideEffects) {
       const auto existing = "existing-" + std::to_string(id);
       const auto missing = "missing-" + std::to_string(id);
       engine->put(existing, "old", 3);
-      TranContext context(id++, engine, manager, level);
+      auto context = make_context(id++, engine, manager, level);
       if (committed) {
         ASSERT_TRUE(context.commit());
       } else {
@@ -3488,7 +3511,7 @@ class TranAbortTest : public TranCommitTest {};
 // 目的：无法登记回滚时必须报错，不能提前结束事务或丢弃仍在暂存的修改。
 // 场景：事务暂存了写入，但管理器已销毁；abort 抛异常，状态和暂存内容保持原样。
 TEST_F(TranAbortTest, ExpiredManagerPreservesUnfinishedContext) {
-  TranContext context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
+  auto context = make_context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
   context.put("k", "pending");
   const auto pending = context.temp_map_;
   const auto operation_count = context.operations.size();
@@ -3515,7 +3538,7 @@ TEST_F(TranAbortTest, ExpiredManagerPreservesUnfinishedContext) {
 // 目的：已提交的事务不能再被改成已取消，也不能撤销已经提交的数据。
 // 场景：读未提交事务新增 k 并 commit，随后误调用 abort，应返回 false 且无副作用。
 TEST_F(TranAbortTest, CannotAbortAnAlreadyCommittedTransaction) {
-  TranContext context(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  auto context = make_context(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
   context.put("k", "committed");
   ASSERT_TRUE(context.commit());
   EXPECT_FALSE(context.abort());
@@ -3912,7 +3935,7 @@ TEST_F(TranCommitTest, ConflictCancelsWithoutApplyingAnyPendingWrite) {
           }
           ASSERT_FALSE(engine->memtable.get_record(key, 0));
         }
-        TranContext context(id, engine, manager, level);
+        auto context = make_context(id, engine, manager, level);
         context.put(key, "stale");
         context.put(extra, "pending");
         const auto operation_count = context.operations.size();
@@ -3949,7 +3972,7 @@ TEST_F(TranCommitTest, SerialReadValidationIncludesMissingAndDeletedKeys) {
     if (scenario != 1) {
       engine->put(key, "old", 3);
     }
-    TranContext context(10, engine, manager, IsolationLevel::SERIALIZABLE);
+    auto context = make_context(10, engine, manager, IsolationLevel::SERIALIZABLE);
     const auto first = context.get(key);
     EXPECT_EQ(first.has_value(), scenario != 1);
     context.put(output, "pending");
@@ -3964,7 +3987,7 @@ TEST_F(TranCommitTest, SerialReadValidationIncludesMissingAndDeletedKeys) {
 // 场景：读 k@3 后出现 k@7，事务 10 只写另一个 key，仍允许提交。
 TEST_F(TranCommitTest, RepeatableReadDoesNotValidateUnwrittenReadKeys) {
   engine->put("read", "old", 3);
-  TranContext context(10, engine, manager, IsolationLevel::REPEATABLE_READ);
+  auto context = make_context(10, engine, manager, IsolationLevel::REPEATABLE_READ);
   EXPECT_EQ(context.get("read"), std::make_optional(std::string("old")));
   engine->put("read", "new", 7);
   context.put("output", "value");
@@ -3985,7 +4008,7 @@ TEST_F(TranCommitTest, FlushesMultipleTablesUntilBelowTotalLimit) {
   }
   ASSERT_GT(engine->memtable.get_frozen_size(), 500u);
   config->modify_lsm_tol_mem_size_limit(200);
-  TranContext context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
+  auto context = make_context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
   context.put("new", "value");
   ASSERT_TRUE(context.commit());
   EXPECT_LT(engine->memtable.get_total_size(), 200u);
@@ -4010,7 +4033,7 @@ TEST_F(TranCommitTest, FlushFailurePreservesCommittedStateAndMemory) {
   engine->put("k", value, 2);
   config->modify_lsm_per_mem_size_limit(128);
   config->modify_lsm_tol_mem_size_limit(256);
-  TranContext context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
+  auto context = make_context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
   context.put("k", value);
   EXPECT_THROW(context.commit(), std::length_error);
   EXPECT_TRUE(context.isCommited);
@@ -4038,7 +4061,7 @@ TEST_F(TranCommitTest, FlushFailurePreservesCommittedStateAndMemory) {
 
 // 目的：缺失必要组件时，在追加 COMMIT 或应用数据前报错；测试开关也不能绕过检查。
 TEST_F(TranCommitTest, MissingComponentsDoNotApplyWritesOrEndTransaction) {
-  TranContext no_manager(6, engine, nullptr, IsolationLevel::REPEATABLE_READ);
+  auto no_manager = make_context(6, engine, nullptr, IsolationLevel::REPEATABLE_READ);
   no_manager.put("missing-manager", "v");
   const auto manager_operations = no_manager.operations;
   EXPECT_THROW(no_manager.commit(), std::logic_error);
@@ -4047,7 +4070,7 @@ TEST_F(TranCommitTest, MissingComponentsDoNotApplyWritesOrEndTransaction) {
   EXPECT_FALSE(no_manager.isAborted);
   EXPECT_EQ(no_manager.operations, manager_operations);
   EXPECT_FALSE(engine->get("missing-manager", 0));
-  TranContext no_engine(7, nullptr, manager, IsolationLevel::REPEATABLE_READ);
+  auto no_engine = make_context(7, nullptr, manager, IsolationLevel::REPEATABLE_READ);
   const auto engine_operations = no_engine.operations;
   EXPECT_THROW(no_engine.commit(), std::logic_error);
   EXPECT_THROW(no_engine.commit(true), std::logic_error);
@@ -4243,7 +4266,7 @@ TEST_F(TranCommitTest, ConcurrentCommitsAndFlushRespectVersionOrder) {
   std::promise<void> start;
   auto worker = [&, go = start.get_future().share()](
                     uint64_t id, const char *value, std::promise<void> staged) {
-    TranContext tx(id, engine, manager, IsolationLevel::REPEATABLE_READ);
+    auto tx = make_context(id, engine, manager, IsolationLevel::REPEATABLE_READ);
     tx.put("k", value);
     if (id == 5)
       tx.put("older-only", "value");
@@ -4767,7 +4790,7 @@ TEST_F(LSMTest, TransactionEndRegistrationSurvivesFlushCleanup) {
 // 场景：小单表阈值、大总量阈值；随后显式刷盘，检查事务完成标记通知管理器。
 TEST_F(TranCommitTest, FreezesTableAndRegistersBeforeFlush) {
   config->modify_lsm_per_mem_size_limit(128);
-  TranContext context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
+  auto context = make_context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
   const std::string value(256, 'v');
   context.put("k", value);
   ASSERT_TRUE(context.commit());
@@ -5346,7 +5369,7 @@ TEST_F(EngineGetRollbackTest, ValuesAndTombstonesStayFilteredAcrossFreezeAndFlus
   engine->put("restored", "keep", 3);
   engine->put("deleted", "ancient", 1);
   engine->remove("deleted", 3);
-  TranContext context(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  auto context = make_context(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
   context.put("updated", "first");
   context.put("updated", "last");
   context.remove("restored");
@@ -5402,7 +5425,7 @@ TEST_F(EngineGetRollbackTest, RangeRollbackSurvivesActualCompaction) {
   engine->put("p/tomb", "ancient", 1);
   engine->remove("p/tomb", 3);
   engine->flush();
-  TranContext context(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  auto context = make_context(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
   context.put("p/k", "cancelled");
   context.remove("p/revive");
   context.put("p/new", "cancelled");
@@ -5444,8 +5467,8 @@ TEST_F(EngineGetRollbackTest, ComparesFilteredMemoryAndDiskCandidates) {
       {{"deleted", "", 7}, {"equal_deleted", "disk5", 5},
        {"equal_kept", "", 5}, {"k", "disk7", 7},
        {"restored", "disk7", 7}});
-  TranContext disk_cancel(11, engine, manager,
-                          IsolationLevel::READ_UNOP_COMMITTED);
+  auto disk_cancel = make_context(
+      11, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
   for (const auto &key : {"deleted", "equal_deleted", "equal_kept", "k",
                           "restored"}) {
     disk_cancel.put(key, "cancelled-disk");
@@ -5456,8 +5479,8 @@ TEST_F(EngineGetRollbackTest, ComparesFilteredMemoryAndDiskCandidates) {
   engine->remove("restored", 3);
   engine->put("equal_kept", "memory5", 5);
   engine->remove("equal_deleted", 5);
-  TranContext memory_cancel(9, engine, manager,
-                            IsolationLevel::READ_UNOP_COMMITTED);
+  auto memory_cancel = make_context(
+      9, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
   for (const auto &key : {"deleted", "equal_deleted", "equal_kept", "k"}) {
     memory_cancel.put(key, "cancelled-memory");
   }
@@ -5500,10 +5523,10 @@ TEST_F(EngineGetRollbackTest, ComparesFilteredMemoryAndDiskCandidates) {
 TEST_F(EngineGetRollbackTest, RechecksCancellationOnEachQuery) {
   engine->put("k", "base", 3);
   engine->flush();
-  TranContext first(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  auto first = make_context(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
   first.put("k", "first");
   engine->memtable.frozen_cur_table();
-  TranContext second(7, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  auto second = make_context(7, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
   second.put("k", "second");
   EXPECT_EQ(engine->get("k", 0), std::make_optional(
                 std::make_pair(std::string("second"), uint64_t{7})));
@@ -5532,13 +5555,13 @@ TEST_F(EngineGetRollbackTest, BatchKeepsOrderDuplicatesAndHistoricalVersions) {
   engine->remove("deleted", 3);
   engine->flush();
 
-  TranContext first(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  auto first = make_context(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
   first.put("k", "cancelled5");
   first.remove("restored");
   first.put("deleted", "cancelled-resurrection");
   first.put("added", "cancelled-new");
   ASSERT_TRUE(first.abort());
-  TranContext second(7, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  auto second = make_context(7, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
   second.put("k", "cancelled7");
   ASSERT_TRUE(second.abort());
 
@@ -5592,7 +5615,7 @@ TEST_F(TranAbortTest, CancelsStagedWritesWithoutChangingDatabase) {
     const auto removed = "removed-" + suffix;
     engine->put(existing, "old", 3);
     engine->put(removed, "keep", 3);
-    TranContext context(10 + static_cast<int>(level), engine, manager, level);
+    auto context = make_context(10 + static_cast<int>(level), engine, manager, level);
     EXPECT_EQ(context.get(existing), std::make_optional(std::string("old")));
     context.put(existing, "pending");
     context.put(added, "pending");
@@ -5628,7 +5651,7 @@ TEST_F(TranAbortTest, CancelsEmptyTransactionsOnlyOnce) {
                      IsolationLevel::REPEATABLE_READ,
                      IsolationLevel::SERIALIZABLE}) {
     SCOPED_TRACE(static_cast<int>(level));
-    TranContext context(10 + static_cast<int>(level), engine, manager, level);
+    auto context = make_context(10 + static_cast<int>(level), engine, manager, level);
     ASSERT_TRUE(context.abort());
     EXPECT_TRUE(manager->is_aborted(context.tranc_id_));
     EXPECT_TRUE(context.isAborted);
@@ -5646,7 +5669,7 @@ TEST_F(TranAbortTest, CancelsEmptyTransactionsOnlyOnce) {
 TEST_F(TranAbortTest, ReadUncommittedRegistersWithoutRewritingRecords) {
   engine->put("existing", "old", 3);
   engine->put("removed", "keep", 3);
-  TranContext context(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  auto context = make_context(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
   context.put("existing", "first");
   context.put("existing", "last");
   context.put("added", "new");
@@ -5690,8 +5713,8 @@ TEST_F(TranAbortTest, ReadUncommittedRestoresPreviousVersionInMemoryAndSst) {
       SCOPED_TRACE(deleted);
       const auto key = "k-" + std::to_string(id);
       engine->put(key, "old", 3);
-      TranContext context(id, engine, manager,
-                          IsolationLevel::READ_UNOP_COMMITTED);
+      auto context = make_context(
+          id, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
       if (deleted) {
         context.remove(key);
       } else {
@@ -5717,10 +5740,10 @@ TEST_F(TranAbortTest, ReadUncommittedRestoresPreviousVersionInMemoryAndSst) {
 //       最新查询应得到 6，读上限 5 应退回 3；只检查最新值会漏掉后一种错误。
 TEST_F(TranAbortTest, KeepsNewerCommitButHidesAbortedVersionFromOlderSnapshot) {
   engine->put("k", "old", 3);
-  TranContext older(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+  auto older = make_context(5, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
   older.put("k", "dirty");
   engine->flush();
-  TranContext newer(6, engine, manager, IsolationLevel::READ_OP_COMMITTED);
+  auto newer = make_context(6, engine, manager, IsolationLevel::READ_OP_COMMITTED);
   newer.put("k", "newest");
   ASSERT_TRUE(newer.commit());
 
@@ -5744,7 +5767,7 @@ TEST_F(TranCommitTest, AppliesWritesAndEndsOnlyOnce) {
     const uint64_t id = 10 + static_cast<int>(level);
     SCOPED_TRACE(suffix);
     engine->put(removed, "old", 3);
-    TranContext context(id, engine, manager, level);
+    auto context = make_context(id, engine, manager, level);
     context.put(key, "first");
     context.put(key, "last");
     context.remove(removed);
@@ -5786,9 +5809,10 @@ TEST_F(TranCommitTest, IgnoresAbortedNewerVersionsAcrossStorage) {
         SCOPED_TRACE(tombstone);
         const auto key = "commit-cancelled-" + std::to_string(id);
         engine->put(key, "old", 3);
-        TranContext older(id, engine, manager, level);
+        auto older = make_context(id, engine, manager, level);
         older.put(key, "accepted");
-        TranContext newer(id + 1, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+        auto newer = make_context(
+            id + 1, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
         if (tombstone) newer.remove(key);
         else newer.put(key, "cancelled");
         if (storage == 1) engine->memtable.frozen_cur_table();
@@ -5817,14 +5841,16 @@ TEST_F(TranCommitTest, StillRejectsValidConflictBelowAbortedVersion) {
       SCOPED_TRACE(tombstone);
       const auto key = "conflict-" + std::to_string(id);
       const auto other = "unwritten-" + std::to_string(id);
-      TranContext older(id, engine, manager, IsolationLevel::REPEATABLE_READ);
+      auto older = make_context(id, engine, manager, IsolationLevel::REPEATABLE_READ);
       older.put(key, "must-not-apply");
       older.put(other, "must-not-apply");
-      TranContext committed(id + 1, engine, manager, IsolationLevel::READ_OP_COMMITTED);
+      auto committed = make_context(
+          id + 1, engine, manager, IsolationLevel::READ_OP_COMMITTED);
       if (tombstone) committed.remove(key);
       else committed.put(key, "committed");
       ASSERT_TRUE(committed.commit());
-      TranContext cancelled(id + 2, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+      auto cancelled = make_context(
+          id + 2, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
       cancelled.put(key, "cancelled");
       if (disk) engine->flush();
       ASSERT_TRUE(cancelled.abort());
@@ -5849,10 +5875,11 @@ TEST_F(TranCommitTest, SerialReadValidationIgnoresAbortedChanges) {
     const auto missing = "missing-" + std::to_string(id);
     const auto written = "written-" + std::to_string(id);
     engine->put(key, "old", 3);
-    TranContext reader(id, engine, manager, IsolationLevel::SERIALIZABLE);
+    auto reader = make_context(id, engine, manager, IsolationLevel::SERIALIZABLE);
     ASSERT_EQ(reader.get(key), std::make_optional(std::string("old")));
     ASSERT_FALSE(reader.get(missing));
-    TranContext cancelled(id + 1, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
+    auto cancelled = make_context(
+        id + 1, engine, manager, IsolationLevel::READ_UNOP_COMMITTED);
     if (tombstone) cancelled.remove(key);
     else cancelled.put(key, "cancelled");
     cancelled.put(missing, "cancelled");
@@ -5870,7 +5897,7 @@ TEST_F(TranCommitTest, SerialReadValidationIgnoresAbortedChanges) {
 TEST_F(TranCommitTest, ZeroLimitsStopAfterMemoryBecomesEmpty) {
   config->modify_lsm_per_mem_size_limit(0);
   config->modify_lsm_tol_mem_size_limit(0);
-  TranContext context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
+  auto context = make_context(5, engine, manager, IsolationLevel::REPEATABLE_READ);
   context.put("k", "v");
   ASSERT_TRUE(context.commit());
   EXPECT_EQ(engine->memtable.get_total_size(), 0u);
