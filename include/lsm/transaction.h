@@ -171,6 +171,9 @@ private:
   // 提交或回滚登记成功后移除；用户自己的 shared_ptr 仍可保留上下文
   std::map<uint64_t, std::shared_ptr<TranContext>> activeTrans_;
 
+  // 每个线程各有一份。即使同一线程操作两个 DB，也只能开一笔显式事务
+  inline static thread_local std::weak_ptr<TranContext> thread_transaction_;
+
   // 待处理的结束登记：事务 ID -> 已提交 / 已回滚
   // 事务已经结束，但尚未完成刷盘流程中的结算
   // 它记录事务状态，不保存 key-value，也不负责实际刷盘

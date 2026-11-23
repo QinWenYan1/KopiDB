@@ -1162,7 +1162,14 @@ void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id,
 
   // 3. 两处登记都成功后，这个事务才不再属于“正在执行的事务”
   // 移除的是管理器持有的 shared_ptr；用户仍持有句柄时，上下文继续有效
-  activeTrans_.erase(tranc_id);
+  auto finished = activeTrans_.find(tranc_id); 
+  if(finished != activeTrans_.end()) {
+    // 两个 DB 可能分配相同的 ID。只有结束的是当前线程记录的那个
+    // 上下文，才释放这个线程开启下一笔事务的名额
+    if (thread_transaction_.lock() == finished->second)
+      thread_transaction_.reset(); 
+  }
+  activeTrans_.erase(finished);
 }
 
 // Lab 5.2 更新持久化的事务状态信息
@@ -1259,6 +1266,10 @@ TranManager::new_tranc(const IsolationLevel &isolation_level) {
   spdlog::debug("TranManager--new_tranc(): Creating new transaction with "
                 "isolation level={}",
                 static_cast<int>(isolation_level));
+  
+  // 先拒绝重复申请，避免等待或消耗一个新的事务 ID
+  if (auto active = thread_transaction_.lock())
+    throw std::logic_error("TranManager::new_tranc: this thread already has active transaction " + std::to_string(active->tranc_id_)); 
 
   // 1. 设置锁:
   //    ID 计数器虽然是原子的，但 activeTrans_ 是普通 map
@@ -1277,6 +1288,9 @@ TranManager::new_tranc(const IsolationLevel &isolation_level) {
   //    TranContext 构造函数会将其保存为 weak_ptr，避免循环引用
   auto context = std::make_shared<TranContext>(
       tranc_id, engine_, shared_from_this(), isolation_level);
+
+  // 管理器登记成功后，再记到当前线程
+  thread_transaction_ = context; 
 
   // 5. 登记活跃事务，管理器持有该上下
   activeTrans_.emplace(tranc_id, context);
