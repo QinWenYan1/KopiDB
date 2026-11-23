@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <thread>
 
 namespace kopidb {
 
@@ -71,6 +72,10 @@ public:
   enum IsolationLevel isolation_level_;
 
 private:
+  // 构造事务时记录创建线程。句柄被复制给其他线程后，这个 ID 仍然不变
+  const std::thread::id owner_thread_id_ = std::this_thread::get_id();
+  
+  void require_owner_thread(const char *ope) const; 
   // 将 operations 中尚未写入 WAL 的部分写出
   // 成功后更新已写条数；失败抛异常，不推进计数
   void persist_pending_wal_();
