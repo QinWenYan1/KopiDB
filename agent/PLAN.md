@@ -44,7 +44,7 @@
 2. **如何反馈误用。** 建议统一抛 `std::logic_error`。同线程重复开事务、活动事务内对本库发起独立写、其他线程调用活动句柄都应明确指出操作名与事务 ID，并保留原事务；`get/remove/put` 等事务内操作使用原事务资格。跨线程复制 `shared_ptr` 本身不是可拦截的 API 调用，检查发生在上下文入口。
 3. **合法的等待。** 另一线程在独占期间请求普通写，或请求独占时仍有其他线程的活动事务，可以等待。长等告警注明操作、等待时间和可定位的事务 ID；误用在等待前反馈。锁选型时同时核对等待诊断与线程退出前结束事务的约定。
 
-**当前函数**：`LSM::put_batch()`。空批次直接返回；整批 key/value 校验完成后、创建 WAL 记录和分配 ID 前，对整批调用一次 `require_direct_write_allowed(__func__)`。
+**当前函数**：`LSM::remove()` 和 `LSM::remove_batch()`。本轮一起给出剩余两个调用点。单键删除在空 key 检查之后、批量删除在整批 key 校验之后调用 `require_direct_write_allowed(__func__)`，两者都在分配 ID 和追加 WAL 前检查。空批次沿用原有的提前返回。
 
 首次基线：`xmake build test_lsm` 成功。独立目录运行 `LSMTest.TranContextGetRejectsOtherThread`，0/1 通过。旧实现允许另一个线程读取暂存值，没有抛出 `std::logic_error`；创建线程后续读取、提交和普通点查均通过。接入检查后用同一个用例验收。
 
@@ -61,3 +61,5 @@
 阶段①局部验收：在用户工作区构建 `test_lsm` 并复跑之前的三个用例，3/3 通过。工厂先登记上下文再写入线程槽，结束时按对象身份清槽且只删除有效迭代器。工厂用例改为每线程逐笔结束，保留管理器持有关系与四线程合计 256 个唯一 ID 的断言；原有普通写冲突用例由另一线程执行独立写。含上述三项的 LSM 定向回归 16/16 通过。新用例 `LSMTest.DirectPutRejectsActiveTransactionOnCallingThread` 的修改前基线 0/1：同库误用成功写入数据，WAL 从 0 增至 52 字节，消耗了一个 ID。
 
 阶段①局部验收：`LSM::put()` 及管理器的同线程、同库检查已接通，`xmake build test_lsm` 成功。在独立临时目录运行普通写、合法批量写、跨库、跨线程写及事务工厂相关用例，17/17 通过。下一入口的基线 `LSMTest.DirectPutBatchRejectsActiveTransactionOnCallingThread` 为 0/1：有活动事务的线程调用本库非空合法批量写时，已有键被覆盖、新键可见、WAL 从 48 增至 119 字节，并额外消耗一个 ID。
+
+阶段①局部验收：`LSM::put_batch()` 在整批参数校验后、取 ID 前检查一次，原先失败的用例已通过。工作区构建成功，定向回归 22/22 通过。两种删除共用的新用例 `LSMTest.DirectRemoveAndRemoveBatchRejectActiveTransactionOnCallingThread` 在工作区为 0/1：单删和批删均未拒绝，三条旧值不可见，WAL 从 136 增至 227 字节，共消耗两个 ID。只在临时源码副本接入两处检查并重编重链，相同回归加上新用例为 23/23。待用户手动接入后验收工作区。

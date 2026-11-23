@@ -1441,6 +1441,33 @@ TEST_F(LSMTest, DirectPutBatchLateOversizedRecordCancelsWholeBatch) {
   EXPECT_EQ(saved.getNextTransactionId(), 4u);
 }
 
+// 同一线程用事务句柄删除应成功；对本库独立删除（单键或整批）应在写墓碑、
+// 追加 WAL 和分配 ID 前抛错。每种删除操作使用不同的 key，分别检查副作用。
+TEST_F(LSMTest, DirectRemoveAndRemoveBatchRejectActiveTransactionOnCallingThread) {
+  LSM db(test_dir);
+  db.put_batch({{"single", "old"}, {"a", "old"}, {"b", "old"}, {"owned", "old"}});
+  auto tx = db.begin_tran(IsolationLevel::READ_UNOP_COMMITTED);
+  tx->remove("owned");
+  const auto wal_path = test_dir + "/wal.0";
+  const auto wal_size = std::filesystem::file_size(wal_path);
+
+  EXPECT_NO_THROW(db.remove_batch({}));
+  EXPECT_THROW(db.remove(""), std::invalid_argument);
+  EXPECT_THROW(db.remove_batch({"a", ""}), std::invalid_argument);
+  EXPECT_THROW(db.remove("single"), std::logic_error);
+  EXPECT_THROW(db.remove_batch({"a", "b"}), std::logic_error);
+  EXPECT_EQ(std::filesystem::file_size(wal_path), wal_size);
+  for (const auto *key : {"single", "a", "b"}) {
+    EXPECT_EQ(db.get(key), std::make_optional(std::string("old"))) << key;
+  }
+
+  ASSERT_TRUE(tx->commit());
+  EXPECT_FALSE(db.get("owned").has_value());
+  auto next = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  EXPECT_EQ(next->tranc_id_, tx->tranc_id_ + 1);
+  EXPECT_TRUE(next->abort());
+}
+
 // 目的：普通 remove 写出 CREATE、DELETE、COMMIT，删除已有值，但保留旧版本。
 // 分别在 MemTable 和 SST 上检查历史读取；迭代器只在局部作用域内存活，不跨越 flush。
 TEST_F(LSMTest, DirectRemoveWritesDeleteWalAndPreservesHistory) {

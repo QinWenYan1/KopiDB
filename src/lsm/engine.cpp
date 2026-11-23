@@ -1340,6 +1340,9 @@ void LSM::remove(const std::string &key) {
   if (key.empty())
     throw std::invalid_argument("LSM::remove: key must not be empty");
 
+  // 参数已验证；在分配 ID 和写 WAL 前，拒绝本线程对同一库的独立删除。
+  tran_manager_->require_direct_write_allowed(__func__);
+
   // 2. 一次普通删除使用一个独立的新版本号
   // 日志由 CREATE、DELETE、COMMIT 三条记录组成
   // 先预留容量，再分配 ID
@@ -1401,6 +1404,9 @@ void LSM::remove_batch(const std::vector<std::string> &keys) {
       throw std::invalid_argument("LSM::remove_batch: key must not be empty");
     }
   }
+
+  // 参数已验证；在分配 ID 和写 WAL 前，拒绝本线程对同一库的独立删除。
+  tran_manager_->require_direct_write_allowed(__func__);
 
   // 3. 整批日志：一条 CREATE、每个 key 一条 DELETE、一条 COMMIT。
   // 先预留容量，再为整批分配一个独立的新版本号。
