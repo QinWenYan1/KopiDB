@@ -9,10 +9,10 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <thread>
 
 namespace kopidb {
 
@@ -74,8 +74,8 @@ public:
 private:
   // 构造事务时记录创建线程。句柄被复制给其他线程后，这个 ID 仍然不变
   const std::thread::id owner_thread_id_ = std::this_thread::get_id();
-  
-  void require_owner_thread(const char *ope) const; 
+
+  void require_owner_thread(const char *ope) const;
   // 将 operations 中尚未写入 WAL 的部分写出
   // 成功后更新已写条数；失败抛异常，不推进计数
   void persist_pending_wal_();
@@ -104,7 +104,7 @@ public:
   void init_new_wal();
   void set_engine(std::shared_ptr<LSMEngine> engine);
   // ! SERIALIZABLE（未完整实现）：允许创建上下文，不代表已提供完整隔离保证
-  void require_direct_write_allowed(const char *operation) const; 
+  void require_direct_write_allowed(const char *operation) const;
   std::shared_ptr<TranContext> new_tranc(const IsolationLevel &isolation_level);
 
   uint64_t getNextTransactionId();

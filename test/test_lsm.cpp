@@ -1319,6 +1319,32 @@ TEST_F(LSMTest, DirectPutBatchEmptyInputDoesNotAllocateIdOrWriteWal) {
   ASSERT_TRUE(next->abort());
 }
 
+// 同线程有本库事务时，空批次仍可直接返回。有效批次必须整批拒绝：
+// 不能覆盖已有 key、创建新 key、追加 WAL 或消耗 ID，原事务仍可提交。
+TEST_F(LSMTest, DirectPutBatchRejectsActiveTransactionOnCallingThread) {
+  LSM db(test_dir);
+  db.put("existing", "old");
+  auto tx = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  tx->put("mine", "pending");
+  const auto wal_path = test_dir + "/wal.0";
+  const auto wal_size = std::filesystem::file_size(wal_path);
+
+  EXPECT_NO_THROW(db.put_batch({}));
+  EXPECT_THROW(db.put_batch({{"existing", "new"}, {"bad", ""}}),
+               std::invalid_argument);
+  EXPECT_THROW(db.put_batch({{"existing", "new"}, {"added", "new"}}),
+               std::logic_error);
+  EXPECT_EQ(std::filesystem::file_size(wal_path), wal_size);
+  EXPECT_EQ(db.get("existing"), std::make_optional(std::string("old")));
+  EXPECT_FALSE(db.get("added").has_value());
+
+  ASSERT_TRUE(tx->commit());
+  EXPECT_EQ(db.get("mine"), std::make_optional(std::string("pending")));
+  auto next = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  EXPECT_EQ(next->tranc_id_, tx->tranc_id_ + 1);
+  EXPECT_TRUE(next->abort());
+}
+
 // 目的：批次后部出现空 key 或空 value 时，整批在分配 ID／写日志之前被拒绝。
 // 前面的合法新增和覆盖都不能提前生效，已有数据和 WAL 字节保持不变。
 TEST_F(LSMTest, DirectPutBatchRejectsLateEmptyArgumentBeforeAnyWrite) {

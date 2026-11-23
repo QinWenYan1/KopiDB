@@ -420,17 +420,16 @@ void LSMEngine::clear() {
   // 然后初始化新 WAL
 }
 
-static std::function<bool(uint64_t)> make_abort_filter(const std::shared_ptr<TranManager>& man){
+static std::function<bool(uint64_t)>
+make_abort_filter(const std::shared_ptr<TranManager> &man) {
   if (!man)
     // 单独使用 Engine 时可能没有事务管理器, 此时无法确认哪些版本
     // 已经回滚，返回空回调，让合并保留所有输入版本
-    return {}; 
+    return {};
 
   // 迭代器会在遍历 SST 时调用这个函数。持有 shared_ptr，保证遍历期间
   // 管理器仍然有效。只有已登记回滚的版本才跳过；活跃事务之后仍可能提交
-  return [man](uint64_t id){
-    return man->is_aborted(id); 
-  }; 
+  return [man](uint64_t id) { return man->is_aborted(id); };
 }
 
 // Lab 4.1 刷盘形成sst文件
@@ -480,13 +479,14 @@ uint64_t LSMEngine::flush() {
   size_t wk = TomlConfig::getInstance().getWisckeyValueThreshold();
 
   SSTBuilder builder = (wk > 0 && vlog_)
-        ? SSTBuilder(block_size, true, vlog_, wk)
-        : SSTBuilder(block_size, true);
+                           ? SSTBuilder(block_size, true, vlog_, wk)
+                           : SSTBuilder(block_size, true);
 
   // flush_last 在 builder.add() 前跳过已回滚版本
   // 因此 WiscKey 模式也不会把这些版本的大 value 追加进 VLog
-  auto new_sst = memtable.flush_last(builder, sst_path, new_sst_id,
-                                    flushed_tranc_ids, block_cache, is_aborted);
+  auto new_sst =
+      memtable.flush_last(builder, sst_path, new_sst_id, flushed_tranc_ids,
+                          block_cache, is_aborted);
 
   // 5. 只有生成了 SST，才登记文件并读取其中的最大版本号
   //
@@ -840,7 +840,7 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
   std::vector<SstIterator> l0_iters;
   std::vector<std::shared_ptr<SST>> l1_ssts;
   // L0 和 L1 都可能含有已经回滚的版本，两侧共用同一个判断
-  const auto is_aborted = make_abort_filter(tran_manager.lock()); 
+  const auto is_aborted = make_abort_filter(tran_manager.lock());
 
   // 0. 按目标 SST 的模式决定输入如何读取 value。
   // 条件与 gen_sst_from_iter 创建 builder 时一致：
@@ -876,8 +876,8 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
   // 4. L1 有序不重叠 -> ConcactIterator 直接串联
   //    再用 TwoMergeIterator 与 L1 的 ConcactIterator 合并
   std::shared_ptr<ConcactIterator> old_l1_begin_ptr =
-      std::make_shared<ConcactIterator>(
-          l1_ssts, 0, true, is_aborted, read_mode);
+      std::make_shared<ConcactIterator>(l1_ssts, 0, true, is_aborted,
+                                        read_mode);
 
   // 5. a 路 = L0 堆 (较新), b 路 = L1
   TwoMergeIterator l0_l1_begin(l0_begin_ptr, old_l1_begin_ptr, 0, true);
@@ -900,7 +900,8 @@ LSMEngine::full_common_compact(std::vector<size_t> &lx_ids,
   // 输出 WiscKey SST 时直接搬引用
   // 输出普通 SST 时先还原原值，避免把引用字节当成用户值写入
   const size_t wk = TomlConfig::getInstance().getWisckeyValueThreshold();
-  const ValueReadMode read_mode = (wk > 0 && vlog_) ? ValueReadMode::Compaction : ValueReadMode::Query;
+  const ValueReadMode read_mode =
+      (wk > 0 && vlog_) ? ValueReadMode::Compaction : ValueReadMode::Query;
 
   // 2. 根据 ID 取得两个相邻层的 SST
   // L1 及更深层的每一层内部，SST 按 key 有序且范围不重叠
@@ -920,9 +921,11 @@ LSMEngine::full_common_compact(std::vector<size_t> &lx_ids,
   const auto is_aborted = make_abort_filter(tran_manager.lock());
 
   std::shared_ptr<ConcactIterator> old_lx_begin_ptr =
-      std::make_shared<ConcactIterator>(lx_ssts, 0, true, is_aborted, read_mode);
+      std::make_shared<ConcactIterator>(lx_ssts, 0, true, is_aborted,
+                                        read_mode);
   std::shared_ptr<ConcactIterator> old_ly_begin_ptr =
-      std::make_shared<ConcactIterator>(ly_ssts, 0, true, is_aborted, read_mode);
+      std::make_shared<ConcactIterator>(ly_ssts, 0, true, is_aborted,
+                                        read_mode);
 
   // 3. a 路 = lx (较新层, 同 key 时赢), b 路 = ly
   //    通过 TwoMergeIterator 合并后调用 gen_sst_from_iter
@@ -1211,7 +1214,7 @@ void LSM::put(const std::string &key, const std::string &value) {
   }
 
   tran_manager_->require_direct_write_allowed(__func__);
-  
+
   // 2. 一次普通写入使用一个独立的新版本号
   // 提前预留三条记录的位置；如果这里分配失败，还没有消耗 ID
   std::vector<Record> records;

@@ -120,10 +120,10 @@ void TranContext::put(const std::string &key, const std::string &value) {
 
   // 1. 已经提交或回滚的事务不能继续写入
   // 必须先检查，避免给已结束的事务追加记录
-  if (isCommited || isAborted) 
+  if (isCommited || isAborted)
     throw std::logic_error(
         "TranContext::put: transaction has already finished");
-  
+
   // 之前 commit/abort 可能已经追加了结束记录
   // 但随后写 WAL 失败，导致两个结束标志 (isAborted/isCommited) 仍然是 false
   //
@@ -191,10 +191,10 @@ void TranContext::remove(const std::string &key) {
   // 1. 已结束的事务不能继续删除
   // 必须在追加日志记录、修改暂存表或引擎之前检查
   // 避免 abort 后又产生新的操作
-  if (isCommited || isAborted) 
+  if (isCommited || isAborted)
     throw std::logic_error(
         "TranContext::remove: transaction has already finished");
-  
+
   // commit/abort 可能已追加结束记录，但随后写 WAL 失败
   // 因而 isCommited/isAborted 仍然是 false
   //
@@ -203,7 +203,7 @@ void TranContext::remove(const std::string &key) {
   if (!operations.empty()) {
     const auto last_type = operations.back().getOperationType();
     if (last_type == OperationType::OP_COMMIT ||
-        last_type == OperationType::OP_ROLLBACK) 
+        last_type == OperationType::OP_ROLLBACK)
       throw std::logic_error(
           "TranContext::remove: previous ending attempt did not finish");
   }
@@ -256,16 +256,17 @@ void TranContext::remove(const std::string &key) {
 
 void TranContext::require_owner_thread(const char *operation) const {
   if (std::this_thread::get_id() == owner_thread_id_)
-    return; 
+    return;
 
   // 拒绝当前调用。事务状态保持原样，创建线程仍能继续读取或提交
-  throw std::logic_error(std::string("TranContext::") + operation + ": transaction " +
-    std::to_string(tranc_id_) + " must be used by its creating thread"); 
+  throw std::logic_error(std::string("TranContext::") + operation +
+                         ": transaction " + std::to_string(tranc_id_) +
+                         " must be used by its creating thread");
 }
 
 // Lab 5.2 get 实现
 std::optional<std::string> TranContext::get(const std::string &key) {
-  require_owner_thread(__func__); 
+  require_owner_thread(__func__);
   spdlog::trace("TranContext--get({}) called, tranc_id={}", key, tranc_id_);
 
   // 1. 已结束的事务不能继续使用
@@ -1162,12 +1163,12 @@ void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id,
 
   // 3. 两处登记都成功后，这个事务才不再属于“正在执行的事务”
   // 移除的是管理器持有的 shared_ptr；用户仍持有句柄时，上下文继续有效
-  auto finished = activeTrans_.find(tranc_id); 
-  if(finished != activeTrans_.end()) {
+  auto finished = activeTrans_.find(tranc_id);
+  if (finished != activeTrans_.end()) {
     // 两个 DB 可能分配相同的 ID。只有结束的是当前线程记录的那个
     // 上下文，才释放这个线程开启下一笔事务的名额
     if (thread_transaction_.lock() == finished->second)
-      thread_transaction_.reset(); 
+      thread_transaction_.reset();
 
     activeTrans_.erase(finished);
   }
@@ -1260,17 +1261,17 @@ uint64_t TranManager::get_checkpoint_tranc_id() {
 }
 
 void TranManager::require_direct_write_allowed(const char *operation) const {
-  auto active = thread_transaction_.lock(); 
+  auto active = thread_transaction_.lock();
 
   // 线程槽跨 DB 共用。线程在 A 库开了事务，仍然可以向 B 库普通写入
   // 这里比较的是两个管理器是否为同一个对象
-  if(!active || active->tranManager_.lock().get() != this)
-    return; 
+  if (!active || active->tranManager_.lock().get() != this)
+    return;
 
   throw std::logic_error(
-    std::string("LSM::") + operation + ": transaction " +
-    std::to_string(active->tranc_id_) +
-    " is active on this thread. Use its handle or finish it first.");
+      std::string("LSM::") + operation + ": transaction " +
+      std::to_string(active->tranc_id_) +
+      " is active on this thread. Use its handle or finish it first.");
 }
 
 // Lab 5.2 事务上下文分配
@@ -1281,10 +1282,12 @@ TranManager::new_tranc(const IsolationLevel &isolation_level) {
   spdlog::debug("TranManager--new_tranc(): Creating new transaction with "
                 "isolation level={}",
                 static_cast<int>(isolation_level));
-  
+
   // 先拒绝重复申请，避免等待或消耗一个新的事务 ID
   if (auto active = thread_transaction_.lock())
-    throw std::logic_error("TranManager::new_tranc: this thread already has active transaction " + std::to_string(active->tranc_id_)); 
+    throw std::logic_error(
+        "TranManager::new_tranc: this thread already has active transaction " +
+        std::to_string(active->tranc_id_));
 
   // 1. 设置锁:
   //    ID 计数器虽然是原子的，但 activeTrans_ 是普通 map
@@ -1302,7 +1305,7 @@ TranManager::new_tranc(const IsolationLevel &isolation_level) {
   //    shared_from_this() 获取共享当前管理器所有权的 shared_ptr 并绑定
   //    TranContext 构造函数会将其保存为 weak_ptr，避免循环引用
   auto context = std::make_shared<TranContext>(
-      tranc_id, engine_, shared_from_this(), isolation_level); 
+      tranc_id, engine_, shared_from_this(), isolation_level);
 
   // 5. 登记活跃事务，管理器持有该上下
   activeTrans_.emplace(tranc_id, context);
