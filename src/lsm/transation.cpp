@@ -673,7 +673,9 @@ bool TranContext::abort() {
 }
 
 enum IsolationLevel TranContext::get_isolation_level() {
-  // ! SERIALIZABLE（未完整实现）：返回所选级别，不表示相应隔离保证已完整实现。
+  // 查询事务的隔离级别也由创建线程执行
+  require_owner_thread(__func__);
+  // SERIALIZABLE 当前可被选中，完整隔离能力仍待验收
   return isolation_level_;
 }
 

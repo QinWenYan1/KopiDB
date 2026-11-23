@@ -2352,6 +2352,18 @@ TEST_F(LSMTest, TranContextAbortRejectsOtherThread) {
   EXPECT_EQ(db.get("key"), std::make_optional(std::string("pending")));
 }
 
+// 读取隔离级别也遵守线程约定；拒绝外线程后，创建线程仍可查询并结束事务。
+TEST_F(LSMTest, TranContextGetIsolationLevelRejectsOtherThread) {
+  LSM db(test_dir);
+  auto tx = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  auto foreign_level = std::async(std::launch::async, [tx] {
+    return tx->get_isolation_level();
+  });
+  EXPECT_THROW(foreign_level.get(), std::logic_error);
+  EXPECT_EQ(tx->get_isolation_level(), IsolationLevel::READ_OP_COMMITTED);
+  EXPECT_TRUE(tx->abort());
+}
+
 // 目的：新事务应处于未结束状态，并为后续操作保留正确的事务身份和开始记录。
 // 场景：分别创建四种隔离级别的上下文；构造本身不执行读写、提交或 WAL 持久化。
 TEST_F(LSMTest, TranContextConstructorInitializesTransaction) {

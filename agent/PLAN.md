@@ -44,10 +44,12 @@
 2. **如何反馈误用。** 建议统一抛 `std::logic_error`。同线程重复开事务、活动事务内对本库发起独立写、其他线程调用活动句柄都应明确指出操作名与事务 ID，并保留原事务；`get/remove/put` 等事务内操作使用原事务资格。跨线程复制 `shared_ptr` 本身不是可拦截的 API 调用，检查发生在上下文入口。
 3. **合法的等待。** 另一线程在独占期间请求普通写，或请求独占时仍有其他线程的活动事务，可以等待。长等告警注明操作、等待时间和可定位的事务 ID；误用在等待前反馈。锁选型时同时核对等待诊断与线程退出前结束事务的约定。
 
-**当前函数**：`TranContext::abort()`。在读取结束状态、追加回滚日志或登记取消之前核对调用线程。
+**当前函数**：`TranContext::get_isolation_level()`。在返回隔离级别前核对调用线程，使事务元信息的公开读取也遵守创建线程约定。
 
 首次基线：`xmake build test_lsm` 成功。独立目录运行 `LSMTest.TranContextGetRejectsOtherThread`，0/1 通过。旧实现允许另一个线程读取暂存值，没有抛出 `std::logic_error`；创建线程后续读取、提交和普通点查均通过。接入检查后用同一个用例验收。
 
 阶段①局部验收：`test_lsm` 构建成功，在独立临时目录运行 `LSMTest.TranContextGet*`，7/7 通过。跨线程读取抛出异常，创建线程仍能读出暂存值并成功提交。下一函数的基线 `LSMTest.TranContextPutRejectsOtherThread` 为 0/1；读未提交和可重复读两种情况下，外线程写入均未抛错，原值都被改为 `foreign`。
 
 阶段①局部验收：已核对 `put/remove/commit` 将线程检查放在函数入口。独立目录运行 LSM 专项 23/23、`TranCommitWALTest.*` 8/8。旧并发刷盘用例原先在主线程创建事务、工作线程提交，触发了新约定；改为两个工作线程各自创建、暂存和提交，保留版本胜负、回滚与最终值的检查。待做的 `LSMTest.TranContextAbortRejectsOtherThread` 单独运行 0/1：外线程取消未抛异常，创建线程随后提交返回 false。
+
+阶段①局部验收：`abort()` 的线程检查早于结束状态、WAL 及回滚登记。独立目录中 LSM 回滚专项 8/8、WAL 回滚专项 6/6 通过。上轮失败的跨线程回滚用例已通过，创建线程可以提交原来的暂存值。下一入口 `LSMTest.TranContextGetIsolationLevelRejectsOtherThread` 的基线为 0/1，唯一失败是外线程调用没有抛出 `std::logic_error`。
