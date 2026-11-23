@@ -2284,6 +2284,74 @@ TEST_F(LSMTest, TranContextGetRejectsOtherThread) {
   EXPECT_EQ(db.get("key"), std::make_optional(std::string("pending")));
 }
 
+// 外线程的 put 应在立即写入或暂存之前被拒绝；创建线程仍可写另一项并提交。
+TEST_F(LSMTest, TranContextPutRejectsOtherThread) {
+  LSM db(test_dir);
+
+  for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    db.put("existing", "original");
+    auto tx = db.begin_tran(level);
+    auto foreign_write = std::async(std::launch::async, [tx] {
+      tx->put("existing", "foreign");
+    });
+    EXPECT_THROW(foreign_write.get(), std::logic_error);
+    EXPECT_EQ(tx->get("existing"), std::make_optional(std::string("original")));
+
+    const auto owner_key = "owner-" + std::to_string(static_cast<int>(level));
+    tx->put(owner_key, "committed");
+    ASSERT_TRUE(tx->commit());
+    EXPECT_EQ(db.get("existing"), std::make_optional(std::string("original")));
+    EXPECT_EQ(db.get(owner_key), std::make_optional(std::string("committed")));
+  }
+}
+
+// 外线程不能写入或暂存墓碑；创建线程提交后，原值仍应可读。
+TEST_F(LSMTest, TranContextRemoveRejectsOtherThread) {
+  LSM db(test_dir);
+  for (auto level : {IsolationLevel::READ_UNOP_COMMITTED,
+                     IsolationLevel::REPEATABLE_READ}) {
+    SCOPED_TRACE(static_cast<int>(level));
+    db.put("key", "original");
+    auto tx = db.begin_tran(level);
+    auto foreign_remove = std::async(std::launch::async, [tx] {
+      tx->remove("key");
+    });
+    EXPECT_THROW(foreign_remove.get(), std::logic_error);
+    EXPECT_EQ(tx->get("key"), std::make_optional(std::string("original")));
+    ASSERT_TRUE(tx->commit());
+    EXPECT_EQ(db.get("key"), std::make_optional(std::string("original")));
+  }
+}
+
+// 外线程尝试提交后，暂存值仍对普通查询不可见；创建线程可以正常提交。
+TEST_F(LSMTest, TranContextCommitRejectsOtherThread) {
+  LSM db(test_dir);
+  auto tx = db.begin_tran(IsolationLevel::REPEATABLE_READ);
+  tx->put("key", "pending");
+  auto foreign_commit = std::async(std::launch::async, [tx] {
+    return tx->commit();
+  });
+  EXPECT_THROW(foreign_commit.get(), std::logic_error);
+  EXPECT_FALSE(db.get("key").has_value());
+  ASSERT_TRUE(tx->commit());
+  EXPECT_EQ(db.get("key"), std::make_optional(std::string("pending")));
+}
+
+// 外线程尝试回滚后，创建线程应仍能提交原来的暂存值。
+TEST_F(LSMTest, TranContextAbortRejectsOtherThread) {
+  LSM db(test_dir);
+  auto tx = db.begin_tran(IsolationLevel::REPEATABLE_READ);
+  tx->put("key", "pending");
+  auto foreign_abort = std::async(std::launch::async, [tx] {
+    return tx->abort();
+  });
+  EXPECT_THROW(foreign_abort.get(), std::logic_error);
+  ASSERT_TRUE(tx->commit());
+  EXPECT_EQ(db.get("key"), std::make_optional(std::string("pending")));
+}
+
 // 目的：新事务应处于未结束状态，并为后续操作保留正确的事务身份和开始记录。
 // 场景：分别创建四种隔离级别的上下文；构造本身不执行读写、提交或 WAL 持久化。
 TEST_F(LSMTest, TranContextConstructorInitializesTransaction) {
@@ -4018,41 +4086,43 @@ TEST_F(TranCommitTest, TestFailDoesNotBypassWriteConflicts) {
 // 目的：并发提交和刷盘不形成锁顺序死锁，同 key 的新版本不会被旧事务覆盖。
 // 场景：事务 5/6 同时提交，允许 5 先成功或因 6 抢先而被取消；6 必须成功。
 TEST_F(TranCommitTest, ConcurrentCommitsAndFlushRespectVersionOrder) {
-  TranContext older(5, engine, manager, IsolationLevel::REPEATABLE_READ);
-  TranContext newer(6, engine, manager, IsolationLevel::REPEATABLE_READ);
-  older.put("k", "old");
-  older.put("older-only", "value");
-  newer.put("k", "new");
-  std::latch start(1);
-  bool older_result = false;
-  bool newer_result = false;
-  std::exception_ptr errors[3];
-  std::thread first([&] {
-    start.wait();
-    try { older_result = older.commit(); }
-    catch (...) { errors[0] = std::current_exception(); }
-  });
-  std::thread second([&] {
-    start.wait();
-    try { newer_result = newer.commit(); }
-    catch (...) { errors[1] = std::current_exception(); }
-  });
-  std::thread flusher([&] {
-    start.wait();
-    try {
-      for (int i = 0; i < 10; ++i) { engine->flush(); }
-    } catch (...) { errors[2] = std::current_exception(); }
-  });
-  start.count_down();
-  first.join();
-  second.join();
-  flusher.join();
-  for (const auto &error : errors) {
-    ASSERT_FALSE(static_cast<bool>(error));
-  }
-  EXPECT_TRUE(newer_result);
-  EXPECT_EQ(older.isCommited, older_result);
-  EXPECT_EQ(older.isAborted, !older_result);
+  std::promise<void> older_staged, newer_staged;
+  auto older_ready = older_staged.get_future();
+  auto newer_ready = newer_staged.get_future();
+
+  // 若创建线程或暂存数据失败，start 会先于两个任务的 future 析构，
+  // 等待开始信号的线程会收到 broken_promise，测试仍能退出。
+  std::future<bool> older_commit, newer_commit;
+  std::promise<void> start;
+  auto worker = [&, go = start.get_future().share()](
+                    uint64_t id, const char *value, std::promise<void> staged) {
+    TranContext tx(id, engine, manager, IsolationLevel::REPEATABLE_READ);
+    tx.put("k", value);
+    if (id == 5)
+      tx.put("older-only", "value");
+
+    staged.set_value();
+    go.get();
+    const bool result = tx.commit();
+    EXPECT_EQ(tx.isCommited, result);
+    EXPECT_EQ(tx.isAborted, !result);
+    return result;
+  };
+
+  older_commit = std::async(std::launch::async, worker, 5, "old",
+                            std::move(older_staged));
+  newer_commit = std::async(std::launch::async, worker, 6, "new",
+                            std::move(newer_staged));
+
+  // 两个事务都由各自的线程写好暂存数据，再让它们与刷盘竞争。
+  older_ready.get();
+  newer_ready.get();
+  start.set_value();
+  for (int i = 0; i < 10; ++i)
+    engine->flush();
+
+  const bool older_result = older_commit.get();
+  EXPECT_TRUE(newer_commit.get());
   EXPECT_EQ(engine->get("older-only", 0).has_value(), older_result);
   EXPECT_EQ(engine->get("k", 0),
             std::make_optional(std::make_pair(std::string("new"), uint64_t{6})));

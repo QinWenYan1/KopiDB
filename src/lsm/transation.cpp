@@ -114,6 +114,8 @@ void TranContext::persist_pending_wal_() {
 // 读未提交：使用本事务 ID 直接写入引擎，不再备份旧值。
 // 其他隔离级别： 暂存在本事务的 temp_map_，等 commit() 再写入引擎
 void TranContext::put(const std::string &key, const std::string &value) {
+  // 先确认调用线程，避免外线程追加写入记录、修改暂存值或直接写入 MemTable
+  require_owner_thread(__func__);
   spdlog::trace("TranContext--put({}, {}), tranc_id={}", key, value, tranc_id_);
 
   // 1. 已经提交或回滚的事务不能继续写入
@@ -182,6 +184,8 @@ void TranContext::put(const std::string &key, const std::string &value) {
 }
 
 void TranContext::remove(const std::string &key) {
+  // 先确认调用线程，避免外线程追加写入记录、修改暂存值或直接写入 MemTable
+  require_owner_thread(__func__);
   spdlog::trace("TranContext--remove({}) called, tranc_id={}", key, tranc_id_);
 
   // 1. 已结束的事务不能继续删除
@@ -344,6 +348,8 @@ std::optional<std::string> TranContext::get(const std::string &key) {
 // 冲突时取消整笔事务；暂存修改尚未写入，因此不需要恢复数据库旧值
 // 同一个 TranContext 的操作由调用者串行执行
 bool TranContext::commit(bool test_fail) {
+  // 先确认调用线程，避免外线程追加写入记录、修改暂存值或直接写入 MemTable
+  require_owner_thread(__func__);
   spdlog::info("TranContext--commit(): Starting commit for transaction ID={}",
                tranc_id_);
 
@@ -576,9 +582,11 @@ bool TranContext::commit(bool test_fail) {
 
 // 取消事务：按需写出 ROLLBACK → 登记回滚 → 清理上下文
 // 已经写入存储层的版本由回滚名单过滤，不在这里恢复旧值
-// !
 // SERIALIZABLE（未完整实现）：同样沿用通用取消流程，不代表已具备完整隔离保证。
 bool TranContext::abort() {
+  // 只有创建线程能取消事务。先检查线程，避免外线程登记回滚并清掉暂存修改。
+  require_owner_thread(__func__);
+
   // 1. 同一个上下文由调用者串行使用
   // 已经提交或取消的事务不能再次取消，也不能重复写 ROLLBACK
   if (isCommited || isAborted)
