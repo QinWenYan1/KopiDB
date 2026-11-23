@@ -34,23 +34,29 @@ class TranManager;
 // 一个 TranContext 对应一个事务，每次 begin_tran() 都创建独立上下文
 // 本类不提供内部线程同步，也不会自动绑定到某个线程
 //
-// 一个线程依次执行本事务的 put/get/remove/commit/abort
+// 一个线程执行本事务的 put/get/remove/commit/abort
 // 事务由创建线程操作，并由该线程显式提交或回滚
 //
 // shared_ptr 只管理对象生命周期，不保证上下文成员的并发访问安全
-// SERIALIZABLE（未完整实现）：以下接口保留实验性分支，不能作为完整串行化使用
+//
+// 每笔事务由创建线程读写，并在该线程上显式提交或回滚
+// 同一线程可以复制事务句柄，所有句柄共享暂存数据和结束状态
+// SERIALIZABLE 的完整隔离保证仍待实
 class TranContext {
   friend class TranManager;
+  // 白盒测试需要构造指定 ID 的事务
+  friend class LSMTest; 
 
   // TranContext 构造函数不要成public，大家都通过 new_tranc() 唯一入口构建 
   TranContext(uint64_t tranc_id, std::shared_ptr<LSMEngine> engine,
               std::shared_ptr<TranManager> tranManager,
               const enum IsolationLevel &isolation_level);
+
+public:
   void put(const std::string &key, const std::string &value);
   void remove(const std::string &key);
   std::optional<std::string> get(const std::string &key);
-
-public:
+  
   // 一个事务只有一份暂存数据和结束状态。需要另一个句柄时，复制 shared_ptr
   TranContext(const TranContext &) = delete;
   TranContext &operator=(const TranContext &) = delete;

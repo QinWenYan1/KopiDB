@@ -1304,8 +1304,8 @@ TranManager::new_tranc(const IsolationLevel &isolation_level) {
   // 4. 创建事务上下文
   //    shared_from_this() 获取共享当前管理器所有权的 shared_ptr 并绑定
   //    TranContext 构造函数会将其保存为 weak_ptr，避免循环引用
-  auto context = std::make_shared<TranContext>(
-      tranc_id, engine_, shared_from_this(), isolation_level);
+  auto context = std::shared_ptr<TranContext>(
+      new TranContext(tranc_id, engine_, shared_from_this(), isolation_level));
 
   // 5. 登记活跃事务，管理器持有该上下
   activeTrans_.emplace(tranc_id, context);
