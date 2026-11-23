@@ -53,6 +53,12 @@ public:
   void remove(const std::string &key);
   std::optional<std::string> get(const std::string &key);
 
+  // 一个事务只有一份暂存数据和结束状态。需要另一个句柄时，复制 shared_ptr
+  TranContext(const TranContext &) = delete;
+  TranContext &operator=(const TranContext &) = delete;
+  TranContext(TranContext &&) = delete;
+  TranContext &operator=(TranContext &&) = delete;
+
   // test_fail 仅用于恢复测试：
   // 暂存型事务确认 COMMIT 日志写出后，跳过数据应用和完成标记
   // 仍登记提交并返回 true，供测试关闭重启后验证 WAL 恢复

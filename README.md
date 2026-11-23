@@ -122,6 +122,8 @@ int main() {
 
 **事务与线程** 每个线程同时最多开启一笔显式事务。事务由创建它的线程读写，并在该线程上调用 `commit()` 或 `abort()` 结束。这两条约定适用于所有隔离级别，已发布的 SDK 尚未强制检查。多个线程可以共享同一个 DB。
 
+在 C++ 中，`auto alias = tx;` 会复制 `begin_tran()` 返回的句柄。两个句柄指向同一笔事务，都只能由创建线程使用；通过任一把事务提交或回滚，事务就结束了。当前源码禁止按值复制或移动 `TranContext` 对象。
+
 公开写入接口拒绝空 key，`put`/`put_batch` 拒绝空 value，删除请用 `remove`。同一迭代器应串行使用。`SERIALIZABLE` 尚未完整实现。普通查询允许看到其他读未提交事务的修改。更多事务和持久性说明见[使用手册](docs/usage.md#concurrency-and-transactions)。
 
 完整的事务回滚、批量操作和有序遍历示例见[五类 API 用法](docs/usage.md#cpp-example)。

@@ -122,6 +122,8 @@ Data is stored in `my-data/` under the application's working directory. No confi
 
 **Transactions and threads.** Keep at most one explicit transaction active per thread. Read, write, and call `commit()` or `abort()` on the thread that created it. These rules apply at every isolation level. Released SDKs do not yet enforce them. Multiple threads can share a DB instance.
 
+In C++, `auto alias = tx;` copies the handle returned by `begin_tran()`. Both handles refer to the same transaction and must be used on its creating thread. Committing or aborting through either handle ends the transaction for both. The current source disables copying and moving the `TranContext` object itself.
+
 Public writes reject empty keys, and `put`/`put_batch` reject empty values. Use `remove` for deletion. Use each iterator serially. `SERIALIZABLE` is incomplete. Ordinary reads can see changes from active read-uncommitted transactions. See the [usage manual](docs/usage.md#concurrency-and-transactions) for isolation, concurrency, and persistence details.
 
 The [complete API example](docs/usage.md#cpp-example) also demonstrates rollback, batch operations, and ordered iteration.
