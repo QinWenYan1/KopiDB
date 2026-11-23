@@ -1168,8 +1168,9 @@ void TranManager::add_ready_to_flush_tranc_id(uint64_t tranc_id,
     // 上下文，才释放这个线程开启下一笔事务的名额
     if (thread_transaction_.lock() == finished->second)
       thread_transaction_.reset(); 
+
+    activeTrans_.erase(finished);
   }
-  activeTrans_.erase(finished);
 }
 
 // Lab 5.2 更新持久化的事务状态信息
@@ -1287,13 +1288,13 @@ TranManager::new_tranc(const IsolationLevel &isolation_level) {
   //    shared_from_this() 获取共享当前管理器所有权的 shared_ptr 并绑定
   //    TranContext 构造函数会将其保存为 weak_ptr，避免循环引用
   auto context = std::make_shared<TranContext>(
-      tranc_id, engine_, shared_from_this(), isolation_level);
-
-  // 管理器登记成功后，再记到当前线程
-  thread_transaction_ = context; 
+      tranc_id, engine_, shared_from_this(), isolation_level); 
 
   // 5. 登记活跃事务，管理器持有该上下
   activeTrans_.emplace(tranc_id, context);
+
+  // 管理器登记成功后，再记到当前线程
+  thread_transaction_ = context;
 
   spdlog::debug("TranManager--new_tranc(): Created transaction ID={} with "
                 "isolation level={}",

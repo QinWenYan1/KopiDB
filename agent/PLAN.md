@@ -44,7 +44,7 @@
 2. **如何反馈误用。** 建议统一抛 `std::logic_error`。同线程重复开事务、活动事务内对本库发起独立写、其他线程调用活动句柄都应明确指出操作名与事务 ID，并保留原事务；`get/remove/put` 等事务内操作使用原事务资格。跨线程复制 `shared_ptr` 本身不是可拦截的 API 调用，检查发生在上下文入口。
 3. **合法的等待。** 另一线程在独占期间请求普通写，或请求独占时仍有其他线程的活动事务，可以等待。长等告警注明操作、等待时间和可定位的事务 ID；误用在等待前反馈。锁选型时同时核对等待诊断与线程退出前结束事务的约定。
 
-**当前函数**：`TranManager::new_tranc()`。在本线程已经有活跃的显式事务时，于取 ID 前拒绝创建；创建且登记成功后填入线程槽。本步同时在 `add_ready_to_flush_tranc_id()` 的活跃项移除处按上下文身份清槽，覆盖保留已结束句柄后再开事务的用法。原先通过同一线程保持两笔活跃事务的工厂/冲突用例需要随规则落地迁移，保留其所有权、ID 和冲突断言。
+**当前函数**：`TranManager::add_ready_to_flush_tranc_id()` 的活跃项移除分支待修。同库拒绝第二笔显式事务已通过。将 `activeTrans_.erase(finished)` 移入查到元素的分支，并让 `new_tranc()` 在活跃表登记成功后再填入线程槽。修后复跑下列三项，再接入独立写入口。旧工厂/冲突用例的迁移保留其所有权、ID 和冲突断言。
 
 首次基线：`xmake build test_lsm` 成功。独立目录运行 `LSMTest.TranContextGetRejectsOtherThread`，0/1 通过。旧实现允许另一个线程读取暂存值，没有抛出 `std::logic_error`；创建线程后续读取、提交和普通点查均通过。接入检查后用同一个用例验收。
 
@@ -55,3 +55,5 @@
 阶段①局部验收：`abort()` 的线程检查早于结束状态、WAL 及回滚登记。独立目录中 LSM 回滚专项 8/8、WAL 回滚专项 6/6 通过。上轮失败的跨线程回滚用例已通过，创建线程可以提交原来的暂存值。下一入口 `LSMTest.TranContextGetIsolationLevelRejectsOtherThread` 的基线为 0/1，唯一失败是外线程调用没有抛出 `std::logic_error`。
 
 阶段①局部验收：`get_isolation_level()` 已在返回级别前检查创建线程。独立目录运行六个事务方法的跨线程拒绝用例和一项 `remove/put` 回归，7/7 通过。同库、跨库重复开启显式事务的两个新用例（`LSMTest.BeginTranRejectsSecond*`）在修改工厂前 0/2 通过：两种情况下第二次申请都成功并占用了 ID。测试还保留已结束句柄再次开事务，并覆盖另一库同 ID 的普通写结束登记。
+
+线程槽首次接入：`xmake build test_lsm` 成功。三个用例在独立临时目录分别运行，同库重复 begin 用例通过，跨库重复 begin 及普通 `DirectPutWritesWalAndRegistersAutomaticFlush` 均因 SIGSEGV 退出。普通写结束时管理器找不到对应活跃上下文，但仍对 `end()` 调用了 `erase`。临时源码副本只将这行移进命中分支，重编并重链后原三项全部通过（3/3）。工作区业务修改待用户手动加入后验收。
