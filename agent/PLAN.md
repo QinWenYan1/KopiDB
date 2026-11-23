@@ -44,7 +44,7 @@
 2. **如何反馈误用。** 建议统一抛 `std::logic_error`。同线程重复开事务、活动事务内对本库发起独立写、其他线程调用活动句柄都应明确指出操作名与事务 ID，并保留原事务；`get/remove/put` 等事务内操作使用原事务资格。跨线程复制 `shared_ptr` 本身不是可拦截的 API 调用，检查发生在上下文入口。
 3. **合法的等待。** 另一线程在独占期间请求普通写，或请求独占时仍有其他线程的活动事务，可以等待。长等告警注明操作、等待时间和可定位的事务 ID；误用在等待前反馈。锁选型时同时核对等待诊断与线程退出前结束事务的约定。
 
-**当前函数**：`LSM::remove()` 和 `LSM::remove_batch()`。本轮一起给出剩余两个调用点。单键删除在空 key 检查之后、批量删除在整批 key 校验之后调用 `require_direct_write_allowed(__func__)`，两者都在分配 ID 和追加 WAL 前检查。空批次沿用原有的提前返回。
+**当前修改位置**：[TranContext 的公开构造函数声明](../include/lsm/transaction.h)。按阶段①第 1 项，将对象本身的拷贝与移动构造、赋值显式声明为 `= delete`。继续支持复制 `begin_tran()` 返回的 `shared_ptr`，同一线程上的多个句柄应看到相同的暂存值和结束状态。
 
 首次基线：`xmake build test_lsm` 成功。独立目录运行 `LSMTest.TranContextGetRejectsOtherThread`，0/1 通过。旧实现允许另一个线程读取暂存值，没有抛出 `std::logic_error`；创建线程后续读取、提交和普通点查均通过。接入检查后用同一个用例验收。
 
@@ -63,3 +63,5 @@
 阶段①局部验收：`LSM::put()` 及管理器的同线程、同库检查已接通，`xmake build test_lsm` 成功。在独立临时目录运行普通写、合法批量写、跨库、跨线程写及事务工厂相关用例，17/17 通过。下一入口的基线 `LSMTest.DirectPutBatchRejectsActiveTransactionOnCallingThread` 为 0/1：有活动事务的线程调用本库非空合法批量写时，已有键被覆盖、新键可见、WAL 从 48 增至 119 字节，并额外消耗一个 ID。
 
 阶段①局部验收：`LSM::put_batch()` 在整批参数校验后、取 ID 前检查一次，原先失败的用例已通过。工作区构建成功，定向回归 22/22 通过。两种删除共用的新用例 `LSMTest.DirectRemoveAndRemoveBatchRejectActiveTransactionOnCallingThread` 在工作区为 0/1：单删和批删均未拒绝，三条旧值不可见，WAL 从 136 增至 227 字节，共消耗两个 ID。只在临时源码副本接入两处检查并重编重链，相同回归加上新用例为 23/23。待用户手动接入后验收工作区。
+
+阶段①局部验收：在工作区提交 `d6066ba` 构建 `test_lsm`，上轮的 23 项定向回归 23/23 通过，包括两种删除被拒后原值、WAL、ID 和原事务的提交检查；六个方法的跨线程拒绝与三项创建测试另跑 9/9 通过。四个独立写入口均已验收。新用例 `LSMTest.TranContextDisallowsValueCopiesButAllowsSharedHandles` 的基线为 0/1：对象的拷贝构造和移动构造仍可用，复制句柄后的读写与结束行为正确。在临时头文件上加入四条删除声明，类型断言编译通过，工作区业务改动由用户手写。

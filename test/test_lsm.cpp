@@ -21,6 +21,7 @@
 #include <string>
 #include <thread>
 #include <tuple>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 #ifndef _WIN32
@@ -2439,6 +2440,23 @@ TEST_F(LSMTest, TranContextGetIsolationLevelRejectsOtherThread) {
   EXPECT_THROW(foreign_level.get(), std::logic_error);
   EXPECT_EQ(tx->get_isolation_level(), IsolationLevel::READ_OP_COMMITTED);
   EXPECT_TRUE(tx->abort());
+}
+
+// 一个事务只有一份暂存数据和结束状态。同一线程可以复制句柄，共用这份状态。
+TEST_F(LSMTest, TranContextDisallowsValueCopiesButAllowsSharedHandles) {
+  EXPECT_FALSE(std::is_copy_constructible_v<TranContext>);
+  EXPECT_FALSE(std::is_move_constructible_v<TranContext>);
+  EXPECT_FALSE(std::is_copy_assignable_v<TranContext>);
+  EXPECT_FALSE(std::is_move_assignable_v<TranContext>);
+
+  LSM db(test_dir);
+  auto tx = db.begin_tran(IsolationLevel::REPEATABLE_READ);
+  auto alias = tx;
+  alias->put("key", "pending");
+  EXPECT_EQ(tx->get("key"), std::make_optional(std::string("pending")));
+  ASSERT_TRUE(tx->commit());
+  EXPECT_FALSE(alias->abort());
+  EXPECT_EQ(db.get("key"), std::make_optional(std::string("pending")));
 }
 
 // 目的：新事务应处于未结束状态，并为后续操作保留正确的事务身份和开始记录。
