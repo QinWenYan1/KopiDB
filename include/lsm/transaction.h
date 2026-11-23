@@ -45,9 +45,9 @@ class TranManager;
 class TranContext {
   friend class TranManager;
   // 白盒测试需要构造指定 ID 的事务
-  friend class LSMTest; 
+  friend class LSMTest;
 
-  // TranContext 构造函数不要成public，大家都通过 new_tranc() 唯一入口构建 
+  // TranContext 构造函数不要成public，大家都通过 new_tranc() 唯一入口构建
   TranContext(uint64_t tranc_id, std::shared_ptr<LSMEngine> engine,
               std::shared_ptr<TranManager> tranManager,
               const enum IsolationLevel &isolation_level);
@@ -56,7 +56,7 @@ public:
   void put(const std::string &key, const std::string &value);
   void remove(const std::string &key);
   std::optional<std::string> get(const std::string &key);
-  
+
   // 一个事务只有一份暂存数据和结束状态。需要另一个句柄时，复制 shared_ptr
   TranContext(const TranContext &) = delete;
   TranContext &operator=(const TranContext &) = delete;
