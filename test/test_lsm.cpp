@@ -2412,6 +2412,41 @@ TEST_F(LSMTest, TranContextConstructorPreservesOwnershipRules) {
   EXPECT_TRUE(engine_observer.expired());
 }
 
+// 活跃期间拒绝同线程再开事务；提交或回滚后，即使旧句柄还在，也能领取下一个 ID。
+TEST_F(LSMTest, BeginTranRejectsSecondActiveTransactionOnSameThread) {
+  LSM db(test_dir);
+  const auto level = IsolationLevel::REPEATABLE_READ;
+  auto first = db.begin_tran(level);
+  first->put("key", "from-first");
+  EXPECT_THROW(db.begin_tran(level), std::logic_error);
+  ASSERT_TRUE(first->commit());
+  EXPECT_EQ(db.get("key"), std::make_optional(std::string("from-first")));
+
+  auto second = db.begin_tran(level);
+  EXPECT_EQ(second->tranc_id_, first->tranc_id_ + 1);
+  ASSERT_TRUE(second->abort());
+  auto third = db.begin_tran(level);
+  EXPECT_EQ(third->tranc_id_, second->tranc_id_ + 1);
+  EXPECT_TRUE(third->abort());
+}
+
+// 每线程的显式事务名额跨 DB 共享；另一库的普通写结束时不能清掉原事务的登记。
+TEST_F(LSMTest, BeginTranRejectsSecondDatabaseOnSameThread) {
+  LSM first_db(test_dir + "/first");
+  LSM second_db(test_dir + "/second");
+  const auto level = IsolationLevel::READ_OP_COMMITTED;
+  auto active = first_db.begin_tran(level);
+  // 两个库分别分配 ID；这笔普通写和 active 在各自库中都使用第一个 ID。
+  second_db.put("key", "independent");
+  EXPECT_THROW(second_db.begin_tran(level), std::logic_error);
+  ASSERT_TRUE(active->abort());
+
+  auto next = second_db.begin_tran(level);
+  EXPECT_EQ(next->tranc_id_, 2u);
+  EXPECT_EQ(next->get("key"), std::make_optional(std::string("independent")));
+  EXPECT_TRUE(next->commit());
+}
+
 // 目的：new_tranc 创建具有独立 ID 的上下文，并将它们登记为活跃事务。
 // 场景：不同隔离级别各创建一个事务；调用者释放句柄后，管理器仍持有上下文。
 //       管理器销毁后上下文也能释放，避免双方互持形成循环引用。
