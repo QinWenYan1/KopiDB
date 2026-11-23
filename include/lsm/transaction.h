@@ -103,7 +103,8 @@ public:
   void reset_after_clear();
   void init_new_wal();
   void set_engine(std::shared_ptr<LSMEngine> engine);
-  // ! SERIALIZABLE（未完整实现）：允许创建上下文，不代表已提供完整隔离保证。
+  // ! SERIALIZABLE（未完整实现）：允许创建上下文，不代表已提供完整隔离保证
+  void require_direct_write_allowed(const char *operation) const; 
   std::shared_ptr<TranContext> new_tranc(const IsolationLevel &isolation_level);
 
   uint64_t getNextTransactionId();

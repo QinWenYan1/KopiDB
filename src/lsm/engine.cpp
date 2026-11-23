@@ -1210,6 +1210,8 @@ void LSM::put(const std::string &key, const std::string &value) {
         "LSM::put: value must not be empty; use remove()");
   }
 
+  tran_manager_->require_direct_write_allowed(__func__);
+  
   // 2. 一次普通写入使用一个独立的新版本号
   // 提前预留三条记录的位置；如果这里分配失败，还没有消耗 ID
   std::vector<Record> records;

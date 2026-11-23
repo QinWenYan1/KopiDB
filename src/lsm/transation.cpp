@@ -1259,6 +1259,20 @@ uint64_t TranManager::get_checkpoint_tranc_id() {
   return *flushedTrancIds_.begin();
 }
 
+void TranManager::require_direct_write_allowed(const char *operation) const {
+  auto active = thread_transaction_.lock(); 
+
+  // 线程槽跨 DB 共用。线程在 A 库开了事务，仍然可以向 B 库普通写入
+  // 这里比较的是两个管理器是否为同一个对象
+  if(!active || active->tranManager_.lock().get() != this)
+    return; 
+
+  throw std::logic_error(
+    std::string("LSM::") + operation + ": transaction " +
+    std::to_string(active->tranc_id_) +
+    " is active on this thread. Use its handle or finish it first.");
+}
+
 // Lab 5.2 事务上下文分配
 // 分配 ID → 创建上下文 → 登记到管理器 → 返回上下文
 // SERIALIZABLE（未完整实现）：允许创建实验性上下文，但未提供完整的串行化调度。
