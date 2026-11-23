@@ -1286,6 +1286,9 @@ void LSM::put_batch(
           "LSM::put_batch: value must not be empty; use remove_batch()");
   }
 
+  // 所有 key/value 都合法后，整批只检查一次当前线程能否独立写入本库
+  tran_manager_->require_direct_write_allowed(__func__);
+
   // 3. 整批需要：一条 CREATE、每项一条 PUT、一条 COMMIT
   // 先预留容量，再分配 ID；预留失败时还没有消耗编号
   std::vector<Record> records;
