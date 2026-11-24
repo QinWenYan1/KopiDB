@@ -32,7 +32,7 @@ class LSMEngine;
 class TranManager;
 
 // 一个 TranContext 对应一个事务，每次 begin_tran() 都创建独立上下文
-// 本类不提供内部线程同步，也不会自动绑定到某个线程
+// 本类不提供内部线程同步，自动绑定到某个线程
 //
 // 一个线程执行本事务的 put/get/remove/commit/abort
 // 事务由创建线程操作，并由该线程显式提交或回滚
