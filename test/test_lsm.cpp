@@ -3,6 +3,7 @@
 #include "lsm/engine.h"
 #include "lsm/level_iterator.h"
 #include "sst/concact_iterator.h"
+#include "transaction_test_thread.h"
 #include "utils/files.h"
 #include "wal/record.h"
 #include <algorithm>
@@ -71,6 +72,8 @@ protected:
 } // namespace kopidb
 
 using namespace ::kopidb;
+using kopidb::test::ThreadOwnedTransaction;
+using kopidb::test::TransactionTestThread;
 
 namespace {
 using MvccRecord = std::tuple<std::string, std::string, uint64_t>;
@@ -3110,10 +3113,12 @@ TEST_F(LSMTest, TransactionEndRegistrationReleasesOnlyFinishedContexts) {
   auto engine = std::make_shared<LSMEngine>(test_dir);
   auto manager = bind_test_manager(engine);
   auto committed = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
-  auto aborted = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
-  auto active = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
+  TransactionTestThread aborted_owner, active_owner;
+  auto open = [&] { return manager->new_tranc(IsolationLevel::REPEATABLE_READ); };
+  auto aborted = aborted_owner.run(open);
+  auto active = active_owner.run(open);
   const auto committed_id = committed->tranc_id_;
-  const auto aborted_id = aborted->tranc_id_;
+  const auto aborted_id = aborted_owner.run([&] { return aborted->tranc_id_; });
   std::weak_ptr<TranContext> committed_observer = committed;
   std::weak_ptr<TranContext> aborted_observer = aborted;
   std::weak_ptr<TranContext> active_observer = active;
@@ -3130,10 +3135,17 @@ TEST_F(LSMTest, TransactionEndRegistrationReleasesOnlyFinishedContexts) {
   EXPECT_TRUE(committed_observer.expired());
   EXPECT_FALSE(manager->is_aborted(committed_id));
 
-  manager->add_ready_to_flush_tranc_id(aborted_id, TransactionState::ABORTED);
+  aborted_owner.run([&] {
+    manager->add_ready_to_flush_tranc_id(aborted_id, TransactionState::ABORTED);
+  });
   EXPECT_TRUE(aborted_observer.expired());
   EXPECT_TRUE(manager->is_aborted(aborted_id));
   EXPECT_FALSE(active_observer.expired());
+  active_owner.run([&] {
+    auto remaining = active_observer.lock();
+    ASSERT_NE(remaining, nullptr);
+    EXPECT_TRUE(remaining->abort());
+  });
 }
 
 // commit 测试单独管理容量配置；测试结束后恢复，避免影响其他用例。
@@ -3566,11 +3578,13 @@ class TranReadVisibilityTest : public TranCommitTest {};
 TEST_F(TranReadVisibilityTest, ManagerReadPolicyTracksCommit) {
   const TranManager &read_only_manager = *manager;
   auto first = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
-  auto second = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
+  ThreadOwnedTransaction second([&] { return manager->new_tranc(IsolationLevel::REPEATABLE_READ); });
   const uint64_t first_id = first->tranc_id_;
-  const uint64_t second_id = second->tranc_id_;
   first->put("policy-first", "value");
-  second->put("policy-second", "value");
+  const auto second_id = second.run([](TranContext &tx) {
+    tx.put("policy-second", "value");
+    return tx.tranc_id_;
+  });
 
   EXPECT_FALSE(read_only_manager.is_aborted(first_id));
   EXPECT_FALSE(read_only_manager.should_skip_read(first_id, false));
@@ -3582,7 +3596,7 @@ TEST_F(TranReadVisibilityTest, ManagerReadPolicyTracksCommit) {
   EXPECT_FALSE(read_only_manager.should_skip_read(first_id, true));
   EXPECT_TRUE(read_only_manager.should_skip_read(second_id, true));
 
-  ASSERT_TRUE(second->commit());
+  ASSERT_TRUE(second.run([](TranContext &tx) { return tx.commit(); }));
   EXPECT_FALSE(read_only_manager.should_skip_read(second_id, false));
   EXPECT_FALSE(read_only_manager.should_skip_read(second_id, true));
 }
@@ -3738,11 +3752,13 @@ TEST_F(TranReadVisibilityTest,
   auto active = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
   const uint64_t active_id = active->tranc_id_;
   active->put("k", "active");
-  auto cancelled = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
-  cancelled->remove("k");
-  engine->flush();
-  ASSERT_EQ(engine->memtable.get_total_size(), 0u);
-  ASSERT_TRUE(cancelled->abort());
+  std::async(std::launch::async, [&] {
+    auto cancelled = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+    cancelled->remove("k");
+    engine->flush();
+    ASSERT_EQ(engine->memtable.get_total_size(), 0u);
+    ASSERT_TRUE(cancelled->abort());
+  }).get();
 
   const auto old = std::make_optional(std::make_pair(std::string("old"), base_id));
   EXPECT_EQ(engine->get("k", 0, true), old);
@@ -3770,13 +3786,14 @@ TEST_F(TranReadVisibilityTest, RejectsDirtyValuesAndTombstonesBeforeCaching) {
       auto writer = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
       if (tombstone) writer->remove(key);
       else writer->put(key, "dirty");
-      auto reader = manager->new_tranc(level);
-      EXPECT_EQ(reader->get(key), std::make_optional(std::string("old")))
+      ThreadOwnedTransaction reader([&] { return manager->new_tranc(level); });
+      auto read_key = [&](TranContext &tx) { return tx.get(key); };
+      EXPECT_EQ(reader.run(read_key), std::make_optional(std::string("old")))
           << "First read must exclude the other transaction's uncommitted record";
       ASSERT_TRUE(writer->abort());
-      EXPECT_EQ(reader->get(key), std::make_optional(std::string("old")))
+      EXPECT_EQ(reader.run(read_key), std::make_optional(std::string("old")))
           << "A cached dirty value or false absence must not survive abort";
-      ASSERT_TRUE(reader->abort());
+      ASSERT_TRUE(reader.run([](TranContext &tx) { return tx.abort(); }));
     }
   }
 }
@@ -3814,32 +3831,37 @@ TEST_F(TranReadVisibilityTest, ContextReadsFilterUncommittedSstVersions) {
     }
   }
 
-  auto check_committed = [](const std::shared_ptr<TranContext> &reader) {
-    EXPECT_EQ(reader->get("updated"), std::make_optional(std::string("old")));
-    EXPECT_EQ(reader->get("restored"), std::make_optional(std::string("keep")));
-    EXPECT_FALSE(reader->get("added"));
-    EXPECT_FALSE(reader->get("deleted"));
+  auto check_committed = [](TranContext &reader) {
+    EXPECT_EQ(reader.get("updated"), std::make_optional(std::string("old")));
+    EXPECT_EQ(reader.get("restored"), std::make_optional(std::string("keep")));
+    EXPECT_FALSE(reader.get("added"));
+    EXPECT_FALSE(reader.get("deleted"));
   };
-  std::vector<std::shared_ptr<TranContext>> readers;
+  std::vector<std::unique_ptr<ThreadOwnedTransaction>> readers;
   for (auto level : {IsolationLevel::READ_OP_COMMITTED,
                      IsolationLevel::REPEATABLE_READ, IsolationLevel::SERIALIZABLE}) {
-    readers.push_back(manager->new_tranc(level));
+    readers.push_back(std::make_unique<ThreadOwnedTransaction>(
+        [&] { return manager->new_tranc(level); }));
     SCOPED_TRACE(static_cast<int>(level));
-    check_committed(readers.back());
+    readers.back()->run(check_committed);
   }
-  auto dirty_reader = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
-  EXPECT_EQ(dirty_reader->get("updated"), std::make_optional(std::string("dirty")));
-  EXPECT_FALSE(dirty_reader->get("restored"));
-  EXPECT_EQ(dirty_reader->get("added"), std::make_optional(std::string("dirty")));
-  EXPECT_EQ(dirty_reader->get("deleted"), std::make_optional(std::string("dirty")));
+  ThreadOwnedTransaction dirty_reader([&] {
+    return manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  });
+  dirty_reader.run([](TranContext &reader) {
+    EXPECT_EQ(reader.get("updated"), std::make_optional(std::string("dirty")));
+    EXPECT_FALSE(reader.get("restored"));
+    EXPECT_EQ(reader.get("added"), std::make_optional(std::string("dirty")));
+    EXPECT_EQ(reader.get("deleted"), std::make_optional(std::string("dirty")));
+  });
 
   ASSERT_TRUE(writer->abort());
   for (const auto &reader : readers) {
-    check_committed(reader);
-    EXPECT_TRUE(reader->abort());
+    reader->run(check_committed);
+    EXPECT_TRUE(reader->run([](TranContext &tx) { return tx.abort(); }));
   }
-  check_committed(dirty_reader);
-  EXPECT_TRUE(dirty_reader->abort());
+  dirty_reader.run(check_committed);
+  EXPECT_TRUE(dirty_reader.run([](TranContext &tx) { return tx.abort(); }));
 }
 
 // 目的：RC 在写事务提交后重查新值，RR/SERIALIZABLE 保持首次合法结果及不存在缓存。
@@ -3855,35 +3877,42 @@ TEST_F(TranReadVisibilityTest, ContextCacheAndRefreshFollowIsolation) {
   writer->put("k", "new");
   writer->put("missing", "created");
   writer->put("deleted", "revived");
-  std::vector<std::shared_ptr<TranContext>> readers;
+  const auto check_old = [](TranContext &reader) {
+    EXPECT_EQ(reader.get("k"), std::make_optional(std::string("old")));
+    EXPECT_FALSE(reader.get("missing"));
+    EXPECT_FALSE(reader.get("deleted"));
+  };
+  std::vector<std::unique_ptr<ThreadOwnedTransaction>> readers;
   for (auto level : {IsolationLevel::READ_OP_COMMITTED,
                      IsolationLevel::REPEATABLE_READ, IsolationLevel::SERIALIZABLE}) {
-    auto reader = manager->new_tranc(level);
-    EXPECT_EQ(reader->get("k"), std::make_optional(std::string("old")));
-    EXPECT_FALSE(reader->get("missing"));
-    EXPECT_FALSE(reader->get("deleted"));
-    readers.push_back(std::move(reader));
+    readers.push_back(std::make_unique<ThreadOwnedTransaction>(
+        [&] { return manager->new_tranc(level); }));
+    readers.back()->run(check_old);
   }
 
   ASSERT_TRUE(writer->commit());
-  EXPECT_EQ(readers[0]->get("k"), std::make_optional(std::string("new")));
-  EXPECT_EQ(readers[0]->get("missing"), std::make_optional(std::string("created")));
-  EXPECT_EQ(readers[0]->get("deleted"), std::make_optional(std::string("revived")));
+  readers.front()->run([](TranContext &reader) {
+    EXPECT_EQ(reader.get("k"), std::make_optional(std::string("new")));
+    EXPECT_EQ(reader.get("missing"), std::make_optional(std::string("created")));
+    EXPECT_EQ(reader.get("deleted"), std::make_optional(std::string("revived")));
+  });
   for (size_t i = 1; i < readers.size(); ++i) {
-    EXPECT_EQ(readers[i]->get("k"), std::make_optional(std::string("old")));
-    EXPECT_FALSE(readers[i]->get("missing"));
-    EXPECT_FALSE(readers[i]->get("deleted"));
+    readers[i]->run(check_old);
   }
   auto fresh = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
   EXPECT_EQ(fresh->get("missing"), std::make_optional(std::string("created")));
   EXPECT_EQ(fresh->get("deleted"), std::make_optional(std::string("revived")));
+  EXPECT_TRUE(fresh->abort());
 
   auto later = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
   later->put("k", "latest");
   ASSERT_TRUE(later->commit());
-  EXPECT_EQ(readers[0]->get("k"), std::make_optional(std::string("latest")));
-  for (const auto &reader : readers) EXPECT_TRUE(reader->abort());
-  EXPECT_TRUE(fresh->abort());
+  readers.front()->run([](TranContext &reader) {
+    EXPECT_EQ(reader.get("k"), std::make_optional(std::string("latest")));
+  });
+  for (const auto &reader : readers) {
+    EXPECT_TRUE(reader->run([](TranContext &tx) { return tx.abort(); }));
+  }
 }
 
 // 目的：严格读取过滤他人的未提交版本后，自身暂存修改仍优先于合法旧值与缓存。
@@ -3893,8 +3922,13 @@ TEST_F(TranReadVisibilityTest, ContextOwnChangesOverrideFilteredCache) {
   auto base = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
   base->put("k", "old");
   ASSERT_TRUE(base->commit());
-  auto writer = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
-  writer->put("k", "dirty");
+  ThreadOwnedTransaction writer([&] {
+    return manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
+  });
+  const auto writer_id = writer.run([](TranContext &tx) {
+    tx.put("k", "dirty");
+    return tx.tranc_id_;
+  });
   for (auto level : {IsolationLevel::READ_OP_COMMITTED,
                      IsolationLevel::REPEATABLE_READ, IsolationLevel::SERIALIZABLE}) {
     SCOPED_TRACE(static_cast<int>(level));
@@ -3909,10 +3943,10 @@ TEST_F(TranReadVisibilityTest, ContextOwnChangesOverrideFilteredCache) {
     EXPECT_EQ(engine->get("k", 0, true), std::make_optional(
                   std::make_pair(std::string("old"), base->tranc_id_)));
     EXPECT_EQ(engine->get("k", 0, false), std::make_optional(
-                  std::make_pair(std::string("dirty"), writer->tranc_id_)));
+              std::make_pair(std::string("dirty"), writer_id)));
     EXPECT_TRUE(reader->abort());
   }
-  EXPECT_TRUE(writer->abort());
+  EXPECT_TRUE(writer.run([](TranContext &tx) { return tx.abort(); }));
 }
 
 // 目的：内存/SST 中的新值和新墓碑都拒绝旧事务，且整个暂存集合零写入。
@@ -4235,9 +4269,12 @@ TEST_F(TranCommitTest, TestFailDoesNotBypassWriteConflicts) {
     older->put(key, "staged");
     older->put(only_old, "staged");
     const auto pending = older->operations;
-    auto newer = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
-    newer->put(key, "newer");
-    ASSERT_TRUE(newer->commit());
+    const auto newer_id = std::async(std::launch::async, [&] {
+      auto newer = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+      newer->put(key, "newer");
+      EXPECT_TRUE(newer->commit());
+      return newer->tranc_id_;
+    }).get();
     const auto before = read_wal();
 
     EXPECT_FALSE(older->commit(true));
@@ -4248,7 +4285,7 @@ TEST_F(TranCommitTest, TestFailDoesNotBypassWriteConflicts) {
     EXPECT_EQ(read_wal(), before);
     EXPECT_EQ(engine->get(key, 0),
               std::make_optional(std::make_pair(std::string("newer"),
-                                               newer->tranc_id_)));
+                                               newer_id)));
     EXPECT_FALSE(engine->get(only_old, 0).has_value());
   }
 }
@@ -4400,18 +4437,20 @@ void write_startup_wal(const std::filesystem::path &path,
 TEST_F(LSMTest, StartupRecoveryBindsComponentsForExplicitTransactions) {
   LSM db(test_dir);
   auto writer = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
-  auto reader = db.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+  TransactionTestThread reader_thread;
+  auto reader = reader_thread.run([&] { return db.begin_tran(IsolationLevel::READ_OP_COMMITTED); });
   ASSERT_NE(writer, nullptr);
   ASSERT_NE(reader, nullptr);
-  EXPECT_GT(reader->tranc_id_, writer->tranc_id_);
+  EXPECT_GT(reader_thread.run([&] { return reader->tranc_id_; }), writer->tranc_id_);
 
   writer->put("key", "value");
   EXPECT_EQ(writer->get("key"), std::make_optional(std::string("value")));
-  EXPECT_FALSE(reader->get("key").has_value());
+  auto read_key = [&] { return reader->get("key"); };
+  EXPECT_FALSE(reader_thread.run(read_key).has_value());
   ASSERT_TRUE(writer->commit());
-  EXPECT_EQ(reader->get("key"), std::make_optional(std::string("value")));
+  EXPECT_EQ(reader_thread.run(read_key), std::make_optional(std::string("value")));
   EXPECT_EQ(db.get("key"), std::make_optional(std::string("value")));
-  ASSERT_TRUE(reader->abort());
+  ASSERT_TRUE(reader_thread.run([&] { return reader->abort(); }));
 
   auto file = FileObj::open((std::filesystem::path(test_dir) / "wal.0").string());
   const auto records = Record::decode(file.read_to_slice(0, file.size()));

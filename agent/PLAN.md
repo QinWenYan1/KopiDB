@@ -2,7 +2,7 @@
 
 ## SERIALIZABLE · 单个数据库实例内的悲观并发控制
 
-本轮目标是 C++ 内核的 `SERIALIZABLE` 悲观独占和并发回归。2026-11-23 确认：事务保证覆盖现有上下文的点读、写入和删除，锁的具体实现待定。功能进度 **0/3（0%）**，按验收通过的阶段数计算。业务代码由用户逐函数实现，助手准备测试、执行回归并记录结果。
+本轮目标是 C++ 内核的 `SERIALIZABLE` 悲观独占和并发回归。2026-11-23 确认：事务保证覆盖现有上下文的点读、写入和删除，锁的具体实现待定。功能进度 **1/3（33%）**，按验收通过的阶段数计算。业务代码由用户逐函数实现，助手准备测试、执行回归并记录结果。
 
 ### 用户应观察到的行为
 
@@ -20,14 +20,14 @@
 3. `TranManager::add_ready_to_flush_tranc_id()` 成功结算显式事务后，按该上下文的身份清理线程槽。正常提交、显式回滚及冲突回滚都走这里；普通写的结束登记、重复登记和失败的登记不能误清其他事务。保留已结束事务的用户句柄不占用下一笔的名额。
 4. 在 [engine.cpp](../src/lsm/engine.cpp) 的 `LSM::put/put_batch/remove/remove_batch` 取资格或分配 ID 之前，复用同一线程槽检查本库活动事务。通过 `tx->put/remove` 的事务内操作继续走已有路径。
 
-验收从公开工厂走。当前 `TranContext` 的构造函数和若干字段公开，白盒用例直接组装上下文；工厂登记本身不能拦截手工构造。若将直接构造也作为对外入口，必须覆盖该路径；否则应将其收口成仅工厂与测试夹具可用。
+应用代码通过 `LSM::begin_tran()` 取得已登记的事务。带 ID 的构造函数已设为私有，友元 `TranManager` 负责创建和登记，白盒测试通过 `kopidb::LSMTest` 组装指定版本的数据。
 
-锁实现仍待选定。候选是一把 `std::shared_mutex`（普通事务和普通写持共享锁，可串行化事务持独占锁），或由 `TranManager` 用短时互斥锁、条件变量和计数控制准入。下文内部凭证是计数路线的草案。两条路线都要落实线程约定。
+阶段②讨论草案：每个 `TranManager` 对应一个 DB。首选带定时获取的读写锁 `std::shared_timed_mutex`：需要长等诊断时用 `try_lock_for` 或 `try_lock_shared_for`，达到诊断阈值记录一次后继续等待。普通 `std::shared_mutex` 支持共享和独占，若要在等待期间按时输出诊断，还需要单独的监测机制。若产品要求独占请求排队后禁止新共享操作插队，则考虑下文的计数和条件变量方案。锁类型、等待阈值与异常收尾待共同确认。
 
 | 阶段 | 工作 | 验收 | 状态 |
 | --- | --- | --- | --- |
-| ① 落实两条线程规则 | 先记录创建线程并从 `TranContext::get()` 接入所有者检查，再覆盖其余事务 API、工厂登记、结束清理以及本库独立写入口。 | 跨线程调用、同线程重复开启事务均在产生副作用前报错；创建线程可继续使用、结束事务并开启下一笔。两个线程各自使用自己的事务仍可并发。 | 进行中 |
-| ② 商讨串行化实现 | 比较 `std::shared_mutex` 与管理器计数方案，定下取得与归还资格的时机、合法等待的反馈及锁顺序。 | 确认方案、函数清单和并发测试场景。 | 待开始 |
+| ① 落实两条线程规则 | 先记录创建线程并从 `TranContext::get()` 接入所有者检查，再覆盖其余事务 API、工厂登记、结束清理以及本库独立写入口。 | 跨线程调用、同线程重复开启事务均在产生副作用前报错；创建线程可继续使用、结束事务并开启下一笔。两个线程各自使用自己的事务仍可并发。 | 已验收 |
+| ② 商讨串行化实现 | 比较 标准读写锁与管理器计数方案，定下取得与归还资格的时机、合法等待的反馈及锁顺序。 | 确认方案、函数清单和并发测试场景。 | 讨论中 |
 | ③ 实现并验收串行化 | 接通显式事务和四个普通写入口，为独占增加等待与唤醒。两条路径验收后再移除 `TranContext::commit()` 的旧单键读集校验。 | 值班案例、普通写与混合隔离、提交/回滚唤醒、异常及重开通过 [C++ 事务测试](../test/test_lsm.cpp) 和 [WAL 测试](../test/test_wal.cpp)。 | 待开始 |
 
 **计数路线的候选凭证。** `AdmissionGuard::AdmissionGuard(...)` 接管一次已取得的资格；`AdmissionGuard::AdmissionGuard(AdmissionGuard&&) noexcept` 移交归还责任，使移出的凭证失效；`AdmissionGuard::~AdmissionGuard() noexcept` 只为有效凭证调用一次 `release_admission()`。凭证持有管理器弱引用，不能形成“管理器 → 活跃上下文 → 管理器”的强引用环。每个 DB 独立维护短时互斥锁和条件变量；取得资格后即可释放互斥锁，等待时也不能持有管理器状态锁或存储层锁。
@@ -36,7 +36,7 @@
 
 **现有函数的复用。** `LSM::begin_tran()` 继续转发到工厂，`TranManager::getNextTransactionId()` 继续分配 ID。`TranContext::put/remove/get` 增加入口线程检查后沿用现有存取逻辑。保留 `read_map_` 和通用写冲突检查。端到端验收走 `db.begin_tran()`。
 
-**旧测试迁移。** 阶段③将 `TranCommitWALTest.ReadChangeRejectsCommitWithoutBlockingOtherWriter` 改为双线程验证写者等待、被唤醒及 WAL 顺序。阶段③同步修订 `TranCommitTest.SerialReadValidationIncludesMissingAndDeletedKeys` 和 `TranCommitTest.SerialReadValidationIgnoresAbortedChanges`：通过公开入口覆盖缺失、删除和已回滚版本。保留 `TranCommitTest.RepeatableReadDoesNotValidateUnwrittenReadKeys` 的断言。 现有 C++ 用例若靠一个线程保持两笔活动事务或在事务内发起独立写来制造竞争，改用两个线程保留其原有版本和 WAL 断言。另以单线程用例验证误用立即失败。
+**旧测试迁移。** 阶段①已将同线程重叠事务和跨线程调用迁移为各线程持有各自事务。阶段③接入真正的独占时，需同步调整仍刻意检验实验性行为的调度：包括 `TranCommitWALTest.ReadChangeRejectsCommitWithoutBlockingOtherWriter`、混合隔离读取用例中 RU 与 SERIALIZABLE 重叠的分支、以及旧单键读集校验。对独占分支使用独立线程发起请求，由当前事务先结束，再验收等待者的返回值、WAL 顺序和可见性。保留 RC/RR 既有断言与 `TranCommitTest.RepeatableReadDoesNotValidateUnwrittenReadKeys`。
 
 ### 调用方责任与待定事项
 
@@ -44,7 +44,12 @@
 2. **如何反馈误用。** 建议统一抛 `std::logic_error`。同线程重复开事务、活动事务内对本库发起独立写、其他线程调用活动句柄都应明确指出操作名与事务 ID，并保留原事务；`get/remove/put` 等事务内操作使用原事务资格。跨线程复制 `shared_ptr` 本身不是可拦截的 API 调用，检查发生在上下文入口。
 3. **合法的等待。** 另一线程在独占期间请求普通写，或请求独占时仍有其他线程的活动事务，可以等待。长等告警注明操作、等待时间和可定位的事务 ID；误用在等待前反馈。锁选型时同时核对等待诊断与线程退出前结束事务的约定。
 
-**当前修改位置**：[TranContext 的访问权限](../include/lsm/transaction.h) 和 [TranManager::new_tranc()](../src/lsm/transation.cpp)。工作区构造函数已设为私有；需把 `public:` 放在构造声明与 `put()` 之间，给夹具 `LSMTest` 添加友元声明，并在管理器内直接调用私有构造。修正后重建并验证工厂及公开接口，再进入锁方案讨论。
+**当前讨论位置**：[TranManager::new_tranc()](../src/lsm/transation.cpp)、[LSM 的四个普通写入口](../src/lsm/engine.cpp) 与 `TranManager::add_ready_to_flush_tranc_id()`。以下是设计建议，尚未实施：
+- 显式事务先检查线程规则，取得本库共享或独占资格，再分配 ID、登记上下文。等待资格时须先释放管理器状态锁、SST 锁及内存表锁，已有事务才能完成和唤醒等待者。
+- RU、RC、RR 显式事务共享，SERIALIZABLE 显式事务独占。结束决定已正确应用并完成状态登记后，由创建线程释放资格；即使用户仍持有句柄，下一笔也能进入。
+- 有效普通写 `put/put_batch/remove/remove_batch` 在参数及误用检查之后取得共享资格，覆盖该次完整操作，批量只取得一次。普通 `db.get()` 延续现有读语义。
+- 等待告警和终止事务分别处理。阶段②还要明确可重试异常、WAL 已确认 COMMIT 但数据应用失败、管理器销毁或所有者线程结束时的锁生命周期。遇到部分应用失败须保留提交决定，并向等待者报告需要恢复的状态，不能让它们把部分结果当作成功提交。
+- 验收重点是共享并发、独占等待及唤醒、值班写偏差、普通写无旁路和异常收尾。当前跨 DB 的每线程一笔显式事务约定已按阶段①验收，锁的作用范围为单个 DB。
 
 首次基线：`xmake build test_lsm` 成功。独立目录运行 `LSMTest.TranContextGetRejectsOtherThread`，0/1 通过。旧实现允许另一个线程读取暂存值，没有抛出 `std::logic_error`；创建线程后续读取、提交和普通点查均通过。接入检查后用同一个用例验收。
 
@@ -71,3 +76,5 @@
 生产代码仅在 `TranManager::new_tranc()` 创建上下文。测试中的 55 个显式指定 ID 的构造点已归集到 `LSMTest::make_context()`，相应的 42 项白盒用例通过。下一个验收用例 `LSMTest.TranContextRequiresFactoryToCreateTransaction` 在工作区为 0/1，唯一失败是普通代码仍可从 ID、引擎、管理器和隔离级别直接构造上下文。临时副本应用私有构造及工厂两处调整后，以现有 Debug 构建参数重编受影响单元，79/79 项去重用例通过。业务修改仍由用户手动加入。
 
 本轮工作区构建检查：`xmake build test_lsm` 报测试夹具无法调用私有构造，公开读写调用也遇到私有成员访问错误；`xmake build kopidb` 单独确认 `new_tranc()` 仍使用 `std::make_shared<TranContext>`，标准库无权调用私有构造。两项目标均未完成构建，本轮没有运行单元测试。
+
+2026-11-24 阶段①已验收。工作区重新构建四个 C++ 测试目标，约定的工厂、白盒与公开接口 79/79 通过。额外验证发现 21 个旧用例的操作顺序违反新的线程约定（LSM 9、WAL 12）。已调整测试，让重叠的事务各由所属线程使用，或在循环再次开启之前显式结束前一笔。WAL 故障注入继续使用真实的文件轮换错误。最终独立目录回归：LSM 182/182（排除 `Persistence`、`BigPersistence`、`BigPersistence2`、`SmallConfigLargeDataPersistent` 四项），WAL 148/148，Compact 与 WiscKey 事务专项 3/3，共 333/333。79 项包含在上述用例中。`transaction.h` 类前的“不会自动绑定”说明与已验收实现冲突，后续编辑头文件时由用户同步修正文案。

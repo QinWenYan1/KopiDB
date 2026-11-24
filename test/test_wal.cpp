@@ -3,6 +3,7 @@
 #include "lsm/engine.h"
 #include "config/config.h"
 #include "lsm/transaction.h"
+#include "transaction_test_thread.h"
 #include "wal/wal.h"
 #include <chrono>
 #include <cstddef>
@@ -10,6 +11,7 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <future>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <limits>
@@ -26,6 +28,7 @@
 
 using namespace testing;
 using namespace ::kopidb;
+using kopidb::test::ThreadOwnedTransaction;
 
 // ! SERIALIZABLE（未完整实现）：本文件涉及该级别的用例只验证现有单键行为及 WAL。
 // 日志和提交测试通过，不代表已验证范围幻读保护或完整可串行化。
@@ -1648,6 +1651,16 @@ TEST_F(TranManagerWALTest, ResetAfterClearPreservesIdsAndAllowsFreshProgress) {
 // 通过公开事务接口验收 WAL 接入；每个测试使用新目录，不调用尚未实现的启动恢复。
 class TranPutWALTest : public WALTest {
 protected:
+  // 在独立线程一次提交足量记录。下一条 WAL 写入会尝试轮换，
+  // 从而可用占用的 wal.1 检查被测事务的真实 I/O 失败路径。
+  bool fill_wal_for_rotation() {
+    return std::async(std::launch::async, [&] {
+      auto padding = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+      padding->put("padding", std::string(5000, 'v'));
+      return padding->commit();
+    }).get();
+  }
+
   void SetUp() override {
     WALTest::SetUp();
     engine = std::make_shared<LSMEngine>(test_dir);
@@ -1726,6 +1739,7 @@ TEST_F(TranPutWALTest, StagedLevelsDoNotWriteWalBeforeCommit) {
     EXPECT_EQ(engine->get("existing", 0),
               std::make_optional(std::make_pair(std::string("old"), base_id)));
     EXPECT_FALSE(engine->get("new", 0));
+    ASSERT_TRUE(transaction->abort());
   }
 }
 
@@ -1751,8 +1765,7 @@ TEST_F(TranPutWALTest, WalFailurePreservesEarlierValueAndRejectsNewWrite) {
   auto transaction = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
   const auto id = transaction->tranc_id_;
   transaction->put("key", "before");
-  auto padding_transaction = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
-  padding_transaction->put("padding", std::string(5000, 'v'));
+  ASSERT_TRUE(fill_wal_for_rotation());
   const auto dir = std::filesystem::path(test_dir);
   const auto successful = read_wal_records(dir / "wal.0");
   ASSERT_GT(std::filesystem::file_size(dir / "wal.0"), 4096u);
@@ -1844,6 +1857,7 @@ TEST_F(TranRemoveWALTest, StagedDeletesStayLocalBeforeCommit) {
     EXPECT_EQ(engine->get("existing", 0),
               std::make_optional(std::make_pair(std::string("old"), base_id)));
     EXPECT_FALSE(engine->memtable.get_record("missing", 0));
+    ASSERT_TRUE(transaction->abort());
   }
 }
 
@@ -1871,8 +1885,7 @@ TEST_F(TranRemoveWALTest, WalFailurePreservesValueAndDoesNotCreateTombstone) {
   auto transaction = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
   const auto id = transaction->tranc_id_;
   transaction->put("existing", "before");
-  auto padding_transaction = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
-  padding_transaction->put("padding", std::string(5000, 'v'));
+  ASSERT_TRUE(fill_wal_for_rotation());
   const auto dir = std::filesystem::path(test_dir);
   const auto successful = read_wal_records(dir / "wal.0");
   ASSERT_GT(std::filesystem::file_size(dir / "wal.0"), 4096u);
@@ -1899,8 +1912,7 @@ TEST_F(TranCommitWALTest, TestFailStillPropagatesWalFailure) {
   auto transaction = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
   transaction->remove("key");
   transaction->put("new", "pending");
-  auto padding = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
-  padding->put("padding", std::string(5000, 'v'));
+  ASSERT_TRUE(fill_wal_for_rotation());
   const auto dir = std::filesystem::path(test_dir);
   ASSERT_GT(std::filesystem::file_size(dir / "wal.0"), 4096u);
   const auto successful = read_wal_records(dir / "wal.0");
@@ -2029,9 +2041,12 @@ TEST_F(TranCommitWALTest, WriteConflictDoesNotWriteCommitOrPendingValues) {
     auto older = manager->new_tranc(level);
     older->put(key, "stale");
     older->put(extra, "pending");
-    auto newer = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
-    newer->put(key, "new");
-    ASSERT_TRUE(newer->commit());
+    const auto newer_id = std::async(std::launch::async, [&] {
+      auto newer = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+      newer->put(key, "new");
+      EXPECT_TRUE(newer->commit());
+      return newer->tranc_id_;
+    }).get();
     const auto successful = read_wal_records(path);
     const auto operation_count = older->operations.size();
 
@@ -2042,7 +2057,7 @@ TEST_F(TranCommitWALTest, WriteConflictDoesNotWriteCommitOrPendingValues) {
     EXPECT_FALSE(engine->get(extra, 0));
     EXPECT_EQ(engine->get(key, 0, true),
               std::make_optional(std::make_pair(std::string("new"),
-                                                newer->tranc_id_)));
+                                                newer_id)));
     EXPECT_EQ(older->operations.size(), operation_count);
     EXPECT_EQ(read_wal_records(path), successful);
   }
@@ -2058,14 +2073,16 @@ TEST_F(TranCommitWALTest, ReadChangeRejectsCommitWithoutBlockingOtherWriter) {
   auto reader = manager->new_tranc(IsolationLevel::SERIALIZABLE);
   EXPECT_EQ(reader->get("A"), std::make_optional(std::string("old")));
   reader->put("B", "based-on-old-A");
-  auto writer = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
-  writer->put("A", "new");
-  ASSERT_TRUE(writer->commit());
+  const auto writer_id = std::async(std::launch::async, [&] {
+    auto writer = manager->new_tranc(IsolationLevel::READ_OP_COMMITTED);
+    writer->put("A", "new");
+    EXPECT_TRUE(writer->commit());
+    return writer->tranc_id_;
+  }).get();
   const auto path = std::filesystem::path(test_dir) / "wal.0";
   const std::vector<Record> expected = {
-      Record::createRecord(writer->tranc_id_),
-      Record::putRecord(writer->tranc_id_, "A", "new"),
-      Record::commitRecord(writer->tranc_id_)};
+      Record::createRecord(writer_id), Record::putRecord(writer_id, "A", "new"),
+      Record::commitRecord(writer_id)};
 
   EXPECT_EQ(reader->get("A"), std::make_optional(std::string("old")));
   EXPECT_FALSE(reader->commit());
@@ -2102,8 +2119,7 @@ TEST_F(TranCommitWALTest, WalFailurePreservesDataAndRejectsRepeatedCommit) {
   auto transaction = manager->new_tranc(IsolationLevel::REPEATABLE_READ);
   transaction->remove("key");
   transaction->put("new", "pending");
-  auto padding = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
-  padding->put("padding", std::string(5000, 'v'));
+  ASSERT_TRUE(fill_wal_for_rotation());
   const auto dir = std::filesystem::path(test_dir);
   const auto successful = read_wal_records(dir / "wal.0");
   ASSERT_GT(std::filesystem::file_size(dir / "wal.0"), 4096u);
@@ -2275,8 +2291,7 @@ TEST_F(TranAbortWALTest, WalFailurePreservesActiveContextAndRejectsRepeatedEnd) 
   auto transaction = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
   const auto id = transaction->tranc_id_;
   transaction->put("key", "dirty");
-  auto padding = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
-  padding->put("padding", std::string(5000, 'v'));
+  ASSERT_TRUE(fill_wal_for_rotation());
   const auto dir = std::filesystem::path(test_dir);
   const auto successful = read_wal_records(dir / "wal.0");
   ASSERT_GT(std::filesystem::file_size(dir / "wal.0"), 4096u);
@@ -2322,8 +2337,7 @@ TEST_F(TranAbortWALTest, WalFailurePreservesActiveContextAndRejectsRepeatedEnd) 
 // 目的：首次 RU 写入失败，已写计数仍为 0，abort 不能因此跳过日志而报告成功。
 // 通过另一事务填满活动文件，让本事务的第一次 put 就遇到真实文件轮换故障。
 TEST_F(TranAbortWALTest, FailedFirstWriteCannotSkipRollbackWal) {
-  auto padding = manager->new_tranc(IsolationLevel::READ_UNOP_COMMITTED);
-  padding->put("padding", std::string(5000, 'v'));
+  ASSERT_TRUE(fill_wal_for_rotation());
   const auto dir = std::filesystem::path(test_dir);
   const auto successful = read_wal_records(dir / "wal.0");
   ASSERT_GT(std::filesystem::file_size(dir / "wal.0"), 4096u);
@@ -3768,23 +3782,22 @@ TEST_F(TranManagerRecoveryTest, StateReplaceFailureAllowsSameManagerRetry) {
 TEST_F(WALTest, PartialFlushRecoveryTest) {
   {
     LSM lsm(test_dir);
-    auto tran_ctx1 = lsm.begin_tran(IsolationLevel::READ_OP_COMMITTED);
-    auto tran_ctx2 = lsm.begin_tran(IsolationLevel::READ_OP_COMMITTED);
-    auto tran_ctx3 = lsm.begin_tran(IsolationLevel::READ_OP_COMMITTED);
-    auto tran_ctx4 = lsm.begin_tran(IsolationLevel::READ_OP_COMMITTED);
-
-    tran_ctx4->put("key0", "value0");
-
-    tran_ctx2->put("key1", "value1");
-    tran_ctx2->put("key2", "value2");
-    // 提交并刷新wal
-    tran_ctx2->commit();
-    tran_ctx4->commit();
-    tran_ctx1->put("key3", "value3");
-
+    auto begin = [&] { return lsm.begin_tran(IsolationLevel::READ_OP_COMMITTED); };
+    ThreadOwnedTransaction tran_ctx1(begin);
+    ThreadOwnedTransaction tran_ctx2(begin);
+    auto tran_ctx3 = begin();  // 故意保持未提交，重开后不应出现 key4。
+    ThreadOwnedTransaction tran_ctx4(begin);
+    tran_ctx4.run([](TranContext &tx) { tx.put("key0", "value0"); });
+    tran_ctx2.run([](TranContext &tx) {
+      tx.put("key1", "value1");
+      tx.put("key2", "value2");
+      ASSERT_TRUE(tx.commit());
+    });
+    ASSERT_TRUE(tran_ctx4.run([](TranContext &tx) { return tx.commit(); }));
+    tran_ctx1.run([](TranContext &tx) { tx.put("key3", "value3"); });
     tran_ctx3->put("key4", "value4");
-    // 模拟写入到WAL后系统崩溃
-    tran_ctx1->commit(true);
+    // 第一笔只把提交决定写入 WAL，重开时重放。
+    ASSERT_TRUE(tran_ctx1.run([](TranContext &tx) { return tx.commit(true); }));
   }
   {
     LSM lsm(test_dir);
@@ -3925,22 +3938,14 @@ TEST_F(WALTest, MixedTransactionCommitAbortAndCrashRecovery) {
     // 未提交，也未中止
     t3->put("k3", "v3");
 
-    auto t5 = lsm.begin_tran(IsolationLevel::READ_OP_COMMITTED);
-    t5->put("k5", "v5");
-    t5->commit();
-
-
-    auto t6 = lsm.begin_tran(IsolationLevel::READ_OP_COMMITTED);
-    t6->put("k6", "v6");
-    t6->commit();
-
-    auto t4 = lsm.begin_tran(IsolationLevel::READ_OP_COMMITTED);
-    t4->put("k4", "v4");
-    t4->commit();
-
-    auto t7 = lsm.begin_tran(IsolationLevel::READ_OP_COMMITTED);
-    t7->put("k7", "v7");
-    t7->commit();
+    std::async(std::launch::async, [&] {
+      for (int n : {5, 6, 4, 7}) {
+        const auto suffix = std::to_string(n);
+        auto tx = lsm.begin_tran(IsolationLevel::READ_OP_COMMITTED);
+        tx->put("k" + suffix, "v" + suffix);
+        ASSERT_TRUE(tx->commit());
+      }
+    }).get();
 
     // 崩溃，t3未提交，t1、t4~t7已提交，t2已中止
   }
