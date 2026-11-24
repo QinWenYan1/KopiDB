@@ -1,102 +1,73 @@
 # KopiDB 当前计划
 
-## C++ 可串行化事务的实现路线
+## C++ 可串行化事务 · 2026-11-25 实施计划
 
-库级悲观锁、五阶段代码路线和逐函数协作格式已确认。业务实施已就绪，等待开始。线程规则已验收。[前置成果](STATE.md#当前进度)
+**目标**　一个 `TranManager` 管一个 DB。可串行化事务先等本库已有的显式事务和普通写结束，再独占到自己提交或回滚登记完成。其间用户能通过 `tx->get/put/remove` 读取已有值、自己的写入和删除。其他三个隔离级别与普通写可以并发。不同 DB 各用自己的锁。[已验收的线程约定](STATE.md#当前进度)
 
-![可串行化实现的验收进度](visuals/plan-progress.svg)
+**接口范围**　C++ 显式事务覆盖现有的单键读写。普通 `db.get/get_batch` 和数据库级遍历沿用各自的可见性约定。读未提交在 `put/remove` 时写入，其余三级暂存到共同的 `commit()`。取得库级锁后才分配版本号，等待顺序由标准读写锁调度。[现有事务接口](../include/lsm/transaction.h#L58) · [暂存与立即写入](../src/lsm/transation.cpp#L161)
 
-**首个待实现函数**　`TranManager::acquire_admission()`，待用户确认开始。
+**当前步骤**　1.1 · `TranManager::lock_for_direct_write()`。本轮给出声明和函数体，由用户写入，助手逐函数检查、补测试并更新清单。
 
-**库级锁** · 显式事务 · 普通写 · 异常收尾 · 最终验收
-
-共 18 项函数改动和 1 项最终验收，进度取自下方清单。同一函数跨阶段承担的不同职责分别验收。第一个函数通过后为 5.3%，最后一项通过为 100%。
-
-**完成后的行为**　A 在本库成功取得 `SERIALIZABLE` 事务时，先前进入的显式事务和普通写入均已结束其逻辑操作。A 通过 `tx->get/put/remove` 读取和修改数据，包括读取自己的暂存写入和删除。直到 A 提交或回滚完成，其他线程在本库新开事务或调用普通写都要等待，即使操作的是另一个 key。RU、RC、RR 和普通写之间可以共享入口。普通 `db.get/get_batch` 及数据库遍历继续按其各自的读取约定使用。
+1.1 草案已在独立源码副本用项目编译参数通过语法检查。工作区实现和行为测试待验收。
 
 | 阶段 | 任务与改动 | 验收标准 | 状态 |
 | --- | --- | --- | --- |
-| ① 建立每个 DB 的读写锁 | 在 `TranManager` 增加共享和独占取锁入口，让每个库能独立控制事务进入。 | 同库两个共享持有者可以同时进入，独占与共享、独占与独占互斥。A 库的锁不阻塞 B 库。长等请求告警一次，持锁方退出后仍能进入。 | 待开始 |
-| ② 接通显式事务的开始和结束 | 在 `new_tranc()` 取锁，提交或回滚登记后放锁，让锁覆盖整笔事务。 | 两个线程经 `db.begin_tran()` 双向验证共享与独占的等待关系。提交、主动回滚、冲突回滚都能放行等待者。保留已结束句柄也能开下一笔。 | 待开始 |
-| ③ 接通四个普通写入口 | 让 `put()`、`remove()` 和各自的批量版本取共享锁，独占期间普通写也会等待。 | 独占期间四个入口都等待，期间没有新 ID、WAL 或数据副作用。反过来，一批已进入的写必须完整结束，独占事务才能读到它的结果。 | 待开始 |
-| ④ 验证异常时的放锁时机 | 调整 `commit()`、`abort()` 和普通写的失败出口，数据只应用了一部分时提示重开本库。 | 可继续的事务仍持锁。结束结果不确定或只应用一部分时，等待者得到需重开的错误。已经应用并登记的提交遇到后续刷盘失败，保留其提交结果。 | 待开始 |
-| ⑤ 替换实验分支并完成验收 | 移除 `commit()` 的实验性读集比较，完成并发回归并同步 C++ 使用文档。 | 两个可串行化事务执行值班案例后至少一人仍在岗。三种较低隔离级别、四个普通写、线程归属、故障重开回归通过，文档与实际 C++ 能力一致。 | 待开始 |
+| ① 库级锁 | `lock_for_direct_write()` 返回标准共享锁，`wait_for_transaction_lock()` 处理共享或独占请求的等待。 | 同库共享持有者可并发，共享与独占、独占与独占互斥。一个库的等待不影响另一个库。长等只告警一次，放锁后请求可继续。 | 进行中 |
+| ② 显式事务 | `new_tranc()` 在分配 ID 前取锁，`add_ready_to_flush_tranc_id()` 登记结束后由创建线程放锁。 | 经 `begin_tran()` 验证三个较低级别可并发，可串行化等它们全部结束。同线程误用在等待前报错。保留已结束句柄或在别处销毁它，均不妨碍下一笔事务。 | 待开始 |
+| ③ 普通写 | 给 `LSM` 的 `put`、`put_batch`、`remove`、`remove_batch` 各加一次共享锁。 | 同库独占期间四个入口等待，此时未分配 ID、写 WAL 或改动数据。反过来，先进入的整批写完后，独占事务才能开始。空批次仍可直接返回。 | 待开始 |
+| ④ 故障收尾 | 四级共用现有提交、回滚和重开恢复。用 `recovery_required_` 向等待者和新请求报告严重故障。 | 普通冲突可正常回滚并放行。结束结果不确定或提交只应用了一部分时，等待中和随后申请的事务、普通写收到重开提示。重开后按 WAL 恢复。 | 待开始 |
+| ⑤ 切换与回归 | 移除 `commit()` 的实验性读集校验，用并发用例验证行为并同步 C++ 文档。 | 两笔可串行化事务做值班交接后至少一人仍在岗。点查、删除、混合级别、普通写、错误和重开回归通过，文档准确描述源码与已发布版本各自的能力。 | 待开始 |
 
-<details>
-<summary>逐函数验收清单（19 项）</summary>
+共 21 项。旧版把取锁、等待和故障检查合算为一项。新版分别计普通写取锁入口、正常等待、故障后的等待检查，增加两个验收点。其余计数仍按函数承担的具体改动，最后一项是整体回归与文档。前置线程规则、头文件准备及旧草案的独立验证不计入本轮。
 
 <!-- plan-progress: 可串行化实现 -->
 
-**① 库级锁**
+### ① 库级锁
 
-- [ ] `TranManager::acquire_admission()` 获取共享锁或独占锁，达到告警阈值后继续等待。
-- [ ] `TranManager::mark_recovery_required()` 标记故障，本库的新申请能收到重开提示。
+- [ ] **1.1** 新增 `TranManager::lock_for_direct_write(const char *operation)`。给管理器加 `transaction_mutex_`，每个实例创建一把 `std::shared_timed_mutex`。函数复用 `require_direct_write_allowed()` 检查同线程误用，返回持有这把锁的 `std::shared_lock<std::shared_timed_mutex>`。普通写的调用栈由 `LSM` 保证管理器存活。[管理器声明](../include/lsm/transaction.h#L105) · [现有线程检查](../src/lsm/transation.cpp#L1263)
+- [ ] **1.2** 新增私有 `TranManager::wait_for_transaction_lock(Lock &lock, const char *operation)`。调用方传入延迟加锁的标准共享锁或独占锁，1.1 改用此函数等待。无竞争时直接取锁。等待达到 1 秒只告警一次，记录操作名、时长和当时能取得的活跃事务 ID，之后继续等。查看 ID 时短暂尝试取得管理器锁，记录日志时释放它。[活跃事务表](../include/lsm/transaction.h#L186)
 
-**② 显式事务**
+已有的 `IsolationLevel` 和标准库锁对象替代旧草案中的 `AdmissionMode`、`AdmissionLock` 和 `AdmissionState`。`transaction_mutex_` 由 `shared_ptr` 持有，方便显式事务的创建线程在管理器先销毁时仍能安全解锁。`mutex_` 继续保护事务登记表。等待库级锁前，调用方应已放开管理器、SST 和 MemTable 的锁。[管理器短锁](../include/lsm/transaction.h#L166) · [既有生命周期用例](../test/test_lsm.cpp#L2520)
 
-- [ ] `ThreadTransactionSlot::release()` 由创建线程释放锁并清理占位。
-- [ ] `ThreadTransactionSlot::~ThreadTransactionSlot()` 处理拥有者线程带着活跃事务退出。
-- [ ] `TranManager::add_ready_to_flush_tranc_id()` 登记成功后释放对应事务的锁。
-- [ ] `TranManager::require_direct_write_allowed()` 通过更新后的线程槽检查同库独立写。
-- [ ] `TranManager::new_tranc()` 先检查线程，再等锁、分配 ID 并登记。
+### ② 显式事务
 
-**③ 普通写**　分别验收四个入口从取 ID 前到整次写入完成都持有共享锁。
+- [ ] **2.1** 新增 `ThreadTransactionSlot::release() noexcept`。扩充现有线程槽，在同一处保存事务弱引用、mutex 的保活指针和实际持有的标准锁。`std::variant` 表示空、共享、独占三种情况。释放时由创建线程先解锁，再清理引用。[当前线程槽](../include/lsm/transaction.h#L189)
+- [ ] **2.2** 修改 `TranManager::require_direct_write_allowed()`，从槽内读取原来的事务弱引用。切换线程槽声明时，同步适配 `new_tranc()` 及 `add_ready_to_flush_tranc_id()` 现有的弱引用访问，使中间版本可构建。同线程对同库的独立写在等锁前报错，对另一个 DB 的普通写按目标库的锁执行。[误用检查](../src/lsm/transation.cpp#L1263)
+- [ ] **2.3** 修改 `TranManager::add_ready_to_flush_tranc_id()`。提交、主动回滚和冲突回滚共用此处。登记成功后，仅在结束的上下文与本线程槽中的对象相同时释放。普通写和启动恢复也会调用此函数，其登记须保留其他事务持有的锁。[现有登记与身份比较](../src/lsm/transation.cpp#L1136)
+- [ ] **2.4** 修改 `TranManager::new_tranc()`。检查线程占位后，`SERIALIZABLE` 选择独占锁，其余三级选择共享锁，两者都经过 1.2 取锁。接着短暂持有 `mutex_` 分配 ID、创建并登记上下文，登记成功才把局部锁移入线程槽。创建失败由局部标准锁解锁。按对象识别已经失效的旧库绑定，在创建线程清理它。同一事务的点读写沿用已取得的锁。[事务工厂](../src/lsm/transation.cpp#L1281) · [C++ 公开入口](../src/lsm/engine.cpp#L1519)
 
-- [ ] `LSM::put()` 单笔写入。
-- [ ] `LSM::put_batch()` 整批写入。
-- [ ] `LSM::remove()` 单笔删除。
-- [ ] `LSM::remove_batch()` 整批删除。
+在 2.4 接通独占的同一轮调整已有并发用例。先确认另一线程已发起申请，让持锁者结束，再等申请返回。使用明确的线程信号和有界等待，保留原有数据、WAL 和事务状态的有效断言。[现有同步等待的用例](../test/test_wal.cpp#L2070)
 
-**④ 异常收尾**　分别验证每个入口出错后，等待者能继续，或收到需重开的错误。
+### ③ 普通写
 
-- [ ] `TranContext::commit()` 区分结束日志不确定、数据部分应用及登记后的维护失败。
-- [ ] `TranContext::abort()` 保留真实的回滚状态，按失败位置处置锁。
-- [ ] `LSM::put()` 单笔写入失败。
-- [ ] `LSM::put_batch()` 整批写入失败。
-- [ ] `LSM::remove()` 单笔删除失败。
-- [ ] `LSM::remove_batch()` 整批删除失败。
+以下四个入口分别把原有的单独线程检查换成 1.1 的取锁调用，返回的标准锁作为局部变量保存。在参数检查后、分配 ID 前取锁，覆盖 WAL、数据应用、结束登记及最后的完成标记，直到整次调用退出。事务内的 `engine->put/remove` 和启动重放继续走底层路径。
 
-**⑤ 最终验收**
+- [ ] **3.1** `LSM::put()` 保护整次单键写入。[单键写入](../src/lsm/engine.cpp#L1204)
+- [ ] **3.2** `LSM::put_batch()` 整批共享一个锁，保留参数检查和输入顺序。[批量写入](../src/lsm/engine.cpp#L1271)
+- [ ] **3.3** `LSM::remove()` 保护墓碑的写入和完成登记。[单键删除](../src/lsm/engine.cpp#L1337)
+- [ ] **3.4** `LSM::remove_batch()` 整批共享一个锁，包括最后一个完成标记。[批量删除](../src/lsm/engine.cpp#L1393)
 
-- [ ] `TranContext::commit()` 移除实验性读集比较，验证值班案例和共用的写冲突检查。
-- [ ] 最终回归与文档验收。运行下文列出的 C++ 用例并核对双语首页和使用手册。
+### ④ 故障收尾
+
+四个级别继续共用 `commit()`、`abort()`。正常写冲突登记回滚并返回 `false`。严重错误仍向原调用方抛出，此外由同一个 `TranManager` 通知尚在等待及之后申请的显式事务和普通写。其他已经通过入口的共享事务可能仍在执行，标志的检查点只设在取库级锁的路径。让调用方协调停用旧实例、重开同一目录，由现有 WAL 流程恢复。[冲突回滚](../src/lsm/transation.cpp#L483) · [启动重放](../src/lsm/engine.cpp#L1075)
+
+- [ ] **4.1** 新增 `TranManager::mark_recovery_required(const TranContext *ending = nullptr) noexcept`。单个内存标志 `recovery_required_` 初始为 `false`，故障时先置 `true`。显式结束失败可传入当前上下文，仅释放身份匹配的线程槽。普通写由局部锁自行释放。保留原异常和持久化的事务决定。
+- [ ] **4.2** 修改 `TranManager::wait_for_transaction_lock()`，在等待前、分段等待期间和成功取锁后检查标志，拒绝时抛出提示重开的 `std::runtime_error`。覆盖四级事务和四个普通写入口，故障库之外的 DB 可继续使用。
+- [ ] **4.3** 新增 `ThreadTransactionSlot::~ThreadTransactionSlot() noexcept`。创建线程带着尚未结束的持锁事务退出时，先将仍存活的管理器标为需要重开，再由该线程释放锁。管理器已经销毁时用槽内保活的 mutex 完成解锁。测试同时覆盖其他线程销毁已结束句柄的情况。
+- [ ] **4.4** 修改 `TranContext::commit()` 的失败出口。结束日志结果不确定、已确认 COMMIT 后应用或登记未完成，先置标志再放锁。普通冲突走原分支。已经完整应用并登记后，冻结或刷盘出错保留提交决定，报告维护异常。保留 `commit(true)` 的恢复测试语义。[WAL 确认](../src/lsm/transation.cpp#L500) · [完成登记](../src/lsm/transation.cpp#L539)
+- [ ] **4.5** 修改 `TranContext::abort()` 的失败出口。仍可继续的事务保持持锁。回滚日志结果不确定，或已写出回滚决定但结束登记失败时，置标志并由创建线程释放锁，保留真实结果供重开。读未提交继续按需要写 ROLLBACK 并登记回滚 ID。[回滚及登记](../src/lsm/transation.cpp#L639)
+- [ ] **4.6** `LSM::put()` 区分构造记录失败、WAL 结果不确定、数据应用和结束登记失败。[写入路径](../src/lsm/engine.cpp#L1241)
+- [ ] **4.7** `LSM::put_batch()` 覆盖整组 COMMIT 已写出但只应用了部分 key 的情况。[批量写入路径](../src/lsm/engine.cpp#L1318)
+- [ ] **4.8** `LSM::remove()` 按墓碑的应用和登记进度处理异常。[删除路径](../src/lsm/engine.cpp#L1369)
+- [ ] **4.9** `LSM::remove_batch()` 覆盖部分墓碑已应用的情况。[批量删除路径](../src/lsm/engine.cpp#L1437)
+
+普通写准备记录时已知尚未发送 WAL 的错误沿用原有取消逻辑。进入实际 WAL 写入后结果不确定、或已提交数据未完整应用与登记时，在局部锁析构前标记故障。故障验证分别覆盖等待者、故障后的新请求、另一库及实际重开。WAL 的提交判定、文件格式和重放沿用现有实现。[已确认提交后的维护异常用例](../test/test_lsm.cpp#L4063) · [重开恢复用例](../test/test_lsm.cpp#L4169)
+
+### ⑤ 切换与回归
+
+- [ ] **5.1** 修改 `TranContext::commit()`，在前四阶段接通后移除 `SERIALIZABLE` 专用的实验性读集比较。保留暂存型事务共用的写版本冲突检查、可重复读的读缓存和读取自身修改的行为。[共用写集检查](../src/lsm/transation.cpp#L430) · [实验读集检查](../src/lsm/transation.cpp#L453)
+- [ ] **5.2** 完成 C++ 回归和使用文档。两个工作线程分别读取对方的值班状态再决定自己是否下班，任一先后顺序下至少一人仍在岗。同时覆盖读自己的写、删除与不存在的 key、混合隔离、普通写双向等待、合法回滚与故障重开。核对源码实验性注释，以及中英文首页和使用手册的版本说明。[LSM 用例](../test/test_lsm.cpp) · [WAL 用例](../test/test_wal.cpp) · [中文首页](../README.md) · [英文首页](../README.en.md) · [使用手册](../docs/usage.md#concurrency-and-transactions)
 
 <!-- /plan-progress -->
 
-</details>
-
-### ① 锁归谁，怎样等待
-
-- 在 `TranManager` 增加一份本库独有的锁状态（`std::shared_timed_mutex` 和内存中的需恢复标志）。拟新增内部方法 `[[nodiscard]] AdmissionLock acquire_admission(AdmissionMode mode, const char *operation)`。返回值持有共享锁或独占锁，由标准锁对象管理释放。另一内部方法 `TranManager::mark_recovery_required() noexcept` 只设置本库标志，供后续故障路径使用。等待库级锁之前须释放已有的管理器 `mutex_`、SST 锁和 MemTable 锁。[事务声明](../include/lsm/transaction.h#L102)
-- 等待用单调时钟计时。建议首版用内部 **1 秒**作为长等告警阈值，记录操作、已等时长、能定位的活跃事务 ID。每次请求只告警一次，并继续等待。发生需重开的故障时，等待循环及成功拿锁后都检查本库状态。调度采用标准读写锁提供的顺序。[C++ 读写锁及所有权](https://eel.is/c++draft/thread.sharedtimedmutex.class)
-
-### ② 先接释放点，再让事务持锁
-
-- 扩充已有的 `thread_transaction_`。建议由一个私有 `ThreadTransactionSlot` 保存事务的弱引用和持锁对象。持锁对象让本库的锁状态存活，普通写的持锁对象只放在调用栈上。事务的创建线程负责解锁，用户可以在之后另行销毁已经结束的句柄。[已有线程槽](../include/lsm/transaction.h#L186)
-- 先接 `TranManager::add_ready_to_flush_tranc_id()` 的成功登记分支。匹配本线程**同一个上下文**时，调用拟新增的私有 `ThreadTransactionSlot::release() noexcept` 释放并清槽。成功提交、主动回滚、写冲突回滚共用这里。普通写和启动恢复也调用登记函数，但它们不能清掉另一笔事务的锁。`require_direct_write_allowed()` 同步改为从槽内取弱句柄。[结束登记](../src/lsm/transation.cpp#L1136) · [同线程误用检查](../src/lsm/transation.cpp#L1263)
-- 再改 `TranManager::new_tranc()`。顺序为检查本线程占位 → 取本库锁 → 在管理器短锁内分配 ID 并登记 → 将锁从局部移入线程槽。构造或登记失败由局部对象释放。`SERIALIZABLE` 取独占，其他三级取共享。`LSM::begin_tran()` 已转发工厂，事务内 `get/put/remove` 直接使用原有存取路径。[工厂](../src/lsm/transation.cpp#L1281) · [公开入口](../src/lsm/engine.cpp#L1519)
-- 调用方在创建线程显式结束事务。如果线程带着活跃事务退出，拟在 `ThreadTransactionSlot::~ThreadTransactionSlot()` 中先将仍存活的本库标为需恢复，再由原线程释放锁，交给 WAL 恢复决定事务结果。管理器先销毁时，线程槽仍持有锁状态，原线程下次使用槽时清理失效绑定。测试分别覆盖句柄跨线程析构和线程退出。[C++ 线程局部对象的析构时机](https://eel.is/c++draft/basic.start.term)
-- 并发测试从本阶段起使用独立拥有者线程、明确的启动信号和有界等待。先让持锁事务结束，再等待发起申请的线程返回。原来同步等待另一事务先提交的实验用例，要同步迁移调度，保留数据和 WAL 断言。[现有等待顺序的实例](../test/test_wal.cpp#L2070)
-
-### ③ 普通写也要经过同一把锁
-
-在四个入口已有的 `require_direct_write_allowed()` 之后、取 ID 之前，各加一次共享锁。一批只取一次锁，覆盖写 WAL、应用整批数据、登记完成和写入完成标记。保留四个入口已有的参数检查和空批次行为。`LSMEngine::put/remove` 同时用于事务内部或恢复，放在公开 `LSM` 层可以避免重复取锁。[put](../src/lsm/engine.cpp#L1204) · [put_batch](../src/lsm/engine.cpp#L1271) · [remove](../src/lsm/engine.cpp#L1337) · [remove_batch](../src/lsm/engine.cpp#L1393)
-
-### ④ 按事务实际走到哪一步处理异常
-
-`commit()` 当前先确认 WAL 并设 `isCommited = true`，随后才应用 `temp_map_`、写完成标记和登记。**允许下一笔事务看到提交结果的时机是数据已完整应用且登记成功。** [提交决定](../src/lsm/transation.cpp#L500) · [完成登记](../src/lsm/transation.cpp#L537) · [回滚](../src/lsm/transation.cpp#L639)
-
-| 发生情况 | 处理和验证 |
-| --- | --- |
-| 数据或参数错误后事务仍可继续，或一次普通写在发送 WAL 前失败 | 显式事务继续持锁，可在原线程完成。普通写离开函数即释放。用例验证下一次合法操作有正确结果。 |
-| 结束日志写出结果不确定，或 WAL 已确认结束但数据或完成登记尚未完成 | 保留原异常及 WAL 决定。`mark_recovery_required() noexcept` 先设置该库标志，再由原线程释放锁。等待中和以后申请的事务及普通写收到 `std::runtime_error`，提示重新打开该库。原线程同时清理自己的占位，管理器保留真实的事务状态供恢复。真实 WAL 故障和重开验证覆盖显式结束及普通写。 |
-| 已完整应用并登记，之后冻结或刷 SST 抛异常 | 保存已登记结果，向调用方传递维护错误。恢复及后续等待者按已完成的事务处理。`commit(true)` 的故意跳过应用沿用专用恢复测试约定。 |
-
-### ⑤ 切换保证并验收公开 C++ 接口
-
-- 前四阶段通过后，移除 `TranContext::commit()` 专属 `SERIALIZABLE` 的单键读集比较。共享的写版本冲突检查、可重复读的 `read_map_`、读回自身暂存值继续使用。[旧读集分支](../src/lsm/transation.cpp#L453) · [共用写冲突检查](../src/lsm/transation.cpp#L430)
-- 通过 `db.begin_tran()` 验收两个线程的值班场景。两人均在岗，各自先读对方，只在对方仍在岗时才让自己下班。允许任一线程先进入，后进入者必须看见前一笔的结果。再验证点查不存在、读自己的写和删除、独占与普通写两种先后顺序、其他隔离级别共享、跨库独立、误用在等待前报错及 WAL 重开。[LSM 测试](../test/test_lsm.cpp) · [WAL 测试](../test/test_wal.cpp)
-- 最终回归在独立临时目录运行新增用例、原 LSM 功能集、完整 `test_wal` 及原 Compact/WiscKey 事务专项。沿用上次 LSM 功能集边界，四项长测 `Persistence`、`BigPersistence`、`BigPersistence2`、`SmallConfigLargeDataPersistent` 单独标明。验收按本轮实际运行结果计数。
-- 核对 `transaction.h`、`engine.h`、`transation.cpp`、`engine.cpp` 及测试中的实验性标识。普通点读、迭代器和维护操作沿用各自的接口约定。C++ 源码验收后同步首页和使用手册，并区分源码能力与已经发布的 SDK 版本。[中文首页](../README.md) · [英文首页](../README.en.md) · [使用手册](../docs/usage.md#concurrency-and-transactions)
-
-2026-11-24，首个函数的草案已在独立源码副本编译，8 项针对性检查通过，覆盖共享并发、独占等待、跨库独立、长等告警及持锁对象寿命。工作区实现待验收。
+回归在独立临时目录运行新增用例、原 `test_lsm` 功能集、完整 `test_wal` 及 Compact/WiscKey 的事务专项。沿用既有口径，`LSMTest.Persistence`、`BigPersistence`、`BigPersistence2`、`SmallConfigLargeDataPersistent` 四项长测另行记录实际运行情况。发布与 SDK 排期见[项目状态](STATE.md#当前进度)。

@@ -1,5 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="680" height="12" viewBox="0 0 680 12" role="img" aria-labelledby="title">
-  <title id="title">${title}，已验收 ${done} 项，共 ${total} 项</title>
-  <rect width="100%" height="12" rx="6" fill="#c6c6c6"/>
-  <rect width="${width}%" height="12" rx="6" fill="#454545"/>
-</svg>

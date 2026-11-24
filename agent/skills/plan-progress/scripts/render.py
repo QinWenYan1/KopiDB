@@ -1,13 +1,12 @@
-"""从验收清单生成阶段总览，复用或更新聊天进度图。"""
+"""读取计划清单，输出阶段总览或包含 PNG 的聊天消息。"""
 
 import argparse
+import base64
 from dataclasses import dataclass
-from html import escape
+import json
 from pathlib import Path
 import re
 import subprocess
-from string import Template
-from tempfile import TemporaryDirectory
 
 
 SKILL = Path(__file__).resolve().parents[1]
@@ -107,38 +106,27 @@ def percentage(done, total):
     return percent
 
 
-def progress_image(output, title, done, total):
-    template = Template((SKILL / "assets/bar.svg").read_text(encoding="utf-8"))
-    image = template.substitute(title=escape(title), done=done, total=total,
-                                width=f"{100 * done / total:.8f}".rstrip("0").rstrip("."))
-    svg = output / "plan-progress.svg"
-    png = output / "plan-progress.png"
-    # SVG 记录本次绘图的输入。报告中的阶段状态每次重算，图相同时直接复用。
-    if svg.is_file() and png.is_file():
-        png_info = png.stat()
-        if (png_info.st_size and png_info.st_mtime_ns <= svg.stat().st_mtime_ns
-                and svg.read_text(encoding="utf-8") == image):
-            return png
-    output.mkdir(exist_ok=True)
-    with TemporaryDirectory(dir=output) as temp:
-        new_png = Path(temp) / png.name
-        new_svg = Path(temp) / svg.name
-        subprocess.run(["rsvg-convert", "-o", str(new_png)], input=image.encode("utf-8"), check=True)
-        new_svg.write_text(image, encoding="utf-8")
-        new_png.replace(png)
-        new_svg.replace(svg)
-    return png
+def progress_image(done, total):
+    width = 100 * done / total
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="680" height="12">
+  <rect width="100%" height="12" rx="6" fill="#c6c6c6"/>
+  <rect width="{width:.8f}%" height="12" rx="6" fill="#454545"/>
+</svg>"""
+    png = subprocess.run(
+        ["rsvg-convert"], input=svg.encode("ascii"), stdout=subprocess.PIPE, check=True
+    ).stdout
+    return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
 
 
-def render(plan):
+def render(plan, chat=False):
     title, stages = checklist(plan)
     done = sum(s.done for s in stages)
     total = sum(s.total for s in stages)
-    png = progress_image(plan.parent / "visuals", title, done, total)
-    print(f"**{title}　{done}/{total}（{percentage(done, total)}）**")
-    print(f"\n![{title}，已完成 {done}/{total}](<{png}>)\n")
-    print("| 阶段 | 任务与改动 | 已完成 | 完成度 | 状态 |")
-    print("| --- | --- | ---: | ---: | --- |")
+    summary = f"**{title}　{done}/{total}（{percentage(done, total)}）**"
+    rows = [
+        "| 阶段 | 任务与改动 | 已完成 | 完成度 | 状态 |",
+        "| --- | --- | ---: | ---: | --- |",
+    ]
     for stage in stages:
         status = stage.status
         if not status:
@@ -147,13 +135,29 @@ def render(plan):
                 status = "已完成"
         name = re.sub(r"(?<!\\)\|", r"\\|", stage.name)
         description = re.sub(r"(?<!\\)\|", r"\\|", stage.description or "—")
-        print(f"| {name} | {description} | {stage.done}/{stage.total} | {percentage(stage.done, stage.total)} | {status} |")
+        rows.append(
+            f"| {name} | {description} | {stage.done}/{stage.total} | "
+            f"{percentage(stage.done, stage.total)} | {status} |"
+        )
+
+    table = "\n".join(rows)
+    if chat:
+        message = {
+            "summary": summary,
+            "image_url": progress_image(done, total),
+            "table": table,
+        }
+        print(json.dumps(message, ensure_ascii=False))
+    else:
+        print(f"{summary}\n\n{table}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plan", type=Path, default=DEFAULT_PLAN)
+    parser.add_argument("--chat", action="store_true", help="通过标准输出返回含进度图的 JSON")
+    args = parser.parse_args()
     try:
-        render(parser.parse_args().plan.resolve())
+        render(args.plan.resolve(), chat=args.chat)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"{error}\n")
